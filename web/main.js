@@ -51,7 +51,7 @@ const EYE = 1.6;
 const state = {
   projs: [],
   fx: null,
-  meters: { l: 0, r: 0, agc: 1, hist: [] },
+  meters: { l: 0, r: 0, agc: 1, pts: 0, hist: [] },
   pose: { x: 3, y: 3 },
   heading: Math.PI / 2, // world math angle; π/2 = facing +y (into the scene)
   pitch: 0,
@@ -412,7 +412,7 @@ async function startAudio() {
     fetchBuf('../assets/fx_whistle.ogg'),
     fetchBuf('../assets/fx_thump.ogg'),
     fetchBuf('../assets/fx_boom.ogg'),
-    fetchBuf('../assets/ambience48.ogg'),
+    fetchBuf('../assets/night-city48.ogg'),
   ]);
 
   const decodeMono = async (buf, target = 0.6) => {
@@ -482,6 +482,7 @@ async function startAudio() {
         state.meters.l = e.data.l;
         state.meters.r = e.data.r;
         state.meters.agc = e.data.agc;
+        state.meters.pts = e.data.pts || 0;
         state.meters.hist.push(e.data.agc);
         if (state.meters.hist.length > 220) state.meters.hist.shift();
       }
@@ -823,6 +824,11 @@ function drawMeters() {
   g.fillStyle = '#ffaa3c';
   g.textAlign = 'left';
   g.fillText(`ear ${(20 * Math.log10(state.meters.agc)).toFixed(1)} dB`, 86, 18);
+  if (state.meters.pts) {
+    // adaptive point-HRTF budget (per source), set by the worklet from load
+    g.fillStyle = '#7a8496';
+    g.fillText(`hrtf ×${state.meters.pts}`, 86, H - 12);
+  }
   // 0 dB reference line
   g.strokeStyle = '#3a4658';
   g.lineWidth = 1;
