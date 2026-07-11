@@ -19,6 +19,9 @@ pub struct RoomDef {
     pub min: (f32, f32),
     pub max: (f32, f32),
     pub height: f32,
+    /// Acoustic roof line for over-the-top diffraction (interior `height`
+    /// plus roof slab / upper storeys — what sound must clear outdoors).
+    pub barrier_height: f32,
     pub walls: [Material; 6],
     pub wall_thickness: f32,
     /// Outdoor region: no walls, no reverb — direct + ground reflection only.
@@ -32,6 +35,7 @@ pub fn rooms() -> Vec<RoomDef> {
             min: (0.0, 0.0),
             max: (8.0, 6.0),
             height: 2.7,
+            barrier_height: 3.1,
             walls: [
                 Material::BRICK,
                 Material::BRICK,
@@ -48,6 +52,7 @@ pub fn rooms() -> Vec<RoomDef> {
             min: (3.2, 6.0),
             max: (4.8, 14.0),
             height: 2.4,
+            barrier_height: 3.1,
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.20,
             outdoor: false,
@@ -57,6 +62,7 @@ pub fn rooms() -> Vec<RoomDef> {
             min: (0.0, 14.0),
             max: (14.0, 24.0),
             height: 7.0,
+            barrier_height: 7.4,
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.30,
             outdoor: false,
@@ -66,6 +72,7 @@ pub fn rooms() -> Vec<RoomDef> {
             min: (20.0, 28.0),
             max: (22.0, 34.0),
             height: 2.6,
+            barrier_height: 3.0,
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.20,
             outdoor: false,
@@ -75,6 +82,7 @@ pub fn rooms() -> Vec<RoomDef> {
             min: (22.0, 26.0),
             max: (32.0, 38.0),
             height: 4.5,
+            barrier_height: 4.9,
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.35,
             outdoor: false,
@@ -83,7 +91,8 @@ pub fn rooms() -> Vec<RoomDef> {
             name: "Old House",
             min: (24.0, 16.0),
             max: (31.0, 23.0),
-            height: 2.8, // ground floor; the second storey is visual mass
+            height: 2.8, // interior ground floor; barrier_height covers the storeys
+            barrier_height: 5.9,
             walls: [Material::BRICK; 6],
             wall_thickness: 0.25,
             outdoor: false,
@@ -96,6 +105,7 @@ pub fn rooms() -> Vec<RoomDef> {
             min: (16.0, 15.0),
             max: (16.5, 21.0),
             height: 2.5,
+            barrier_height: 2.9,
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.25,
             outdoor: false,
@@ -105,6 +115,7 @@ pub fn rooms() -> Vec<RoomDef> {
             min: (14.5, 34.0),
             max: (16.5, 36.0),
             height: 2.7,
+            barrier_height: 3.0,
             walls: [Material::WOOD_PANEL; 6],
             wall_thickness: 0.1,
             outdoor: false,
@@ -116,6 +127,7 @@ pub fn rooms() -> Vec<RoomDef> {
             min: (-8.0, -8.0),
             max: (42.0, 46.0),
             height: 30.0,
+            barrier_height: 30.0,
             walls: [Material::GRASS; 6],
             wall_thickness: 0.15,
             outdoor: true,
@@ -252,7 +264,7 @@ const WAYPOINTS: [(f32, f32, f32); 20] = [
 ];
 
 pub const DURATION_S: f32 = 98.0;
-const EYE_HEIGHT: f32 = 1.6;
+pub const EYE_HEIGHT: f32 = 1.6;
 pub const SRC_HEIGHT: f32 = 1.5;
 const WALL_MARGIN: f32 = 0.3;
 

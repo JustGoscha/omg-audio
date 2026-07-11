@@ -2,6 +2,7 @@
 //! compiles unchanged to native and wasm. Produces `ParamBlock`s that the
 //! DSP layer (omg-dsp) renders — the two sides only speak through params.
 
+pub mod diffraction;
 pub mod ism;
 pub mod material;
 pub mod params;

@@ -51,6 +51,13 @@ struct SimCtx {
 
 static mut SIM: Option<SimCtx> = None;
 
+/// Both contexts are single-threaded (a Worker, an AudioWorklet), so one
+/// mutable global per context is sound; raw-pointer access keeps the
+/// Rust-2024 `static_mut_refs` lint honest about that.
+fn sim() -> &'static mut SimCtx {
+    unsafe { (*(&raw mut SIM)).as_mut().expect("sim_setup first") }
+}
+
 #[no_mangle]
 pub extern "C" fn sim_setup() {
     let ctx = SimCtx {
@@ -64,7 +71,7 @@ pub extern "C" fn sim_setup() {
         dyn_in: leak_f32(12),
         flat_tmp: Vec::with_capacity(MAX_FLAT),
     };
-    unsafe { SIM = Some(ctx) };
+    unsafe { *(&raw mut SIM) = Some(ctx) };
 }
 
 /// One simulation tick for listener pose (world coords, walk yaw).
@@ -74,13 +81,13 @@ pub extern "C" fn sim_setup() {
 ///            src1_route_n, x0,y0,...]
 #[no_mangle]
 pub extern "C" fn sim_dyn_ptr() -> *mut f32 {
-    let ctx = unsafe { SIM.as_mut().expect("sim_setup first") };
+    let ctx = sim();
     ctx.dyn_in.as_mut_ptr()
 }
 
 #[no_mangle]
 pub extern "C" fn sim_tick(lx: f32, ly: f32, yaw: f32) {
-    let ctx = unsafe { SIM.as_mut().expect("sim_setup first") };
+    let ctx = sim();
     for slot in 0..3 {
         let o = slot * 4;
         ctx.world.set_dynamic(
@@ -131,19 +138,19 @@ pub extern "C" fn sim_tick(lx: f32, ly: f32, yaw: f32) {
 
 #[no_mangle]
 pub extern "C" fn sim_params_ptr(i: u32) -> *const f32 {
-    let ctx = unsafe { SIM.as_ref().expect("sim_setup first") };
+    let ctx = sim();
     ctx.params[i as usize].as_ptr()
 }
 
 #[no_mangle]
 pub extern "C" fn sim_params_len(i: u32) -> u32 {
-    let ctx = unsafe { SIM.as_ref().expect("sim_setup first") };
+    let ctx = sim();
     ctx.param_lens[i as usize] as u32
 }
 
 #[no_mangle]
 pub extern "C" fn sim_state_ptr() -> *const f32 {
-    let ctx = unsafe { SIM.as_ref().expect("sim_setup first") };
+    let ctx = sim();
     ctx.state.as_ptr()
 }
 
@@ -182,7 +189,6 @@ struct EngCtx {
     ambient_stage: Option<&'static mut [f32]>,
     ambient_pos: usize,
     ambient_gain: omg_dsp::smooth::Smoothed,
-    ambient_lp_target: f32,
     ambient_lp_coef: omg_dsp::smooth::Smoothed,
     ambient_lp: [f32; 4],
     ambient_enc: [[f32; NCH]; 4],
@@ -212,7 +218,6 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         ambient_stage: None,
         ambient_pos: 0,
         ambient_gain: omg_dsp::smooth::Smoothed::new(0.0, 0.8, sample_rate),
-        ambient_lp_target: 1.0,
         ambient_lp_coef: omg_dsp::smooth::Smoothed::new(1.0, 0.8, sample_rate),
         ambient_lp: [0.0; 4],
         // world-anchored feed directions (N/E/S/W): the bed lives on the
@@ -225,11 +230,11 @@ pub extern "C" fn eng_init(sample_rate: f32) {
             omg_dsp::ambi::encode_gains([-1.0, 0.0, 0.0]),
         ],
     };
-    unsafe { ENG = Some(ctx) };
+    unsafe { *(&raw mut ENG) = Some(ctx) };
 }
 
 fn eng() -> &'static mut EngCtx {
-    unsafe { ENG.as_mut().expect("eng_init first") }
+    unsafe { (*(&raw mut ENG)).as_mut().expect("eng_init first") }
 }
 
 #[no_mangle]

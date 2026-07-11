@@ -20,14 +20,14 @@ const MASTER: f32 = 1.4;
 
 fn parse_bin(bytes: &[u8]) -> (usize, Vec<([f32; 3], Vec<f32>, Vec<f32>)>) {
     let mut off = 0usize;
-    let mut u32_at = |o: &mut usize| {
+    let u32_at = |o: &mut usize| {
         let v = u32::from_le_bytes(bytes[*o..*o + 4].try_into().unwrap());
         *o += 4;
         v
     };
     let count = u32_at(&mut off) as usize;
     let taps = u32_at(&mut off) as usize;
-    let mut f32s = |o: &mut usize, n: usize| -> Vec<f32> {
+    let f32s = |o: &mut usize, n: usize| -> Vec<f32> {
         let v = bytes[*o..*o + 4 * n]
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))

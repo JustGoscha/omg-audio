@@ -26,8 +26,11 @@ field is *computed*, not authored:
 - **Aperture radiation**: doors and windows re-radiate what's inside —
   including order-2 reflections from the source room — so a window is
   audible off-axis, not just on the sight line.
-- **Corner diffraction** around building edges (per-band bend attenuation)
-  and **facade reflections** outdoors.
+- **Diffraction**: blocked outdoor paths bend around building corners
+  (single and double) and over roof lines, priced by Kurze–Anderson
+  knife-edge losses — the Fresnel number of each path's detour decides,
+  per band, how much survives. Bass wraps around the club; over-the-roof
+  arrivals actually come from above. Plus **facade reflections** outdoors.
 - **Binaural output**: order-2 ambisonics decoded through 20 virtual
   speakers (dodecahedron) × measured MIT KEMAR HRIRs, plus *point
   rendering* — the strongest N paths per source get their own nearest-HRIR
@@ -159,9 +162,11 @@ guess — `tools/bench_web.mjs` is the receipt:
 - **Rectangular rooms + wall segments** (height-aware), not arbitrary
   meshes. Arbitrary geometry needs triangle BVH + path-validation rays —
   planned as a wgpu compute port of the tracer.
-- **Corner diffraction is calibrated geometry** (per-band attenuation by
-  bend angle), not the Uniform Theory of Diffraction. A UTD edge graph is
-  the biggest remaining realism item indoors.
+- **Diffraction is knife-edge Kurze–Anderson** (Fresnel-number insertion
+  loss per edge, "rubber band" multi-edge construction) over corner and
+  roof edges — the dominant behavior, but not full UTD wedge coefficients
+  (interior wedge angle, reflection-boundary terms), and outdoors only;
+  indoor doorframe diffraction is approximated by the aperture radiators.
 - **Order-2 bus for the diffuse tier** — see the rendering section; the
   sharp tier bypasses it entirely.
 - **Nearest-HRIR selection** (with 10 ms crossfades) rather than
