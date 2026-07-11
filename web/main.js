@@ -839,6 +839,28 @@ function drawMeters() {
   g.stroke();
 }
 
+// Inferno colormap (perceptually uniform: black → purple → crimson →
+// orange → yellow), piecewise-linear between matplotlib anchor stops.
+const SPEC_LUT = (() => {
+  const stops = [
+    [0.0, 0, 0, 4], [0.125, 22, 11, 57], [0.25, 66, 10, 104],
+    [0.375, 106, 23, 110], [0.5, 147, 38, 103], [0.625, 188, 55, 84],
+    [0.75, 221, 81, 58], [0.875, 243, 120, 25], [0.9375, 249, 189, 38],
+    [1.0, 252, 255, 164],
+  ];
+  const lut = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let k = 0;
+    while (stops[k + 1][0] < t) k++;
+    const u = (t - stops[k][0]) / (stops[k + 1][0] - stops[k][0]);
+    for (let ch = 0; ch < 3; ch++) {
+      lut[i * 3 + ch] = Math.round(stops[k][ch + 1] + u * (stops[k + 1][ch + 1] - stops[k][ch + 1]));
+    }
+  }
+  return lut;
+})();
+
 function drawSpec() {
   const c = document.getElementById('spec');
   if (!c || !state.analyser) return;
@@ -848,23 +870,27 @@ function drawSpec() {
   state.analyser.getByteFrequencyData(state.specBins);
   // scroll left, draw the new column at the right edge
   g.drawImage(c, -2, 0);
-  g.fillStyle = '#0e1116';
-  g.fillRect(W - 2, 0, 2, H);
   const bins = state.specBins;
   const fs = 48000;
   const nyq = fs / 2;
+  if (!state.specCol) state.specCol = g.createImageData(2, H);
+  const px = state.specCol.data;
   for (let y = 0; y < H; y++) {
     // log frequency axis: 40 Hz (bottom) … 16 kHz (top)
     const frac = 1 - y / H;
     const f = 40 * Math.pow(16000 / 40, frac);
     const bin = Math.min(bins.length - 1, Math.round((f / nyq) * bins.length));
-    const v = bins[bin] / 255;
-    if (v > 0.03) {
-      const heat = Math.pow(v, 1.4);
-      g.fillStyle = `rgb(${Math.round(40 + 215 * heat)},${Math.round(60 + 130 * heat)},${Math.round(120 - 60 * heat)})`;
-      g.fillRect(W - 2, y, 2, 1);
+    // analyser bytes are already dB-scaled; mild gamma keeps the floor dark
+    const li = Math.round(Math.pow(bins[bin] / 255, 1.25) * 255) * 3;
+    for (let x = 0; x < 2; x++) {
+      const o = (y * 2 + x) * 4;
+      px[o] = SPEC_LUT[li];
+      px[o + 1] = SPEC_LUT[li + 1];
+      px[o + 2] = SPEC_LUT[li + 2];
+      px[o + 3] = 255;
     }
   }
+  g.putImageData(state.specCol, W - 2, 0);
   // frequency gridlines: 100 Hz, 1 kHz, 10 kHz
   g.fillStyle = '#7a849644';
   for (const f of [100, 1000, 10000]) {
