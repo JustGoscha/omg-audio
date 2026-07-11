@@ -135,8 +135,18 @@ impl Rain {
     }
 
     /// Load the recorded-splat bank (uniform BANK_SLOT slices). Without
-    /// it, everything falls back to synthesis.
-    pub fn set_bank(&mut self, samples: Vec<f32>) {
+    /// it, everything falls back to synthesis. Slices are dulled at load
+    /// (one-pole lowpass ~3 kHz): raw drip recordings are bubbly plinks;
+    /// rain against a building reads duller.
+    pub fn set_bank(&mut self, mut samples: Vec<f32>) {
+        let coef = 1.0 - (-core::f32::consts::TAU * 3_000.0 / self.sample_rate).exp();
+        for slice in samples.chunks_mut(BANK_SLOT) {
+            let mut lp = 0.0f32;
+            for x in slice.iter_mut() {
+                lp += coef * (*x - lp);
+                *x = lp;
+            }
+        }
         self.bank = samples;
     }
 
@@ -186,8 +196,8 @@ impl Rain {
             if n_slices > 0 && self.rng.next_f32() < 0.4 {
                 d.bank_off = (self.rng.next_u64() as usize % n_slices) * BANK_SLOT;
                 d.bank_pos = 0.0;
-                d.bank_rate = 0.9 + self.rng.next_f32() * 0.5;
-                d.env = (0.02 + 0.05 * self.rng.next_f32()) * g.min(1.2);
+                d.bank_rate = 0.85 + self.rng.next_f32() * 0.3;
+                d.env = (0.012 + 0.03 * self.rng.next_f32()) * g.min(1.2);
                 d.decay = 1.0;
                 d.click = 0.0;
             } else {
@@ -210,10 +220,11 @@ impl Rain {
                 // pitch/gain variation so no two reads alike
                 d.bank_off = (self.rng.next_u64() as usize % n_slices) * BANK_SLOT;
                 d.bank_pos = 0.0;
-                d.bank_rate = 0.85 + self.rng.next_f32() * 0.6;
-                d.env = 0.05 + 0.11 * self.rng.next_f32().powi(2);
+                // narrow spread, biased slightly down: dull, not bubbly
+                d.bank_rate = 0.8 + self.rng.next_f32() * 0.3;
+                d.env = 0.025 + 0.05 * self.rng.next_f32().powi(2);
                 d.decay = 1.0;
-                d.click = d.env * 0.5; // extra attack bite
+                d.click = d.env * 0.25;
                 let el = 0.15 + 0.35 * self.rng.next_f32();
                 let (se, ce) = el.sin_cos();
                 d.enc = encode_gains([az.cos() * ce, az.sin() * ce, se]);
@@ -241,8 +252,8 @@ impl Rain {
         if n_slices > 0 && self.rng.next_f32() < 0.2 {
             d.bank_off = (self.rng.next_u64() as usize % n_slices) * BANK_SLOT;
             d.bank_pos = 0.0;
-            d.bank_rate = 0.9 + self.rng.next_f32() * 0.5;
-            d.env = 0.015 + 0.035 * self.rng.next_f32().powi(2);
+            d.bank_rate = 0.85 + self.rng.next_f32() * 0.3;
+            d.env = 0.01 + 0.02 * self.rng.next_f32().powi(2);
             d.decay = 1.0;
             d.click = 0.0;
             // ground splashes arrive from below-ish around you
