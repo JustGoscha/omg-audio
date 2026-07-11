@@ -284,9 +284,9 @@ impl WorldSim {
                 // the same straight-ray transmission rules. Additionally,
                 // the bent path only carries what the straight ray does NOT:
                 // with clear line of sight through the opening the straight
-                // tap IS the direct sound, and the routed copy shrinks to
-                // door-frame scatter (avoids double-counting, which made
-                // doorway sight-lines louder than being in the room).
+                // tap IS the direct sound and the routed copy vanishes — a
+                // residual copy at sub-millisecond offset is a comb filter
+                // (metallic), not scatter.
                 let occ = if routed.extra_dist > 0.0 {
                     let door_occ = straight_path_transmission(
                         rooms,
@@ -302,7 +302,7 @@ impl WorldSim {
                     );
                     let fl = floor_of(routed.virt_world);
                     core::array::from_fn(|b| {
-                        door_occ[b].max(fl[b]) * (1.0 - 0.7 * los[b])
+                        door_occ[b].max(fl[b]) * (1.0 - los[b])
                     })
                 } else if rooms[state.room].outdoor {
                     // Same outdoor "room" — but buildings may stand between
@@ -487,10 +487,14 @@ impl WorldSim {
                 rem_n += 1;
 
                 // Early reflections of the SOURCE's room, carried through
-                // the doorway: image sources toward the exit door, then the
-                // door→listener leg (spreading, muffle, occlusion), arriving
-                // from the doorway direction. This is what makes a room
-                // sound like itself through its open door.
+                // the doorway. Each image path exits the aperture at its
+                // OWN crossing point — a ceiling bounce leaves higher and
+                // elsewhere along the width than a grazing path. Collapsing
+                // them all onto the door's center point makes a stack of
+                // coherent copies at millisecond spacings from one
+                // direction: the "metal box" coloration outside a lively
+                // room. This is the image-source construction continued
+                // through the opening.
                 let sr2 = &self.rooms[def.room];
                 let sbox2 = Shoebox::new(
                     Vec3::new(sr2.max.0 - sr2.min.0, sr2.max.1 - sr2.min.1, sr2.height),
@@ -511,16 +515,67 @@ impl WorldSim {
                 }
                 refl.sort_by(|a, b| b.gains[1].total_cmp(&a.gains[1]));
                 refl.truncate(6);
+                // the aperture this radiator exits through (its true extents)
+                let ap = self.doors.iter().find(|dd| {
+                    let (dp, dl) = if dd.axis == 0 {
+                        (exit2.0 - dd.pos.0, exit2.1 - dd.pos.1)
+                    } else {
+                        (exit2.1 - dd.pos.1, exit2.0 - dd.pos.0)
+                    };
+                    dp.abs() < 0.1 && dl.abs() <= dd.half + 0.1
+                });
+                let lis3 = [
+                    state.listener_world.0,
+                    state.listener_world.1,
+                    self.rooms[state.room].floor_z + state.listener_local.z,
+                ];
+                let dist3 = |a: [f32; 3], b: [f32; 3]| {
+                    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2))
+                        .sqrt()
+                };
                 for (ri, tref) in refl.iter().enumerate() {
                     let d_tap = tref.delay_s * omg_core::SPEED_OF_SOUND;
-                    let scale = d_tap / (d_tap + d_after);
+                    // image position (dir points from the door toward it)
+                    let img = [
+                        exit2.0 + tref.dir[0] * d_tap,
+                        exit2.1 + tref.dir[1] * d_tap,
+                        sr2.floor_z + walkthrough::SRC_HEIGHT + tref.dir[2] * d_tap,
+                    ];
+                    // where the image→listener line crosses the opening
+                    let e3 = if let Some(dd) = ap {
+                        let (plane, ia, la, ic, lc) = if dd.axis == 0 {
+                            (dd.pos.0, img[0], lis3[0], img[1], lis3[1])
+                        } else {
+                            (dd.pos.1, img[1], lis3[1], img[0], lis3[0])
+                        };
+                        let denom = la - ia;
+                        let t = if denom.abs() < 1e-6 {
+                            0.5
+                        } else {
+                            ((plane - ia) / denom).clamp(0.0, 1.0)
+                        };
+                        let cc = if dd.axis == 0 { dd.pos.1 } else { dd.pos.0 };
+                        let cl = (ic + t * (lc - ic)).clamp(cc - dd.half + 0.05, cc + dd.half - 0.05);
+                        let cz = (img[2] + t * (lis3[2] - img[2])).clamp(
+                            dd.zc - 0.5 * dd.height + 0.05,
+                            dd.zc + 0.5 * dd.height - 0.05,
+                        );
+                        if dd.axis == 0 { [plane, cl, cz] } else { [cl, plane, cz] }
+                    } else {
+                        [exit2.0, exit2.1, walkthrough::SRC_HEIGHT]
+                    };
+                    let pre = dist3(img, e3).max(0.3);
+                    let post = dist3(e3, lis3).max(0.3);
+                    let scale = pre / (pre + post);
                     let gains: [f32; NBANDS] = core::array::from_fn(|b| {
                         tref.gains[b] * routed.muffle[b] * scale * occ[b] * w
                     });
+                    let (ex, ey, ez) =
+                        ((lis3[0] - e3[0]) / post, (lis3[1] - e3[1]) / post, (lis3[2] - e3[2]) / post);
                     pb.taps.push(Tap {
                         key: 7000 + ai as u32 * 128 + state.room as u32 * 16 + ri as u32,
-                        delay_s: tref.delay_s + d_after / omg_core::SPEED_OF_SOUND,
-                        dir: [dx, dy, 0.0],
+                        delay_s: (pre + post) / omg_core::SPEED_OF_SOUND,
+                        dir: [cos * ex + sin * ey, -sin * ex + cos * ey, ez],
                         gains,
                     });
                 }
@@ -541,7 +596,7 @@ impl WorldSim {
                     let gains: [f32; NBANDS] = core::array::from_fn(|b| {
                         routed.muffle[b] * air[b] / total.max(0.3)
                             * occ[b]
-                            * (1.0 - 0.7 * los[b])
+                            * (1.0 - los[b])
                             * w
                     });
                     if gains[0] > 2e-5 {
@@ -983,6 +1038,40 @@ mod tests {
             "doorway enclosure should sit between: {}",
             mid_info.env.enclosure
         );
+    }
+
+    /// Outside an open door, the source room's early reflections must
+    /// exit across the WHOLE opening — distinct directions (including
+    /// elevation) and distinct path lengths. Collapsed onto the door's
+    /// center they are a stack of coherent copies at millisecond
+    /// spacings: the "metal box" coloration this test pins down.
+    #[test]
+    fn aperture_reflections_spread_across_the_opening() {
+        let mut w = WorldSim::new();
+        // voice is in the Great Hall; stand outside its door at (7, 24)
+        for _ in 0..4 {
+            let _ = w.tick_at(7.0, 26.0, 0.0);
+        }
+        let (blocks, _) = w.tick_at(7.0, 26.0, 0.0);
+        let refl: Vec<&Tap> =
+            blocks[1].taps.iter().filter(|t| (7000..7800).contains(&t.key)).collect();
+        assert!(refl.len() >= 3, "expected doorway reflections, got {}", refl.len());
+        let mut min_dot = 1.0f32;
+        for i in 0..refl.len() {
+            for j in i + 1..refl.len() {
+                let (a, b) = (refl[i].dir, refl[j].dir);
+                min_dot = min_dot.min(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
+            }
+        }
+        assert!(min_dot < 0.995, "reflections leave from one point: min pairwise dot {min_dot}");
+        assert!(
+            refl.iter().any(|t| t.dir[2].abs() > 0.05),
+            "no vertical spread — exit heights are not being used"
+        );
+        let (dmin, dmax) = refl.iter().fold((f32::MAX, 0.0f32), |(lo, hi), t| {
+            (lo.min(t.delay_s), hi.max(t.delay_s))
+        });
+        assert!(dmax - dmin > 0.002, "delays too uniform: {:.4}..{:.4}", dmin, dmax);
     }
 
     /// Deep shadow behind the Old House: the surviving energy must be
