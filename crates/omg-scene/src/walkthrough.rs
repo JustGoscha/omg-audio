@@ -205,14 +205,20 @@ pub fn aperture_hop(
     };
     let (pa, qa) = if d.axis == 0 { (p.0, q.0) } else { (p.1, q.1) };
     let (pc, qc) = if d.axis == 0 { (p.1, q.1) } else { (p.0, q.0) };
+    // The hop only passes THROUGH the opening if the segment actually
+    // transits the door plane between its endpoints. A hairpin (both
+    // neighbors on the same side — e.g. a listener beside the wall the
+    // door exits from) must be priced as a bend around the jamb; the
+    // clamped crossing would otherwise flip sides on a hair's width and
+    // snap the whole chain between free and shadowed.
     let denom = qa - pa;
-    let c = if denom.abs() < 1e-6 {
-        0.5 * (pc + qc) // degenerate: endpoints in the door plane itself
+    let (c, transits) = if denom.abs() < 1e-6 {
+        (0.5 * (pc + qc), false)
     } else {
-        let t = ((plane - pa) / denom).clamp(0.0, 1.0);
-        pc + t * (qc - pc)
+        let t_raw = (plane - pa) / denom;
+        (pc + t_raw.clamp(0.0, 1.0) * (qc - pc), (0.0..=1.0).contains(&t_raw))
     };
-    let inside = c > lo && c < hi;
+    let inside = transits && c > lo && c < hi;
     // bend/reference point: the crossing clamped into the opening (jamb
     // margin keeps virtual sources out of the wall itself)
     let cc = c.clamp(lo + 0.02, hi - 0.02);
