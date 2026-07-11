@@ -71,7 +71,7 @@ const candidates = [
 ];
 let worst = { taps: -1, pos: [0, 0] };
 for (const [x, y] of candidates) {
-  sim.sim_tick(x, y, 0.0);
+  sim.sim_tick(x, y, 1.6, 0.0);
   const taps = setParamsFromSim();
   if (taps > worst.taps) worst = { taps, pos: [x, y] };
 }

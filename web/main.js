@@ -18,6 +18,7 @@ const ROOMS = [
   { name: 'Old House', min: [24, 16], max: [31, 23], h: 5.6, floor: 0x39322a }, // 2 storeys
   { name: 'Colonnade', min: [16, 15], max: [16.5, 21], h: 2.5, solid: true },
   { name: 'Kiosk', min: [14.5, 34], max: [16.5, 36], h: 2.7, solid: true },
+  { name: 'Old House Upper', min: [24, 16], max: [31, 23], upper: true }, // index-aligned with the sim
   { name: 'Outside', min: [-8, -8], max: [42, 46], outdoor: true, floor: 0x1c2a20 },
 ];
 // axis: 0 = opening in an x=const wall, 1 = opening in a y=const wall
@@ -93,14 +94,16 @@ function cycleRain() {
 // SPL, and each source's authored gain gives its baseline; the fader sets
 // the REAL emitted energy: gain = 10^((SPL − baseline) / 20).
 // Ambience/rain/master are trim faders in plain dB.
+// `base` is the calibration anchor (authored gain = that SPL); `def` is
+// the default fader position (tuned by ear for the demo mix).
 const MIXER = [
-  { name: 'music', srcs: [0], base: 90, meters: [0], spl: true },
-  { name: 'voice', srcs: [1], base: 84, meters: [1], spl: true },
-  { name: 'club', srcs: [2], base: 104, meters: [2], spl: true },
-  { name: 'balls', srcs: [3, 4, 5], base: 89, meters: [3, 4, 5], spl: true },
-  { name: 'ambience', target: 'ambient', meters: [6] },
-  { name: 'rain', target: 'rainGain', meters: [7] },
-  { name: 'master', target: 'master', meters: 'lr' },
+  { name: 'music', srcs: [0], base: 90, def: 72, meters: [0], spl: true },
+  { name: 'voice', srcs: [1], base: 84, def: 65, meters: [1], spl: true },
+  { name: 'club', srcs: [2], base: 104, def: 104, meters: [2], spl: true },
+  { name: 'balls', srcs: [3, 4, 5], base: 89, def: 89, meters: [3, 4, 5], spl: true },
+  { name: 'ambience', target: 'ambient', def: -9, meters: [6] },
+  { name: 'rain', target: 'rainGain', def: 0, meters: [7] },
+  { name: 'master', target: 'master', def: 0, meters: 'lr' },
 ];
 const SPL_MIN = 20, SPL_MAX = 130, TRIM_MIN = -30, TRIM_MAX = 12;
 
@@ -118,8 +121,8 @@ function buildMixer() {
     fader.type = 'range';
     fader.min = 0; fader.max = 1000; fader.className = 'fader';
     fader.value = ch.spl
-      ? ((ch.base - SPL_MIN) / (SPL_MAX - SPL_MIN)) * 1000
-      : ((0 - TRIM_MIN) / (TRIM_MAX - TRIM_MIN)) * 1000;
+      ? ((ch.def - SPL_MIN) / (SPL_MAX - SPL_MIN)) * 1000
+      : ((ch.def - TRIM_MIN) / (TRIM_MAX - TRIM_MIN)) * 1000;
     const meter = document.createElement('div');
     meter.className = 'meter';
     meter.innerHTML = '<div class="rms"></div><div class="pk"></div>';
@@ -223,7 +226,7 @@ function crossesWall(x0, y0, x1, y1, z = 1.6) {
 
 function walkableMove(x0, y0, x1, y1) {
   if (x1 < WORLD.min[0] || x1 > WORLD.max[0] || y1 < WORLD.min[1] || y1 > WORLD.max[1]) return false;
-  return !crossesWall(x0, y0, x1, y1);
+  return !crossesWall(x0, y0, x1, y1, (state.pose.z || 0) + 1.0);
 }
 
 // ------------------------------------------------------------ three scene
@@ -412,7 +415,9 @@ function openColliderGap(axis, plane, at) {
     if (at - DOOR_HALF > c.lo && at + DOOR_HALF < c.hi) {
       COLLIDERS.splice(i, 1,
         { ...c, hi: at - DOOR_HALF },
-        { ...c, lo: at + DOOR_HALF });
+        { ...c, lo: at + DOOR_HALF },
+        // the wall above the doorway stays solid
+        { ...c, lo: at - DOOR_HALF, hi: at + DOOR_HALF, zlo: DOOR_H });
     }
   }
 }
@@ -420,7 +425,7 @@ function openColliderGap(axis, plane, at) {
 function buildWorld() {
   // floors + ceilings
   for (const r of ROOMS) {
-    if (r.solid) continue;
+    if (r.solid || r.upper) continue;
     const w = r.max[0] - r.min[0];
     const d = r.max[1] - r.min[1];
     const floor = new THREE.Mesh(
@@ -484,10 +489,16 @@ function buildWorld() {
   upper(31, 19.5, 0.15, 7);
   upper(27.5, 23, 7, 0.15);
   {
-    const slab = new THREE.Mesh(new THREE.PlaneGeometry(7, 7), ceilMat);
-    slab.rotation.x = Math.PI / 2;
-    slab.position.copy(v3(27.5, 19.5, 2.8));
-    scene.add(slab);
+    // upper slab (top at z = 3.0) with a stairwell opening along the
+    // west wall; stairs rise south → north to the landing
+    addBox(28.35, 19.5, 2.9, 5.3, 7, 0.2);      // main slab east of the stairwell
+    addBox(24.85, 16.45, 2.9, 1.7, 0.9, 0.2);   // south sliver
+    const steps = 13;
+    for (let i = 0; i < steps; i++) {
+      const z = ((i + 1) / steps) * 3.0;
+      addBox(24.9, 17.2 + (i / (steps - 1)) * 4.0, z - 0.1, 1.2, 4.0 / steps + 0.05, 0.2);
+    }
+    addBox(24.9, 22.0, 2.9, 1.2, 1.2, 0.2);      // landing
     const roof = new THREE.Mesh(new THREE.PlaneGeometry(7, 7), ceilMat);
     roof.rotation.x = Math.PI / 2;
     roof.position.copy(v3(27.5, 19.5, 5.6));
@@ -699,7 +710,7 @@ async function startAudio() {
     node.port.postMessage({ type: 'fx', src, kind, action });
   setInterval(() => {
     worker.postMessage({
-      type: 'pose', x: state.pose.x, y: state.pose.y, yaw: 0,
+      type: 'pose', x: state.pose.x, y: state.pose.y, z: EYE + (state.pose.z || 0), yaw: 0,
       doors: state.doors.map((d) => (d ? 1 : 0)),
       projs: state.projs.map((p) => [p.slot, p.x, p.y, p.z]),
     });
@@ -810,7 +821,7 @@ function throwBall() {
   scene.add(light);
   state.projs.push({
     slot,
-    x: state.pose.x + ch * 0.4, y: state.pose.y + sh * 0.4, z: EYE,
+    x: state.pose.x + ch * 0.4, y: state.pose.y + sh * 0.4, z: EYE + (state.pose.z || 0),
     vx: ch * cp * speed, vy: sh * cp * speed, vz: sp * speed + 2.5,
     landedAt: 0, boomAt: 0, mesh, light,
   });
@@ -902,9 +913,25 @@ function updateProjectile(p, dt, now) {
 const WALK_SPEED = 3.0;
 let lastT = 0;
 
+// Feet height at a position: the Old House stairs rise to the upper
+// floor (slab top z = 3.0); everywhere else is ground.
+function floorHeightAt(x, y, curZ) {
+  const inHouse = x > 24.05 && x < 30.95 && y > 16.05 && y < 22.95;
+  const inStairCol = x > 24.25 && x < 25.55;
+  if (inHouse && inStairCol && y > 16.9) {
+    if (y >= 21.3) return 3.0; // landing
+    return 3.0 * Math.min(1, Math.max(0, (y - 17.0) / (21.3 - 17.0)));
+  }
+  if (inHouse && curZ > 1.5) return 3.0; // upper floor
+  return 0;
+}
+
 function movePose(t) {
   const dt = Math.min((t - lastT) / 1000, 0.05);
   lastT = t;
+  // follow the floor (stairs are a ramp; snap gently)
+  const target = floorHeightAt(state.pose.x, state.pose.y, state.pose.z || 0);
+  state.pose.z = (state.pose.z || 0) + (target - (state.pose.z || 0)) * Math.min(1, dt * 10);
   let fwd = 0;
   let strafe = 0;
 
@@ -960,7 +987,7 @@ function frame(t) {
     movePose(t);
     updateProjectiles(dt, t);
     updateDoors(dt);
-    camera.position.copy(v3(state.pose.x, state.pose.y, EYE));
+    camera.position.copy(v3(state.pose.x, state.pose.y, EYE + (state.pose.z || 0)));
     camera.rotation.y = state.heading - Math.PI / 2;
     camera.rotation.x = state.pitch;
   }
@@ -1119,6 +1146,7 @@ function drawMinimap() {
   const room = state.simState ? state.simState[2] | 0 : -1;
 
   ROOMS.forEach((r, i) => {
+    if (r.upper && i !== room) return;
     if (r.solid) {
       mm.fillStyle = '#3a4658';
       mm.fillRect(sx(r.min[0]), sy(r.max[1]),

@@ -63,7 +63,7 @@ for (let sec = 0; sec < positions.length; sec++) {
   const [px, py] = positions[sec];
   let secSq = 0;
   for (let tick = 0; tick < 20; tick++) {
-    sim.sim_tick(px, py, 0.0);
+    sim.sim_tick(px, py, 1.6, 0.0);
     setParamsFromSim();
     // head turns slowly during second 3 to exercise rotation + reselection
     if (sec === 3) eng.eng_set_head((tick / 20) * Math.PI);

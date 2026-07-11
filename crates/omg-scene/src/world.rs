@@ -130,7 +130,7 @@ impl WorldSim {
         }
         let i = self.defs.len() - walkthrough::DYN_SLOTS + slot;
         self.defs[i].pos = (x, y);
-        self.defs[i].room = walkthrough::room_of(&self.rooms, x, y);
+        self.defs[i].room = walkthrough::room_of_z(&self.rooms, x, y, z);
         self.src_z[i] = z.clamp(0.2, 12.0);
         self.dynamic_active[slot] = active;
     }
@@ -145,7 +145,18 @@ impl WorldSim {
     /// walk/course yaw baked into arrival directions; fast head rotation is
     /// applied downstream in the renderer.
     pub fn tick_at(&mut self, lx: f32, ly: f32, yaw: f32) -> (Vec<ParamBlock>, TickInfo) {
-        let bs = blended_state_for(&self.rooms, lx, ly, yaw);
+        self.tick_at_z(lx, ly, walkthrough::EYE_HEIGHT, yaw)
+    }
+
+    /// Interactive tick with explicit eye height (stacked storeys).
+    pub fn tick_at_z(
+        &mut self,
+        lx: f32,
+        ly: f32,
+        lz: f32,
+        yaw: f32,
+    ) -> (Vec<ParamBlock>, TickInfo) {
+        let bs = blended_state_for(&self.rooms, lx, ly, lz, yaw);
         self.tick_blended(bs)
     }
 

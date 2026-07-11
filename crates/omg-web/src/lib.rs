@@ -98,7 +98,7 @@ pub extern "C" fn sim_door_ptr() -> *mut f32 {
 }
 
 #[no_mangle]
-pub extern "C" fn sim_tick(lx: f32, ly: f32, yaw: f32) {
+pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
     let ctx = sim();
     for i in 0..6 {
         ctx.world.set_door(i, ctx.door_in[i] > 0.5);
@@ -113,7 +113,7 @@ pub extern "C" fn sim_tick(lx: f32, ly: f32, yaw: f32) {
             ctx.dyn_in[o + 3] > 0.5,
         );
     }
-    let (blocks, info) = ctx.world.tick_at(lx, ly, yaw);
+    let (blocks, info) = ctx.world.tick_at_z(lx, ly, lz, yaw);
     for (i, pb) in blocks.iter().enumerate().take(NSRC) {
         pb.write_flat(&mut ctx.flat_tmp);
         let n = ctx.flat_tmp.len().min(MAX_FLAT);
@@ -133,6 +133,7 @@ pub extern "C" fn sim_tick(lx: f32, ly: f32, yaw: f32) {
         "Great Hall" => (0.010, 600.0),
         "Entrance" => (0.024, 1200.0),
         "Old House" => (0.020, 900.0),
+        "Old House Upper" => (0.028, 1400.0),
         _ => (0.004, 300.0), // Club: thick concrete
     };
     st[62] = ag;

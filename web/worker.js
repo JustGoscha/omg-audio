@@ -2,7 +2,7 @@
 // pose from the main thread; posts flat ParamBlocks (transferred) + a small
 // state buffer for the canvas viz.
 let w = null;
-let pose = { x: 3.0, y: 3.0, yaw: 0.0, projs: [] };
+let pose = { x: 3.0, y: 3.0, z: 1.6, yaw: 0.0, projs: [] };
 
 onmessage = async (e) => {
   const m = e.data;
@@ -26,7 +26,7 @@ function tick() {
     const slot = p[0];
     if (slot >= 0 && slot < 3) dyn.set([p[1], p[2], p[3], 1], slot * 4);
   });
-  w.sim_tick(pose.x, pose.y, pose.yaw);
+  w.sim_tick(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw);
   const blocks = [];
   for (let i = 0; i < 6; i++) {
     const len = w.sim_params_len(i);

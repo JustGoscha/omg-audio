@@ -23,11 +23,12 @@ pub struct OutputStage {
     env_att: f32,
     env_rel: f32,
     gain_down: f32,
-    gain_up: f32,
+    gain_up_fast: f32,
+    gain_up_slow: f32,
     // Temporary threshold shift ("club ears"): sustained demand far above
     // the AGC target accumulates fatigue; fatigue muffles the output —
-    // a lowpass that deepens with exposure and lets go over ~25 s, the
-    // way hearing stays dulled after stepping away from a loud PA.
+    // a lowpass that deepens with exposure and fully lets go within
+    // ~20 s, the way hearing stays dulled after stepping away from a PA.
     // Protection-shaped only: exactly zero effect at normal levels.
     tts: f32,
     tts_up: f32,
@@ -35,6 +36,14 @@ pub struct OutputStage {
     tts_lp: (f32, f32),
     tts_coef: f32,
     tts_refresh: u32,
+    // Tinnitus: a faint ring after blasts. Fed by demand spikes far above
+    // even the fatigue threshold, decays over ~6 s. Diotic (identical in
+    // both ears — it reads as inside the head), and NOT scaled by the AGC:
+    // the acoustic reflex cannot quiet a phantom sound.
+    tin: f32,
+    tin_phase: f32,
+    tin_step: f32,
+    tin_decay: f32,
     sample_rate: f32,
 }
 
@@ -46,6 +55,11 @@ const TTS_LOUD: f32 = AGC_TARGET * 3.2;
 /// Muffle cutoff range: log-swept 18 kHz (none) → 1.4 kHz (full fatigue).
 const TTS_FC_HI: f32 = 18_000.0;
 const TTS_FC_LO: f32 = 1_400.0;
+/// Tinnitus: demand above this (per sample, pre-AGC) feeds the ring.
+const TIN_THRESH: f32 = 2.2;
+/// Ring pitch and ceiling level (≈ −44 dBFS — audible only in quiet).
+const TIN_HZ: f32 = 5_400.0;
+const TIN_LEVEL: f32 = 0.006;
 
 impl OutputStage {
     pub fn from_speaker_bytes(bytes: Option<&[u8]>, sample_rate: f32) -> Self {
@@ -62,13 +76,18 @@ impl OutputStage {
             env_att: tc(0.008),
             env_rel: tc(1.0),
             gain_down: tc(0.05),
-            gain_up: tc(30.0),
+            gain_up_fast: tc(4.0),
+            gain_up_slow: tc(45.0),
             tts: 0.0,
             tts_up: tc(4.0),
-            tts_down: tc(25.0),
+            tts_down: tc(6.0),
             tts_lp: (0.0, 0.0),
             tts_coef: 1.0,
             tts_refresh: 0,
+            tin: 0.0,
+            tin_phase: 0.0,
+            tin_step: core::f32::consts::TAU * TIN_HZ / sample_rate,
+            tin_decay: (-1.0 / (4.0 * sample_rate)).exp(),
             sample_rate,
         }
     }
@@ -97,6 +116,11 @@ impl OutputStage {
         self.tts
     }
 
+    /// Current tinnitus excitation, 0 … 1.
+    pub fn tinnitus(&self) -> f32 {
+        self.tin
+    }
+
     /// Rotate + decode the diffuse bus, mix in point-rendered stereo,
     /// soft-limit.
     #[inline]
@@ -114,11 +138,20 @@ impl OutputStage {
         let coef = if m > self.env { self.env_att } else { self.env_rel };
         self.env += coef * (m - self.env);
         let desired = (AGC_TARGET / self.env.max(1e-4)).clamp(AGC_MAX_CUT, AGC_MAX_BOOST);
-        let gcoef = if desired < self.agc_gain { self.gain_down } else { self.gain_up };
+        // Recovery is exponential in perception: coming back from deep
+        // protection is quick at first, but the last ~6 dB of sensitivity
+        // returns much later (fast tc while far below the target gain,
+        // sliding toward the slow tc as it closes in).
+        let gcoef = if desired < self.agc_gain {
+            self.gain_down
+        } else {
+            let r = (self.agc_gain / desired.max(1e-6)).clamp(0.0, 1.0);
+            self.gain_up_fast + (self.gain_up_slow - self.gain_up_fast) * r * r
+        };
         self.agc_gain += gcoef * (desired - self.agc_gain);
 
         // hearing fatigue: builds over seconds of ultra-loud demand,
-        // releases over ~25 s of relief
+        // clears within ~20 s of relief
         let excess = (self.env / TTS_LOUD - 1.0).clamp(0.0, 1.0);
         let tcoef = if excess > self.tts { self.tts_up } else { self.tts_down };
         self.tts += tcoef * (excess - self.tts);
@@ -130,13 +163,22 @@ impl OutputStage {
         }
         self.tts_refresh -= 1;
 
+        // tinnitus excitation: blasts far beyond the fatigue threshold
+        self.tin = (self.tin + (m - TIN_THRESH).max(0.0) * 2e-4).min(1.0) * self.tin_decay;
+        let ring = if self.tin > 1e-4 {
+            self.tin_phase = (self.tin_phase + self.tin_step) % core::f32::consts::TAU;
+            self.tin_phase.sin() * self.tin * TIN_LEVEL
+        } else {
+            0.0
+        };
+
         let gl = l * self.agc_gain;
         let gr = r * self.agc_gain;
         // dry/lowpassed blend by fatigue — bit-transparent at tts = 0
         self.tts_lp.0 += self.tts_coef * (gl - self.tts_lp.0);
         self.tts_lp.1 += self.tts_coef * (gr - self.tts_lp.1);
-        let ol = gl + self.tts * (self.tts_lp.0 - gl);
-        let or_ = gr + self.tts * (self.tts_lp.1 - gr);
+        let ol = gl + self.tts * (self.tts_lp.0 - gl) + ring;
+        let or_ = gr + self.tts * (self.tts_lp.1 - gr) + ring;
         (ol.tanh(), or_.tanh())
     }
 }
@@ -167,9 +209,10 @@ mod tests {
         let mut out = OutputStage::from_speaker_bytes(None, 48_000.0);
         let fresh = hf_lf_ratio(&mut out);
 
-        // 8 s of club-at-the-PA level (demand ≫ AGC target)
-        for k in 0..48_000 * 8 {
-            let x = 2.5 * (core::f32::consts::TAU * 700.0 * k as f32 / 48_000.0).sin();
+        // 10 s of club-at-the-PA level (demand ≫ AGC target, below the
+        // tinnitus blast threshold so the ring can't pollute the probe)
+        for k in 0..48_000 * 10 {
+            let x = 2.1 * (core::f32::consts::TAU * 700.0 * k as f32 / 48_000.0).sin();
             out.process(&[0.0; NCH], x, x);
         }
         assert!(out.ear_fatigue() > 0.5, "fatigue {}", out.ear_fatigue());
@@ -179,8 +222,8 @@ mod tests {
             "highs should dull after exposure: {dulled} vs fresh {fresh}"
         );
 
-        // ~50 s of near-silence: hearing comes back
-        for _ in 0..48_000 * 50 {
+        // ~25 s of near-silence: hearing comes back
+        for _ in 0..48_000 * 25 {
             out.process(&[0.0; NCH], 0.0, 0.0);
         }
         let later = hf_lf_ratio(&mut out);
@@ -191,6 +234,29 @@ mod tests {
     }
 
     #[test]
+    fn blast_rings_then_fades() {
+        let mut out = OutputStage::from_speaker_bytes(None, 48_000.0);
+        // 120 ms explosion-grade blast
+        for k in 0..4800 {
+            let x = 4.5 * (core::f32::consts::TAU * 90.0 * k as f32 / 48_000.0).sin();
+            out.process(&[0.0; NCH], x, x);
+        }
+        assert!(out.tinnitus() > 0.05, "blast should excite: {}", out.tinnitus());
+        // in silence right after: the ring is audible (nonzero output)
+        let mut e = 0.0f64;
+        for _ in 0..4800 {
+            let (l, _) = out.process(&[0.0; NCH], 0.0, 0.0);
+            e += (l * l) as f64;
+        }
+        assert!(e > 1e-9, "ring should be audible in silence: {e}");
+        // and it lets go over ~20 s
+        for _ in 0..48_000 * 20 {
+            out.process(&[0.0; NCH], 0.0, 0.0);
+        }
+        assert!(out.tinnitus() < 0.01, "ring should fade: {}", out.tinnitus());
+    }
+
+    #[test]
     fn normal_levels_never_muffle() {
         let mut out = OutputStage::from_speaker_bytes(None, 48_000.0);
         for k in 0..48_000 * 10 {
@@ -198,5 +264,6 @@ mod tests {
             out.process(&[0.0; NCH], x, x);
         }
         assert!(out.ear_fatigue() < 1e-3, "fatigue at normal level: {}", out.ear_fatigue());
+        assert!(out.tinnitus() < 1e-6, "tinnitus at normal level: {}", out.tinnitus());
     }
 }

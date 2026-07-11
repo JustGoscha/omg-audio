@@ -23,6 +23,8 @@ pub struct RoomDef {
     /// Acoustic roof line for over-the-top diffraction (interior `height`
     /// plus roof slab / upper storeys — what sound must clear outdoors).
     pub barrier_height: f32,
+    /// Height of this room's floor above ground (stacked storeys).
+    pub floor_z: f32,
     pub walls: [Material; 6],
     pub wall_thickness: f32,
     /// Outdoor region: no walls, no reverb — direct + ground reflection only.
@@ -37,6 +39,7 @@ pub fn rooms() -> Vec<RoomDef> {
             max: (8.0, 6.0),
             height: 2.7,
             barrier_height: 3.1,
+            floor_z: 0.0,
             walls: [
                 Material::BRICK,
                 Material::BRICK,
@@ -54,6 +57,7 @@ pub fn rooms() -> Vec<RoomDef> {
             max: (4.8, 14.0),
             height: 2.4,
             barrier_height: 3.1,
+            floor_z: 0.0,
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.20,
             outdoor: false,
@@ -64,6 +68,7 @@ pub fn rooms() -> Vec<RoomDef> {
             max: (14.0, 24.0),
             height: 7.0,
             barrier_height: 7.4,
+            floor_z: 0.0,
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.30,
             outdoor: false,
@@ -74,6 +79,7 @@ pub fn rooms() -> Vec<RoomDef> {
             max: (22.0, 34.0),
             height: 2.6,
             barrier_height: 3.0,
+            floor_z: 0.0,
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.20,
             outdoor: false,
@@ -84,6 +90,7 @@ pub fn rooms() -> Vec<RoomDef> {
             max: (32.0, 38.0),
             height: 4.5,
             barrier_height: 4.9,
+            floor_z: 0.0,
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.35,
             outdoor: false,
@@ -94,6 +101,7 @@ pub fn rooms() -> Vec<RoomDef> {
             max: (31.0, 23.0),
             height: 2.8, // interior ground floor; barrier_height covers the storeys
             barrier_height: 5.9,
+            floor_z: 0.0,
             walls: [Material::BRICK; 6],
             wall_thickness: 0.25,
             outdoor: false,
@@ -107,6 +115,7 @@ pub fn rooms() -> Vec<RoomDef> {
             max: (16.5, 21.0),
             height: 2.5,
             barrier_height: 2.9,
+            floor_z: 0.0,
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.25,
             outdoor: false,
@@ -117,8 +126,20 @@ pub fn rooms() -> Vec<RoomDef> {
             max: (16.5, 36.0),
             height: 2.7,
             barrier_height: 3.0,
+            floor_z: 0.0,
             walls: [Material::WOOD_PANEL; 6],
             wall_thickness: 0.1,
+            outdoor: false,
+        },
+        RoomDef {
+            name: "Old House Upper",
+            min: (24.0, 16.0),
+            max: (31.0, 23.0),
+            height: 2.6,
+            barrier_height: 5.9,
+            floor_z: 3.0, // above the ground floor + slab
+            walls: [Material::BRICK; 6],
+            wall_thickness: 0.25,
             outdoor: false,
         },
         // Outside must come LAST: enclosed rooms overlap its rectangle and
@@ -129,6 +150,7 @@ pub fn rooms() -> Vec<RoomDef> {
             max: (42.0, 46.0),
             height: 30.0,
             barrier_height: 30.0,
+            floor_z: 0.0,
             walls: [Material::GRASS; 6],
             wall_thickness: 0.15,
             outdoor: true,
@@ -142,7 +164,8 @@ pub const HALL: usize = 2;
 pub const ENTRANCE: usize = 3;
 pub const CLUB: usize = 4;
 pub const HOUSE: usize = 5;
-pub const OUTSIDE: usize = 8;
+pub const HOUSE_UP: usize = 8;
+pub const OUTSIDE: usize = 9;
 
 /// A doorway between two rooms. `axis`: 0 = opening in an x=const wall,
 /// 1 = opening in a y=const wall. Arbitrary graph topology (BFS routing).
@@ -175,6 +198,12 @@ pub fn doors() -> Vec<Door> {
         // house windows look out onto the square, club and hall
         Door { rooms: (HOUSE, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, glass: true, open: true },
         Door { rooms: (HOUSE, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, glass: true, open: true },
+        // upper-storey windows onto the square and toward the club
+        Door { rooms: (HOUSE_UP, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, glass: true, open: true },
+        Door { rooms: (HOUSE_UP, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, glass: true, open: true },
+        // stairwell: the vertical portal between the two storeys — always
+        // open, never toggled (indices ≥ 6 are outside the E-key range)
+        Door { rooms: (HOUSE, HOUSE_UP), pos: (24.8, 21.5), axis: 0, half: 0.7, glass: false, open: true },
     ]
 }
 
@@ -365,6 +394,30 @@ fn path_at(t: f32) -> (f32, f32) {
 }
 
 pub fn room_of(rooms: &[RoomDef], x: f32, y: f32) -> usize {
+    room_of_z(rooms, x, y, EYE_HEIGHT)
+}
+
+/// Room containing (x, y) whose vertical extent holds eye height `z` —
+/// stacked storeys select by z, ground-based rooms as before.
+pub fn room_of_z(rooms: &[RoomDef], x: f32, y: f32, z: f32) -> usize {
+    for (i, r) in rooms.iter().enumerate() {
+        if x >= r.min.0
+            && x <= r.max.0
+            && y >= r.min.1
+            && y <= r.max.1
+            && z >= r.floor_z - 0.3
+            && z <= r.floor_z + r.height + 0.9
+        {
+            return i;
+        }
+    }
+    // no storey matched: retry ignoring z (e.g. a projectile above a roof
+    // still belongs to the outdoor volume below it)
+    for (i, r) in rooms.iter().enumerate() {
+        if x >= r.min.0 && x <= r.max.0 && y >= r.min.1 && y <= r.max.1 && r.outdoor {
+            return i;
+        }
+    }
     for (i, r) in rooms.iter().enumerate() {
         if x >= r.min.0 && x <= r.max.0 && y >= r.min.1 && y <= r.max.1 {
             return i;
@@ -414,16 +467,17 @@ pub struct WalkState {
     pub listener_local: Vec3,
 }
 
-fn state_in_room(rooms: &[RoomDef], room: usize, lx: f32, ly: f32, yaw: f32) -> WalkState {
+fn state_in_room(rooms: &[RoomDef], room: usize, lx: f32, ly: f32, lz: f32, yaw: f32) -> WalkState {
     let r = &rooms[room];
     let (lx, ly) = clamp_into(r, lx, ly);
     let size = Vec3::new(r.max.0 - r.min.0, r.max.1 - r.min.1, r.height);
+    let local_z = (lz - r.floor_z).clamp(0.2, r.height - 0.2);
     WalkState {
         listener_world: (lx, ly),
         yaw,
         room,
         shoebox: Shoebox::new(size, r.walls),
-        listener_local: Vec3::new(lx - r.min.0, ly - r.min.1, EYE_HEIGHT),
+        listener_local: Vec3::new(lx - r.min.0, ly - r.min.1, local_z),
     }
 }
 
@@ -436,7 +490,7 @@ pub fn state_at(rooms: &[RoomDef], t: f32) -> WalkState {
         let (bx, by) = path_at(t - 0.4);
         (ly - by).atan2(lx - bx)
     };
-    state_in_room(rooms, room_of(rooms, lx, ly), lx, ly, yaw)
+    state_in_room(rooms, room_of(rooms, lx, ly), lx, ly, EYE_HEIGHT, yaw)
 }
 
 /// Primary room state + (near a doorway) the state of the room across it,
@@ -452,12 +506,13 @@ pub struct BlendedState {
 pub fn blended_state_at(rooms: &[RoomDef], t: f32) -> BlendedState {
     let st = state_at(rooms, t);
     let (lx, ly) = st.listener_world;
-    blended_state_for(rooms, lx, ly, st.yaw)
+    blended_state_for(rooms, lx, ly, EYE_HEIGHT, st.yaw)
 }
 
 /// Blend state for an arbitrary listener pose (interactive/web input).
-pub fn blended_state_for(rooms: &[RoomDef], lx: f32, ly: f32, yaw: f32) -> BlendedState {
-    let primary = state_in_room(rooms, room_of(rooms, lx, ly), lx, ly, yaw);
+/// `lz` is the EYE height in world coordinates (feet + 1.6).
+pub fn blended_state_for(rooms: &[RoomDef], lx: f32, ly: f32, lz: f32, yaw: f32) -> BlendedState {
+    let primary = state_in_room(rooms, room_of_z(rooms, lx, ly, lz), lx, ly, lz, yaw);
     let (lx, ly) = primary.listener_world;
 
     let all_doors = doors();
@@ -484,7 +539,7 @@ pub fn blended_state_for(rooms: &[RoomDef], lx: f32, ly: f32, yaw: f32) -> Blend
             };
             if let Some(o) = other_room {
                 let theta = (1.0 - dist / BLEND_RADIUS) * core::f32::consts::FRAC_PI_4;
-                let other = state_in_room(rooms, o, lx, ly, primary.yaw);
+                let other = state_in_room(rooms, o, lx, ly, lz, primary.yaw);
                 return BlendedState {
                     primary,
                     primary_weight: theta.cos(),
