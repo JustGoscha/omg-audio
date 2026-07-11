@@ -4,3 +4,5 @@
 *.mp4
 *.flac
 /web/vendor/three.module.js.map
+/godot/.godot/
+/godot/bin/

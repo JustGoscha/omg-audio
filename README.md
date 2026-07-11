@@ -71,6 +71,24 @@ ffmpeg -framerate 30 -i frames/%05d.png -i walk.wav \
 Env knobs (native): `OMG_POINT_TAPS=n` point-render budget,
 `OMG_MUTE_TAPS` / `OMG_MUTE_OWN` / `OMG_MUTE_REMOTE` isolate signal paths.
 
+Godot 4 (GDExtension, tested against 4.7):
+
+```sh
+sh tools/build_godot.sh        # cargo build the extension + stage into godot/bin/
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path godot -s test.gd   # smoke test
+/Applications/Godot.app/Contents/MacOS/Godot --path godot                          # playable demo
+```
+
+`OmgEngine` (RefCounted) is the whole integration surface: `setup(rate)`,
+`set_source_samples(i, PackedFloat32Array)`, `set_listener(x, y, yaw)`,
+`set_head_yaw(yaw)`, `set_dynamic(slot, x, y, z, active)`, and
+`render(frames) -> PackedVector2Array` which you push into an
+`AudioStreamGenerator`. The simulation runs on its own 20 Hz thread inside
+the extension; `render()` never blocks on it — the same two-clock
+architecture as every other frontend. `godot/demo.gd` is the whole demo:
+first-person walk (click to capture, WASD + mouse, Esc to release) with
+synthesized music and club sources.
+
 ## Architecture — the two clocks
 
 The load-bearing decision: the **simulation clock** and the **audio clock**
@@ -150,6 +168,7 @@ with explicit 4-lane accumulation.
 | `omg-scene` | the world: rooms, doors, windows, materials/thickness, portal graph, transmission/aperture/diffraction routing, `WorldSim` | yes |
 | `omg-web` | wasm C-ABI exports (`sim_*` for the Worker, `eng_*` for the Worklet), no wasm-bindgen | is the wasm |
 | `omg-app` | native binary: cpal live output, offline render, walkthrough scripting, JSON export for the video tool | native |
+| `omg-godot` | GDExtension (godot-rust): the engine as a Godot 4 class, KEMAR HRIRs baked in | native |
 
 ## Deliberate approximations (and what full fidelity would need)
 

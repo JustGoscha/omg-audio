@@ -6,6 +6,7 @@ members = [
     "crates/omg-scene",
     "crates/omg-app",
     "crates/omg-web",
+    "crates/omg-godot",
 ]
 
 [profile.release]

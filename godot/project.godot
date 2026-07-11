@@ -1,0 +1,16 @@
+; Engine configuration file.
+config_version=5
+
+[application]
+
+config/name="omg-audio Godot demo"
+run/main_scene="res://demo.tscn"
+config/features=PackedStringArray("4.2")
+
+[audio]
+
+driver/mix_rate=48000
+
+[rendering]
+
+renderer/rendering_method="mobile"
