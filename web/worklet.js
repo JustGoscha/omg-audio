@@ -104,7 +104,7 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.mR = Math.max(this.mR, Math.abs(r[i]));
     }
     if (this.mN >= 8) {
-      this.port.postMessage({ type: 'meters', l: this.mL, r: this.mR, agc: this.w.eng_agc_gain(), pts: this.budget });
+      this.port.postMessage({ type: 'meters', l: this.mL, r: this.mR, agc: this.w.eng_agc_gain(), tts: this.w.eng_ear_fatigue(), pts: this.budget });
       this.mL = 0;
       this.mR = 0;
       this.mN = 0;

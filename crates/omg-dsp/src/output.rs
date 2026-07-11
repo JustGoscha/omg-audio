@@ -24,11 +24,28 @@ pub struct OutputStage {
     env_rel: f32,
     gain_down: f32,
     gain_up: f32,
+    // Temporary threshold shift ("club ears"): sustained demand far above
+    // the AGC target accumulates fatigue; fatigue muffles the output —
+    // a lowpass that deepens with exposure and lets go over ~25 s, the
+    // way hearing stays dulled after stepping away from a loud PA.
+    // Protection-shaped only: exactly zero effect at normal levels.
+    tts: f32,
+    tts_up: f32,
+    tts_down: f32,
+    tts_lp: (f32, f32),
+    tts_coef: f32,
+    tts_refresh: u32,
+    sample_rate: f32,
 }
 
 const AGC_TARGET: f32 = 0.35;
 const AGC_MAX_BOOST: f32 = 1.15;
 const AGC_MAX_CUT: f32 = 0.06;
+/// Demand (pre-AGC envelope) where fatigue starts: ≈ +10 dB over target.
+const TTS_LOUD: f32 = AGC_TARGET * 3.2;
+/// Muffle cutoff range: log-swept 18 kHz (none) → 1.4 kHz (full fatigue).
+const TTS_FC_HI: f32 = 18_000.0;
+const TTS_FC_LO: f32 = 1_400.0;
 
 impl OutputStage {
     pub fn from_speaker_bytes(bytes: Option<&[u8]>, sample_rate: f32) -> Self {
@@ -46,6 +63,13 @@ impl OutputStage {
             env_rel: tc(1.0),
             gain_down: tc(0.05),
             gain_up: tc(30.0),
+            tts: 0.0,
+            tts_up: tc(4.0),
+            tts_down: tc(25.0),
+            tts_lp: (0.0, 0.0),
+            tts_coef: 1.0,
+            tts_refresh: 0,
+            sample_rate,
         }
     }
 
@@ -68,6 +92,11 @@ impl OutputStage {
         self.agc_gain
     }
 
+    /// Current hearing-fatigue amount, 0 (fresh) … 1 (fully dulled).
+    pub fn ear_fatigue(&self) -> f32 {
+        self.tts
+    }
+
     /// Rotate + decode the diffuse bus, mix in point-rendered stereo,
     /// soft-limit.
     #[inline]
@@ -88,6 +117,86 @@ impl OutputStage {
         let gcoef = if desired < self.agc_gain { self.gain_down } else { self.gain_up };
         self.agc_gain += gcoef * (desired - self.agc_gain);
 
-        ((l * self.agc_gain).tanh(), (r * self.agc_gain).tanh())
+        // hearing fatigue: builds over seconds of ultra-loud demand,
+        // releases over ~25 s of relief
+        let excess = (self.env / TTS_LOUD - 1.0).clamp(0.0, 1.0);
+        let tcoef = if excess > self.tts { self.tts_up } else { self.tts_down };
+        self.tts += tcoef * (excess - self.tts);
+        if self.tts_refresh == 0 {
+            self.tts_refresh = 64;
+            let fc = TTS_FC_HI * (TTS_FC_LO / TTS_FC_HI).powf(self.tts);
+            self.tts_coef =
+                1.0 - (-core::f32::consts::TAU * fc / self.sample_rate).exp();
+        }
+        self.tts_refresh -= 1;
+
+        let gl = l * self.agc_gain;
+        let gr = r * self.agc_gain;
+        // dry/lowpassed blend by fatigue — bit-transparent at tts = 0
+        self.tts_lp.0 += self.tts_coef * (gl - self.tts_lp.0);
+        self.tts_lp.1 += self.tts_coef * (gr - self.tts_lp.1);
+        let ol = gl + self.tts * (self.tts_lp.0 - gl);
+        let or_ = gr + self.tts * (self.tts_lp.1 - gr);
+        (ol.tanh(), or_.tanh())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ratio of a 6 kHz probe to a 200 Hz probe through the stage — the
+    /// AGC scales both equally, so this isolates the muffle filter.
+    fn hf_lf_ratio(out: &mut OutputStage) -> f32 {
+        let mut peak = |freq: f32| -> f32 {
+            let mut p = 0.0f32;
+            for k in 0..4800 {
+                let x = 0.02 * (core::f32::consts::TAU * freq * k as f32 / 48_000.0).sin();
+                let (l, _) = out.process(&[0.0; NCH], x, x);
+                if k > 960 {
+                    p = p.max(l.abs());
+                }
+            }
+            p
+        };
+        peak(6000.0) / peak(200.0).max(1e-9)
+    }
+
+    #[test]
+    fn loud_exposure_muffles_highs_then_recovers() {
+        let mut out = OutputStage::from_speaker_bytes(None, 48_000.0);
+        let fresh = hf_lf_ratio(&mut out);
+
+        // 8 s of club-at-the-PA level (demand ≫ AGC target)
+        for k in 0..48_000 * 8 {
+            let x = 2.5 * (core::f32::consts::TAU * 700.0 * k as f32 / 48_000.0).sin();
+            out.process(&[0.0; NCH], x, x);
+        }
+        assert!(out.ear_fatigue() > 0.5, "fatigue {}", out.ear_fatigue());
+        let dulled = hf_lf_ratio(&mut out);
+        assert!(
+            dulled < 0.6 * fresh,
+            "highs should dull after exposure: {dulled} vs fresh {fresh}"
+        );
+
+        // ~50 s of near-silence: hearing comes back
+        for _ in 0..48_000 * 50 {
+            out.process(&[0.0; NCH], 0.0, 0.0);
+        }
+        let later = hf_lf_ratio(&mut out);
+        assert!(
+            later > 0.85 * fresh,
+            "should recover: {later} vs fresh {fresh}"
+        );
+    }
+
+    #[test]
+    fn normal_levels_never_muffle() {
+        let mut out = OutputStage::from_speaker_bytes(None, 48_000.0);
+        for k in 0..48_000 * 10 {
+            let x = 0.3 * (core::f32::consts::TAU * 500.0 * k as f32 / 48_000.0).sin();
+            out.process(&[0.0; NCH], x, x);
+        }
+        assert!(out.ear_fatigue() < 1e-3, "fatigue at normal level: {}", out.ear_fatigue());
     }
 }

@@ -375,6 +375,12 @@ pub extern "C" fn eng_agc_gain() -> f32 {
     eng().out.as_ref().map_or(1.0, |o| o.agc_gain())
 }
 
+/// Hearing fatigue 0…1 (temporary threshold shift after ultra-loud).
+#[no_mangle]
+pub extern "C" fn eng_ear_fatigue() -> f32 {
+    eng().out.as_ref().map_or(0.0, |o| o.ear_fatigue())
+}
+
 #[no_mangle]
 pub extern "C" fn eng_out_l() -> *const f32 {
     eng().out_l.as_ptr()

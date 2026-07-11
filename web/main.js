@@ -51,7 +51,7 @@ const EYE = 1.6;
 const state = {
   projs: [],
   fx: null,
-  meters: { l: 0, r: 0, agc: 1, pts: 0, hist: [] },
+  meters: { l: 0, r: 0, agc: 1, tts: 0, pts: 0, hist: [] },
   pose: { x: 3, y: 3 },
   heading: Math.PI / 2, // world math angle; π/2 = facing +y (into the scene)
   pitch: 0,
@@ -483,6 +483,7 @@ async function startAudio() {
         state.meters.r = e.data.r;
         state.meters.agc = e.data.agc;
         state.meters.pts = e.data.pts || 0;
+        state.meters.tts = e.data.tts || 0;
         state.meters.hist.push(e.data.agc);
         if (state.meters.hist.length > 220) state.meters.hist.shift();
       }
@@ -824,6 +825,11 @@ function drawMeters() {
   g.fillStyle = '#ffaa3c';
   g.textAlign = 'left';
   g.fillText(`ear ${(20 * Math.log10(state.meters.agc)).toFixed(1)} dB`, 86, 18);
+  if (state.meters.tts > 0.02) {
+    // hearing fatigue after ultra-loud exposure (muffle depth)
+    g.fillStyle = '#ff6a5a';
+    g.fillText(`muffled ${Math.round(state.meters.tts * 100)}%`, 200, 18);
+  }
   if (state.meters.pts) {
     // adaptive point-HRTF budget (per source), set by the worklet from load
     g.fillStyle = '#7a8496';
