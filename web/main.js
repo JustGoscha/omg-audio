@@ -430,7 +430,7 @@ async function startAudio() {
     fetchBuf('../assets/fx_whistle.ogg'),
     fetchBuf('../assets/fx_thump.ogg'),
     fetchBuf('../assets/fx_boom.ogg'),
-    fetchBuf('../assets/night-city48.ogg'),
+    fetchBuf('../assets/night-nature48.ogg'),
   ]);
 
   const decodeMono = async (buf, target = 0.6) => {

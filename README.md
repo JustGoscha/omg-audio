@@ -52,7 +52,7 @@ field is *computed*, not authored:
 - **Doppler by construction**: tap delays glide on motion; path identity
   changes crossfade. Room transitions cannot click or chirp.
 - Dynamic sources (thrown projectiles: whistle in flight, bounce, explode),
-  a world-anchored night-city ambience bed, HUD meters + spectrogram.
+  a world-anchored night-nature ambience bed, HUD meters + spectrogram.
 
 ## Hear it
 
@@ -231,9 +231,8 @@ Code: Apache-2.0. Acoustic data and demo media:
 - MIT KEMAR HRTF measurements (Gardner & Martin, MIT Media Lab) — free with attribution.
 - Kimiko Ishizaka, *Open Goldberg Variations* — CC0.
 - LibriVox *Alice's Adventures in Wonderland* — public domain.
-- Night-city ambience: ["Ambient night city, far away party, walla, crowd,
-  insects, air"](https://freesound.org/people/ValentinPetiteau/sounds/649075/)
-  by Valentin Petiteau — CC0.
+- Night ambience: ["nature_ambient_night_5-min"](https://freesound.org/people/edmondsr/sounds/711207/)
+  by edmondsr — CC0.
 - Club track, projectile FX: synthesized by this repo's tools (CC0).
 
 `assets/*.wav` are gitignored; regenerate via `tools/` or use the shipped
