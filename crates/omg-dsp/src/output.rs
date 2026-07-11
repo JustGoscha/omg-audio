@@ -87,7 +87,7 @@ impl OutputStage {
             tin: 0.0,
             tin_phase: 0.0,
             tin_step: core::f32::consts::TAU * TIN_HZ / sample_rate,
-            tin_decay: (-1.0 / (4.0 * sample_rate)).exp(),
+            tin_decay: (-1.0 / (2.5 * sample_rate)).exp(),
             sample_rate,
         }
     }
@@ -163,10 +163,14 @@ impl OutputStage {
         }
         self.tts_refresh -= 1;
 
-        // tinnitus excitation: blasts far beyond the fatigue threshold
+        // tinnitus excitation: blasts far beyond the fatigue threshold.
+        // The ring sits slightly sharp while strong and settles in pitch
+        // as it fades (~8 s to silence) — a static tone reads as a bug,
+        // a drifting one reads as your ears.
         self.tin = (self.tin + (m - TIN_THRESH).max(0.0) * 2e-4).min(1.0) * self.tin_decay;
         let ring = if self.tin > 1e-4 {
-            self.tin_phase = (self.tin_phase + self.tin_step) % core::f32::consts::TAU;
+            let step = self.tin_step * (1.0 + 0.08 * self.tin);
+            self.tin_phase = (self.tin_phase + step) % core::f32::consts::TAU;
             self.tin_phase.sin() * self.tin * TIN_LEVEL
         } else {
             0.0
