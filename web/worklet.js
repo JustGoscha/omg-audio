@@ -62,6 +62,8 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.w.eng_set_head(m.yaw);
     } else if (m.type === 'ambient' && this.ready) {
       this.w.eng_set_ambient(m.gain, m.fc);
+    } else if (m.type === 'rain' && this.ready) {
+      this.w.eng_set_rain(m.intensity);
     } else if (m.type === 'fx' && this.ready) {
       if (m.action === 'play') this.w.eng_fx_play(m.src, m.kind);
       else this.w.eng_fx_stop(m.src, m.kind);

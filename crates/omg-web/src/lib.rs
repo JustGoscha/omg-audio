@@ -192,6 +192,7 @@ struct EngCtx {
     ambient_lp_coef: omg_dsp::smooth::Smoothed,
     ambient_lp: [f32; 4],
     ambient_enc: [[f32; NCH]; 4],
+    rain: omg_dsp::rain::Rain,
 }
 
 static mut ENG: Option<EngCtx> = None;
@@ -220,6 +221,7 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         ambient_gain: omg_dsp::smooth::Smoothed::new(0.0, 0.8, sample_rate),
         ambient_lp_coef: omg_dsp::smooth::Smoothed::new(1.0, 0.8, sample_rate),
         ambient_lp: [0.0; 4],
+        rain: omg_dsp::rain::Rain::new(sample_rate),
         // world-anchored feed directions (N/E/S/W): the bed lives on the
         // rotating SH bus so it counter-rotates with head turns like the
         // rest of the world, instead of sticking to the ears.
@@ -334,6 +336,12 @@ pub extern "C" fn eng_ambient_commit(channels: u32) {
     ctx.ambient_stereo = channels == 2;
 }
 
+/// Rain intensity 0…1 (ramped inside; rain starts/stops like weather).
+#[no_mangle]
+pub extern "C" fn eng_set_rain(intensity: f32) {
+    eng().rain.set_intensity(intensity);
+}
+
 /// Enclosure-dependent bed control: gain + lowpass cutoff (Hz).
 #[no_mangle]
 pub extern "C" fn eng_set_ambient(gain: f32, fc: f32) {
@@ -419,6 +427,13 @@ pub extern "C" fn eng_process(n: u32) {
             let (a, b) = ren.process(x, &mut bus);
             pl += a;
             pr += b;
+        }
+        // rain: world-anchored on the SH bus like the ambience bed;
+        // enclosure derived from the room's bed gain (outside = 0.085)
+        {
+            let ag = ctx.ambient_gain.current();
+            let enclosure = (1.0 - ag / 0.085).clamp(0.0, 1.0);
+            ctx.rain.process(&mut bus, enclosure, ctx.ambient_lp_coef.current());
         }
         // ambient bed: four decorrelated reads of the loop, encoded at
         // world N/E/S/W onto the SH bus (pre-rotation) — world-anchored,

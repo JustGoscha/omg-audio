@@ -62,7 +62,24 @@ const state = {
   orientationOffset: null,
   simState: null,
   running: false,
+  rainLevel: 0, // index into RAIN_LEVELS
 };
+
+// simulated weather: intensity targets the engine ramps toward (~6 s),
+// so rain starts and stops like weather, not like a fader
+const RAIN_LEVELS = [
+  { label: '☂ off', intensity: 0.0 },
+  { label: '☂ drizzle', intensity: 0.3 },
+  { label: '☂ rain', intensity: 0.65 },
+  { label: '☂ downpour', intensity: 1.0 },
+];
+
+function cycleRain() {
+  state.rainLevel = (state.rainLevel + 1) % RAIN_LEVELS.length;
+  const lvl = RAIN_LEVELS[state.rainLevel];
+  document.getElementById('rain').textContent = lvl.label;
+  if (state.node) state.node.port.postMessage({ type: 'rain', intensity: lvl.intensity });
+}
 
 // ------------------------------------------------------------ walkability
 
@@ -381,6 +398,7 @@ document.getElementById('start').onclick = async () => {
     await startAudio();
     document.getElementById('overlay').remove();
     document.getElementById('recenter').hidden = false;
+    document.getElementById('rain').hidden = false;
     setupControls();
     state.running = true;
   } catch (e) {
@@ -461,6 +479,8 @@ async function startAudio() {
     outputChannelCount: [2],
   });
   node.connect(audio.destination);
+  state.node = node;
+  document.getElementById('rain').onclick = (e) => { e.target.blur(); cycleRain(); };
   const analyser = audio.createAnalyser();
   analyser.fftSize = 2048;
   analyser.smoothingTimeConstant = 0.35;
@@ -534,6 +554,7 @@ function setupControls() {
     });
     addEventListener('keydown', (e) => {
       if (e.code === 'Space') throwBall();
+      else if (e.code === 'KeyR') cycleRain();
       else state.keys.add(e.code);
     });
     addEventListener('keyup', (e) => state.keys.delete(e.code));

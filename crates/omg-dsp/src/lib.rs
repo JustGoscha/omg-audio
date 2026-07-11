@@ -9,6 +9,7 @@ pub mod fdn;
 pub mod filter;
 pub mod hrtf;
 pub mod output;
+pub mod rain;
 pub mod renderer;
 pub mod smooth;
 

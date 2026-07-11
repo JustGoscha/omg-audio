@@ -20,6 +20,8 @@
            padding: 14px 28px; font-size: 17px; font-weight: 600; }
   #hud { position: absolute; top: 10px; left: 12px; font-size: 13px; color: #7a8496;
          z-index: 5; pointer-events: none; line-height: 1.6; }
+  #rain { position: absolute; top: 10px; right: 110px; z-index: 6;
+    background: #2a3648; color: #cfe3ff; }
   #recenter { position: absolute; top: 10px; right: 12px; z-index: 6;
               padding: 8px 14px; font-size: 13px; background: #2a3648; color: #c8d2e1; }
   #status { color: #50dcff; }
@@ -36,6 +38,7 @@
 <div id="crosshair"></div>
 <div id="hud"><span id="status">–</span><br><span id="controls-hint"></span></div>
 <button id="recenter" hidden>recenter</button>
+<button id="rain" hidden>☂ off</button>
 <div id="overlay">
   <h1>omg-audio</h1>
   <p>Real-time path-traced sound propagation, binaural over measured KEMAR
