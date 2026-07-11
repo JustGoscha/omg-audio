@@ -23,7 +23,10 @@ use omg_scene::world::WorldSim;
 
 const NSRC: usize = 6;
 const MAX_FLAT: usize = 4096; // f32s per param buffer (~450 taps headroom)
-const STATE_LEN: usize = 96;
+/// State layout: [0..4] pose/room/rt60, [4..58] per-source route viz,
+/// [58..] the flat Environment block (see omg_dsp::env).
+const ENV_OFF: usize = 58;
+const STATE_LEN: usize = ENV_OFF + omg_dsp::env::ENV_FLAT_LEN;
 const MAX_BLOCK: usize = 4096;
 
 // ------------------------------------------------------------------ helpers
@@ -98,10 +101,16 @@ pub extern "C" fn sim_door_ptr() -> *mut f32 {
 }
 
 #[no_mangle]
+pub extern "C" fn sim_state_len() -> u32 {
+    STATE_LEN as u32
+}
+
+#[no_mangle]
 pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
     let ctx = sim();
     for i in 0..6 {
-        ctx.world.set_door(i, ctx.door_in[i] > 0.5);
+        // animated leaf position — the swing sweeps the filters
+        ctx.world.set_door(i, ctx.door_in[i]);
     }
     for slot in 0..3 {
         let o = slot * 4;
@@ -125,58 +134,10 @@ pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
     st[1] = info.listener.1;
     st[2] = info.room as f32;
     st[3] = info.rt60_mid;
-    // ambient bed control by enclosure: (gain, lowpass fc)
-    let (ag, afc) = match ctx.world.rooms[info.room].name {
-        "Outside" => (0.085, 18_000.0),
-        "Living Room" => (0.018, 900.0),
-        "Corridor" => (0.005, 400.0),
-        "Great Hall" => (0.010, 600.0),
-        "Entrance" => (0.024, 1200.0),
-        "Old House" => (0.020, 900.0),
-        "Old House Upper" => (0.028, 1400.0),
-        _ => (0.004, 300.0), // Club: thick concrete
-    };
-    st[62] = ag;
-    st[63] = afc;
-    // Rain routes: apertures between the listener's room and the outdoors
-    // — direction (world frame), gain, one-pole coefficient set by what
-    // fills the opening. st[64..80] = 4 × [dx, dy, gain, coef].
-    for v in st[64..80].iter_mut() {
-        *v = 0.0;
-    }
-    let outside = omg_scene::walkthrough::OUTSIDE;
-    if info.room != outside {
-        let sr = 48_000.0f32;
-        let coef_of = |fc: f32| 1.0 - (-core::f32::consts::TAU * fc / sr).exp();
-        let mut slot = 0usize;
-        for d in ctx.world.doors.iter() {
-            if slot >= 4 {
-                break;
-            }
-            let connects = (d.rooms.0 == info.room && d.rooms.1 == outside)
-                || (d.rooms.1 == info.room && d.rooms.0 == outside);
-            if !connects {
-                continue;
-            }
-            let (dx, dy) = (d.pos.0 - info.listener.0, d.pos.1 - info.listener.1);
-            let dist = (dx * dx + dy * dy).sqrt().max(0.5);
-            // aperture near-field: strong within a few meters, 1/d beyond
-            let reach = 3.0 / (3.0 + dist);
-            let (gain, fc) = if d.glass {
-                (0.35 * reach, 1800.0)
-            } else if d.open {
-                (1.4 * reach, 16_000.0)
-            } else {
-                (0.15 * reach, 500.0) // closed panel: dull seep
-            };
-            let o = 64 + slot * 4;
-            st[o] = dx / dist;
-            st[o + 1] = dy / dist;
-            st[o + 2] = gain;
-            st[o + 3] = coef_of(fc);
-            slot += 1;
-        }
-    }
+    // Environment: geometry-priced routing of the outdoor field (ambience
+    // + rain) — aperture inlets, shell seep, roof exposure. No per-room
+    // constants: the power balance and the blend zones decide.
+    info.env.write_flat(&mut st[ENV_OFF..]);
     let mut o = 4;
     for route in info.routes.iter().take(NSRC) {
         let n = route.len().min(4);
@@ -239,20 +200,13 @@ struct EngCtx {
     fx_bufs: Vec<Vec<f32>>,
     fx_stage: Option<&'static mut [f32]>,
     voices: Vec<Voice>,
-    ambient: Vec<f32>,
-    ambient_stereo: bool,
     ambient_stage: Option<&'static mut [f32]>,
-    ambient_pos: usize,
-    ambient_gain: omg_dsp::smooth::Smoothed,
-    ambient_lp_coef: omg_dsp::smooth::Smoothed,
-    ambient_lp: [f32; 4],
-    ambient_enc: [[f32; NCH]; 4],
+    ambience: omg_dsp::ambience::Ambience,
     rain: omg_dsp::rain::Rain,
     /// Mixer: per-source user gains (smoothed toward targets), plus
     /// ambience and master. Source faders are POWER faders — the UI maps
     /// an SPL scale (needle drop … jet engine) to these linear gains.
     mixer: [omg_dsp::smooth::Smoothed; NSRC],
-    ambient_user: omg_dsp::smooth::Smoothed,
     master: omg_dsp::smooth::Smoothed,
     /// Per-channel meter accumulators (6 sources + ambience + rain):
     /// (peak², Σm², n) since the last commit.
@@ -279,28 +233,13 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         fx_bufs: Vec::new(),
         fx_stage: None,
         voices: Vec::new(),
-        ambient: Vec::new(),
-        ambient_stereo: false,
         ambient_stage: None,
-        ambient_pos: 0,
-        ambient_gain: omg_dsp::smooth::Smoothed::new(0.0, 0.8, sample_rate),
-        ambient_lp_coef: omg_dsp::smooth::Smoothed::new(1.0, 0.8, sample_rate),
-        ambient_lp: [0.0; 4],
+        ambience: omg_dsp::ambience::Ambience::new(sample_rate),
         rain: omg_dsp::rain::Rain::new(sample_rate),
         mixer: core::array::from_fn(|_| omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate)),
-        ambient_user: omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate),
         master: omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate),
         meter_acc: [(0.0, 0.0, 0); 8],
         meter_out: leak_f32(16),
-        // world-anchored feed directions (N/E/S/W): the bed lives on the
-        // rotating SH bus so it counter-rotates with head turns like the
-        // rest of the world, instead of sticking to the ears.
-        ambient_enc: [
-            omg_dsp::ambi::encode_gains([0.0, 1.0, 0.0]),
-            omg_dsp::ambi::encode_gains([1.0, 0.0, 0.0]),
-            omg_dsp::ambi::encode_gains([0.0, -1.0, 0.0]),
-            omg_dsp::ambi::encode_gains([-1.0, 0.0, 0.0]),
-        ],
     };
     unsafe { *(&raw mut ENG) = Some(ctx) };
 }
@@ -412,9 +351,9 @@ pub extern "C" fn eng_ambient_alloc(nsamples: u32) -> *mut f32 {
 pub extern "C" fn eng_ambient_commit(channels: u32) {
     let ctx = eng();
     let buf = ctx.ambient_stage.take().expect("alloc first");
-    ctx.ambient = buf.to_vec();
-    ctx.ambient_stereo = channels == 2;
-    omg_dsp::level::normalize_rms(&mut ctx.ambient, omg_dsp::level::REF_CLIP_RMS);
+    let mut data = buf.to_vec();
+    omg_dsp::level::normalize_rms(&mut data, omg_dsp::level::REF_CLIP_RMS);
+    ctx.ambience.set_loop(data, channels == 2);
 }
 
 /// Mixer: source fader (linear gain; the UI's SPL scale maps to this).
@@ -427,7 +366,7 @@ pub extern "C" fn eng_set_mixer(i: u32, gain: f32) {
 
 #[no_mangle]
 pub extern "C" fn eng_set_ambient_user(gain: f32) {
-    eng().ambient_user.set(gain.clamp(0.0, 8.0));
+    eng().ambience.set_user(gain);
 }
 
 #[no_mangle]
@@ -476,23 +415,18 @@ pub extern "C" fn eng_set_rain(intensity: f32) {
     eng().rain.set_intensity(intensity);
 }
 
-/// Rain aperture routes staged in the param buffer: n × [dx, dy, gain,
-/// lp_coef] (see sim_tick's state layout).
+/// Environment block staged in the param buffer (the flat form of
+/// omg_dsp::env::Environment, copied from the sim state): geometry-priced
+/// routing for ambience and rain.
 #[no_mangle]
-pub extern "C" fn eng_set_rain_routes(len: u32) {
+pub extern "C" fn eng_set_env(len: u32) {
     let ctx = eng();
-    let n = (len as usize).min(16);
-    let flat: Vec<f32> = ctx.param_buf[..n].to_vec();
-    ctx.rain.set_routes(&flat);
-}
-
-/// Enclosure-dependent bed control: gain + lowpass cutoff (Hz).
-#[no_mangle]
-pub extern "C" fn eng_set_ambient(gain: f32, fc: f32) {
-    let ctx = eng();
-    ctx.ambient_gain.set(gain);
-    ctx.ambient_lp_coef
-        .set(1.0 - (-core::f32::consts::TAU * fc.clamp(100.0, 20000.0) / ctx.sample_rate).exp());
+    if (len as usize) < omg_dsp::env::ENV_FLAT_LEN {
+        return;
+    }
+    let env = omg_dsp::env::Environment::read_flat(ctx.param_buf);
+    ctx.ambience.set_environment(&env);
+    ctx.rain.set_environment(&env);
 }
 
 #[no_mangle]
@@ -581,13 +515,13 @@ pub extern "C" fn eng_process(n: u32) {
             acc.1 += m2 as f64;
             acc.2 += 1;
         }
-        // rain: world-anchored on the SH bus like the ambience bed;
-        // enclosure derived from the room's bed gain (outside = 0.085)
+        // Environment audio: rain and ambience are outdoor fields routed
+        // through the same geometry-priced inlets (apertures, shell seep,
+        // horizon sectors) — world-anchored on the SH bus, no per-room
+        // constants and no listener-glued bed.
         {
-            let ag = ctx.ambient_gain.current();
-            let enclosure = (1.0 - ag / 0.085).clamp(0.0, 1.0);
             let w0 = bus[0];
-            ctx.rain.process(&mut bus, enclosure, ctx.ambient_lp_coef.current());
+            ctx.rain.process(&mut bus);
             let dw = bus[0] - w0;
             let m2 = 2.0 * dw * dw;
             let acc = &mut ctx.meter_acc[7];
@@ -595,31 +529,10 @@ pub extern "C" fn eng_process(n: u32) {
             acc.1 += m2 as f64;
             acc.2 += 1;
         }
-        // ambient bed: four decorrelated reads of the loop, encoded at
-        // world N/E/S/W onto the SH bus (pre-rotation) — world-anchored,
-        // ducked + darkened indoors.
-        if !ctx.ambient.is_empty() {
-            let frames = if ctx.ambient_stereo { ctx.ambient.len() / 2 } else { ctx.ambient.len() };
-            ctx.ambient_pos = (ctx.ambient_pos + 1) % frames;
-            let amb_w0 = bus[0];
-            let g = ctx.ambient_gain.tick() * 0.55 * ctx.ambient_user.tick();
-            let c = ctx.ambient_lp_coef.tick();
-            for d in 0..4 {
-                // stereo: N/S take L at offset reads, E/W take R —
-                // real channel decorrelation, world-anchored.
-                let frame = (ctx.ambient_pos + (d / 2) * frames / 2) % frames;
-                let sample = if ctx.ambient_stereo {
-                    ctx.ambient[frame * 2 + (d % 2)]
-                } else {
-                    ctx.ambient[(ctx.ambient_pos + d * frames / 4) % frames]
-                };
-                ctx.ambient_lp[d] += c * (sample - ctx.ambient_lp[d]);
-                let v = ctx.ambient_lp[d] * g;
-                for k in 0..NCH {
-                    bus[k] += v * ctx.ambient_enc[d][k];
-                }
-            }
-            let dw = bus[0] - amb_w0;
+        {
+            let w0 = bus[0];
+            ctx.ambience.process(&mut bus);
+            let dw = bus[0] - w0;
             let m2 = 2.0 * dw * dw;
             let acc = &mut ctx.meter_acc[6];
             acc.0 = acc.0.max(m2);

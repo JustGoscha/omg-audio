@@ -4,7 +4,10 @@
 //! parameters so simulation updates never click.
 
 pub mod ambi;
+pub mod ambience;
+pub mod bands;
 pub mod delay;
+pub mod env;
 pub mod fdn;
 pub mod filter;
 pub mod hrtf;

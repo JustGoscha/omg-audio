@@ -709,12 +709,10 @@ async function startAudio() {
     if (e.data.type !== 'tick') return;
     node.port.postMessage({ type: 'params', blocks: e.data.blocks }, e.data.blocks);
     state.simState = new Float32Array(e.data.state);
-    node.port.postMessage({
-      type: 'ambient', gain: state.simState[62], fc: state.simState[63],
-    });
-    node.port.postMessage({
-      type: 'rainRoutes', routes: Array.from(state.simState.slice(64, 80)),
-    });
+    // environment block (offset 58: see omg-web STATE layout) — the
+    // geometry-priced ambience/rain routing
+    const env = state.simState.slice(58).buffer;
+    node.port.postMessage({ type: 'env', env }, [env]);
   };
 
   state.fx = (src, kind, action = 'play') =>
@@ -722,7 +720,8 @@ async function startAudio() {
   setInterval(() => {
     worker.postMessage({
       type: 'pose', x: state.pose.x, y: state.pose.y, z: EYE + (state.pose.z || 0), yaw: 0,
-      doors: state.doors.map((d) => (d ? 1 : 0)),
+      // animated leaf positions: the sim prices the swing continuously
+      doors: state.doorMeshes.map((dm) => dm.openness),
       projs: state.projs.map((p) => [p.slot, p.x, p.y, p.z]),
     });
   }, 50);

@@ -51,13 +51,37 @@ field is *computed*, not authored:
   The HUD shows `muffled N%` while it holds.
 - **Doppler by construction**: tap delays glide on motion; path identity
   changes crossfade. Room transitions cannot click or chirp.
+- **Environment routing**: ambience and rain are not listener-glued beds —
+  they are the *outdoor field*, routed through the same geometry as every
+  source. A Sabine power balance over the room-coupling graph (shared
+  walls, floor slabs, sky-exposed roofs, exterior surfaces, live
+  apertures — all derived from the scene, no per-room constants) gives
+  each room its share of the field per band; the listener hears it as
+  directional inlets (each door slit, pane and stairwell of the room, and
+  the four horizon sectors outdoors) plus a dark diffuse shell seep.
+  Rooms with no outside opening get theirs through the rooms that do,
+  because that is what the balance says.
+- **Doors are moving geometry**: a leaf's openness (0…1, the animated
+  swing) prices every filter as the area-weighted energy mix of the open
+  slit and the wood panel — opening a door *sweeps* the sound, it never
+  switches it. `tools/env_probe.mjs` renders a walk through a doorway and
+  a full door swing and asserts the level trajectory has no step.
+- **Rain lands on things**: drops are modal impacts (glass/metal/stone
+  mode tables) anchored to the surfaces that collect them — ticks on the
+  actual window panes of your room, knocks and drumming from the roof
+  only where the sky is really overhead (a storey above you silences it),
+  splash pings on the ground outdoors — while the fused downpour noise
+  pours in through the aperture inlets and seeps through the shell,
+  band-shaped by the same pricing. Structure-borne impacts arrive duller
+  and quieter than open-air splashes (a lowpassed impactor at a fraction
+  of the level: the slab transmits a knock, not the impact).
 - **Import loudness normalization**: every clip entering the engine is
   gated-RMS normalized to one reference — how a sound was recorded stops
   mattering; its mixer type (a real SPL scale, needle-drop → jet-engine)
   decides the energy it emits.
 - Dynamic sources (thrown projectiles: whistle in flight, bounce, explode),
-  a world-anchored night-nature ambience bed, openable doors, simulated
-  rain, a mixer panel with per-channel meters, HUD meters + spectrogram.
+  a night-nature ambience, openable doors, simulated rain, a mixer panel
+  with per-channel meters, HUD meters + spectrogram.
 
 ## Hear it
 
@@ -67,6 +91,7 @@ Web (what the live demo runs):
 sh tools/build_web.sh          # cargo build wasm (+simd128) + stage into web/
 python3 tools/serve.py         # http://localhost:8000/web/
 node tools/web_smoke.mjs       # headless pipeline test
+node tools/env_probe.mjs       # ambience/rain continuity through doors + swings
 node tools/bench_web.mjs       # realtime-factor benchmark (point budgets)
 ```
 

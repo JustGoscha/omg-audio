@@ -81,7 +81,7 @@ const bench = (budget) => {
   eng.eng_set_point_budget(budget);
   // settle at the worst spot so tap slots are live in their final mode
   for (let t = 0; t < 10; t++) {
-    sim.sim_tick(worst.pos[0], worst.pos[1], 0.0);
+    sim.sim_tick(worst.pos[0], worst.pos[1], 1.6, 0.0);
     setParamsFromSim();
     for (let b = 0; b < FS / 20 / 128; b++) eng.eng_process(128);
   }

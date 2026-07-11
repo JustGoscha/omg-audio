@@ -3,11 +3,13 @@
 //! ParamBlock per source plus viz/telemetry info. Drives both the native
 //! scripted walkthrough and the interactive web build.
 
+use crate::environment::AcousticsGraph;
 use crate::sim::{Facade, Sim};
 use crate::walkthrough::{
     self, aperture_routes, blended_state_at, blended_state_for, route_source,
     straight_path_transmission, to_local, BlendedState, Door, RoomDef, SourceDef,
 };
+use omg_dsp::env::{EnvRoute, EnvWindow, Environment, MAX_ENV_ROUTES, MAX_ENV_WINDOWS};
 use omg_core::ism::image_source_taps;
 use omg_core::material::{air_attenuation, Material};
 use omg_core::params::{ParamBlock, RemoteReverb, Tap};
@@ -23,6 +25,9 @@ pub struct TickInfo {
     pub rt60_mid: f32,
     /// Apparent acoustic path per source (source → doors → listener).
     pub routes: Vec<Vec<(f32, f32)>>,
+    /// How the outdoor field (ambience, rain) reaches this pose: aperture
+    /// inlets, shell seep, roof exposure — geometry-priced, blend-smooth.
+    pub env: Environment,
 }
 
 pub struct WorldSim {
@@ -44,6 +49,8 @@ pub struct WorldSim {
     /// Corner↔corner clearness (flattened n×n), precomputed once — the
     /// middle leg of double-corner diffraction paths.
     corner_vis: Vec<bool>,
+    /// Room-coupling graph for the outdoor-field power balance.
+    acoustics: AcousticsGraph,
     tick_no: u64,
 }
 
@@ -104,6 +111,7 @@ impl WorldSim {
                 }
                 f
             },
+            acoustics: AcousticsGraph::new(&rooms, &doors),
             corners,
             corner_vis,
             rooms,
@@ -113,12 +121,13 @@ impl WorldSim {
         }
     }
 
-    /// Open/close a door (indices into the scene door list; glass panes
-    /// ignore this). Closed doors keep routing but pay panel transmission.
-    pub fn set_door(&mut self, i: usize, open: bool) {
+    /// Door panel openness 0 (closed) … 1 (open) — pass the ANIMATED leaf
+    /// position each tick, so the swing sweeps every transmission filter
+    /// continuously (glass panes ignore this).
+    pub fn set_door(&mut self, i: usize, openness: f32) {
         if let Some(d) = self.doors.get_mut(i) {
-            if !d.glass && d.open != open {
-                d.open = open;
+            if !d.glass {
+                d.openness = openness.clamp(0.0, 1.0);
             }
         }
     }
@@ -581,8 +590,149 @@ impl WorldSim {
             room: st.room,
             rt60_mid,
             routes,
+            env: self.environment(&bs),
         };
         (blocks, info)
+    }
+
+    /// Environment routing for a pose: run the outdoor-field power balance,
+    /// then describe every inlet the outdoor sound (ambience, rain) takes
+    /// to this listener. Blend states accumulate equal-power per stable
+    /// route id, so room transitions and door swings are continuous by
+    /// construction — there is no per-room constant left to snap.
+    fn environment(&self, bs: &BlendedState) -> Environment {
+        let field = self.acoustics.outdoor_field(&self.doors);
+        let mut states: Vec<(&walkthrough::WalkState, f32)> =
+            vec![(&bs.primary, bs.primary_weight)];
+        if let Some((ref o, w)) = bs.other {
+            states.push((o, w));
+        }
+
+        struct Acc {
+            dir: [f32; 3],
+            e: [f32; NBANDS],
+            dist: f32,
+        }
+        let mut accs: std::collections::BTreeMap<u32, Acc> = std::collections::BTreeMap::new();
+        let mut seep_e = [0.0f32; NBANDS];
+        let (mut enclosure, mut roof) = (0.0f32, 0.0f32);
+        let mut windows: Vec<EnvWindow> = Vec::new();
+
+        for (state, w) in states {
+            let w2 = w * w;
+            let (lx, ly) = state.listener_world;
+            let lz = self.rooms[state.room].floor_z + state.listener_local.z;
+            if self.rooms[state.room].outdoor {
+                // A blend can hold the outdoor state while the body is
+                // already across the plane (positions clamp per room):
+                // anchor the horizon at the doorway then — the aperture
+                // is where the open air actually is, and it re-radiates
+                // the whole horizon into the room.
+                let (mut hx, mut hy) = (lx, ly);
+                let mut horizon_fill = [1.0f32; NBANDS];
+                if walkthrough::room_of_z(&self.rooms, hx, hy, lz) != state.room {
+                    if let Some(di) = bs.door {
+                        let d = &self.doors[di];
+                        let interior =
+                            if self.rooms[d.rooms.0].outdoor { d.rooms.1 } else { d.rooms.0 };
+                        let rc = &self.rooms[interior];
+                        let (cx, cy) =
+                            (0.5 * (rc.min.0 + rc.max.0), 0.5 * (rc.min.1 + rc.max.1));
+                        if d.axis == 0 {
+                            hx = d.pos.0 + 0.35 * (d.pos.0 - cx).signum();
+                            hy = d.pos.1;
+                        } else {
+                            hx = d.pos.0;
+                            hy = d.pos.1 + 0.35 * (d.pos.1 - cy).signum();
+                        }
+                        // the horizon reaches this body THROUGH the blend
+                        // doorway — it pays whatever fills it (a swinging
+                        // leaf sweeps this continuously)
+                        horizon_fill = d.fill_energy();
+                    }
+                }
+                // Open sky: the field arrives as four horizon sectors,
+                // each dimmed by whatever stands in that direction —
+                // over-roof / around-corner bending keeps it alive behind
+                // buildings instead of cutting it.
+                for (k, (dx, dy)) in
+                    [(0.0f32, 1.0f32), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)].iter().enumerate()
+                {
+                    let far = (hx + 35.0 * dx, hy + 35.0 * dy);
+                    let t = straight_path_transmission(&self.rooms, &self.doors, far, (hx, hy));
+                    let bend = self.bend_factor(far, (hx, hy), 3.0);
+                    let a = accs.entry(100 + k as u32).or_insert(Acc {
+                        dir: [*dx, *dy, 0.0],
+                        e: [0.0; NBANDS],
+                        dist: 35.0,
+                    });
+                    for b in 0..NBANDS {
+                        let amp = t[b].max(bend[b]);
+                        a.e[b] += w2 * amp * amp * horizon_fill[b];
+                    }
+                }
+            } else {
+                for b in 0..NBANDS {
+                    seep_e[b] += w2 * field[state.room][b];
+                }
+                // Enclosure is GEOMETRIC (a shell stands between you and
+                // the weather), not reverberant: an open door changes what
+                // pours through it — the routes — never whether you are
+                // under a roof. Blend zones make the doorway continuous.
+                enclosure += w2;
+                roof += w2 * self.acoustics.roof_sky[state.room];
+                // Every aperture of this room is an inlet: it radiates the
+                // field level of whatever is on its other side (the open
+                // air, or a neighbor room's leaked share) through its
+                // filler — pane, swinging panel, open slit.
+                for (di, d) in self.doors.iter().enumerate() {
+                    let n = if d.rooms.0 == state.room {
+                        d.rooms.1
+                    } else if d.rooms.1 == state.room {
+                        d.rooms.0
+                    } else {
+                        continue;
+                    };
+                    let (dx, dy, dz) = (d.pos.0 - lx, d.pos.1 - ly, d.zc - lz);
+                    let dist = (dx * dx + dy * dy + dz * dz).sqrt().max(0.3);
+                    let reach = 3.0 / (3.0 + dist); // near-field radiator
+                    let fe = d.fill_energy();
+                    let a = accs.entry(di as u32).or_insert(Acc {
+                        dir: [dx / dist, dy / dist, dz / dist],
+                        e: [0.0; NBANDS],
+                        dist,
+                    });
+                    for b in 0..NBANDS {
+                        a.e[b] += w2 * field[n][b] * fe[b] * reach * reach;
+                    }
+                    if d.glass && windows.len() < MAX_ENV_WINDOWS {
+                        // rain lands ON this pane — the drops anchor here
+                        windows.push(EnvWindow {
+                            dir: [dx / dist, dy / dist, dz / dist],
+                            gain: w * reach,
+                        });
+                    }
+                }
+            }
+        }
+        let mut routes: Vec<EnvRoute> = accs
+            .into_iter()
+            .map(|(id, a)| EnvRoute {
+                id,
+                dir: a.dir,
+                gains: core::array::from_fn(|b| a.e[b].sqrt()),
+                dist: a.dist,
+            })
+            .collect();
+        routes.sort_by(|a, b| b.gains[1].total_cmp(&a.gains[1]));
+        routes.truncate(MAX_ENV_ROUTES);
+        Environment {
+            seep: core::array::from_fn(|b| seep_e[b].sqrt()),
+            enclosure,
+            roof_gain: roof,
+            routes,
+            windows,
+        }
     }
 }
 
@@ -777,7 +927,7 @@ mod tests {
             (sum, sum[1])
         };
         let (_, open_mid) = read(&mut w);
-        w.set_door(0, false); // Living ↔ Corridor
+        w.set_door(0, 0.0); // Living ↔ Corridor
         let (closed, closed_mid) = read(&mut w);
         assert!(
             closed_mid < 0.45 * open_mid,
@@ -787,9 +937,52 @@ mod tests {
             closed[0] > 2.0 * closed[2],
             "panel transmission must favor lows: {closed:?}"
         );
-        w.set_door(0, true);
+        w.set_door(0, 1.0);
         let (_, reopened) = read(&mut w);
         assert!(reopened > 0.75 * open_mid, "reopening should restore: {reopened} vs {open_mid}");
+    }
+
+    /// The complaint this design answers: walking from outdoors through
+    /// the hall door must never step the ambient level — the outdoor
+    /// field hands over from horizon routes to aperture routes + seep
+    /// through the blend zone, continuously.
+    #[test]
+    fn ambient_field_is_continuous_through_a_doorway() {
+        let mut w = WorldSim::new();
+        // straight walk through the Hall ↔ Outside door at (7, 24)
+        let mut prev = f32::NAN;
+        let mut y = 27.0;
+        while y >= 20.0 {
+            let (_, info) = w.tick_at(7.0, y, 0.0);
+            let e = &info.env;
+            // total received ambient energy: diffuse seep + every route
+            let total: f32 = e.seep[1] * e.seep[1]
+                + e.routes.iter().map(|r| r.gains[1] * r.gains[1]).sum::<f32>();
+            assert!(total > 1e-6, "ambient field died at y={y}");
+            if prev.is_finite() {
+                let ratio = (total / prev).max(prev / total);
+                assert!(
+                    ratio < 2.0,
+                    "ambient energy jump {:.1} dB between y={} and y={}",
+                    10.0 * ratio.log10(),
+                    y + 0.25,
+                    y
+                );
+            }
+            prev = total;
+            y -= 0.25;
+        }
+        // and enclosure must ramp, not snap
+        let (_, out_info) = w.tick_at(7.0, 27.0, 0.0);
+        let (_, in_info) = w.tick_at(7.0, 20.0, 0.0);
+        let (_, mid_info) = w.tick_at(7.0, 24.0, 0.0);
+        assert!(out_info.env.enclosure < 0.1);
+        assert!(in_info.env.enclosure > 0.5);
+        assert!(
+            mid_info.env.enclosure > 0.1 && mid_info.env.enclosure < 0.9,
+            "doorway enclosure should sit between: {}",
+            mid_info.env.enclosure
+        );
     }
 
     /// Deep shadow behind the Old House: the surviving energy must be

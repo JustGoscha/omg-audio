@@ -175,35 +175,66 @@ pub struct Door {
     pub pos: (f32, f32),
     pub axis: usize,
     pub half: f32,
+    /// Vertical extent of the opening (m) — aperture area for the power
+    /// balance is `2·half × height`.
+    pub height: f32,
+    /// WORLD z of the aperture center (doors ~1 m, windows sill-high,
+    /// upper-storey windows above the slab) — routes point at this.
+    pub zc: f32,
     /// Glass pane: not walkable, not a routing edge — but an acoustic
     /// radiator like any aperture, with glass transmission.
     pub glass: bool,
-    /// Openable doors: closed = a wood panel fills the aperture (mass-law
-    /// transmission instead of free passage / knife-edge bending).
-    pub open: bool,
+    /// Panel openness 0 (closed) … 1 (fully open). The swinging leaf IS
+    /// the filter: transmission is the area-weighted energy mix of the
+    /// open slit and the wood panel, so opening a door sweeps the sound
+    /// continuously instead of snapping it (see `fill_energy`).
+    pub openness: f32,
+}
+
+impl Door {
+    /// Per-band ENERGY transmission of whatever fills this aperture:
+    /// glass panes transmit as glass; a door passes the open fraction of
+    /// its area freely and the rest through the panel (incoherent
+    /// sub-apertures — powers add).
+    pub fn fill_energy(&self) -> [f32; NBANDS] {
+        if self.glass {
+            core::array::from_fn(|b| GLASS_TRANSMISSION[b] * GLASS_TRANSMISSION[b])
+        } else {
+            let o = self.openness.clamp(0.0, 1.0);
+            core::array::from_fn(|b| {
+                o + (1.0 - o) * DOOR_PANEL_TRANSMISSION[b] * DOOR_PANEL_TRANSMISSION[b]
+            })
+        }
+    }
+
+    /// Amplitude form of `fill_energy`.
+    pub fn fill_amplitude(&self) -> [f32; NBANDS] {
+        let e = self.fill_energy();
+        core::array::from_fn(|b| e[b].sqrt())
+    }
 }
 
 pub fn doors() -> Vec<Door> {
     vec![
-        Door { rooms: (LIVING, CORRIDOR), pos: (4.0, 6.0), axis: 1, half: 0.55, glass: false, open: true },
-        Door { rooms: (CORRIDOR, HALL), pos: (4.0, 14.0), axis: 1, half: 0.55, glass: false, open: true },
-        Door { rooms: (HALL, OUTSIDE), pos: (7.0, 24.0), axis: 1, half: 0.55, glass: false, open: true },
-        Door { rooms: (OUTSIDE, ENTRANCE), pos: (20.0, 31.0), axis: 0, half: 0.55, glass: false, open: true },
-        Door { rooms: (ENTRANCE, CLUB), pos: (22.0, 31.0), axis: 0, half: 0.55, glass: false, open: true },
-        Door { rooms: (OUTSIDE, HOUSE), pos: (26.5, 23.0), axis: 1, half: 0.55, glass: false, open: true },
+        Door { rooms: (LIVING, CORRIDOR), pos: (4.0, 6.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
+        Door { rooms: (CORRIDOR, HALL), pos: (4.0, 14.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
+        Door { rooms: (HALL, OUTSIDE), pos: (7.0, 24.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
+        Door { rooms: (OUTSIDE, ENTRANCE), pos: (20.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
+        Door { rooms: (ENTRANCE, CLUB), pos: (22.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
+        Door { rooms: (OUTSIDE, HOUSE), pos: (26.5, 23.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
         // windows
-        Door { rooms: (LIVING, OUTSIDE), pos: (3.0, 0.0), axis: 1, half: 1.3, glass: true, open: true },
-        Door { rooms: (CLUB, OUTSIDE), pos: (32.0, 32.0), axis: 0, half: 1.8, glass: true, open: true },
-        Door { rooms: (CLUB, OUTSIDE), pos: (26.0, 38.0), axis: 1, half: 1.8, glass: true, open: true },
+        Door { rooms: (LIVING, OUTSIDE), pos: (3.0, 0.0), axis: 1, half: 1.3, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
+        Door { rooms: (CLUB, OUTSIDE), pos: (32.0, 32.0), axis: 0, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
+        Door { rooms: (CLUB, OUTSIDE), pos: (26.0, 38.0), axis: 1, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
         // house windows look out onto the square, club and hall
-        Door { rooms: (HOUSE, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, glass: true, open: true },
-        Door { rooms: (HOUSE, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, glass: true, open: true },
+        Door { rooms: (HOUSE, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
+        Door { rooms: (HOUSE, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
         // upper-storey windows onto the square and toward the club
-        Door { rooms: (HOUSE_UP, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, glass: true, open: true },
-        Door { rooms: (HOUSE_UP, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, glass: true, open: true },
+        Door { rooms: (HOUSE_UP, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, height: 1.4, zc: 4.5, glass: true, openness: 1.0 },
+        Door { rooms: (HOUSE_UP, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, height: 1.4, zc: 4.5, glass: true, openness: 1.0 },
         // stairwell: the vertical portal between the two storeys — always
         // open, never toggled (indices ≥ 6 are outside the E-key range)
-        Door { rooms: (HOUSE, HOUSE_UP), pos: (24.8, 21.5), axis: 0, half: 0.7, glass: false, open: true },
+        Door { rooms: (HOUSE, HOUSE_UP), pos: (24.8, 21.5), axis: 0, half: 0.7, height: 2.2, zc: 3.0, glass: false, openness: 1.0 },
     ]
 }
 
@@ -258,24 +289,33 @@ pub fn aperture_hop(
     // margin keeps virtual sources out of the wall itself)
     let cc = c.clamp(lo + 0.02, hi - 0.02);
     let v = if d.axis == 0 { (plane, cc) } else { (cc, plane) };
-    if !d.open && !d.glass {
-        // closed: the panel radiates the whole aperture — flat mass-law
-        // transmission, no bending geometry
-        return (v, DOOR_PANEL_TRANSMISSION);
+    // Open-path factor: free on the sight line through the opening (the
+    // coherent-point lit-side edge ripple of the knife-edge kernel is not
+    // applied — sources here are extended/reverberant fields and it
+    // averages away across the source and the two jambs); in the shadow
+    // zone the path bends around the nearer jamb and pays the knife-edge
+    // loss of its detour.
+    let ke = if inside {
+        [1.0; NBANDS]
+    } else {
+        let jamb = if (c - lo).abs() < (c - hi).abs() { lo } else { hi };
+        let e = if d.axis == 0 { (plane, jamb) } else { (jamb, plane) };
+        let detour = (dist(p, e) + dist(e, q) - dist(p, q)).max(0.0);
+        omg_core::diffraction::knife_edge_bands(detour)
+    };
+    if d.glass {
+        return (v, ke); // callers price the pane's flat transmission
     }
-    if inside {
-        // Sight line through the opening: free. (The coherent-point
-        // lit-side edge ripple of the knife-edge kernel is not applied —
-        // sources here are extended/reverberant fields and it averages
-        // away across the source and the two jambs.)
-        return (v, [1.0; NBANDS]);
-    }
-    // Shadow zone: the path bends around the nearer jamb and pays the
-    // knife-edge loss of its detour.
-    let jamb = if (c - lo).abs() < (c - hi).abs() { lo } else { hi };
-    let e = if d.axis == 0 { (plane, jamb) } else { (jamb, plane) };
-    let detour = (dist(p, e) + dist(e, q) - dist(p, q)).max(0.0);
-    (v, omg_core::diffraction::knife_edge_bands(detour))
+    // A swinging panel: the open fraction of the aperture carries the
+    // bent/free field, the panel fraction mass-law transmission — energy
+    // area mix, continuous in openness (the moving leaf IS the filter).
+    let o = d.openness.clamp(0.0, 1.0);
+    let mixed: [f32; NBANDS] = core::array::from_fn(|b| {
+        (o * ke[b] * ke[b]
+            + (1.0 - o) * DOOR_PANEL_TRANSMISSION[b] * DOOR_PANEL_TRANSMISSION[b])
+            .sqrt()
+    });
+    (v, mixed)
 }
 
 /// Per-band knife-edge product over the interior vertices of a 2D
@@ -501,6 +541,8 @@ pub struct BlendedState {
     pub primary: WalkState,
     pub primary_weight: f32,
     pub other: Option<(WalkState, f32)>,
+    /// The doorway this blend crosses (scene door index), when blending.
+    pub door: Option<usize>,
 }
 
 pub fn blended_state_at(rooms: &[RoomDef], t: f32) -> BlendedState {
@@ -544,11 +586,12 @@ pub fn blended_state_for(rooms: &[RoomDef], lx: f32, ly: f32, lz: f32, yaw: f32)
                     primary,
                     primary_weight: theta.cos(),
                     other: Some((other, theta.sin())),
+                    door: Some(door),
                 };
             }
         }
     }
-    BlendedState { primary, primary_weight: 1.0, other: None }
+    BlendedState { primary, primary_weight: 1.0, other: None, door: None }
 }
 
 /// How a fixed source reaches the listener's room.
@@ -708,11 +751,12 @@ pub fn price_chain(
         let d = &all_doors[di];
         let (v, ke) = aperture_hop(pts[k], pts[k + 2], d);
         pts[k + 1] = v;
+        let fill = d.fill_amplitude();
         for b in 0..NBANDS {
+            // aperture_hop already mixes the panel into the bent path;
+            // the wet field pays the filler alone (it doesn't bend).
             muffle[b] *= ke[b];
-            if !d.open && !d.glass {
-                wet_trans[b] *= DOOR_PANEL_TRANSMISSION[b];
-            }
+            wet_trans[b] *= fill[b];
         }
     }
 
@@ -758,13 +802,7 @@ pub fn aperture_routes(
                 // open aperture is priced by the bend it forces
                 extra_dist: dist(src.pos, v),
                 muffle: if d.glass { GLASS_TRANSMISSION } else { ke },
-                wet_trans: if d.glass {
-                    GLASS_TRANSMISSION
-                } else if !d.open {
-                    DOOR_PANEL_TRANSMISSION
-                } else {
-                    [1.0; NBANDS]
-                },
+                wet_trans: d.fill_amplitude(),
                 route: vec![src.pos, v, lis],
             }
         })
@@ -819,9 +857,8 @@ pub fn straight_path_transmission(
                     && (along - if axis == 0 { d.pos.1 } else { d.pos.0 }).abs() < d.half
             });
             let amp = match hit_aperture {
-                Some(d) if !d.glass && d.open => [1.0; NBANDS],
-                Some(d) if d.glass => GLASS_TRANSMISSION,
-                Some(_) => DOOR_PANEL_TRANSMISSION, // closed door panel
+                // openness-continuous filler (open slit + panel / pane)
+                Some(d) => d.fill_amplitude(),
                 None => r.walls[wall_idx].transmission_at(r.wall_thickness),
             };
             crossings.push((t, amp));
@@ -857,9 +894,22 @@ mod tests {
     /// On the sight line through an open door, the portal costs (almost)
     /// nothing; hiding beside the jamb costs a lot, and costs the highs
     /// far more than the lows. Geometry prices doors now, not constants.
+    fn test_door(openness: f32) -> Door {
+        Door {
+            rooms: (0, 1),
+            pos: (4.0, 6.0),
+            axis: 1,
+            half: 0.55,
+            height: 2.0,
+            zc: 1.0,
+            glass: false,
+            openness,
+        }
+    }
+
     #[test]
     fn aperture_is_free_on_axis_and_muffled_off_axis() {
-        let d = Door { rooms: (0, 1), pos: (4.0, 6.0), axis: 1, half: 0.55, glass: false, open: true };
+        let d = test_door(1.0);
         // straight through the middle of the opening
         let (_, on) = aperture_hop((4.0, 3.0), (4.0, 9.0), &d);
         assert!(on[2] > 0.85, "on-axis high band should pass: {:?}", on);
@@ -873,10 +923,42 @@ mod tests {
     /// the path actually bends around — not at the door center.
     #[test]
     fn aperture_vertex_tracks_the_bend() {
-        let d = Door { rooms: (0, 1), pos: (4.0, 6.0), axis: 1, half: 0.55, glass: false, open: true };
+        let d = test_door(1.0);
         let (v, _) = aperture_hop((3.6, 3.0), (7.5, 6.4), &d);
         assert!((v.1 - 6.0).abs() < 1e-4, "vertex on the door plane");
         assert!(v.0 > 4.0, "vertex pulled toward the listener-side jamb: {v:?}");
         assert!(v.0 <= 4.0 + d.half, "vertex stays inside the opening: {v:?}");
+    }
+
+    /// A swinging leaf sweeps the transmission continuously: monotone in
+    /// openness, panel-flat at 0, free at 1, and LINEAR in transmitted
+    /// power (the open area is what admits energy). This is what makes
+    /// opening a door sound like moving geometry, not toggling a filter.
+    #[test]
+    fn door_openness_prices_continuously() {
+        let probe = |o: f32| -> [f32; NBANDS] {
+            aperture_hop((4.0, 3.0), (4.0, 9.0), &test_door(o)).1
+        };
+        let mut prev: Option<[f32; NBANDS]> = None;
+        let mut o = 0.0f32;
+        while o <= 1.0 + 1e-6 {
+            let t = probe(o);
+            if let Some(p) = prev {
+                for b in 0..NBANDS {
+                    assert!(t[b] >= p[b] - 1e-6, "opening must never reduce band {b}");
+                    let de = t[b] * t[b] - p[b] * p[b];
+                    assert!(de <= 0.055, "energy step must stay ∝ area: {de} in band {b} at {o}");
+                }
+            }
+            prev = Some(t);
+            o += 0.05;
+        }
+        let (closed, open) = (probe(0.0), probe(1.0));
+        for b in 0..NBANDS {
+            assert!((closed[b] - DOOR_PANEL_TRANSMISSION[b]).abs() < 1e-6);
+            assert!((open[b] - 1.0).abs() < 1e-6);
+        }
+        let half = probe(0.5);
+        assert!(half[2] > 2.0 * closed[2] && half[2] < 0.95, "half-open sits between: {half:?}");
     }
 }
