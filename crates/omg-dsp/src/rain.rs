@@ -51,16 +51,20 @@ pub const BANK_SLOT: usize = 7200;
 /// Per mode: (frequency Hz, decay tau s, relative amplitude).
 type ModeTable = [(f32, f32, f32); 4];
 
+/// A window PANE, not a goblet: a big plate's modes sit low and damp
+/// fast — the tick is dull with a faint glassy edge, never a ring.
 const GLASS_MODES: ModeTable =
-    [(650.0, 0.030, 0.5), (1750.0, 0.026, 0.9), (3050.0, 0.018, 1.0), (4700.0, 0.010, 0.5)];
+    [(480.0, 0.030, 0.8), (1150.0, 0.024, 1.0), (2300.0, 0.014, 0.5), (3800.0, 0.008, 0.18)];
 const METAL_MODES: ModeTable =
     [(820.0, 0.090, 0.7), (2200.0, 0.120, 1.0), (3600.0, 0.080, 0.8), (5400.0, 0.050, 0.4)];
 const STONE_MODES: ModeTable =
     [(380.0, 0.011, 1.0), (900.0, 0.008, 0.8), (1550.0, 0.006, 0.5), (2400.0, 0.004, 0.25)];
+/// Ground/soil splash: damping so heavy (Q ≈ 4) nothing reads as pitch —
+/// the pitchless "plat" of a real drop, a shaped noise thump.
+const PLAT_MODES: ModeTable =
+    [(240.0, 0.006, 1.0), (620.0, 0.0035, 0.85), (1250.0, 0.0022, 0.45), (2200.0, 0.0014, 0.15)];
 
 struct Drop {
-    phase: f32,
-    step: f32,   // radians/sample
     env: f32,    // exponential amplitude
     decay: f32,  // per-sample multiplier
     /// Impact click transient (very fast noise burst) — the "tap".
@@ -134,8 +138,6 @@ impl Rain {
             gain: Smoothed::new(1.0, 0.02, sample_rate),
             rng: Rng::new(0x5EED_5EED),
             drops: core::array::from_fn(|_| Drop {
-                phase: 0.0,
-                step: 0.0,
                 env: 0.0,
                 decay: 0.0,
                 click: 0.0,
@@ -257,7 +259,6 @@ impl Rain {
     fn spawn_drop(&mut self, enclosure: f32, roof: f32) {
         let d = &mut self.drops[self.next];
         self.next = (self.next + 1) % MAX_DROPS;
-        d.phase = 0.0;
         let az = self.rng.next_f32() * core::f32::consts::TAU;
         let n_slices = self.bank.len() / BANK_SLOT;
 
@@ -287,14 +288,9 @@ impl Rain {
                 d.decay = 1.0;
                 d.click = 0.0;
             } else {
-                d.bank_off = usize::MAX;
-                d.modal = false;
-                let f = 1400.0 + self.rng.next_f32().powi(2) * 4200.0;
-                d.step = core::f32::consts::TAU * f / self.sample_rate;
-                d.env = (0.012 + 0.03 * self.rng.next_f32().powi(2)) * g.min(1.2);
-                d.click = d.env * 0.4;
-                let tau = 0.004 + 0.012 * self.rng.next_f32();
-                d.decay = (-1.0 / (tau * self.sample_rate)).exp();
+                // an outdoor drop seen through the opening: a plat
+                let level = (0.012 + 0.03 * self.rng.next_f32().powi(2)) * g.min(1.2);
+                Self::setup_modal(d, &PLAT_MODES, level, 1.0, &mut self.rng, self.sample_rate);
             }
             d.enc = enc;
             return;
@@ -379,8 +375,8 @@ impl Rain {
             return;
         }
 
-        // airborne drop outdoors: mostly airy pings around the listener;
-        // sometimes a real ground splat from below
+        // airborne drop outdoors: pitchless plats on the ground around
+        // the listener; sometimes a real recorded splat
         d.surface = false;
         if n_slices > 0 && self.rng.next_f32() < 0.2 {
             d.bank_off = (self.rng.next_u64() as usize % n_slices) * BANK_SLOT;
@@ -396,14 +392,8 @@ impl Rain {
             d.enc = encode_gains([az.cos() * ce, az.sin() * ce, se]);
             return;
         }
-        d.bank_off = usize::MAX;
-        d.modal = false;
-        let f = 1400.0 + self.rng.next_f32().powi(2) * 5200.0;
-        d.step = core::f32::consts::TAU * f / self.sample_rate;
-        d.env = 0.010 + 0.030 * self.rng.next_f32().powi(3);
-        d.click = d.env * 0.35;
-        let tau = 0.004 + 0.014 * self.rng.next_f32();
-        d.decay = (-1.0 / (tau * self.sample_rate)).exp();
+        let level = 0.010 + 0.030 * self.rng.next_f32().powi(3);
+        Self::setup_modal(d, &PLAT_MODES, level, 1.0, &mut self.rng, self.sample_rate);
         let el = -0.15 + 0.6 * self.rng.next_f32(); // the splash plane
         let (se, ce) = el.sin_cos();
         d.enc = encode_gains([az.cos() * ce, az.sin() * ce, se]);
@@ -499,10 +489,8 @@ impl Rain {
                 d.bank_pos += d.bank_rate;
                 (a + fr * (b - a)) * d.env + tick
             } else {
-                let v = d.phase.sin() * d.env + tick;
-                d.phase += d.step;
-                d.env *= d.decay;
-                v
+                d.env = 0.0; // every live drop is modal or bank-backed
+                continue;
             };
             drum_in += s;
             let g = s * if d.surface { 1.0 } else { direct } * MASTER * user;
@@ -681,9 +669,22 @@ mod tests {
             x[2880..].iter().map(|v| v * v).sum() // after 60 ms
         };
         let (g, m, st) = (render(&GLASS_MODES), render(&METAL_MODES), render(&STONE_MODES));
-        assert!(zcr(&g) > 2 * zcr(&st), "glass must ring brighter than stone: {} vs {}", zcr(&g), zcr(&st));
+        // a pane (not a goblet): clearly brighter than stone, but dull
+        assert!(
+            zcr(&g) as f32 > 1.5 * zcr(&st) as f32,
+            "glass must ring brighter than stone: {} vs {}",
+            zcr(&g),
+            zcr(&st)
+        );
         assert!(late_e(&m) > 4.0 * late_e(&g), "metal must ring longer than glass");
         assert!(late_e(&st) < 0.05 * late_e(&m), "stone must be dead by 60 ms");
+        // the ground plat is a pitchless thump: gone almost immediately,
+        // and duller than the glass tick
+        let p = render(&PLAT_MODES);
+        let e20 = p[960..].iter().map(|v| v * v).sum::<f32>();
+        let e_all = p.iter().map(|v| v * v).sum::<f32>();
+        assert!(e20 < 0.02 * e_all, "plat must be dead by 20 ms");
+        assert!(zcr(&p) < zcr(&g), "plat must be duller than glass: {} vs {}", zcr(&p), zcr(&g));
     }
 
     #[test]

@@ -75,15 +75,21 @@ impl Ambience {
         }
     }
 
-    /// Decorrelated loop read: feed `k` reads its own offset into the
-    /// loop; stereo material additionally alternates channels.
+    /// Loop read for feed `k`. Deliberately only TWO read positions for
+    /// stereo material, with the recording's own channels carrying the
+    /// left/right variety: every extra read position DUPLICATES sparse
+    /// events — a cricket chirping from four directions at once reads as
+    /// four ambiences, not as envelopment. Mono falls back to four
+    /// offsets (it has no channel decorrelation to lean on).
     #[inline]
     fn read(&self, k: usize, frames: usize) -> f32 {
-        let f = (self.pos + (k + 1) * frames / (MAX_ENV_ROUTES + 6)) % frames;
+        let d = k % 4;
+        let shift = (k / 4) * (frames / 8); // rare extra inlets only
         if self.stereo {
-            self.data[f * 2 + (k % 2)]
+            let f = (self.pos + (d / 2) * (frames / 2) + shift) % frames;
+            self.data[f * 2 + (d % 2)]
         } else {
-            self.data[f]
+            self.data[(self.pos + d * (frames / 4) + shift) % frames]
         }
     }
 
