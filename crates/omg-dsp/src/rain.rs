@@ -29,6 +29,20 @@ const MASTER: f32 = 0.22;
 /// tools/make_drops.py.
 pub const BANK_SLOT: usize = 7200;
 
+/// Modal impact synthesis: a surface is a small set of resonant modes;
+/// a drop is a soft noise burst driving them. The practical middle path
+/// between samples and physical simulation — material-parametric, so
+/// glass, metal and stone genuinely sound like themselves.
+/// Per mode: (frequency Hz, decay tau s, relative amplitude).
+type ModeTable = [(f32, f32, f32); 4];
+
+const GLASS_MODES: ModeTable =
+    [(650.0, 0.030, 0.5), (1750.0, 0.026, 0.9), (3050.0, 0.018, 1.0), (4700.0, 0.010, 0.5)];
+const METAL_MODES: ModeTable =
+    [(820.0, 0.090, 0.7), (2200.0, 0.120, 1.0), (3600.0, 0.080, 0.8), (5400.0, 0.050, 0.4)];
+const STONE_MODES: ModeTable =
+    [(380.0, 0.011, 1.0), (900.0, 0.008, 0.8), (1550.0, 0.006, 0.5), (2400.0, 0.004, 0.25)];
+
 #[derive(Clone, Copy)]
 struct RainRoute {
     enc: [f32; NCH],
@@ -58,6 +72,14 @@ struct Drop {
     bank_off: usize,
     bank_pos: f32,
     bank_rate: f32,
+    /// Modal resonators: per mode [c1, c2, y1, y2] and a drive gain —
+    /// active when `modal` is set (excitation drives the modes).
+    modal: bool,
+    modes: [[f32; 4]; 4],
+    mode_gain: [f32; 4],
+    exc: f32,
+    exc_lp: f32,
+    exc_coef: f32,
     enc: [f32; NCH],
 }
 
@@ -105,6 +127,12 @@ impl Rain {
                 bank_off: usize::MAX,
                 bank_pos: 0.0,
                 bank_rate: 1.0,
+                modal: false,
+                modes: [[0.0; 4]; 4],
+                mode_gain: [0.0; 4],
+                exc: 0.0,
+                exc_lp: 0.0,
+                exc_coef: 0.3,
                 enc: [0.0; NCH],
             }),
             next: 0,
@@ -166,6 +194,32 @@ impl Rain {
         }
     }
 
+    /// Configure drop `next` as a modal impact on the given material.
+    fn setup_modal(d: &mut Drop, table: &ModeTable, level: f32, rng: &mut Rng, sr: f32) {
+        d.modal = true;
+        d.bank_off = usize::MAX;
+        d.env = 1.0;
+        d.decay = 1.0;
+        d.click = 0.0;
+        let mut slowest = 0.0f32;
+        for (m, &(f, tau, amp)) in table.iter().enumerate() {
+            let f = f * (0.97 + 0.06 * rng.next_f32()); // per-drop detune
+            let r = (-1.0 / (tau * sr)).exp();
+            slowest = slowest.max(r);
+            let th = core::f32::consts::TAU * f / sr;
+            d.modes[m] = [2.0 * r * th.cos(), -r * r, 0.0, 0.0];
+            // (1−r) keeps the resonator's impulse peak ≈ the drive level
+            d.mode_gain[m] = amp * (1.0 - r) * level * (0.8 + 0.4 * rng.next_f32());
+        }
+        // lifetime rides the slowest mode; kill when everything rang out
+        d.decay = slowest;
+        // soft impactor: small drops excite brighter
+        d.exc = 1.0;
+        d.exc_lp = 0.0;
+        let fc = 1200.0 + 3200.0 * rng.next_f32();
+        d.exc_coef = 1.0 - (-core::f32::consts::TAU * fc / sr).exp();
+    }
+
     fn spawn_drop(&mut self, enclosure: f32) {
         let d = &mut self.drops[self.next];
         self.next = (self.next + 1) % MAX_DROPS;
@@ -215,7 +269,7 @@ impl Rain {
         if self.rng.next_f32() < enclosure * 0.9 {
             d.surface = true;
             let glass = self.rng.next_f32() < 0.4;
-            if glass && n_slices > 0 {
+            if glass && n_slices > 0 && self.rng.next_f32() < 0.3 {
                 // window splat: a REAL recorded hit, hot and harsh, with
                 // pitch/gain variation so no two reads alike
                 d.bank_off = (self.rng.next_u64() as usize % n_slices) * BANK_SLOT;
@@ -230,18 +284,17 @@ impl Rain {
                 d.enc = encode_gains([az.cos() * ce, az.sin() * ce, se]);
                 return;
             }
-            d.bank_off = usize::MAX;
-            let (f, tau, el) = if glass {
-                // window tick (synth fallback): bright, tiny
-                (1800.0 + self.rng.next_f32() * 2600.0, 0.002 + 0.005 * self.rng.next_f32(), 0.15 + 0.35 * self.rng.next_f32())
+            // modal impact: the surface decides the sound. Windows are
+            // glass; roofs here are stone/concrete with the occasional
+            // metal ledge/gutter ping.
+            let (table, level, el): (&ModeTable, f32, f32) = if glass {
+                (&GLASS_MODES, 0.02 + 0.045 * self.rng.next_f32().powi(2), 0.15 + 0.35 * self.rng.next_f32())
+            } else if self.rng.next_f32() < 0.15 {
+                (&METAL_MODES, 0.012 + 0.03 * self.rng.next_f32().powi(2), 1.0 + 0.4 * self.rng.next_f32())
             } else {
-                // roof knock: low panel resonance
-                (280.0 + self.rng.next_f32() * 620.0, 0.012 + 0.024 * self.rng.next_f32(), 1.1 + 0.4 * self.rng.next_f32())
+                (&STONE_MODES, 0.025 + 0.05 * self.rng.next_f32().powi(2), 1.1 + 0.4 * self.rng.next_f32())
             };
-            d.step = core::f32::consts::TAU * f / self.sample_rate;
-            d.env = 0.012 + 0.038 * self.rng.next_f32().powi(2);
-            d.click = d.env * if glass { 0.9 } else { 0.5 };
-            d.decay = (-1.0 / (tau * self.sample_rate)).exp();
+            Self::setup_modal(d, table, level, &mut self.rng, self.sample_rate);
             let (se, ce) = el.min(1.5).sin_cos();
             d.enc = encode_gains([az.cos() * ce, az.sin() * ce, se]);
             return;
@@ -318,7 +371,27 @@ impl Rain {
             } else {
                 0.0
             };
-            let s = if d.bank_off != usize::MAX {
+            let s = if d.modal {
+                // excitation: soft noise burst (~1 ms) through the
+                // impactor lowpass, driving the material's modes
+                let x_in = if d.exc > 1e-3 {
+                    let w = self.rng.next_f32() * 2.0 - 1.0;
+                    d.exc *= 0.982; // ~1 ms burst
+                    d.exc_lp += d.exc_coef * (w * d.exc - d.exc_lp);
+                    d.exc_lp
+                } else {
+                    0.0
+                };
+                let mut out = 0.0f32;
+                for (m, st) in d.modes.iter_mut().enumerate() {
+                    let y = st[0] * st[2] + st[1] * st[3] + d.mode_gain[m] * x_in;
+                    st[3] = st[2];
+                    st[2] = y;
+                    out += y;
+                }
+                d.env *= d.decay;
+                out
+            } else if d.bank_off != usize::MAX {
                 // recorded hit: linear-interp read at the drop's rate
                 let i = d.bank_pos as usize;
                 if i + 1 >= BANK_SLOT {
@@ -400,6 +473,57 @@ mod tests {
             e += (bus[0] * bus[0]) as f64;
         }
         (e / n as f64) as f32
+    }
+
+    /// The material tables must produce genuinely distinct impacts:
+    /// glass rings brighter than stone, metal rings longer than glass.
+    #[test]
+    fn materials_have_distinct_signatures() {
+        let render = |table: &ModeTable| -> Vec<f32> {
+            let sr = 48_000.0;
+            // same recurrence as the modal path
+            let mut modes = [[0.0f32; 4]; 4];
+            let mut gains = [0.0f32; 4];
+            for (m, &(f, tau, amp)) in table.iter().enumerate() {
+                let r = (-1.0 / (tau * sr)).exp();
+                let th = core::f32::consts::TAU * f / sr;
+                modes[m] = [2.0 * r * th.cos(), -r * r, 0.0, 0.0];
+                gains[m] = amp * (1.0 - r) * 0.05;
+            }
+            let mut exc = 1.0f32;
+            let mut lp = 0.0f32;
+            let mut rng = Rng::new(9);
+            (0..9600)
+                .map(|_| {
+                    let x = if exc > 1e-3 {
+                        let w = rng.next_f32() * 2.0 - 1.0;
+                        exc *= 0.982;
+                        lp += 0.3 * (w * exc - lp);
+                        lp
+                    } else {
+                        0.0
+                    };
+                    let mut out = 0.0;
+                    for (m, st) in modes.iter_mut().enumerate() {
+                        let y = st[0] * st[2] + st[1] * st[3] + gains[m] * x;
+                        st[3] = st[2];
+                        st[2] = y;
+                        out += y;
+                    }
+                    out
+                })
+                .collect()
+        };
+        let zcr = |x: &[f32]| -> usize {
+            x.windows(2).filter(|w| w[0].signum() != w[1].signum()).count()
+        };
+        let late_e = |x: &[f32]| -> f32 {
+            x[2880..].iter().map(|v| v * v).sum() // after 60 ms
+        };
+        let (g, m, st) = (render(&GLASS_MODES), render(&METAL_MODES), render(&STONE_MODES));
+        assert!(zcr(&g) > 2 * zcr(&st), "glass must ring brighter than stone: {} vs {}", zcr(&g), zcr(&st));
+        assert!(late_e(&m) > 4.0 * late_e(&g), "metal must ring longer than glass");
+        assert!(late_e(&st) < 0.05 * late_e(&m), "stone must be dead by 60 ms");
     }
 
     #[test]

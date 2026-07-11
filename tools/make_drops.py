@@ -14,24 +14,21 @@ import sys
 import tempfile
 import urllib.request
 
+# Drop-on-SURFACE recordings only (can, metal ledge, umbrella, window):
+# water-into-water drips read as bubbly plinks, not rain hitting a
+# building — that distinction is the whole character of the bank.
 SOURCES = [
-    ("sandome/68330", "https://cdn.freesound.org/previews/68/68330_973966-hq.ogg"),
-    ("deleted_user/166325", "https://cdn.freesound.org/previews/166/166325_2104797-hq.ogg"),
-    ("mattfinarelli/533146", "https://cdn.freesound.org/previews/533/533146_7566729-hq.ogg"),
-    ("AardsReal/842164", "https://cdn.freesound.org/previews/842/842164_13307919-hq.ogg"),
-    ("DigPro120/558850", "https://cdn.freesound.org/previews/558/558850_7414526-hq.ogg"),
-    ("ianslattery/168861", "https://cdn.freesound.org/previews/168/168861_1993921-hq.ogg"),
-    ("MasterSuite/667386", "https://cdn.freesound.org/previews/667/667386_14357477-hq.ogg"),
-    ("Lunardrive/22438", "https://cdn.freesound.org/previews/22/22438_120830-hq.ogg"),
-    ("Mega-X-stream/546279", "https://cdn.freesound.org/previews/546/546279_4937681-hq.ogg"),
-    ("Panska_Sand/498999", "https://cdn.freesound.org/previews/498/498999_10821817-hq.ogg"),
-    ("paespedro/174718", "https://cdn.freesound.org/previews/174/174718_1850811-hq.ogg"),
-    ("nebulasnails/495118", "https://cdn.freesound.org/previews/495/495118_2723982-hq.ogg"),
+    ("felix.blume/414101 drop on empty can", "https://cdn.freesound.org/previews/414/414101_1661766-hq.ogg"),
+    ("Erbsland-Music/428605 rain on metal ledge", "https://cdn.freesound.org/previews/428/428605_522747-hq.ogg"),
+    ("launemax/274765 raindrops under umbrella", "https://cdn.freesound.org/previews/274/274765_389377-hq.ogg"),
+    ("petewyer2/438967 rain on umbrella", "https://cdn.freesound.org/previews/438/438967_1942716-hq.ogg"),
+    ("xkeril/669486 rain on window interior", "https://cdn.freesound.org/previews/669/669486_13504080-hq.ogg"),
+    ("ivolipa/329112 rain falling on umbrella", "https://cdn.freesound.org/previews/329/329112_3474310-hq.ogg"),
 ]
 
 FS = 48000
 SLOT = 7200  # 150 ms — keep in sync with rain.rs BANK_SLOT
-MAX_PER_FILE = 3
+MAX_PER_FILE = 6
 
 
 def decode(path):
@@ -43,38 +40,56 @@ def decode(path):
 
 
 def slice_hits(x):
+    """Strictly curated: a usable hit must be ISOLATED (near-silence
+    before the onset), SHORT (decays fast — no reverb tails or smears)
+    and SPIKY (high crest — a tap, not a swell)."""
     peak = max((abs(v) for v in x), default=0.0)
     if peak < 1e-4:
         return []
-    on = peak * 0.12
-    off = peak * 0.015
+    on = peak * 0.25
+    off = peak * 0.02
+    pre = int(0.040 * FS)
     hits = []
-    i = 0
+    i = pre
     n = len(x)
     while i < n and len(hits) < MAX_PER_FILE:
         if abs(x[i]) < on:
             i += 1
             continue
-        start = max(0, i - int(0.003 * FS))
+        # isolation: the 40 ms before the onset must be quiet
+        if max(abs(v) for v in x[i - pre:i - int(0.002 * FS)] or [1.0]) > off * 2:
+            i += int(0.010 * FS)
+            continue
+        start = max(0, i - int(0.002 * FS))
         end = i
         quiet = 0
         while end < n and end - start < SLOT:
             if abs(x[end]) < off:
                 quiet += 1
-                if quiet > int(0.030 * FS):
+                if quiet > int(0.020 * FS):
                     break
             else:
                 quiet = 0
             end += 1
         seg = x[start:end]
-        if len(seg) >= int(0.015 * FS):
-            p = max(abs(v) for v in seg)
-            seg = [v * 0.9 / p for v in seg]
-            fade = min(int(0.005 * FS), len(seg))
-            for k in range(fade):
-                seg[len(seg) - fade + k] *= 1.0 - k / fade
-            hits.append(seg)
         i = end + int(0.050 * FS)
+        if len(seg) < int(0.012 * FS) or len(seg) > int(0.110 * FS):
+            continue  # too tiny to read, or a smear
+        p = max(abs(v) for v in seg)
+        rms = (sum(v * v for v in seg) / len(seg)) ** 0.5
+        if p / max(rms, 1e-9) < 4.5:
+            continue  # not a tap
+        # energy must be front-loaded (fast decay)
+        half = len(seg) // 2
+        e1 = sum(v * v for v in seg[:half])
+        e2 = sum(v * v for v in seg[half:])
+        if e2 > 0.35 * e1:
+            continue
+        seg = [v * 0.9 / p for v in seg]
+        fade = min(int(0.004 * FS), len(seg))
+        for k in range(fade):
+            seg[len(seg) - fade + k] *= 1.0 - k / fade
+        hits.append(seg)
     return hits
 
 
