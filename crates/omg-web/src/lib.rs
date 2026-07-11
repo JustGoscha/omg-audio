@@ -166,6 +166,7 @@ struct EngCtx {
     sources: Vec<SourceState>,
     out: Option<OutputStage>,
     sample_rate: f32,
+    point_budget: usize,
     grid: Option<Arc<HrirGrid>>,
     // staging buffers JS writes into
     hrir_grid_buf: Option<&'static mut [u8]>,
@@ -196,6 +197,7 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         sources: Vec::new(),
         out: None,
         sample_rate,
+        point_budget: 8,
         grid: None,
         hrir_grid_buf: None,
         hrir_spk_buf: None,
@@ -265,8 +267,21 @@ pub extern "C" fn eng_source_alloc(i: u32, nsamples: u32) -> *mut f32 {
     let ctx = eng();
     assert_eq!(i as usize, ctx.sources.len(), "sources in order");
     ctx.sources.push(SourceState { data: vec![0.0; nsamples as usize], pos: 0 });
-    ctx.renderers.push(Renderer::with_grid(ctx.sample_rate, ctx.grid.clone()));
+    let mut r = Renderer::with_grid(ctx.sample_rate, ctx.grid.clone());
+    r.set_point_budget(ctx.point_budget);
+    ctx.renderers.push(r);
     ctx.sources.last_mut().unwrap().data.as_mut_ptr()
+}
+
+/// Per-source point-render budget (strongest N taps get their own HRIR
+/// convolution). The page sets this from measured platform headroom.
+#[no_mangle]
+pub extern "C" fn eng_set_point_budget(n: u32) {
+    let ctx = eng();
+    ctx.point_budget = n as usize;
+    for r in &mut ctx.renderers {
+        r.set_point_budget(n as usize);
+    }
 }
 
 /// Stage an fx buffer (call in kind order 0,1,2,…), then eng_fx_commit.

@@ -5,6 +5,16 @@ class OmgProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.ready = false;
+    // Adaptive point-render budget: strongest N taps per source get their
+    // own HRIR convolution (eng_set_point_budget). The worklet measures its
+    // own render load and walks N between the floor and cap with hysteresis
+    // — a throttled CPU (Low Power Mode, phones) settles low, a fast
+    // desktop climbs to the cap. Bench: tools/bench_web.mjs.
+    this.budget = 16;
+    this.BUDGET_MIN = 8;
+    this.BUDGET_MAX = 32;
+    this.loadMs = 0;
+    this.loadFrames = 0;
     this.port.onmessage = (e) => this.onMessage(e.data);
   }
 
@@ -38,6 +48,7 @@ class OmgProcessor extends AudioWorkletProcessor {
         new Float32Array(this.w.memory.buffer, ptr, f.length).set(f);
         this.w.eng_fx_commit();
       });
+      this.w.eng_set_point_budget(this.budget);
       this.ready = true;
       this.port.postMessage({ type: 'ready' });
     } else if (m.type === 'params' && this.ready) {
@@ -63,7 +74,22 @@ class OmgProcessor extends AudioWorkletProcessor {
       return true;
     }
     const n = out[0].length;
+    const t0 = Date.now();
     this.w.eng_process(n);
+    this.loadMs += Date.now() - t0; // 1 ms quantization averages out over the window
+    this.loadFrames += n;
+    if (this.loadFrames >= sampleRate * 4) {
+      const ratio = this.loadMs / (this.loadFrames / sampleRate * 1000);
+      if (ratio > 0.55 && this.budget > this.BUDGET_MIN) {
+        this.budget = Math.max(this.BUDGET_MIN, this.budget - 4);
+        this.w.eng_set_point_budget(this.budget);
+      } else if (ratio < 0.30 && this.budget < this.BUDGET_MAX) {
+        this.budget = Math.min(this.BUDGET_MAX, this.budget + 4);
+        this.w.eng_set_point_budget(this.budget);
+      }
+      this.loadMs = 0;
+      this.loadFrames = 0;
+    }
     const l = new Float32Array(this.w.memory.buffer, this.w.eng_out_l(), n);
     const r = new Float32Array(this.w.memory.buffer, this.w.eng_out_r(), n);
     out[0].set(l);
@@ -78,7 +104,7 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.mR = Math.max(this.mR, Math.abs(r[i]));
     }
     if (this.mN >= 8) {
-      this.port.postMessage({ type: 'meters', l: this.mL, r: this.mR, agc: this.w.eng_agc_gain() });
+      this.port.postMessage({ type: 'meters', l: this.mL, r: this.mR, agc: this.w.eng_agc_gain(), pts: this.budget });
       this.mL = 0;
       this.mR = 0;
       this.mN = 0;

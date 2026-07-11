@@ -70,13 +70,16 @@ impl BinauralDecoder {
         let k = records.len() as f32;
         let speakers = records
             .into_iter()
-            .map(|(d, hrir_l, hrir_r)| {
+            .map(|(d, mut hrir_l, mut hrir_r)| {
                 let enc = encode_gains(d);
                 let mut matrix = [0.0f32; NCH];
                 for (n, m) in matrix.iter_mut().enumerate() {
                     let l = if n == 0 { 0 } else if n < 4 { 1 } else { 2 };
                     *m = (2 * l + 1) as f32 / k * MAXRE[l] * enc[n] * MASTER;
                 }
+                // stored reversed: see convolve_ring
+                hrir_l.reverse();
+                hrir_r.reverse();
                 Speaker { matrix, hrir_l, hrir_r, hist: vec![0.0; taps] }
             })
             .collect();
@@ -110,18 +113,41 @@ impl BinauralDecoder {
     }
 }
 
+/// Dot products of `hist` against two kernels at once, with explicit 4-lane
+/// accumulation: float reductions don't auto-vectorize under strict FP
+/// semantics, so the reassociation is spelled out and the compiler keeps the
+/// lanes in NEON / wasm simd128 registers.
 #[inline]
-fn convolve_ring(hist: &[f32], pos: usize, hl: &[f32], hr: &[f32]) -> (f32, f32) {
-    let taps = hist.len();
-    let (mut al, mut ar) = (0.0f32, 0.0f32);
-    let mut j = pos;
-    for i in 0..taps {
-        let h = hist[j];
-        al += h * hl[i];
-        ar += h * hr[i];
-        j = if j == 0 { taps - 1 } else { j - 1 };
+fn dot2(hist: &[f32], kl: &[f32], kr: &[f32]) -> (f32, f32) {
+    let mut al = [0.0f32; 4];
+    let mut ar = [0.0f32; 4];
+    let mut h4 = hist.chunks_exact(4);
+    let mut l4 = kl.chunks_exact(4);
+    let mut r4 = kr.chunks_exact(4);
+    for ((h, l), r) in (&mut h4).zip(&mut l4).zip(&mut r4) {
+        for k in 0..4 {
+            al[k] += h[k] * l[k];
+            ar[k] += h[k] * r[k];
+        }
     }
-    (al, ar)
+    let mut sl = (al[0] + al[1]) + (al[2] + al[3]);
+    let mut sr = (ar[0] + ar[1]) + (ar[2] + ar[3]);
+    for ((h, l), r) in h4.remainder().iter().zip(l4.remainder()).zip(r4.remainder()) {
+        sl += h * l;
+        sr += h * r;
+    }
+    (sl, sr)
+}
+
+/// Ring convolution (newest sample at `pos`) with a PRE-REVERSED kernel
+/// pair: with krev[i] = k[n−1−i], Σᵢ hist[(pos−i) mod n]·k[i] becomes two
+/// contiguous forward dot products — the form the SIMD kernel needs.
+#[inline]
+fn convolve_ring(hist: &[f32], pos: usize, hl_rev: &[f32], hr_rev: &[f32]) -> (f32, f32) {
+    let s = hist.len() - 1 - pos;
+    let (l1, r1) = dot2(&hist[..=pos], &hl_rev[s..], &hr_rev[s..]);
+    let (l2, r2) = dot2(&hist[pos + 1..], &hl_rev[..s], &hr_rev[..s]);
+    (l1 + l2, r1 + r2)
 }
 
 // ------------------------------------------------- dense grid + point conv
@@ -146,7 +172,10 @@ impl HrirGrid {
             hrir_r: Vec::with_capacity(records.len()),
             taps,
         };
-        for (d, l, r) in records {
+        for (d, mut l, mut r) in records {
+            // stored reversed: see convolve_ring
+            l.reverse();
+            r.reverse();
             g.dirs.push(d);
             g.hrir_l.push(l);
             g.hrir_r.push(r);
@@ -228,6 +257,43 @@ impl PointConv {
             (cl + f * (pl - cl), cr + f * (pr - cr))
         } else {
             (cl, cr)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The segmented/pre-reversed kernel must match the naive ring
+    /// convolution Σᵢ hist[(pos−i) mod n]·k[i] at every ring position.
+    #[test]
+    fn convolve_ring_matches_naive() {
+        let n = 128;
+        let mut rng = 0x2545F4914F6CDD1Du64;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+        };
+        let hist: Vec<f32> = (0..n).map(|_| next()).collect();
+        let kl: Vec<f32> = (0..n).map(|_| next()).collect();
+        let kr: Vec<f32> = (0..n).map(|_| next()).collect();
+        let (mut kl_rev, mut kr_rev) = (kl.clone(), kr.clone());
+        kl_rev.reverse();
+        kr_rev.reverse();
+
+        for pos in 0..n {
+            let (mut nl, mut nr) = (0.0f32, 0.0f32);
+            for i in 0..n {
+                let h = hist[(pos + n - i) % n];
+                nl += h * kl[i];
+                nr += h * kr[i];
+            }
+            let (sl, sr) = convolve_ring(&hist, pos, &kl_rev, &kr_rev);
+            assert!((sl - nl).abs() < 1e-4 && (sr - nr).abs() < 1e-4,
+                "pos {pos}: ({sl}, {sr}) vs naive ({nl}, {nr})");
         }
     }
 }

@@ -230,6 +230,9 @@ fn load_grid() -> Option<Arc<omg_dsp::hrtf::HrirGrid>> {
 
 fn make_renderer(fs: f32, grid: Option<Arc<omg_dsp::hrtf::HrirGrid>>) -> omg_dsp::Renderer {
     let mut r = omg_dsp::Renderer::with_grid(fs, grid);
+    if let Some(n) = std::env::var("OMG_POINT_TAPS").ok().and_then(|v| v.parse().ok()) {
+        r.set_point_budget(n);
+    }
     r.mute_taps = std::env::var("OMG_MUTE_TAPS").is_ok();
     r.mute_own_fdn = std::env::var("OMG_MUTE_OWN").is_ok();
     r.mute_remote = std::env::var("OMG_MUTE_REMOTE").is_ok();

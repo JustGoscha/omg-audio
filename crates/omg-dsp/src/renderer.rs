@@ -25,9 +25,13 @@ pub const MAX_TAPS: usize = 448;
 const RETARGET_MS: f32 = 6.0;
 /// Loudness match of point-rendered direct paths vs. the bus decode.
 const POINT_GAIN: f32 = 0.8;
-/// How many of the strongest taps are point-rendered (direct + prominent
-/// early reflections); the rest stay on the order-2 bus.
-const POINT_TAPS: usize = 8;
+/// Default per-source point-render budget: how many of the strongest taps
+/// get their own nearest-HRIR convolution (full-sharpness localization)
+/// instead of the order-2 bus. A measured CPU budget, not a quality
+/// ceiling: with the SIMD convolution kernel, 24 holds 2.06× realtime at
+/// the worst-case scene position on an M1 (tools/bench_web.mjs). The web
+/// worklet overrides this adaptively from its own measured load.
+const DEFAULT_POINT_TAPS: usize = 24;
 /// Angular spread of the remote-reverb lines around the doorway (±~30°).
 const REMOTE_SPREAD_RAD: [f32; NLINES] =
     [-0.55, -0.38, -0.22, -0.08, 0.08, 0.22, 0.38, 0.55];
@@ -135,6 +139,8 @@ pub struct Renderer {
     c_high: f32,
     sample_rate: f32,
     retarget_thresh: f32,
+    /// Per-source point-render budget (see `DEFAULT_POINT_TAPS`).
+    point_budget: usize,
     /// Fast head rotation (device orientation / mouse look), applied to
     /// point-tap HRIR selection here and to the bus at the decode stage.
     head_yaw: Smoothed,
@@ -200,6 +206,7 @@ impl Renderer {
             c_high: OnePoleLp::coef(HIGH_SHELF_HZ, sample_rate),
             sample_rate,
             retarget_thresh: RETARGET_MS * 1e-3 * sample_rate,
+            point_budget: DEFAULT_POINT_TAPS,
             head_yaw: Smoothed::new(0.0, 0.03, sample_rate),
             reselect_countdown: 0,
             version_seen: 0,
@@ -212,6 +219,13 @@ impl Renderer {
 
     pub fn set_head_yaw(&mut self, yaw: f32) {
         self.head_yaw.set(yaw);
+    }
+
+    /// Set how many of the strongest taps are point-rendered. Takes effect
+    /// on the next ParamBlock; taps whose mode changes re-slot with a
+    /// crossfade (a live slot never switches mode in place).
+    pub fn set_point_budget(&mut self, n: usize) {
+        self.point_budget = n;
     }
 
     /// Called from the audio thread whenever a new ParamBlock is available.
@@ -242,14 +256,12 @@ impl Renderer {
 
         // The strongest taps (direct + prominent early reflections) are
         // point-rendered when a dense HRIR grid is available.
-        let mut point_keys = [u32::MAX; POINT_TAPS];
+        let mut point_keys: Vec<u32> = Vec::new();
         if self.grid.is_some() {
             let mut top: Vec<(f32, u32)> =
                 incoming.iter().map(|t| (t.gains[1], t.key)).collect();
             top.sort_by(|a, b| b.0.total_cmp(&a.0));
-            for (i, (_, k)) in top.iter().take(POINT_TAPS).enumerate() {
-                point_keys[i] = *k;
-            }
+            point_keys.extend(top.iter().take(self.point_budget).map(|(_, k)| *k));
         }
 
         for t in incoming {
