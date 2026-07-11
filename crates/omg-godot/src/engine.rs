@@ -93,7 +93,8 @@ impl SpatialEngine {
         }
     }
 
-    pub fn set_source_samples(&mut self, i: usize, samples: Vec<f32>) {
+    pub fn set_source_samples(&mut self, i: usize, mut samples: Vec<f32>) {
+        omg_dsp::level::normalize_rms(&mut samples, omg_dsp::level::REF_CLIP_RMS);
         if let Some(s) = self.sources.get_mut(i) {
             *s = (samples, 0);
         }

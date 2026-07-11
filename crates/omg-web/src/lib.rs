@@ -298,6 +298,16 @@ pub extern "C" fn eng_hrir_speakers_done() {
     ctx.out = Some(OutputStage::from_speaker_bytes(Some(buf), ctx.sample_rate));
 }
 
+/// Import-normalize source `i`'s buffer (gated RMS → reference): how a
+/// clip was recorded stops mattering; its mixer SPL type sets the energy.
+#[no_mangle]
+pub extern "C" fn eng_source_commit(i: u32) {
+    let ctx = eng();
+    if let Some(s) = ctx.sources.get_mut(i as usize) {
+        omg_dsp::level::normalize_rms(&mut s.data, omg_dsp::level::REF_CLIP_RMS);
+    }
+}
+
 /// Allocate the loop buffer for source `i` (mono samples at engine rate)
 /// and create its renderer. Call in source-index order.
 #[no_mangle]
@@ -365,6 +375,7 @@ pub extern "C" fn eng_ambient_commit(channels: u32) {
     let buf = ctx.ambient_stage.take().expect("alloc first");
     ctx.ambient = buf.to_vec();
     ctx.ambient_stereo = channels == 2;
+    omg_dsp::level::normalize_rms(&mut ctx.ambient, omg_dsp::level::REF_CLIP_RMS);
 }
 
 /// Mixer: source fader (linear gain; the UI's SPL scale maps to this).

@@ -614,12 +614,19 @@ async function startAudio() {
     fetchBuf('../assets/night-nature48.ogg'),
   ]);
 
-  const decodeMono = async (buf, target = 0.6) => {
+  // Sources go to the engine raw — import loudness is normalized there
+  // (gated RMS), so recording level doesn't matter. FX keep per-type
+  // peak targets: their relative energies ARE the type calibration.
+  const decodeMono = async (buf, target = 0) => {
     const ab = await audio.decodeAudioData(buf);
     const ch = ab.getChannelData(0);
+    const out = new Float32Array(ch.length);
+    if (!target) {
+      out.set(ch);
+      return out;
+    }
     let peak = 1e-6;
     for (let i = 0; i < ch.length; i++) peak = Math.max(peak, Math.abs(ch[i]));
-    const out = new Float32Array(ch.length);
     const g = target / peak;
     for (let i = 0; i < ch.length; i++) out[i] = ch[i] * g;
     return out;
@@ -641,10 +648,9 @@ async function startAudio() {
         const off = Math.floor(L.length / 3);
         for (let i = 0; i < L.length; i++) R[i] = L[(i + off) % L.length];
       }
-      let peak = 1e-6;
-      for (let i = 0; i < L.length; i++) peak = Math.max(peak, Math.abs(L[i]), Math.abs(R[i]));
+      // raw interleave — the engine import-normalizes the bed
       const out = new Float32Array(L.length * 2);
-      const g = 0.55 / peak;
+      const g = 1.0;
       for (let i = 0; i < L.length; i++) {
         out[i * 2] = L[i] * g;
         out[i * 2 + 1] = R[i] * g;

@@ -51,8 +51,13 @@ field is *computed*, not authored:
   The HUD shows `muffled N%` while it holds.
 - **Doppler by construction**: tap delays glide on motion; path identity
   changes crossfade. Room transitions cannot click or chirp.
+- **Import loudness normalization**: every clip entering the engine is
+  gated-RMS normalized to one reference — how a sound was recorded stops
+  mattering; its mixer type (a real SPL scale, needle-drop → jet-engine)
+  decides the energy it emits.
 - Dynamic sources (thrown projectiles: whistle in flight, bounce, explode),
-  a world-anchored night-nature ambience bed, HUD meters + spectrogram.
+  a world-anchored night-nature ambience bed, openable doors, simulated
+  rain, a mixer panel with per-channel meters, HUD meters + spectrogram.
 
 ## Hear it
 
