@@ -28,17 +28,27 @@ field is *computed*, not authored:
 - **Aperture radiation**: doors and windows re-radiate what's inside —
   including order-2 reflections from the source room — so a window is
   audible off-axis, not just on the sight line.
-- **Diffraction**: blocked outdoor paths bend around building corners
-  (single and double) and over roof lines, priced by Kurze–Anderson
-  knife-edge losses — the Fresnel number of each path's detour decides,
-  per band, how much survives. Bass wraps around the club; over-the-roof
-  arrivals actually come from above. Plus **facade reflections** outdoors.
+- **Diffraction as an occlusion floor**: losing sight of a source (or of
+  the window/door it radiates from) never cuts it — for every exit
+  emitter the simulation finds the best bent path around the blocking
+  geometry (single and double corners, over the roof) and occlusion
+  floors at its Kurze–Anderson knife-edge loss. The Fresnel number of
+  each path's detour decides, per band, how much survives: bass wraps
+  around buildings, treble shadows. Dry sound, early reflections and
+  coupled reverb all hand off to the bend together — a regression test
+  literally walks through a building's shadow and asserts no level jump.
+  Plus **facade reflections** outdoors.
 - **Binaural output**: order-2 ambisonics decoded through 20 virtual
   speakers (dodecahedron) × measured MIT KEMAR HRIRs, plus *point
   rendering* — the strongest N paths per source get their own nearest-HRIR
   convolution from a 710-direction grid, N adapting to measured CPU load.
-- **Ear adaptation (AGC)**: protects against ultra-loud content (club PA,
-  explosions) with fast clamp and ~30 s recovery; it never boosts quiet.
+- **Ear adaptation**: an AGC protects against ultra-loud content (club
+  PA, explosions) with fast clamp and ~30 s recovery — it never boosts
+  quiet. On top of it, **hearing fatigue** (temporary threshold shift):
+  seconds of demand ~10 dB over the target build up a muffle — a lowpass
+  sweeping 18 kHz → 1.4 kHz with exposure depth — that releases over
+  ~25 s, the dulled-ears feeling after stepping away from the speakers.
+  The HUD shows `muffled N%` while it holds.
 - **Doppler by construction**: tap delays glide on motion; path identity
   changes crossfade. Room transitions cannot click or chirp.
 - Dynamic sources (thrown projectiles: whistle in flight, bounce, explode),
@@ -200,9 +210,13 @@ guess — `tools/bench_web.mjs` is the receipt:
   plus the directional late field that replaces per-portal coupled
   reverb — is the next milestone, then the wgpu compute port.
 - **Diffraction is knife-edge Kurze–Anderson** (Fresnel-number insertion
-  loss per edge, "rubber band" multi-edge construction) over corner and
-  corner, roof and door-jamb edges — the dominant behavior, but not full
-  UTD wedge coefficients (interior wedge angle, reflection-boundary terms).
+  loss per edge, "rubber band" multi-edge construction) over corner, roof
+  and door-jamb edges — the dominant behavior, but not full UTD wedge
+  coefficients (interior wedge angle, reflection-boundary terms). And as
+  an occlusion *floor* it preserves level and spectrum continuity, not
+  arrival direction: deep in a shadow, bent energy still arrives from its
+  emitter's direction rather than visibly from the corner or roof line
+  (near the boundary, where localization is sharpest, the two coincide).
 - **Order-2 bus for the diffuse tier** — see the rendering section; the
   sharp tier bypasses it entirely.
 - **Nearest-HRIR selection** (with 10 ms crossfades) rather than
