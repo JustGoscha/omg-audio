@@ -1,6 +1,23 @@
 use crate::material::Material;
 use crate::vec3::Vec3;
 
+/// A surface hit inside acoustic geometry.
+pub struct GeomHit {
+    pub t: f32,
+    /// Unit normal at the hit, oriented AGAINST the incoming ray
+    /// (n·d < 0), so reflection code needs no winding convention.
+    pub normal: Vec3,
+    pub material: Material,
+}
+
+/// Anything the stochastic tracer can bounce rays around in. Implemented
+/// by the analytic `Shoebox` and by arbitrary triangle `Mesh`es — the
+/// tracer is identical over both.
+pub trait AcousticGeometry {
+    /// Nearest surface hit from `p` along normalized `d`.
+    fn raycast_hit(&self, p: Vec3, d: Vec3) -> Option<GeomHit>;
+}
+
 /// Wall indices: 0=x·min 1=x·max 2=y·min 3=y·max 4=z·min (floor) 5=z·max (ceiling).
 /// Room occupies [0,size.x] × [0,size.y] × [0,size.z].
 /// Axes: +x forward, +y left, +z up (listener faces +x for now).
@@ -41,5 +58,18 @@ impl Shoebox {
             }
         }
         (best_t, best_w)
+    }
+}
+
+impl AcousticGeometry for Shoebox {
+    fn raycast_hit(&self, p: Vec3, d: Vec3) -> Option<GeomHit> {
+        let (t, wall) = self.raycast(p, d);
+        if !t.is_finite() || t <= 0.0 {
+            return None;
+        }
+        let mut normal = Vec3::new(0.0, 0.0, 0.0);
+        // inward-facing = against a ray leaving the interior
+        normal.set(wall / 2, if wall % 2 == 0 { 1.0 } else { -1.0 });
+        Some(GeomHit { t, normal, material: self.walls[wall] })
     }
 }

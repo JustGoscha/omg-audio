@@ -165,7 +165,7 @@ with explicit 4-lane accumulation.
 
 | crate | role | wasm? |
 |---|---|---|
-| `omg-core` | vec/rng, materials, shoebox raycast, ISM, path tracer, `ParamBlock`. Zero deps. | yes |
+| `omg-core` | vec/rng, materials, shoebox + triangle-mesh geometry (binned-SAH BVH, budgeted diffraction-edge extraction), ISM, path tracer, `ParamBlock`. Zero deps. | yes |
 | `omg-dsp` | delays, smoothers, EQ, FDN, ambisonics, HRTF (bus + point), renderer, output stage. Alloc-free hot path. | yes |
 | `omg-scene` | the world: rooms, doors, windows, materials/thickness, portal graph, transmission/aperture/diffraction routing, `WorldSim` | yes |
 | `omg-web` | wasm C-ABI exports (`sim_*` for the Worker, `eng_*` for the Worklet), no wasm-bindgen | is the wasm |
@@ -180,9 +180,19 @@ guess — `tools/bench_web.mjs` is the receipt:
 - **3 frequency bands** (<250 Hz, 250–2500, >2500). Wall/air filtering is
   fitted continuously from the bands (one-pole lowpass through the band
   gains), so nothing sounds stepped; production engines use 4–9 bands.
-- **Rectangular rooms + wall segments** (height-aware), not arbitrary
-  meshes. Arbitrary geometry needs triangle BVH + path-validation rays —
-  planned as a wgpu compute port of the tracer.
+- **The demo scene authors rectangles**, but the core is no longer
+  limited to them: `omg_core::mesh` is an arbitrary triangle mesh with a
+  binned-SAH BVH — the same stochastic tracer runs over it (unit-tested
+  to match the analytic shoebox on a box), segments query per-surface
+  transmission crossings, and diffraction edges are auto-extracted with
+  an explicit importance budget (dense meshes degrade by dropping short/
+  shallow creases first, never by breaking). Measured on M1
+  (`mesh_bench`, 2 520-tri city block): BVH build 2 ms, 2 M rays/s,
+  full trace 79 ms at the 4096-ray desktop tier / 19 ms at the 1024-ray
+  mobile tier — variance, not bias, is what degrades on cheaper tiers
+  (EMA accumulation smooths it). Wiring the scene layer (portals,
+  transmission, ISM) onto meshes is the next milestone; the wgpu compute
+  port comes after.
 - **Diffraction is knife-edge Kurze–Anderson** (Fresnel-number insertion
   loss per edge, "rubber band" multi-edge construction) over corner and
   corner, roof and door-jamb edges — the dominant behavior, but not full

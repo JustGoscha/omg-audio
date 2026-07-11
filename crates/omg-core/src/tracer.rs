@@ -5,7 +5,7 @@
 
 use crate::params::ReverbParams;
 use crate::rng::Rng;
-use crate::scene::Shoebox;
+use crate::scene::AcousticGeometry;
 use crate::vec3::Vec3;
 use crate::{NBANDS, SPEED_OF_SOUND};
 
@@ -42,7 +42,7 @@ impl Echogram {
 }
 
 pub fn trace(
-    room: &Shoebox,
+    room: &impl AcousticGeometry,
     source: Vec3,
     listener: Vec3,
     n_rays: u32,
@@ -59,11 +59,16 @@ pub fn trace(
         let mut energy: [f32; NBANDS] = core::array::from_fn(|b| per_ray * source_energy[b]);
         let mut dist_total = 0.0f32;
 
+        // NOTE: no Russian roulette here. In low-absorption rooms the decay
+        // curve IS the long tail — stochastic termination makes the EDC
+        // spike-dominated and corrupts the RT60 fit (measured, not theory).
+        // The honest budget lever is `n_rays`: fewer rays + EMA temporal
+        // accumulation degrades variance, never bias.
         for _bounce in 0..64 {
-            let (t_hit, wall) = room.raycast(pos, dir);
-            if !t_hit.is_finite() || t_hit <= 0.0 {
-                break;
-            }
+            let Some(hit) = room.raycast_hit(pos, dir) else {
+                break; // escaped open geometry
+            };
+            let t_hit = hit.t;
 
             // Receiver sphere crossing along this segment.
             let to_l = listener - pos;
@@ -81,13 +86,13 @@ pub fn trace(
                 }
             }
 
-            // Advance to the wall, absorb, pick specular or diffuse bounce.
+            // Advance to the surface, absorb, pick specular or diffuse bounce.
             pos = pos + dir * t_hit;
             dist_total += t_hit;
             if dist_total / SPEED_OF_SOUND > MAX_TIME {
                 break;
             }
-            let mat = &room.walls[wall];
+            let mat = &hit.material;
             let mut alive = false;
             for b in 0..NBANDS {
                 energy[b] *= 1.0 - mat.absorption[b];
@@ -99,24 +104,19 @@ pub fn trace(
                 break;
             }
 
-            let axis = wall / 2;
+            let normal = hit.normal; // oriented against the incoming ray
             if rng.next_f32() < mat.scattering {
                 // Lambertian: normal + uniform sphere point, renormalized.
-                let mut normal = Vec3::new(0.0, 0.0, 0.0);
-                normal.set(axis, if wall % 2 == 0 { 1.0 } else { -1.0 });
                 dir = (normal + rng.unit_sphere()).normalize();
                 // Guard against grazing/degenerate directions.
                 if dir.dot(normal) < 1e-3 {
                     dir = normal;
                 }
             } else {
-                dir.set(axis, -dir.get(axis));
+                dir = dir - normal * (2.0 * dir.dot(normal));
             }
-            // Nudge off the wall to avoid self-intersection.
-            pos.set(
-                axis,
-                if wall % 2 == 0 { WALL_EPS } else { room.size.get(axis) - WALL_EPS },
-            );
+            // Nudge off the surface to avoid self-intersection.
+            pos = pos + normal * WALL_EPS;
         }
     }
 }

@@ -5,6 +5,7 @@
 pub mod diffraction;
 pub mod ism;
 pub mod material;
+pub mod mesh;
 pub mod params;
 pub mod rng;
 pub mod scene;

@@ -27,6 +27,22 @@ impl Vec3 {
         }
     }
 
+    pub fn cross(self, o: Self) -> Self {
+        Self::new(
+            self.y * o.z - self.z * o.y,
+            self.z * o.x - self.x * o.z,
+            self.x * o.y - self.y * o.x,
+        )
+    }
+
+    pub fn min(self, o: Self) -> Self {
+        Self::new(self.x.min(o.x), self.y.min(o.y), self.z.min(o.z))
+    }
+
+    pub fn max(self, o: Self) -> Self {
+        Self::new(self.x.max(o.x), self.y.max(o.y), self.z.max(o.z))
+    }
+
     pub fn get(self, axis: usize) -> f32 {
         match axis {
             0 => self.x,
