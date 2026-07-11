@@ -2,12 +2,13 @@
 //! acoustics and two *fixed* sources — music in the Living Room, a narrator
 //! in the Great Hall. The listener walks the waypoint path between them.
 //!
-//! Cross-room propagation uses a portal approximation: a source in another
-//! room is rendered as a virtual source at the doorway into the listener's
-//! room — per-band muffled per door crossed, delayed and attenuated by the
-//! pre-door path. That is what makes the doorway transitions audible. True
-//! doorway diffraction (UTD) is milestone M5; this is the game-audio-grade
-//! stand-in.
+//! Cross-room propagation uses portals: a source in another room is
+//! rendered as a virtual source at the aperture into the listener's room,
+//! delayed and attenuated by the pre-door path. Each doorway crossing is
+//! priced by knife-edge diffraction at the actual jamb the path bends
+//! around (`aperture_hop`) — free on the sight line through the opening,
+//! increasingly bass-only as the bend deepens. Geometry decides; there are
+//! no per-door muffle constants.
 
 use omg_core::material::Material;
 use omg_core::scene::Shoebox;
@@ -183,9 +184,72 @@ pub const GLASS_TRANSMISSION: [f32; NBANDS] = [0.50, 0.32, 0.20];
 /// the acoustics of both connected rooms are simulated and crossfaded.
 pub const BLEND_RADIUS: f32 = 1.5;
 
-/// Per-band amplitude factor for one doorway crossing (low bends around
-/// the opening much better than high — the diffraction-flavored part).
-pub const DOOR_MUFFLE: [f32; NBANDS] = [0.80, 0.50, 0.22];
+/// Effective bend point and per-band knife-edge loss for one aperture hop.
+/// Where the straight line p→q meets the door plane INSIDE the opening,
+/// sound passes with at most edge-proximity loss (illuminated side of the
+/// Kurze–Anderson kernel); outside it, the path bends around the nearer
+/// jamb and pays the shadow-zone loss of its detour. This replaces the old
+/// fixed per-door muffle constants — geometry decides now.
+pub fn aperture_hop(
+    p: (f32, f32),
+    q: (f32, f32),
+    d: &Door,
+) -> ((f32, f32), [f32; NBANDS]) {
+    let dist =
+        |a: (f32, f32), b: (f32, f32)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+    // door plane coordinate and opening span in the cross coordinate
+    let (plane, lo, hi) = if d.axis == 0 {
+        (d.pos.0, d.pos.1 - d.half, d.pos.1 + d.half)
+    } else {
+        (d.pos.1, d.pos.0 - d.half, d.pos.0 + d.half)
+    };
+    let (pa, qa) = if d.axis == 0 { (p.0, q.0) } else { (p.1, q.1) };
+    let (pc, qc) = if d.axis == 0 { (p.1, q.1) } else { (p.0, q.0) };
+    let denom = qa - pa;
+    let c = if denom.abs() < 1e-6 {
+        0.5 * (pc + qc) // degenerate: endpoints in the door plane itself
+    } else {
+        let t = ((plane - pa) / denom).clamp(0.0, 1.0);
+        pc + t * (qc - pc)
+    };
+    let inside = c > lo && c < hi;
+    // bend/reference point: the crossing clamped into the opening (jamb
+    // margin keeps virtual sources out of the wall itself)
+    let cc = c.clamp(lo + 0.02, hi - 0.02);
+    let v = if d.axis == 0 { (plane, cc) } else { (cc, plane) };
+    if inside {
+        // Sight line through the opening: free. (The coherent-point
+        // lit-side edge ripple of the knife-edge kernel is not applied —
+        // sources here are extended/reverberant fields and it averages
+        // away across the source and the two jambs.)
+        return (v, [1.0; NBANDS]);
+    }
+    // Shadow zone: the path bends around the nearer jamb and pays the
+    // knife-edge loss of its detour.
+    let jamb = if (c - lo).abs() < (c - hi).abs() { lo } else { hi };
+    let e = if d.axis == 0 { (plane, jamb) } else { (jamb, plane) };
+    let detour = (dist(p, e) + dist(e, q) - dist(p, q)).max(0.0);
+    (v, omg_core::diffraction::knife_edge_bands(detour))
+}
+
+/// Per-band knife-edge product over the interior vertices of a 2D
+/// polyline (the "rubber band" multi-edge construction) — used for wet
+/// energy following a multi-door chain.
+pub fn chain_bend_muffle(points: &[(f32, f32)]) -> [f32; NBANDS] {
+    let dist =
+        |a: (f32, f32), b: (f32, f32)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+    let mut g = [1.0f32; NBANDS];
+    for i in 1..points.len().saturating_sub(1) {
+        let detour =
+            dist(points[i - 1], points[i]) + dist(points[i], points[i + 1])
+                - dist(points[i - 1], points[i + 1]);
+        let ke = omg_core::diffraction::knife_edge_bands(detour);
+        for b in 0..NBANDS {
+            g[b] *= ke[b];
+        }
+    }
+    g
+}
 
 pub struct SourceDef {
     pub name: &'static str,
@@ -431,9 +495,6 @@ pub struct Routed {
 }
 
 pub fn route_source(src: &SourceDef, lis_room: usize, lis: (f32, f32)) -> Routed {
-    let dist =
-        |a: (f32, f32), b: (f32, f32)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
-
     if src.room == lis_room {
         return Routed {
             virt_world: src.pos,
@@ -476,32 +537,111 @@ pub fn route_source(src: &SourceDef, lis_room: usize, lis: (f32, f32)) -> Routed
     }
 
     // Reconstruct door chain listener → source, then reverse.
-    let mut door_pos: Vec<(f32, f32)> = Vec::new();
+    let mut chain: Vec<usize> = Vec::new();
     let mut r = lis_room;
     while r != src.room {
         let di = prev[r].expect("rooms are connected");
-        let d = &all_doors[di];
-        door_pos.push(d.pos);
-        r = if d.rooms.0 == r { d.rooms.1 } else { d.rooms.0 };
+        chain.push(di);
+        r = if all_doors[di].rooms.0 == r { all_doors[di].rooms.1 } else { all_doors[di].rooms.0 };
     }
-    door_pos.reverse();
+    chain.reverse();
 
-    let mut extra = dist(src.pos, door_pos[0]);
-    for w in door_pos.windows(2) {
+    price_chain(src.pos, &chain, lis, &all_doors)
+}
+
+/// The door indices a source's sound crosses to reach the listener's room
+/// (BFS shortest hop count). Topology only — independent of the exact
+/// target point, so one chain can be re-priced toward many targets.
+pub fn door_chain(src_room: usize, lis_room: usize) -> Vec<usize> {
+    let all_doors = doors();
+    if src_room == lis_room {
+        return Vec::new();
+    }
+    let n_rooms = rooms().len();
+    let mut prev: Vec<Option<usize>> = vec![None; n_rooms];
+    let mut visited = vec![false; n_rooms];
+    let mut queue = std::collections::VecDeque::new();
+    visited[src_room] = true;
+    queue.push_back(src_room);
+    while let Some(r) = queue.pop_front() {
+        if r == lis_room {
+            break;
+        }
+        for (di, d) in all_doors.iter().enumerate() {
+            if d.glass {
+                continue;
+            }
+            let next = if d.rooms.0 == r {
+                d.rooms.1
+            } else if d.rooms.1 == r {
+                d.rooms.0
+            } else {
+                continue;
+            };
+            if !visited[next] {
+                visited[next] = true;
+                prev[next] = Some(di);
+                queue.push_back(next);
+            }
+        }
+    }
+    let mut chain: Vec<usize> = Vec::new();
+    let mut r = lis_room;
+    while r != src_room {
+        let di = prev[r].expect("rooms are connected");
+        chain.push(di);
+        r = if all_doors[di].rooms.0 == r { all_doors[di].rooms.1 } else { all_doors[di].rooms.0 };
+    }
+    chain.reverse();
+    chain
+}
+
+/// Price a door chain from `src_pos` toward `target`: effective bend
+/// points (each hop's straight line clamped into its aperture) and the
+/// knife-edge loss of every bend the chain forces. One forward pass —
+/// earlier vertices already refined, later ones still at door centers;
+/// doors are far apart relative to their widths.
+pub fn price_chain(
+    src_pos: (f32, f32),
+    chain: &[usize],
+    target: (f32, f32),
+    all_doors: &[Door],
+) -> Routed {
+    let dist =
+        |a: (f32, f32), b: (f32, f32)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+    if chain.is_empty() {
+        return Routed {
+            virt_world: src_pos,
+            glass: false,
+            extra_dist: 0.0,
+            muffle: [1.0; NBANDS],
+            route: vec![src_pos, target],
+        };
+    }
+    let mut pts: Vec<(f32, f32)> = vec![src_pos];
+    pts.extend(chain.iter().map(|&di| all_doors[di].pos));
+    pts.push(target);
+    let mut muffle = [1.0f32; NBANDS];
+    for (k, &di) in chain.iter().enumerate() {
+        let (v, ke) = aperture_hop(pts[k], pts[k + 2], &all_doors[di]);
+        pts[k + 1] = v;
+        for b in 0..NBANDS {
+            muffle[b] *= ke[b];
+        }
+    }
+
+    let n = chain.len();
+    let mut extra = 0.0;
+    for w in pts[..=n].windows(2) {
         extra += dist(w[0], w[1]);
     }
-    let muffle = core::array::from_fn(|b| DOOR_MUFFLE[b].powi(door_pos.len() as i32));
-
-    let mut route = vec![src.pos];
-    route.extend(&door_pos);
-    route.push(lis);
 
     Routed {
-        virt_world: *door_pos.last().unwrap(),
+        virt_world: pts[n],
         glass: false,
         extra_dist: extra,
         muffle,
-        route,
+        route: pts,
     }
 }
 
@@ -522,12 +662,17 @@ pub fn aperture_routes(
             (d.rooms.0 == src.room && d.rooms.1 == lis_room)
                 || (d.rooms.1 == src.room && d.rooms.0 == lis_room)
         })
-        .map(|d| Routed {
-            virt_world: d.pos,
-            glass: d.glass,
-            extra_dist: dist(src.pos, d.pos),
-            muffle: if d.glass { GLASS_TRANSMISSION } else { DOOR_MUFFLE },
-            route: vec![src.pos, d.pos, lis],
+        .map(|d| {
+            let (v, ke) = aperture_hop(src.pos, lis, d);
+            Routed {
+                virt_world: v,
+                glass: d.glass,
+                // a pane transmits (flat loss) rather than diffracting; an
+                // open aperture is priced by the bend it forces
+                extra_dist: dist(src.pos, v),
+                muffle: if d.glass { GLASS_TRANSMISSION } else { ke },
+                route: vec![src.pos, v, lis],
+            }
         })
         .collect()
 }
@@ -608,4 +753,35 @@ pub fn straight_path_transmission(
         i = j;
     }
     total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// On the sight line through an open door, the portal costs (almost)
+    /// nothing; hiding beside the jamb costs a lot, and costs the highs
+    /// far more than the lows. Geometry prices doors now, not constants.
+    #[test]
+    fn aperture_is_free_on_axis_and_muffled_off_axis() {
+        let d = Door { rooms: (0, 1), pos: (4.0, 6.0), axis: 1, half: 0.55, glass: false };
+        // straight through the middle of the opening
+        let (_, on) = aperture_hop((4.0, 3.0), (4.0, 9.0), &d);
+        assert!(on[2] > 0.85, "on-axis high band should pass: {:?}", on);
+        // listener tucked around the corner, well off the opening
+        let (_, off) = aperture_hop((4.0, 3.0), (7.5, 6.4), &d);
+        assert!(off[2] < 0.3, "deep off-axis highs must shadow: {:?}", off);
+        assert!(off[0] > 2.0 * off[2], "off-axis must favor lows: {:?}", off);
+    }
+
+    /// The effective virtual source sits inside the opening, near the jamb
+    /// the path actually bends around — not at the door center.
+    #[test]
+    fn aperture_vertex_tracks_the_bend() {
+        let d = Door { rooms: (0, 1), pos: (4.0, 6.0), axis: 1, half: 0.55, glass: false };
+        let (v, _) = aperture_hop((3.6, 3.0), (7.5, 6.4), &d);
+        assert!((v.1 - 6.0).abs() < 1e-4, "vertex on the door plane");
+        assert!(v.0 > 4.0, "vertex pulled toward the listener-side jamb: {v:?}");
+        assert!(v.0 <= 4.0 + d.half, "vertex stays inside the opening: {v:?}");
+    }
 }

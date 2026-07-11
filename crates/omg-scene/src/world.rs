@@ -315,33 +315,55 @@ impl WorldSim {
                     st.listener_world,
                 );
                 if straight[1] < 0.05 {
-                    let src3 = [src_pt.0, src_pt.1, self.src_z[si]];
                     let lst3 = [
                         st.listener_world.0,
                         st.listener_world.1,
                         walkthrough::EYE_HEIGHT,
                     ];
+                    // Chain topology src room → outdoors, re-priced toward
+                    // each candidate's exit direction: the aperture bend is
+                    // part of the SAME polyline as the corner bend, and
+                    // pricing them against different targets would count
+                    // the exit bend twice.
+                    let chain = walkthrough::door_chain(def.room, st.room);
+                    let src3_of = |routed: &walkthrough::Routed| {
+                        [routed.virt_world.0, routed.virt_world.1, self.src_z[si]]
+                    };
+                    let src3 = src3_of(&routed0);
                     let nc = self.corners.len();
-                    // Leg clearness src→corner / corner→listener, reused by
-                    // both single- and double-corner path building.
+                    // Per-corner chain pricing + leg clearness (reused by
+                    // both single- and double-corner path building).
                     let mut s_clear = vec![false; nc];
                     let mut l_clear = vec![false; nc];
+                    let corner_routes: Vec<walkthrough::Routed> = self
+                        .corners
+                        .iter()
+                        .map(|c| walkthrough::price_chain(def.pos, &chain, *c, &self.doors))
+                        .collect();
                     for (ci, c) in self.corners.iter().enumerate() {
                         s_clear[ci] = straight_path_transmission(
-                            &self.rooms, &self.doors, src_pt, *c)[1] >= 0.7;
+                            &self.rooms, &self.doors, corner_routes[ci].virt_world, *c)[1]
+                            >= 0.7;
                         l_clear[ci] = straight_path_transmission(
                             &self.rooms, &self.doors, *c, st.listener_world)[1] >= 0.7;
                     }
                     let c3 = |ci: usize| {
                         let c = self.corners[ci];
                         // edge is vertical: diffraction happens at path height
-                        [c.0, c.1, 0.5 * (src3[2] + lst3[2])]
+                        [c.0, c.1, 0.5 * (self.src_z[si] + lst3[2])]
                     };
-                    // Candidate bent paths: (key, polyline).
-                    let mut cands: Vec<(u32, Vec<[f32; 3]>)> = Vec::new();
+                    // Candidate bent paths: (key, polyline, chain muffle, chain length).
+                    type Cand = (u32, Vec<[f32; 3]>, [f32; NBANDS], f32);
+                    let mut cands: Vec<Cand> = Vec::new();
                     for ci in 0..nc {
                         if s_clear[ci] && l_clear[ci] {
-                            cands.push((7500 + ci as u32, vec![src3, c3(ci), lst3]));
+                            let r = &corner_routes[ci];
+                            cands.push((
+                                7500 + ci as u32,
+                                vec![src3_of(r), c3(ci), lst3],
+                                r.muffle,
+                                r.extra_dist,
+                            ));
                         }
                     }
                     for ci in 0..nc {
@@ -352,14 +374,18 @@ impl WorldSim {
                             if cj == ci || !l_clear[cj] || !self.corner_vis[ci * nc + cj] {
                                 continue;
                             }
+                            let r = &corner_routes[ci];
                             cands.push((
                                 40_000 + (ci * nc + cj) as u32,
-                                vec![src3, c3(ci), c3(cj), lst3],
+                                vec![src3_of(r), c3(ci), c3(cj), lst3],
+                                r.muffle,
+                                r.extra_dist,
                             ));
                         }
                     }
                     // Over-the-roof paths: one per building the sight line
-                    // crosses, up its near wall and down the far one.
+                    // crosses, up its near wall and down the far one. The
+                    // listener-targeted chain is the consistent one here.
                     for (ri, r) in self.rooms.iter().enumerate() {
                         if r.outdoor {
                             continue;
@@ -371,18 +397,20 @@ impl WorldSim {
                             cands.push((
                                 45_000 + ri as u32,
                                 vec![src3, [pin.0, pin.1, h], [pout.0, pout.1, h], lst3],
+                                routed0.muffle,
+                                routed0.extra_dist,
                             ));
                         }
                     }
                     // Price every candidate, keep the strongest few.
                     let mut taps: Vec<(u32, f32, [f32; 3], [f32; NBANDS])> = cands
                         .into_iter()
-                        .filter_map(|(key, path)| {
+                        .filter_map(|(key, path, muffle, extra)| {
                             let (len, ke) = bent_path_gains(&path);
-                            let total = len + routed0.extra_dist;
+                            let total = len + extra;
                             let air = air_attenuation(total);
                             let gains: [f32; NBANDS] = core::array::from_fn(|b| {
-                                routed0.muffle[b] * air[b] * ke[b] / total
+                                muffle[b] * air[b] * ke[b] / total
                             });
                             if gains[0] < 2e-5 {
                                 return None;
@@ -475,7 +503,9 @@ impl WorldSim {
                 // The wet field exits the OPEN first door unattenuated;
                 // only additional doors muffle it. The ~2 m² aperture is a
                 // near-field radiator: flat to ~sqrt(A), 1/d beyond.
-                let extra_doors = routed.route.len().saturating_sub(3) as i32;
+                // The wet field exits the OPEN first door unattenuated; any
+                // further doors on the chain bend it and pay knife-edge.
+                let chain_bend = walkthrough::chain_bend_muffle(&routed.route[1..]);
                 let aperture = 1.6 / d_after.max(1.6);
                 let occ = straight_path_transmission(
                     &self.rooms,
@@ -484,12 +514,10 @@ impl WorldSim {
                     state.listener_world,
                 );
                 for b in 0..NBANDS {
-                    // wet passes glass attenuated; open apertures freely
-                    // (only extra doors on a chain muffle it further)
                     let ap_factor = if routed.glass {
                         walkthrough::GLASS_TRANSMISSION[b]
                     } else {
-                        walkthrough::DOOR_MUFFLE[b].powi(extra_doors)
+                        chain_bend[b]
                     };
                     rem_send[b] += w2 * rp.level[b] * ap_factor * aperture * occ[b];
                     rem_rt60[b] = rp.rt60[b];

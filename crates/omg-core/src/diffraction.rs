@@ -13,19 +13,29 @@ use crate::{NBANDS, SPEED_OF_SOUND};
 /// (<250 Hz, 250–2500 Hz, >2500 Hz).
 pub const BAND_CENTER_HZ: [f32; NBANDS] = [125.0, 790.0, 5600.0];
 
-/// Amplitude factor for one diffracting edge given the detour `δ` (how much
-/// longer the bent path is than the blocked straight line, in meters).
+/// Amplitude factor for one diffracting edge given the SIGNED detour `δ`:
+/// positive = shadow zone (the bent path via the edge is δ longer than the
+/// blocked straight line), negative = illuminated side (line of sight
+/// exists; |δ| is the path difference via the edge — edge-proximity loss).
 ///
-/// Kurze–Anderson: A(dB) = 5 + 20·log10(√(2πN)/tanh(√(2πN))), N = 2δ/λ.
-/// δ→0 (grazing the edge) gives −5 dB; deep shadow rolls off like √N.
+/// Kurze–Anderson, both branches of N = 2δ/λ:
+///   N ≥ 0:        A = 5 + 20·log10(√(2πN)/tanh(√(2πN)))   (shadow)
+///   −0.19 < N < 0: A = 5 + 20·log10(√(2π|N|)/tan(√(2π|N|))) (lit, → 0 dB)
+///   N ≤ −0.19:    A = 0                                     (fully clear)
+/// Continuous through the shadow boundary at −5 dB (N = 0).
 pub fn knife_edge_amp(detour_m: f32, freq_hz: f32) -> f32 {
-    if detour_m <= 0.0 {
-        return 1.0; // line of sight — no barrier in the path
-    }
     let n = 2.0 * detour_m * freq_hz / SPEED_OF_SOUND;
-    let x = (2.0 * core::f32::consts::PI * n).sqrt();
-    // x/tanh(x) → 1 as x→0, → x in deep shadow.
-    let ratio = if x < 1e-3 { 1.0 } else { x / x.tanh() };
+    if n <= -0.1916 {
+        return 1.0;
+    }
+    let x = (2.0 * core::f32::consts::PI * n.abs()).sqrt();
+    let ratio = if x < 1e-3 {
+        1.0
+    } else if n >= 0.0 {
+        x / x.tanh()
+    } else {
+        x / x.tan()
+    };
     let a_db = 5.0 + 20.0 * ratio.log10();
     10f32.powf(-a_db / 20.0)
 }
@@ -60,6 +70,22 @@ mod tests {
         for i in 1..40 {
             let a = knife_edge_amp(i as f32 * 0.1, 790.0);
             assert!(a < prev);
+            prev = a;
+        }
+    }
+
+    #[test]
+    fn illuminated_side_recovers_to_unity() {
+        // far into the lit zone: no loss (cutoff N ≤ −0.19 ⇒ δ ≈ −0.041 m @ 790 Hz)
+        assert!((knife_edge_amp(-0.05, 790.0) - 1.0).abs() < 1e-6);
+        // inside the transition: partial, between clear and the −5 dB boundary
+        let mid = knife_edge_amp(-0.02, 790.0);
+        assert!(mid < 1.0 && mid > 0.56, "transition value {mid}");
+        // monotonic through the shadow boundary into the shadow zone
+        let mut prev = knife_edge_amp(-0.04, 790.0);
+        for i in 0..20 {
+            let a = knife_edge_amp(-0.04 + i as f32 * 0.005, 790.0);
+            assert!(a <= prev + 1e-6, "not monotonic at step {i}");
             prev = a;
         }
     }

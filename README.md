@@ -15,8 +15,10 @@ field is *computed*, not authored:
 - **Image-source early reflections** (order 3) + **stochastic path tracer**
   (4096 rays, 3 frequency bands) measuring per-room RT60 and late level.
 - **Portals**: sources in other rooms render as virtual sources at
-  doorways (BFS over the door graph), per-band muffled per door crossed,
-  equal-power blended near thresholds. Coupled rooms carry their *own*
+  doorways (BFS over the door graph), each crossing priced by knife-edge
+  diffraction at the jamb the path actually bends around — free on the
+  sight line, bass-only around the corner; equal-power blended near
+  thresholds. Coupled rooms carry their *own*
   reverb through the doorway as a directional wet emitter — you hear the
   hall being a hall from the corridor.
 - **Wall transmission**: straight rays cross wall segments with mass-law
@@ -183,9 +185,8 @@ guess — `tools/bench_web.mjs` is the receipt:
   planned as a wgpu compute port of the tracer.
 - **Diffraction is knife-edge Kurze–Anderson** (Fresnel-number insertion
   loss per edge, "rubber band" multi-edge construction) over corner and
-  roof edges — the dominant behavior, but not full UTD wedge coefficients
-  (interior wedge angle, reflection-boundary terms), and outdoors only;
-  indoor doorframe diffraction is approximated by the aperture radiators.
+  corner, roof and door-jamb edges — the dominant behavior, but not full
+  UTD wedge coefficients (interior wedge angle, reflection-boundary terms).
 - **Order-2 bus for the diffuse tier** — see the rendering section; the
   sharp tier bypasses it entirely.
 - **Nearest-HRIR selection** (with 10 ms crossfades) rather than
