@@ -352,15 +352,25 @@ function wallX(x, y0, y1, h) {
 // closed panel as mass-law transmission instead of a free aperture.
 const doorMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2e });
 function buildDoorPanels() {
-  DOORS.forEach((d, i) => {
+  DOORS.forEach((d) => {
     const [dx, dy] = d.pos;
-    const g = d.axis === 0
-      ? new THREE.BoxGeometry(0.08, DOOR_H, 2 * DOOR_HALF)
-      : new THREE.BoxGeometry(2 * DOOR_HALF, DOOR_H, 0.08);
-    const m = new THREE.Mesh(g, doorMat);
-    m.position.copy(v3(dx, dy, DOOR_H / 2));
-    m.visible = false; // doors start open
-    scene.add(m);
+    // hinge pivot at one jamb; the leaf hangs off it and swings ~112°
+    const hinge = new THREE.Group();
+    const leaf = new THREE.Mesh(
+      d.axis === 0
+        ? new THREE.BoxGeometry(0.08, DOOR_H, 2 * DOOR_HALF)
+        : new THREE.BoxGeometry(2 * DOOR_HALF, DOOR_H, 0.08),
+      doorMat,
+    );
+    if (d.axis === 0) {
+      hinge.position.copy(v3(dx, dy - DOOR_HALF, DOOR_H / 2));
+      leaf.position.set(0, 0, -DOOR_HALF); // three -z = world +y
+    } else {
+      hinge.position.copy(v3(dx - DOOR_HALF, dy, DOOR_H / 2));
+      leaf.position.set(DOOR_HALF, 0, 0);
+    }
+    hinge.add(leaf);
+    scene.add(hinge);
     const collider = {
       axis: d.axis, plane: d.axis === 0 ? dx : dy,
       lo: (d.axis === 0 ? dy : dx) - DOOR_HALF,
@@ -368,8 +378,19 @@ function buildDoorPanels() {
       h: DOOR_H, off: true,
     };
     COLLIDERS.push(collider);
-    state.doorMeshes.push({ mesh: m, collider, pos: d.pos });
+    // doors start open: leaf swung back against the wall
+    state.doorMeshes.push({ hinge, collider, pos: d.pos, openness: 1, target: 1 });
   });
+}
+
+const DOOR_SWING = 1.95; // rad, ~112°
+function updateDoors(dt) {
+  for (const dm of state.doorMeshes) {
+    dm.openness += (dm.target - dm.openness) * Math.min(1, dt * 7);
+    dm.hinge.rotation.y = dm.openness * DOOR_SWING;
+    // passable once it's swung well out of the frame
+    dm.collider.off = dm.openness > 0.45;
+  }
 }
 
 function toggleNearestDoor() {
@@ -381,9 +402,7 @@ function toggleNearestDoor() {
   });
   if (best < 0) return;
   state.doors[best] = !state.doors[best];
-  const dm = state.doorMeshes[best];
-  dm.mesh.visible = !state.doors[best];
-  dm.collider.off = state.doors[best];
+  state.doorMeshes[best].target = state.doors[best] ? 1 : 0;
 }
 
 function openColliderGap(axis, plane, at) {
@@ -940,6 +959,7 @@ function frame(t) {
     state.prevT = t;
     movePose(t);
     updateProjectiles(dt, t);
+    updateDoors(dt);
     camera.position.copy(v3(state.pose.x, state.pose.y, EYE));
     camera.rotation.y = state.heading - Math.PI / 2;
     camera.rotation.x = state.pitch;
