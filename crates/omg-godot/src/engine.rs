@@ -21,7 +21,7 @@ use omg_scene::world::WorldSim;
 const HRIR_GRID: &[u8] = include_bytes!("../../../assets/hrir_grid.bin");
 const HRIR_SPEAKERS: &[u8] = include_bytes!("../../../assets/hrir_dodeca20.bin");
 
-pub const NSRC: usize = 6;
+pub const NSRC: usize = 8;
 
 #[derive(Clone, Copy, Default)]
 struct Pose {

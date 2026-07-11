@@ -142,12 +142,39 @@ pub fn rooms() -> Vec<RoomDef> {
             wall_thickness: 0.25,
             outdoor: false,
         },
+        // A stone cathedral, far north across the field: a vast nave
+        // whose reverb should read as its size long before you reach it.
+        RoomDef {
+            name: "Cathedral",
+            min: (0.0, 52.0),
+            max: (16.0, 74.0),
+            height: 15.0,
+            barrier_height: 16.5,
+            floor_z: 0.0,
+            walls: [Material::CONCRETE; 6],
+            wall_thickness: 0.5,
+            outdoor: false,
+        },
+        // An underground bunker beneath the east field, reached by a
+        // stair shaft. Earth, not air, is what surrounds it — the
+        // acoustics graph couples only above-ground surfaces outward.
+        RoomDef {
+            name: "Bunker",
+            min: (34.0, 6.0),
+            max: (40.0, 14.0),
+            height: 2.2,
+            barrier_height: 0.0,
+            floor_z: -3.0,
+            walls: [Material::CONCRETE; 6],
+            wall_thickness: 0.4,
+            outdoor: false,
+        },
         // Outside must come LAST: enclosed rooms overlap its rectangle and
         // room_of matches in order. It surrounds all buildings.
         RoomDef {
             name: "Outside",
             min: (-8.0, -8.0),
-            max: (42.0, 46.0),
+            max: (48.0, 80.0),
             height: 30.0,
             barrier_height: 30.0,
             floor_z: 0.0,
@@ -165,7 +192,9 @@ pub const ENTRANCE: usize = 3;
 pub const CLUB: usize = 4;
 pub const HOUSE: usize = 5;
 pub const HOUSE_UP: usize = 8;
-pub const OUTSIDE: usize = 9;
+pub const CATHEDRAL: usize = 9;
+pub const BUNKER: usize = 10;
+pub const OUTSIDE: usize = 11;
 
 /// A doorway between two rooms. `axis`: 0 = opening in an x=const wall,
 /// 1 = opening in a y=const wall. Arbitrary graph topology (BFS routing).
@@ -222,6 +251,8 @@ pub fn doors() -> Vec<Door> {
         Door { rooms: (OUTSIDE, ENTRANCE), pos: (20.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
         Door { rooms: (ENTRANCE, CLUB), pos: (22.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
         Door { rooms: (OUTSIDE, HOUSE), pos: (26.5, 23.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
+        // cathedral portal: a tall double door (E-toggleable, index 6)
+        Door { rooms: (OUTSIDE, CATHEDRAL), pos: (8.0, 52.0), axis: 1, half: 1.2, height: 3.5, zc: 1.75, glass: false, openness: 1.0 },
         // windows
         Door { rooms: (LIVING, OUTSIDE), pos: (3.0, 0.0), axis: 1, half: 1.3, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
         Door { rooms: (CLUB, OUTSIDE), pos: (32.0, 32.0), axis: 0, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
@@ -232,9 +263,14 @@ pub fn doors() -> Vec<Door> {
         // upper-storey windows onto the square and toward the club
         Door { rooms: (HOUSE_UP, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, height: 1.4, zc: 4.5, glass: true, openness: 1.0 },
         Door { rooms: (HOUSE_UP, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, height: 1.4, zc: 4.5, glass: true, openness: 1.0 },
+        // tall stained-glass windows along the cathedral's flanks
+        Door { rooms: (CATHEDRAL, OUTSIDE), pos: (0.0, 63.0), axis: 0, half: 3.0, height: 6.0, zc: 6.0, glass: true, openness: 1.0 },
+        Door { rooms: (CATHEDRAL, OUTSIDE), pos: (16.0, 63.0), axis: 0, half: 3.0, height: 6.0, zc: 6.0, glass: true, openness: 1.0 },
         // stairwell: the vertical portal between the two storeys — always
-        // open, never toggled (indices ≥ 6 are outside the E-key range)
+        // open, never toggled (indices ≥ 7 are outside the E-key range)
         Door { rooms: (HOUSE, HOUSE_UP), pos: (24.8, 21.5), axis: 0, half: 0.7, height: 2.2, zc: 3.0, glass: false, openness: 1.0 },
+        // bunker stair shaft: a vertical hatch in the bunker's ceiling
+        Door { rooms: (OUTSIDE, BUNKER), pos: (35.0, 7.0), axis: 0, half: 0.7, height: 2.2, zc: -0.8, glass: false, openness: 1.0 },
     ]
 }
 
@@ -353,7 +389,7 @@ pub struct SourceDef {
 pub const CLUB_SPEAKERS: [(f32, f32); 4] =
     [(23.5, 27.5), (30.5, 27.5), (23.5, 36.5), (30.5, 36.5)];
 
-pub fn sources() -> [SourceDef; 6] {
+pub fn sources() -> [SourceDef; 8] {
     [
         SourceDef {
             name: "music",
@@ -377,6 +413,21 @@ pub fn sources() -> [SourceDef; 6] {
             // stage (acoustic reflex) is what keeps it listenable inside.
             gain: 5.0,
             emitters: &CLUB_SPEAKERS,
+        },
+        SourceDef {
+            name: "flute",
+            pos: (8.0, 66.0),
+            room: CATHEDRAL,
+            gain: 1.0,
+            emitters: &[(8.0, 66.0)],
+        },
+        SourceDef {
+            name: "radio",
+            pos: (37.5, 12.5),
+            room: BUNKER,
+            // a little transistor radio, not a hi-fi
+            gain: 0.5,
+            emitters: &[(37.5, 12.5)],
         },
         // Dynamic slots: thrown projectiles (positions set per tick).
         SourceDef { name: "ball0", pos: (0.0, 0.0), room: OUTSIDE, gain: 0.9, emitters: &[(0.0, 0.0)] },
@@ -827,7 +878,8 @@ pub fn straight_path_transmission(
     // (t, per-band amplitude) of each boundary crossing
     let mut crossings: Vec<(f32, [f32; NBANDS])> = Vec::new();
 
-    for r in rooms.iter().filter(|r| !r.outdoor) {
+    // buried rooms (the bunker) cannot occlude above-ground paths
+    for r in rooms.iter().filter(|r| !r.outdoor && r.floor_z + r.height > 0.2) {
         // Edge order matches walls[]: x-min, x-max, y-min, y-max.
         let edges = [
             (0usize, r.min.0, r.min.1, r.max.1, 0usize),

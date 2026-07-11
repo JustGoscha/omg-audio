@@ -54,8 +54,18 @@ pub struct WorldSim {
     acoustics: AcousticsGraph,
     /// Ray-sampled ambient dome (the audio skybox).
     dome: DomeProbe,
+    /// Per-source LOD: last produced block/route and its total level —
+    /// inaudible sources refresh at 5 Hz instead of 20 (perceptually
+    /// unimportant work goes first).
+    last_blocks: Vec<ParamBlock>,
+    last_routes: Vec<Vec<(f32, f32)>>,
+    last_level: Vec<f32>,
     tick_no: u64,
 }
+
+/// Below this summed mid-band gain a source is treated as inaudible for
+/// LOD purposes (well under the quietest thing the mix resolves).
+const LOD_QUIET: f32 = 0.004;
 
 /// Maps the dome's escaped-ray energy fraction to route amplitude,
 /// calibrated so the open field lands at the loudness the old horizon
@@ -69,7 +79,7 @@ impl WorldSim {
         let defs: Vec<SourceDef> = walkthrough::sources().into();
         let corners: Vec<(f32, f32)> = rooms
             .iter()
-            .filter(|r| !r.outdoor)
+            .filter(|r| !r.outdoor && r.floor_z + r.height > 0.2)
             .flat_map(|r| {
                 let o = 0.15;
                 [
@@ -100,7 +110,7 @@ impl WorldSim {
                 let out = rooms.last().unwrap();
                 let (ox, oy) = out.min;
                 let mut f = Vec::new();
-                for r in rooms.iter().filter(|r| !r.outdoor) {
+                for r in rooms.iter().filter(|r| !r.outdoor && r.floor_z + r.height > 0.2) {
                     let edges = [
                         (0usize, r.min.0, r.min.1, r.max.1, 0usize),
                         (0, r.max.0, r.min.1, r.max.1, 1),
@@ -125,6 +135,9 @@ impl WorldSim {
             corner_vis,
             rooms,
             doors,
+            last_blocks: defs.iter().map(|_| ParamBlock::default()).collect(),
+            last_routes: defs.iter().map(|_| Vec::new()).collect(),
+            last_level: defs.iter().map(|_| f32::MAX).collect(),
             defs,
             tick_no: 0,
         }
@@ -192,6 +205,13 @@ impl WorldSim {
                 pb.version = self.tick_no;
                 blocks.push(pb);
                 routes.push(vec![]);
+                continue;
+            }
+            // LOD: a source whose last block was inaudible refreshes at
+            // 5 Hz, staggered; the engine's smoothers hold in between.
+            if self.last_level[si] < LOD_QUIET && (self.tick_no + si as u64) % 4 != 0 {
+                blocks.push(self.last_blocks[si].clone());
+                routes.push(self.last_routes[si].clone());
                 continue;
             }
             let src_z = self.src_z[si];
@@ -645,6 +665,10 @@ impl WorldSim {
 
             pb.version = self.tick_no;
             rt60_mid = pb.reverb.rt60[1];
+            self.last_level[si] = pb.taps.iter().map(|t| t.gains[1]).sum::<f32>()
+                + pb.remote.as_ref().map_or(0.0, |r| r.send[1]);
+            self.last_blocks[si] = pb.clone();
+            self.last_routes[si] = route.clone();
             blocks.push(pb);
             routes.push(route);
         }
@@ -796,7 +820,7 @@ impl WorldSim {
         // free-field standing behind two buildings.
         let seg_d2 = (lis.0 - e.0).powi(2) + (lis.1 - e.1).powi(2);
         let mut spans: Vec<(f32, f32, f32)> = Vec::new(); // (t_in, t_out, barrier h)
-        for r in self.rooms.iter().filter(|r| !r.outdoor) {
+        for r in self.rooms.iter().filter(|r| !r.outdoor && r.barrier_height > 0.3) {
             if let Some((pin, pout)) = segment_rect_crossing(e, lis, r.min, r.max) {
                 let t_of = |p: (f32, f32)| {
                     ((p.0 - e.0) * (lis.0 - e.0) + (p.1 - e.1) * (lis.1 - e.1)) / seg_d2.max(1e-9)

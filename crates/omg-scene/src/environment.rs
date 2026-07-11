@@ -116,7 +116,12 @@ impl AcousticsGraph {
                         });
                     }
                 }
-                let ext = total - covered;
+                // Only the ABOVE-GROUND part of a wall faces the open
+                // air; below grade there is earth, which transmits
+                // nothing worth modeling (an underground room couples
+                // outward only through its shaft).
+                let above = (z1.min(f32::MAX) - z0.max(0.0)).max(0.0) / (z1 - z0);
+                let ext = (total - covered) * above;
                 if ext > MIN_AREA {
                     conduits.push(Conduit {
                         rooms: (ri, outside),
@@ -152,7 +157,8 @@ impl AcousticsGraph {
                     }),
                 });
             }
-            let sky = (footprint - covered).max(0.0);
+            // a ceiling below grade is under earth, not under sky
+            let sky = if z1 > 0.05 { (footprint - covered).max(0.0) } else { 0.0 };
             roof_sky[ri] = sky / footprint;
             if sky > MIN_AREA {
                 conduits.push(Conduit {

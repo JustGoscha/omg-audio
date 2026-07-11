@@ -21,7 +21,7 @@ use omg_dsp::output::OutputStage;
 use omg_dsp::Renderer;
 use omg_scene::world::WorldSim;
 
-const NSRC: usize = 6;
+const NSRC: usize = 8;
 const MAX_FLAT: usize = 4096; // f32s per param buffer (~450 taps headroom)
 /// State layout: [0..4] pose/room/rt60, [4..58] per-source route viz,
 /// [58..] the flat Environment block (see omg_dsp::env).
@@ -67,10 +67,7 @@ fn sim() -> &'static mut SimCtx {
 pub extern "C" fn sim_setup() {
     let ctx = SimCtx {
         world: WorldSim::new(),
-        params: [
-            leak_f32(MAX_FLAT), leak_f32(MAX_FLAT), leak_f32(MAX_FLAT),
-            leak_f32(MAX_FLAT), leak_f32(MAX_FLAT), leak_f32(MAX_FLAT),
-        ],
+        params: core::array::from_fn(|_| leak_f32(MAX_FLAT)),
         param_lens: [0; NSRC],
         state: leak_f32(STATE_LEN),
         dyn_in: leak_f32(12),
@@ -108,7 +105,7 @@ pub extern "C" fn sim_state_len() -> u32 {
 #[no_mangle]
 pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
     let ctx = sim();
-    for i in 0..6 {
+    for i in 0..7 {
         // animated leaf position — the swing sweeps the filters
         ctx.world.set_door(i, ctx.door_in[i]);
     }
@@ -208,9 +205,9 @@ struct EngCtx {
     /// an SPL scale (needle drop … jet engine) to these linear gains.
     mixer: [omg_dsp::smooth::Smoothed; NSRC],
     master: omg_dsp::smooth::Smoothed,
-    /// Per-channel meter accumulators (6 sources + ambience + rain):
+    /// Per-channel meter accumulators (NSRC sources + ambience + rain):
     /// (peak², Σm², n) since the last commit.
-    meter_acc: [(f32, f64, u32); 8],
+    meter_acc: [(f32, f64, u32); NSRC + 2],
     meter_out: &'static mut [f32],
 }
 
@@ -238,8 +235,8 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         rain: omg_dsp::rain::Rain::new(sample_rate),
         mixer: core::array::from_fn(|_| omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate)),
         master: omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate),
-        meter_acc: [(0.0, 0.0, 0); 8],
-        meter_out: leak_f32(16),
+        meter_acc: [(0.0, 0.0, 0); NSRC + 2],
+        meter_out: leak_f32(2 * (NSRC + 2)),
     };
     unsafe { *(&raw mut ENG) = Some(ctx) };
 }
@@ -524,7 +521,7 @@ pub extern "C" fn eng_process(n: u32) {
             ctx.rain.process(&mut bus);
             let dw = bus[0] - w0;
             let m2 = 2.0 * dw * dw;
-            let acc = &mut ctx.meter_acc[7];
+            let acc = &mut ctx.meter_acc[NSRC + 1];
             acc.0 = acc.0.max(m2);
             acc.1 += m2 as f64;
             acc.2 += 1;
@@ -534,7 +531,7 @@ pub extern "C" fn eng_process(n: u32) {
             ctx.ambience.process(&mut bus);
             let dw = bus[0] - w0;
             let m2 = 2.0 * dw * dw;
-            let acc = &mut ctx.meter_acc[6];
+            let acc = &mut ctx.meter_acc[NSRC];
             acc.0 = acc.0.max(m2);
             acc.1 += m2 as f64;
             acc.2 += 1;
