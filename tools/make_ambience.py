@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Synthesize a loopable outdoor nature bed (CC0 by construction):
-wind through a wandering filter + sparse birdsong. Pure stdlib.
+"""Synthesize a loopable SERENE outdoor bed (CC0 by construction):
+barely-there dark wind + sparse melodic birdsong with long silences.
 
 Usage: make_ambience.py assets/ambience48.wav [seconds]
 """
@@ -20,44 +20,58 @@ def main():
     n = int(seconds * FS)
     out = [0.0] * n
 
-    # --- wind: noise → two cascaded one-poles with slowly wandering cutoff
-    lp1 = lp2 = 0.0
-    wander = 0.0
+    # --- air: very soft, very dark breath — three cascaded one-poles,
+    # gentle swells, no gusts
+    lp1 = lp2 = lp3 = 0.0
     for i in range(n):
         t = i / FS
-        wander += 0.00003 * ((random.random() * 2 - 1) - wander * 0.01)
-        # gusts: two incommensurate slow LFOs, integer cycles over the loop
-        gust = 0.55 + 0.3 * math.sin(2 * math.pi * 3 * t / seconds) \
-                    + 0.15 * math.sin(2 * math.pi * 7 * t / seconds + 1.3)
-        c = 0.02 + 0.05 * max(0.0, gust + 40.0 * wander)
-        c = min(max(c, 0.008), 0.12)
+        swell = 0.75 + 0.25 * math.sin(2 * math.pi * 2 * t / seconds) \
+                     + 0.10 * math.sin(2 * math.pi * 5 * t / seconds + 0.7)
         w = random.random() * 2 - 1
-        lp1 += c * (w - lp1)
-        lp2 += c * (lp1 - lp2)
-        out[i] += 2.6 * gust * lp2
+        lp1 += 0.015 * (w - lp1)
+        lp2 += 0.015 * (lp1 - lp2)
+        lp3 += 0.03 * (lp2 - lp3)
+        out[i] += 1.1 * swell * lp3
 
-    # --- birds: sparse FM chirps, 2–6 s apart, varied species-ish patterns
-    t_next = 1.0
-    while t_next < seconds - 1.5:
-        base = random.uniform(2200, 4400)
-        n_notes = random.randint(2, 5)
+    # --- birds: sparse, melodic, soft — pure tones with slow vibrato,
+    # falling two-note calls and the occasional gentle trill, long silences
+    t_next = 2.0
+    while t_next < seconds - 3.0:
+        kind = random.random()
         t0 = t_next
-        for k in range(n_notes):
-            dur = random.uniform(0.06, 0.16)
-            sweep = random.uniform(-900, 1200)
-            amp = random.uniform(0.05, 0.12)
+        if kind < 0.6:
+            # two-note falling call (soft, blackbird-ish)
+            base = random.uniform(1700, 2600)
+            for f0 in (base, base * random.uniform(0.78, 0.86)):
+                dur = random.uniform(0.22, 0.38)
+                amp = random.uniform(0.025, 0.05)
+                s0 = int(t0 * FS)
+                phase = 0.0
+                for i in range(int(dur * FS)):
+                    tt = i / (dur * FS)
+                    f = f0 * (1.0 - 0.06 * tt) + 18 * math.sin(2 * math.pi * 5.5 * tt)
+                    phase += 2 * math.pi * f / FS
+                    env = math.sin(math.pi * tt) ** 1.5
+                    idx = s0 + i
+                    if idx < n:
+                        out[idx] += amp * env * math.sin(phase)
+                t0 += dur + random.uniform(0.25, 0.5)
+        else:
+            # gentle trill, far away
+            base = random.uniform(2400, 3300)
+            amp = random.uniform(0.015, 0.03)
+            dur = random.uniform(0.5, 0.9)
             s0 = int(t0 * FS)
             phase = 0.0
             for i in range(int(dur * FS)):
                 tt = i / (dur * FS)
-                f = base + sweep * tt + 300 * math.sin(2 * math.pi * 28 * tt)
+                f = base + 140 * math.sin(2 * math.pi * 11 * tt)
                 phase += 2 * math.pi * f / FS
-                env = math.sin(math.pi * tt) ** 2
+                env = math.sin(math.pi * tt) ** 2 * 0.9
                 idx = s0 + i
                 if idx < n:
                     out[idx] += amp * env * math.sin(phase)
-            t0 += dur + random.uniform(0.04, 0.18)
-        t_next += random.uniform(2.0, 6.0)
+        t_next += random.uniform(4.0, 10.0)
 
     # loop seam: crossfade the last second into the first
     xf = FS

@@ -412,7 +412,7 @@ async function startAudio() {
     fetchBuf('../assets/fx_whistle.ogg'),
     fetchBuf('../assets/fx_thump.ogg'),
     fetchBuf('../assets/fx_boom.ogg'),
-    fetchBuf('../assets/city48.ogg'),
+    fetchBuf('../assets/ambience48.ogg'),
   ]);
 
   const decodeMono = async (buf, target = 0.6) => {
@@ -435,7 +435,13 @@ async function startAudio() {
     (async () => {
       const ab = await audio.decodeAudioData(ambRaw);
       const L = ab.getChannelData(0);
-      const R = ab.numberOfChannels > 1 ? ab.getChannelData(1) : L;
+      let R = ab.numberOfChannels > 1 ? ab.getChannelData(1) : null;
+      if (!R) {
+        // mono bed: decorrelate the second channel with an offset read
+        R = new Float32Array(L.length);
+        const off = Math.floor(L.length / 3);
+        for (let i = 0; i < L.length; i++) R[i] = L[(i + off) % L.length];
+      }
       let peak = 1e-6;
       for (let i = 0; i < L.length; i++) peak = Math.max(peak, Math.abs(L[i]), Math.abs(R[i]));
       const out = new Float32Array(L.length * 2);
