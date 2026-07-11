@@ -36,6 +36,8 @@ struct Drop {
 
 pub struct Rain {
     intensity: Smoothed,
+    /// User mixer gain (smoothed), on top of the weather intensity.
+    gain: Smoothed,
     rng: Rng,
     drops: [Drop; MAX_DROPS],
     next: usize,
@@ -55,6 +57,7 @@ impl Rain {
     pub fn new(sample_rate: f32) -> Self {
         Self {
             intensity: Smoothed::new(0.0, 6.0, sample_rate),
+            gain: Smoothed::new(1.0, 0.02, sample_rate),
             rng: Rng::new(0x5EED_5EED),
             drops: core::array::from_fn(|_| Drop {
                 phase: 0.0,
@@ -83,6 +86,11 @@ impl Rain {
         self.intensity.current()
     }
 
+    /// Mixer fader for the rain channel (1 = calibrated default).
+    pub fn set_gain(&mut self, g: f32) {
+        self.gain.set(g.clamp(0.0, 8.0));
+    }
+
     fn spawn_drop(&mut self, enclosure: f32) {
         let d = &mut self.drops[self.next];
         self.next = (self.next + 1) % MAX_DROPS;
@@ -109,6 +117,7 @@ impl Rain {
     #[inline]
     pub fn process(&mut self, bus: &mut [f32; NCH], enclosure: f32, muffle_coef: f32) {
         let inten = self.intensity.tick();
+        let user = self.gain.tick();
         if inten < 1e-4 && self.spawn_in == f32::MAX && self.hiss_lo.abs() < 1e-9 {
             return; // fully dry and settled — costs nothing
         }
@@ -138,7 +147,7 @@ impl Rain {
             d.phase += d.step;
             d.env *= d.decay;
             drum_in += s;
-            let g = s * direct * MASTER;
+            let g = s * direct * MASTER * user;
             for k in 0..NCH {
                 bus[k] += g * d.enc[k];
             }
@@ -147,7 +156,7 @@ impl Rain {
         // roof drumming: the same drop energy, structure-borne — heavy
         // lowpass, from straight above, only meaningful indoors
         self.drum_lp += 0.04 * (drum_in - self.drum_lp);
-        let drum_g = self.drum_lp * enclosure * 2.4 * MASTER;
+        let drum_g = self.drum_lp * enclosure * 2.4 * MASTER * user;
         for k in 0..NCH {
             bus[k] += drum_g * self.up_enc[k];
         }
@@ -162,7 +171,7 @@ impl Rain {
         // outdoors dry, indoors properly darkened, not just quieter
         self.muff_lp += muffle_coef.clamp(0.0, 1.0) * (raw - self.muff_lp);
         let hiss = raw + enclosure * (self.muff_lp - raw);
-        let hg = hiss * inten.powf(1.8) * 0.5 * MASTER * (1.0 - 0.6 * enclosure);
+        let hg = hiss * inten.powf(1.8) * 0.5 * MASTER * user * (1.0 - 0.6 * enclosure);
         // diffuse: omni + a touch of overhead bias
         bus[0] += hg;
         for k in 0..NCH {

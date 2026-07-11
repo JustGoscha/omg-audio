@@ -22,6 +22,24 @@
          z-index: 5; pointer-events: none; line-height: 1.6; }
   #rain { position: absolute; top: 10px; right: 110px; z-index: 6;
     background: #2a3648; color: #cfe3ff; }
+  #mixerbtn { position: absolute; top: 10px; right: 230px; z-index: 6;
+    background: #2a3648; color: #cfe3ff; }
+  #mixer { position: absolute; top: 52px; right: 12px; z-index: 6;
+    background: #0e1116ee; border: 1px solid #2a3648; border-radius: 12px;
+    padding: 12px 14px; width: 330px; font: 12px sans-serif; color: #cfe3ff; }
+  #mixer .row { display: grid; grid-template-columns: 62px 1fr 58px;
+    align-items: center; gap: 8px; margin: 7px 0; }
+  #mixer .fader { width: 100%; accent-color: #50dcff; }
+  #mixer .meter { position: relative; height: 4px; background: #1c2430;
+    border-radius: 2px; margin-top: 3px; overflow: hidden; }
+  #mixer .meter .rms { position: absolute; left: 0; top: 0; bottom: 0;
+    background: #50dcff; width: 0; }
+  #mixer .meter .pk { position: absolute; top: 0; bottom: 0; width: 2px;
+    background: #ffaa3c; left: 0; }
+  #mixer .lvl { text-align: right; color: #7a8496; font-variant-numeric: tabular-nums; }
+  #mixer .spl { color: #7a8496; }
+  #mixer .scale { display: flex; justify-content: space-between;
+    color: #4a5568; font-size: 10px; margin: -2px 0 6px 70px; padding-right: 66px; }
   #recenter { position: absolute; top: 10px; right: 12px; z-index: 6;
               padding: 8px 14px; font-size: 13px; background: #2a3648; color: #c8d2e1; }
   #status { color: #50dcff; }
@@ -39,6 +57,8 @@
 <div id="hud"><span id="status">–</span><br><span id="controls-hint"></span></div>
 <button id="recenter" hidden>recenter</button>
 <button id="rain" hidden>☂ off</button>
+<button id="mixerbtn" hidden>mixer</button>
+<div id="mixer" hidden></div>
 <div id="overlay">
   <h1>omg-audio</h1>
   <p>Real-time path-traced sound propagation, binaural over measured KEMAR

@@ -64,6 +64,11 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.w.eng_set_ambient(m.gain, m.fc);
     } else if (m.type === 'rain' && this.ready) {
       this.w.eng_set_rain(m.intensity);
+    } else if (m.type === 'mixer' && this.ready) {
+      if (m.target === 'ambient') this.w.eng_set_ambient_user(m.gain);
+      else if (m.target === 'rainGain') this.w.eng_set_rain_gain(m.gain);
+      else if (m.target === 'master') this.w.eng_set_master(m.gain);
+      else for (const i of m.srcs) this.w.eng_set_mixer(i, m.gain);
     } else if (m.type === 'fx' && this.ready) {
       if (m.action === 'play') this.w.eng_fx_play(m.src, m.kind);
       else this.w.eng_fx_stop(m.src, m.kind);
@@ -106,7 +111,9 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.mR = Math.max(this.mR, Math.abs(r[i]));
     }
     if (this.mN >= 8) {
-      this.port.postMessage({ type: 'meters', l: this.mL, r: this.mR, agc: this.w.eng_agc_gain(), tts: this.w.eng_ear_fatigue(), pts: this.budget });
+      const mp = this.w.eng_meters_commit();
+      const chans = Array.from(new Float32Array(this.w.memory.buffer, mp, 16));
+      this.port.postMessage({ type: 'meters', l: this.mL, r: this.mR, agc: this.w.eng_agc_gain(), tts: this.w.eng_ear_fatigue(), pts: this.budget, chans });
       this.mL = 0;
       this.mR = 0;
       this.mN = 0;

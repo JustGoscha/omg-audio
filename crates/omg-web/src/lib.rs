@@ -193,6 +193,16 @@ struct EngCtx {
     ambient_lp: [f32; 4],
     ambient_enc: [[f32; NCH]; 4],
     rain: omg_dsp::rain::Rain,
+    /// Mixer: per-source user gains (smoothed toward targets), plus
+    /// ambience and master. Source faders are POWER faders — the UI maps
+    /// an SPL scale (needle drop … jet engine) to these linear gains.
+    mixer: [omg_dsp::smooth::Smoothed; NSRC],
+    ambient_user: omg_dsp::smooth::Smoothed,
+    master: omg_dsp::smooth::Smoothed,
+    /// Per-channel meter accumulators (6 sources + ambience + rain):
+    /// (peak², Σm², n) since the last commit.
+    meter_acc: [(f32, f64, u32); 8],
+    meter_out: &'static mut [f32],
 }
 
 static mut ENG: Option<EngCtx> = None;
@@ -222,6 +232,11 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         ambient_lp_coef: omg_dsp::smooth::Smoothed::new(1.0, 0.8, sample_rate),
         ambient_lp: [0.0; 4],
         rain: omg_dsp::rain::Rain::new(sample_rate),
+        mixer: core::array::from_fn(|_| omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate)),
+        ambient_user: omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate),
+        master: omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate),
+        meter_acc: [(0.0, 0.0, 0); 8],
+        meter_out: leak_f32(16),
         // world-anchored feed directions (N/E/S/W): the bed lives on the
         // rotating SH bus so it counter-rotates with head turns like the
         // rest of the world, instead of sticking to the ears.
@@ -336,6 +351,43 @@ pub extern "C" fn eng_ambient_commit(channels: u32) {
     ctx.ambient_stereo = channels == 2;
 }
 
+/// Mixer: source fader (linear gain; the UI's SPL scale maps to this).
+#[no_mangle]
+pub extern "C" fn eng_set_mixer(i: u32, gain: f32) {
+    if let Some(m) = eng().mixer.get_mut(i as usize) {
+        m.set(gain.clamp(0.0, 256.0));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn eng_set_ambient_user(gain: f32) {
+    eng().ambient_user.set(gain.clamp(0.0, 8.0));
+}
+
+#[no_mangle]
+pub extern "C" fn eng_set_rain_gain(gain: f32) {
+    eng().rain.set_gain(gain);
+}
+
+#[no_mangle]
+pub extern "C" fn eng_set_master(gain: f32) {
+    eng().master.set(gain.clamp(0.0, 4.0));
+}
+
+/// Commit per-channel meters (peak, rms) × 8 into the meter buffer and
+/// reset the accumulators. Returns the buffer pointer.
+#[no_mangle]
+pub extern "C" fn eng_meters_commit() -> *const f32 {
+    let ctx = eng();
+    for (ch, acc) in ctx.meter_acc.iter_mut().enumerate() {
+        let (p2, s2, n) = *acc;
+        ctx.meter_out[ch * 2] = p2.sqrt();
+        ctx.meter_out[ch * 2 + 1] = if n > 0 { ((s2 / n as f64) as f32).sqrt() } else { 0.0 };
+        *acc = (0.0, 0.0, 0);
+    }
+    ctx.meter_out.as_ptr()
+}
+
 /// Rain intensity 0…1 (ramped inside; rain starts/stops like weather).
 #[no_mangle]
 pub extern "C" fn eng_set_rain(intensity: f32) {
@@ -424,16 +476,32 @@ pub extern "C" fn eng_process(n: u32) {
                     v.pos += 1;
                 }
             }
-            let (a, b) = ren.process(x, &mut bus);
+            let w0 = bus[0];
+            let (a, b) = ren.process(x * ctx.mixer[si].tick(), &mut bus);
             pl += a;
             pr += b;
+            // channel meter: point stereo + this source's bus contribution
+            // (W-channel delta, roughly calibrated to the decode)
+            let dw = bus[0] - w0;
+            let m2 = 0.5 * (a * a + b * b) + 2.0 * dw * dw;
+            let acc = &mut ctx.meter_acc[si];
+            acc.0 = acc.0.max(m2);
+            acc.1 += m2 as f64;
+            acc.2 += 1;
         }
         // rain: world-anchored on the SH bus like the ambience bed;
         // enclosure derived from the room's bed gain (outside = 0.085)
         {
             let ag = ctx.ambient_gain.current();
             let enclosure = (1.0 - ag / 0.085).clamp(0.0, 1.0);
+            let w0 = bus[0];
             ctx.rain.process(&mut bus, enclosure, ctx.ambient_lp_coef.current());
+            let dw = bus[0] - w0;
+            let m2 = 2.0 * dw * dw;
+            let acc = &mut ctx.meter_acc[7];
+            acc.0 = acc.0.max(m2);
+            acc.1 += m2 as f64;
+            acc.2 += 1;
         }
         // ambient bed: four decorrelated reads of the loop, encoded at
         // world N/E/S/W onto the SH bus (pre-rotation) — world-anchored,
@@ -441,7 +509,8 @@ pub extern "C" fn eng_process(n: u32) {
         if !ctx.ambient.is_empty() {
             let frames = if ctx.ambient_stereo { ctx.ambient.len() / 2 } else { ctx.ambient.len() };
             ctx.ambient_pos = (ctx.ambient_pos + 1) % frames;
-            let g = ctx.ambient_gain.tick() * 0.55;
+            let amb_w0 = bus[0];
+            let g = ctx.ambient_gain.tick() * 0.55 * ctx.ambient_user.tick();
             let c = ctx.ambient_lp_coef.tick();
             for d in 0..4 {
                 // stereo: N/S take L at offset reads, E/W take R —
@@ -458,13 +527,20 @@ pub extern "C" fn eng_process(n: u32) {
                     bus[k] += v * ctx.ambient_enc[d][k];
                 }
             }
+            let dw = bus[0] - amb_w0;
+            let m2 = 2.0 * dw * dw;
+            let acc = &mut ctx.meter_acc[6];
+            acc.0 = acc.0.max(m2);
+            acc.1 += m2 as f64;
+            acc.2 += 1;
         }
         let (l, r) = match &mut ctx.out {
             Some(o) => o.process(&bus, pl, pr),
             None => (pl.tanh(), pr.tanh()),
         };
-        ctx.out_l[i] = l;
-        ctx.out_r[i] = r;
+        let mg = ctx.master.tick();
+        ctx.out_l[i] = (l * mg).clamp(-1.0, 1.0);
+        ctx.out_r[i] = (r * mg).clamp(-1.0, 1.0);
     }
     ctx.voices.retain(|v| v.pos < ctx.fx_bufs[v.buf].len());
 }

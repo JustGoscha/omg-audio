@@ -63,6 +63,8 @@ const state = {
   simState: null,
   running: false,
   rainLevel: 0, // index into RAIN_LEVELS
+  chanHist: [], // per-channel meter frames, ~1 s
+  mixerRows: null,
 };
 
 // simulated weather: intensity targets the engine ramps toward (~6 s),
@@ -79,6 +81,105 @@ function cycleRain() {
   const lvl = RAIN_LEVELS[state.rainLevel];
   document.getElementById('rain').textContent = lvl.label;
   if (state.node) state.node.port.postMessage({ type: 'rain', intensity: lvl.intensity });
+}
+
+// ------------------------------------------------------------- mixer panel
+//
+// Source faders are POWER faders on a real SPL scale (dB SPL @ 1 m):
+// 20 ≈ a needle drop, 60 ≈ speech, 90 ≈ fortissimo piano, 110 ≈ club PA,
+// 130 ≈ jet engine. The engine's calibration anchor is gain 1.0 ≈ 90 dB
+// SPL, and each source's authored gain gives its baseline; the fader sets
+// the REAL emitted energy: gain = 10^((SPL − baseline) / 20).
+// Ambience/rain/master are trim faders in plain dB.
+const MIXER = [
+  { name: 'music', srcs: [0], base: 90, meters: [0], spl: true },
+  { name: 'voice', srcs: [1], base: 84, meters: [1], spl: true },
+  { name: 'club', srcs: [2], base: 104, meters: [2], spl: true },
+  { name: 'balls', srcs: [3, 4, 5], base: 89, meters: [3, 4, 5], spl: true },
+  { name: 'ambience', target: 'ambient', meters: [6] },
+  { name: 'rain', target: 'rainGain', meters: [7] },
+  { name: 'master', target: 'master', meters: 'lr' },
+];
+const SPL_MIN = 20, SPL_MAX = 130, TRIM_MIN = -30, TRIM_MAX = 12;
+
+function buildMixer() {
+  const panel = document.getElementById('mixer');
+  panel.innerHTML = '<div class="scale"><span>20</span><span>needle</span>' +
+    '<span>60 speech</span><span>club 110</span><span>jet 130</span></div>';
+  state.mixerRows = MIXER.map((ch) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const label = document.createElement('div');
+    label.innerHTML = ch.name + '<br><span class="spl"></span>';
+    const mid = document.createElement('div');
+    const fader = document.createElement('input');
+    fader.type = 'range';
+    fader.min = 0; fader.max = 1000; fader.className = 'fader';
+    fader.value = ch.spl
+      ? ((ch.base - SPL_MIN) / (SPL_MAX - SPL_MIN)) * 1000
+      : ((0 - TRIM_MIN) / (TRIM_MAX - TRIM_MIN)) * 1000;
+    const meter = document.createElement('div');
+    meter.className = 'meter';
+    meter.innerHTML = '<div class="rms"></div><div class="pk"></div>';
+    mid.append(fader, meter);
+    const lvl = document.createElement('div');
+    lvl.className = 'lvl';
+    lvl.textContent = '−∞';
+    row.append(label, mid, lvl);
+    panel.append(row);
+    const apply = () => {
+      const v = fader.value / 1000;
+      let gain, text;
+      if (ch.spl) {
+        const spl = SPL_MIN + v * (SPL_MAX - SPL_MIN);
+        gain = 10 ** ((spl - ch.base) / 20);
+        text = `${spl.toFixed(0)} dB SPL`;
+      } else {
+        const db = TRIM_MIN + v * (TRIM_MAX - TRIM_MIN);
+        gain = v === 0 ? 0 : 10 ** (db / 20);
+        text = `${db >= 0 ? '+' : ''}${db.toFixed(0)} dB`;
+      }
+      label.querySelector('.spl').textContent = text;
+      if (state.node) {
+        state.node.port.postMessage({ type: 'mixer', target: ch.target, srcs: ch.srcs, gain });
+      }
+    };
+    fader.oninput = apply;
+    fader.onpointerup = () => fader.blur();
+    apply();
+    return { ch, row, lvl, rms: meter.querySelector('.rms'), pk: meter.querySelector('.pk') };
+  });
+}
+
+// meter history: ~43 frames ≈ 1 s
+function updateMixerMeters() {
+  if (!state.mixerRows || document.getElementById('mixer').hidden) return;
+  const hist = state.chanHist;
+  if (!hist.length) return;
+  for (const r of state.mixerRows) {
+    let rms = 0, pk = 0;
+    if (r.ch.meters === 'lr') {
+      // master: current output block peaks (post-AGC, post-master)
+      rms = (state.meters.l + state.meters.r) / 2;
+      pk = Math.max(state.meters.l, state.meters.r);
+    } else {
+      let n = 0;
+      for (const frame of hist) {
+        for (const m of r.ch.meters) {
+          rms += frame[m * 2 + 1] ** 2;
+          pk = Math.max(pk, frame[m * 2]);
+          n++;
+        }
+      }
+      rms = Math.sqrt(rms / Math.max(1, n));
+    }
+    const toDb = (x) => Math.max(-60, 20 * Math.log10(x + 1e-9));
+    const rdb = toDb(rms);
+    const pdb = toDb(pk);
+    r.rms.style.width = `${((rdb + 60) / 60) * 100}%`;
+    r.pk.style.left = `${((pdb + 60) / 60) * 100}%`;
+    r.lvl.textContent = rdb <= -59.5 ? '−∞' : `${rdb.toFixed(1)} dB`;
+  }
 }
 
 // ------------------------------------------------------------ walkability
@@ -399,6 +500,13 @@ document.getElementById('start').onclick = async () => {
     document.getElementById('overlay').remove();
     document.getElementById('recenter').hidden = false;
     document.getElementById('rain').hidden = false;
+    document.getElementById('mixerbtn').hidden = false;
+    buildMixer();
+    document.getElementById('mixerbtn').onclick = (e) => {
+      e.target.blur();
+      const p = document.getElementById('mixer');
+      p.hidden = !p.hidden;
+    };
     setupControls();
     state.running = true;
   } catch (e) {
@@ -504,6 +612,10 @@ async function startAudio() {
         state.meters.agc = e.data.agc;
         state.meters.pts = e.data.pts || 0;
         state.meters.tts = e.data.tts || 0;
+        if (e.data.chans) {
+          state.chanHist.push(e.data.chans);
+          if (state.chanHist.length > 43) state.chanHist.shift();
+        }
         state.meters.hist.push(e.data.agc);
         if (state.meters.hist.length > 220) state.meters.hist.shift();
       }
@@ -809,6 +921,7 @@ function frame(t) {
 }
 
 function drawMeters() {
+  updateMixerMeters();
   const c = document.getElementById('meters');
   if (!c) return;
   const g = c.getContext('2d');
