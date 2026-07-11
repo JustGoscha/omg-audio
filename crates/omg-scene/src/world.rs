@@ -153,6 +153,10 @@ impl WorldSim {
              -> (ParamBlock, Vec<(f32, f32)>) {
                 let routed = route_source(def, state.room, state.listener_world);
                 let margin = if routed.extra_dist > 0.0 { 0.06 } else { 0.3 };
+                // Speaker rigs only at (near-)full weight: during a portal
+                // blend both room states render at once, and the doubled
+                // tap load is what makes throttled CPUs glitch at doorways.
+                let rig_ok = w > 0.72;
                 let virt = walkthrough::to_local_margin(
                     &rooms[state.room],
                     routed.virt_world.0,
@@ -161,7 +165,7 @@ impl WorldSim {
                     margin,
                 );
                 let sim = &mut sims[state.room];
-                let mut pb = if state.room == def.room && def.emitters.len() > 1 {
+                let mut pb = if state.room == def.room && def.emitters.len() > 1 && rig_ok {
                     // Speaker rig in this room: per-emitter image sources.
                     let ems: Vec<Vec3> = def
                         .emitters

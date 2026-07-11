@@ -221,10 +221,20 @@ impl Renderer {
         }
         self.version_seen = pb.version;
 
+        // CPU ceiling: keep only the strongest incoming taps. The weakest
+        // image sources are inaudible under the ones we keep; this bounds
+        // worst-case render cost on throttled devices.
+        const MAX_INCOMING: usize = 160;
+        let mut incoming: Vec<&omg_core::params::Tap> = pb.taps.iter().collect();
+        if incoming.len() > MAX_INCOMING {
+            incoming.sort_by(|a, b| b.gains[1].total_cmp(&a.gains[1]));
+            incoming.truncate(MAX_INCOMING);
+        }
+
         // Fade out slots whose path no longer exists.
         for slot in &mut self.taps {
             if let Some(k) = slot.key {
-                if !pb.taps.iter().any(|t| t.key == k) {
+                if !incoming.iter().any(|t| t.key == k) {
                     slot.release();
                 }
             }
@@ -235,14 +245,14 @@ impl Renderer {
         let mut point_keys = [u32::MAX; POINT_TAPS];
         if self.grid.is_some() {
             let mut top: Vec<(f32, u32)> =
-                pb.taps.iter().map(|t| (t.gains[1], t.key)).collect();
+                incoming.iter().map(|t| (t.gains[1], t.key)).collect();
             top.sort_by(|a, b| b.0.total_cmp(&a.0));
             for (i, (_, k)) in top.iter().take(POINT_TAPS).enumerate() {
                 point_keys[i] = *k;
             }
         }
 
-        for t in &pb.taps {
+        for t in incoming {
             let tg = targets_of(t, self.sample_rate);
             let want_point = self.grid.is_some() && point_keys.contains(&t.key);
             let existing = self.taps.iter().position(|s| s.key == Some(t.key));
