@@ -599,7 +599,7 @@ async function startAudio() {
     return r.arrayBuffer();
   };
   statusEl.textContent = 'loading…';
-  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fxW, fxT, fxB, ambRaw] =
+  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fxW, fxT, fxB, ambRaw, dropsRaw] =
     await Promise.all([
     fetchBuf('omg_web.wasm'),
     fetchBuf('omg_web.wasm'),
@@ -612,6 +612,7 @@ async function startAudio() {
     fetchBuf('../assets/fx_thump.ogg'),
     fetchBuf('../assets/fx_boom.ogg'),
     fetchBuf('../assets/night-nature48.ogg'),
+    fetchBuf('../assets/drops48.ogg'),
   ]);
 
   // Sources go to the engine raw — import loudness is normalized there
@@ -631,13 +632,14 @@ async function startAudio() {
     for (let i = 0; i < ch.length; i++) out[i] = ch[i] * g;
     return out;
   };
-  const [aria, alice, club, whistle, thumpFx, boomFx, ambience] = await Promise.all([
+  const [aria, alice, club, whistle, thumpFx, boomFx, drops, ambience] = await Promise.all([
     decodeMono(ariaRaw),
     decodeMono(aliceRaw),
     decodeMono(clubRaw),
     decodeMono(fxW, 0.18), // whistle: background-y
     decodeMono(fxT, 0.55),
     decodeMono(fxB, 1.9), // boom: BIG (AGC + tanh keep it safe)
+    decodeMono(dropsRaw), // recorded splat bank (pre-normalized slices)
     (async () => {
       const ab = await audio.decodeAudioData(ambRaw);
       const L = ab.getChannelData(0);
@@ -678,9 +680,9 @@ async function startAudio() {
     { type: 'wasm', bytes: wasm1, grid, speakers,
       sources: [aria.buffer, alice.buffer, club.buffer, silent.buffer],
       fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer],
-      ambient: ambience.buffer },
+      ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, silent.buffer,
-     whistle.buffer, thumpFx.buffer, boomFx.buffer, ambience.buffer],
+     whistle.buffer, thumpFx.buffer, boomFx.buffer, ambience.buffer, drops.buffer],
   );
   await new Promise((res) => {
     node.port.onmessage = (e) => {

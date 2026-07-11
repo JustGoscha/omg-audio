@@ -239,6 +239,8 @@ Code: Apache-2.0. Acoustic data and demo media:
 - Night ambience: ["nature_ambient_night_5-min"](https://freesound.org/people/edmondsr/sounds/711207/)
   by edmondsr — CC0.
 - Club track, projectile FX: synthesized by this repo's tools (CC0).
+- Rain splat bank: 22 hits sliced from CC0 freesound recordings
+  (sources listed in `tools/make_drops.py`).
 
 `assets/*.wav` are gitignored; regenerate via `tools/` or use the shipped
 `.ogg` versions (what the web demo loads).

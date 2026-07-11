@@ -415,6 +415,22 @@ pub extern "C" fn eng_meters_commit() -> *const f32 {
     ctx.meter_out.as_ptr()
 }
 
+/// Stage + commit the recorded-splat bank for the rain (mono f32,
+/// uniform 150 ms slices — see tools/make_drops.py).
+#[no_mangle]
+pub extern "C" fn eng_rain_bank_alloc(nsamples: u32) -> *mut f32 {
+    let ctx = eng();
+    ctx.fx_stage = Some(leak_f32(nsamples as usize));
+    ctx.fx_stage.as_mut().unwrap().as_mut_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn eng_rain_bank_commit() {
+    let ctx = eng();
+    let buf = ctx.fx_stage.take().expect("alloc first");
+    ctx.rain.set_bank(buf.to_vec());
+}
+
 /// Rain intensity 0…1 (ramped inside; rain starts/stops like weather).
 #[no_mangle]
 pub extern "C" fn eng_set_rain(intensity: f32) {

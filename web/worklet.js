@@ -37,6 +37,12 @@ class OmgProcessor extends AudioWorkletProcessor {
         new Float32Array(this.w.memory.buffer, ptr, f.length).set(f);
         this.w.eng_source_commit(i); // import-normalize (gated RMS)
       });
+      if (m.drops) {
+        const f = new Float32Array(m.drops);
+        const ptr = this.w.eng_rain_bank_alloc(f.length);
+        new Float32Array(this.w.memory.buffer, ptr, f.length).set(f);
+        this.w.eng_rain_bank_commit();
+      }
       if (m.ambient) {
         const f = new Float32Array(m.ambient);
         const ptr = this.w.eng_ambient_alloc(f.length);

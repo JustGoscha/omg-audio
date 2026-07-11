@@ -25,6 +25,9 @@ const MAX_DROPS: usize = 32;
 const RATE_FULL_HZ: f32 = 260.0;
 /// Overall level trim (calibrated against the night-city ambience bed).
 const MASTER: f32 = 0.22;
+/// Sample bank slot length (150 ms @ 48 kHz) — keep in sync with
+/// tools/make_drops.py.
+pub const BANK_SLOT: usize = 7200;
 
 struct Drop {
     phase: f32,
@@ -36,6 +39,11 @@ struct Drop {
     /// Structure-borne (roof knock / window tick): heard at full level
     /// indoors instead of being shell-attenuated like airborne drops.
     surface: bool,
+    /// Sample-bank playback (real recorded splats): slice offset, read
+    /// position and rate (pitch variation), or `usize::MAX` for synth.
+    bank_off: usize,
+    bank_pos: f32,
+    bank_rate: f32,
     enc: [f32; NCH],
 }
 
@@ -46,7 +54,10 @@ pub struct Rain {
     rng: Rng,
     drops: [Drop; MAX_DROPS],
     next: usize,
-    spawn_in: f32, // samples until next drop
+    /// Normalized time to the next drop (exponential inter-arrival at
+    /// unit rate) — advanced by rate/sr each sample, so the schedule
+    /// adapts as the rate ramps instead of freezing a stale interval.
+    spawn_in: f32,
     // downpour hiss shaping: noise → band between the two poles
     hiss_lo: f32,
     hiss_hi: f32,
@@ -54,6 +65,8 @@ pub struct Rain {
     drum_lp: f32,
     // shell muffle state for the hiss (one-pole, coef from the room)
     muff_lp: f32,
+    /// Bank of real recorded drop/splat hits (uniform BANK_SLOT slices).
+    bank: Vec<f32>,
     sample_rate: f32,
     up_enc: [f32; NCH],
 }
@@ -71,14 +84,18 @@ impl Rain {
                 decay: 0.0,
                 click: 0.0,
                 surface: false,
+                bank_off: usize::MAX,
+                bank_pos: 0.0,
+                bank_rate: 1.0,
                 enc: [0.0; NCH],
             }),
             next: 0,
-            spawn_in: f32::MAX,
+            spawn_in: 0.0,
             hiss_lo: 0.0,
             hiss_hi: 0.0,
             drum_lp: 0.0,
             muff_lp: 0.0,
+            bank: Vec::new(),
             sample_rate,
             up_enc: encode_gains([0.0, 0.0, 1.0]),
         }
@@ -98,6 +115,16 @@ impl Rain {
         self.gain.set(g.clamp(0.0, 8.0));
     }
 
+    /// Load the recorded-splat bank (uniform BANK_SLOT slices). Without
+    /// it, everything falls back to synthesis.
+    pub fn set_bank(&mut self, samples: Vec<f32>) {
+        self.bank = samples;
+    }
+
+    fn bank_slices(&self) -> usize {
+        self.bank.len() / BANK_SLOT
+    }
+
     fn spawn_drop(&mut self, enclosure: f32) {
         let d = &mut self.drops[self.next];
         self.next = (self.next + 1) % MAX_DROPS;
@@ -107,11 +134,27 @@ impl Rain {
         // Enclosed: most drops become discrete surface impacts — roof
         // knocks from straight overhead, brighter glass ticks from the
         // sides. That's the tappy part of rain heard from inside.
+        let n_slices = self.bank.len() / BANK_SLOT;
         if self.rng.next_f32() < enclosure * 0.9 {
             d.surface = true;
-            let glass = self.rng.next_f32() < 0.35;
+            let glass = self.rng.next_f32() < 0.4;
+            if glass && n_slices > 0 {
+                // window splat: a REAL recorded hit, hot and harsh, with
+                // pitch/gain variation so no two reads alike
+                d.bank_off = (self.rng.next_u64() as usize % n_slices) * BANK_SLOT;
+                d.bank_pos = 0.0;
+                d.bank_rate = 0.85 + self.rng.next_f32() * 0.6;
+                d.env = 0.05 + 0.11 * self.rng.next_f32().powi(2);
+                d.decay = 1.0;
+                d.click = d.env * 0.5; // extra attack bite
+                let el = 0.15 + 0.35 * self.rng.next_f32();
+                let (se, ce) = el.sin_cos();
+                d.enc = encode_gains([az.cos() * ce, az.sin() * ce, se]);
+                return;
+            }
+            d.bank_off = usize::MAX;
             let (f, tau, el) = if glass {
-                // window tick: bright, tiny
+                // window tick (synth fallback): bright, tiny
                 (1800.0 + self.rng.next_f32() * 2600.0, 0.002 + 0.005 * self.rng.next_f32(), 0.15 + 0.35 * self.rng.next_f32())
             } else {
                 // roof knock: low panel resonance
@@ -126,8 +169,22 @@ impl Rain {
             return;
         }
 
-        // airborne drop: airy ping with a soft tick, from above
+        // airborne drop: mostly airy pings; sometimes a real ground splat
         d.surface = false;
+        if n_slices > 0 && self.rng.next_f32() < 0.2 {
+            d.bank_off = (self.rng.next_u64() as usize % n_slices) * BANK_SLOT;
+            d.bank_pos = 0.0;
+            d.bank_rate = 0.9 + self.rng.next_f32() * 0.5;
+            d.env = 0.015 + 0.035 * self.rng.next_f32().powi(2);
+            d.decay = 1.0;
+            d.click = 0.0;
+            // ground splashes arrive from below-ish around you
+            let el = -0.25 + 0.3 * self.rng.next_f32();
+            let (se, ce) = el.sin_cos();
+            d.enc = encode_gains([az.cos() * ce, az.sin() * ce, se]);
+            return;
+        }
+        d.bank_off = usize::MAX;
         let f = 1400.0 + self.rng.next_f32().powi(2) * 5200.0;
         d.step = core::f32::consts::TAU * f / self.sample_rate;
         d.env = 0.010 + 0.030 * self.rng.next_f32().powi(3);
@@ -147,23 +204,24 @@ impl Rain {
     pub fn process(&mut self, bus: &mut [f32; NCH], enclosure: f32, muffle_coef: f32) {
         let inten = self.intensity.tick();
         let user = self.gain.tick();
-        if inten < 1e-4 && self.spawn_in == f32::MAX && self.hiss_lo.abs() < 1e-9 {
+        if inten < 1e-4 && self.hiss_lo.abs() < 1e-9 && self.drops.iter().all(|d| d.env < 1e-6) {
             return; // fully dry and settled — costs nothing
         }
 
         // Poisson drop scheduling; a roof concentrates the whole surface's
-        // impacts over your head, so enclosure raises the audible rate
-        let rate = (RATE_FULL_HZ * inten * inten + 14.0 * inten) * (1.0 + 0.8 * enclosure);
+        // impacts over your head, so enclosure raises the audible rate.
+        // The curve is steep: drizzle is SPARSE (individual taps with real
+        // gaps), and only real rain approaches the fused rate.
+        let rate = (RATE_FULL_HZ * inten.powf(2.5) + 6.0 * inten) * (1.0 + 0.8 * enclosure);
         if rate > 0.01 {
-            self.spawn_in -= 1.0;
-            if self.spawn_in <= 0.0 || self.spawn_in == f32::MAX - 1.0 {
+            // advance normalized time by the CURRENT rate — the schedule
+            // follows ramps instead of freezing a stale interval
+            self.spawn_in -= rate / self.sample_rate;
+            if self.spawn_in <= 0.0 {
                 self.spawn_drop(enclosure);
-                // exponential inter-arrival times
                 let u = self.rng.next_f32().max(1e-6);
-                self.spawn_in = -u.ln() * self.sample_rate / rate;
+                self.spawn_in = -u.ln();
             }
-        } else {
-            self.spawn_in = f32::MAX;
         }
 
         // drops: airborne pings are shell-attenuated indoors; surface
@@ -182,9 +240,24 @@ impl Rain {
             } else {
                 0.0
             };
-            let s = d.phase.sin() * d.env + tick;
-            d.phase += d.step;
-            d.env *= d.decay;
+            let s = if d.bank_off != usize::MAX {
+                // recorded hit: linear-interp read at the drop's rate
+                let i = d.bank_pos as usize;
+                if i + 1 >= BANK_SLOT {
+                    d.env = 0.0;
+                    continue;
+                }
+                let fr = d.bank_pos - i as f32;
+                let a = self.bank[d.bank_off + i];
+                let b = self.bank[d.bank_off + i + 1];
+                d.bank_pos += d.bank_rate;
+                (a + fr * (b - a)) * d.env + tick
+            } else {
+                let v = d.phase.sin() * d.env + tick;
+                d.phase += d.step;
+                d.env *= d.decay;
+                v
+            };
             drum_in += s;
             let g = s * if d.surface { 1.0 } else { direct } * MASTER * user;
             for k in 0..NCH {
@@ -210,7 +283,10 @@ impl Rain {
         // outdoors dry, indoors properly darkened, not just quieter
         self.muff_lp += muffle_coef.clamp(0.0, 1.0) * (raw - self.muff_lp);
         let hiss = raw + enclosure * (self.muff_lp - raw);
-        let hg = hiss * inten.powf(1.8) * 0.5 * MASTER * user * (1.0 - 0.6 * enclosure);
+        // Hiss is what drops fuse into — it has no business at drizzle.
+        // Below ~0.3 intensity there is none; it grows steeply after.
+        let hiss_amt = ((inten - 0.28) / 0.72).clamp(0.0, 1.0).powf(1.6);
+        let hg = hiss * hiss_amt * 0.5 * MASTER * user * (1.0 - 0.6 * enclosure);
         // diffuse: omni + a touch of overhead bias
         bus[0] += hg;
         for k in 0..NCH {
@@ -281,6 +357,38 @@ mod tests {
         };
         let (out_c, in_c) = (crest(0.0), crest(1.0));
         assert!(in_c > 1.3 * out_c, "indoor rain should be tappier: crest {in_c} vs {out_c}");
+    }
+
+    /// Drizzle must be taps with real gaps, not a hiss bed: high crest
+    /// factor and a near-silent floor between events.
+    #[test]
+    fn drizzle_is_sparse_taps_not_hiss() {
+        let mut r = Rain::new(48_000.0);
+        r.set_intensity(0.3);
+        for _ in 0..48_000 * 12 {
+            let mut bus = [0.0f32; NCH];
+            r.process(&mut bus, 0.0, 1.0);
+        }
+        let mut peak = 0.0f32;
+        let mut e = 0.0f64;
+        let mut quiet = 0u32;
+        const N: usize = 48_000 * 2;
+        for _ in 0..N {
+            let mut bus = [0.0f32; NCH];
+            r.process(&mut bus, 0.0, 1.0);
+            peak = peak.max(bus[0].abs());
+            e += (bus[0] * bus[0]) as f64;
+            if bus[0].abs() < 1e-4 {
+                quiet += 1;
+            }
+        }
+        let crest = peak / ((e / N as f64) as f32).sqrt().max(1e-9);
+        assert!(crest > 6.0, "drizzle should be spiky events: crest {crest}");
+        assert!(
+            quiet as f32 / N as f32 > 0.4,
+            "drizzle needs real gaps between taps: quiet fraction {}",
+            quiet as f32 / N as f32
+        );
     }
 
     #[test]
