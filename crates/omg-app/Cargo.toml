@@ -1,0 +1,15 @@
+[package]
+name = "omg-app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "omg-audio"
+path = "src/main.rs"
+
+[dependencies]
+omg-core = { path = "../omg-core" }
+omg-dsp = { path = "../omg-dsp" }
+omg-scene = { path = "../omg-scene" }
+cpal = "0.15"
+hound = "3.5"

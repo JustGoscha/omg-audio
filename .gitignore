@@ -1,0 +1,6 @@
+/target
+*.wav
+*.mp3
+*.mp4
+*.flac
+/web/vendor/three.module.js.map

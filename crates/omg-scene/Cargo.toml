@@ -1,0 +1,8 @@
+[package]
+name = "omg-scene"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+omg-core = { path = "../omg-core" }
+omg-dsp = { path = "../omg-dsp" }

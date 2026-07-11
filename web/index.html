@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>omg-audio · walking simulator</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0d12; color: #c8d2e1;
+               font-family: -apple-system, Roboto, sans-serif; overflow: hidden;
+               touch-action: none; -webkit-user-select: none; user-select: none; }
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #minimap { position: absolute; right: 12px; bottom: 12px; width: 150px; height: 240px;
+             opacity: .85; z-index: 5; pointer-events: none; border-radius: 8px; }
+  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column;
+             align-items: center; justify-content: center; gap: 16px;
+             background: rgba(10,13,18,.72); backdrop-filter: blur(2px); z-index: 10; text-align: center; padding: 24px; }
+  #overlay h1 { font-size: 22px; margin: 0; }
+  #overlay p { max-width: 440px; color: #7a8496; font-size: 14px; line-height: 1.5; margin: 0; }
+  button { background: #50dcff; color: #08222b; border: 0; border-radius: 10px;
+           padding: 14px 28px; font-size: 17px; font-weight: 600; }
+  #hud { position: absolute; top: 10px; left: 12px; font-size: 13px; color: #7a8496;
+         z-index: 5; pointer-events: none; line-height: 1.6; }
+  #recenter { position: absolute; top: 10px; right: 12px; z-index: 6;
+              padding: 8px 14px; font-size: 13px; background: #2a3648; color: #c8d2e1; }
+  #status { color: #50dcff; }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px;
+               margin: -2px; background: #50dcff88; border-radius: 50%; z-index: 4;
+               pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="minimap" width="300" height="480"></canvas>
+<canvas id="meters" width="260" height="240" style="position:absolute;left:12px;bottom:150px;width:130px;height:120px;z-index:5;pointer-events:none;border-radius:8px;"></canvas>
+<canvas id="spec" width="360" height="260" style="position:absolute;left:12px;bottom:12px;width:180px;height:130px;z-index:5;pointer-events:none;border-radius:8px;background:#0e1116cc;"></canvas>
+<div id="crosshair"></div>
+<div id="hud"><span id="status">–</span><br><span id="controls-hint"></span></div>
+<button id="recenter" hidden>recenter</button>
+<div id="overlay">
+  <h1>omg-audio</h1>
+  <p>Real-time path-traced sound propagation, binaural over measured KEMAR
+     ears. <b>Headphones required.</b></p>
+  <p>Desktop: click to capture the mouse, look around, walk with WASD.
+     Phone: left-thumb joystick to walk, physically turn to look
+     (or drag right half). Walk through the doorways — music plays in the
+     living room, a narrator in the great hall, open air past the hall.</p>
+  <button id="start">start</button>
+  <p id="err" style="color:#ff8a7a"></p>
+</div>
+<script type="module" src="main.js"></script>
+</body>
+</html>

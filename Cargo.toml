@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/omg-core",
+    "crates/omg-dsp",
+    "crates/omg-scene",
+    "crates/omg-app",
+    "crates/omg-web",
+]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.dev]
+opt-level = 1
