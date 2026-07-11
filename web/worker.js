@@ -18,6 +18,8 @@ onmessage = async (e) => {
 
 function tick() {
   if (!w) return;
+  const doors = new Float32Array(w.memory.buffer, w.sim_door_ptr(), 16);
+  (pose.doors || []).forEach((v, i) => { doors[i] = v ? 1 : 0; });
   const dyn = new Float32Array(w.memory.buffer, w.sim_dyn_ptr(), 12);
   dyn.fill(0);
   (pose.projs || []).forEach((p) => {

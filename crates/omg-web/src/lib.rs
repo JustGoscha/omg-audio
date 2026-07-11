@@ -46,6 +46,8 @@ struct SimCtx {
     state: &'static mut [f32],
     /// JS-written dynamic-source inputs: [x, y, z, active] × DYN_SLOTS.
     dyn_in: &'static mut [f32],
+    /// JS-written door states (1 = open), indices into the scene doors.
+    door_in: &'static mut [f32],
     flat_tmp: Vec<f32>,
 }
 
@@ -69,6 +71,11 @@ pub extern "C" fn sim_setup() {
         param_lens: [0; NSRC],
         state: leak_f32(STATE_LEN),
         dyn_in: leak_f32(12),
+        door_in: {
+            let b = leak_f32(16);
+            b.fill(1.0);
+            b
+        },
         flat_tmp: Vec::with_capacity(MAX_FLAT),
     };
     unsafe { *(&raw mut SIM) = Some(ctx) };
@@ -86,8 +93,16 @@ pub extern "C" fn sim_dyn_ptr() -> *mut f32 {
 }
 
 #[no_mangle]
+pub extern "C" fn sim_door_ptr() -> *mut f32 {
+    sim().door_in.as_mut_ptr()
+}
+
+#[no_mangle]
 pub extern "C" fn sim_tick(lx: f32, ly: f32, yaw: f32) {
     let ctx = sim();
+    for i in 0..6 {
+        ctx.world.set_door(i, ctx.door_in[i] > 0.5);
+    }
     for slot in 0..3 {
         let o = slot * 4;
         ctx.world.set_dynamic(

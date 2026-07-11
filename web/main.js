@@ -65,6 +65,8 @@ const state = {
   rainLevel: 0, // index into RAIN_LEVELS
   chanHist: [], // per-channel meter frames, ~1 s
   mixerRows: null,
+  doors: DOORS.map(() => true), // open/closed, index-matched to DOORS
+  doorMeshes: [],
 };
 
 // simulated weather: intensity targets the engine ramps toward (~6 s),
@@ -193,6 +195,7 @@ const WORLD = { min: [-7.6, -7.6], max: [41.6, 45.6] };
 
 function crossesWall(x0, y0, x1, y1, z = 1.6) {
   for (const c of COLLIDERS) {
+    if (c.off) continue; // opened door panel
     if (z > c.h || z < (c.zlo || 0)) continue; // above wall / below upper storey
     const [p0, p1] = c.axis === 0 ? [x0, x1] : [y0, y1];
     const d = p1 - p0;
@@ -344,6 +347,45 @@ function wallX(x, y0, y1, h) {
 }
 
 // split a collider around a doorway so it stays walkable
+// Openable door panels: a wood slab in each doorway with its own
+// toggleable collider. E toggles the nearest door; the sim hears the
+// closed panel as mass-law transmission instead of a free aperture.
+const doorMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2e });
+function buildDoorPanels() {
+  DOORS.forEach((d, i) => {
+    const [dx, dy] = d.pos;
+    const g = d.axis === 0
+      ? new THREE.BoxGeometry(0.08, DOOR_H, 2 * DOOR_HALF)
+      : new THREE.BoxGeometry(2 * DOOR_HALF, DOOR_H, 0.08);
+    const m = new THREE.Mesh(g, doorMat);
+    m.position.copy(v3(dx, dy, DOOR_H / 2));
+    m.visible = false; // doors start open
+    scene.add(m);
+    const collider = {
+      axis: d.axis, plane: d.axis === 0 ? dx : dy,
+      lo: (d.axis === 0 ? dy : dx) - DOOR_HALF,
+      hi: (d.axis === 0 ? dy : dx) + DOOR_HALF,
+      h: DOOR_H, off: true,
+    };
+    COLLIDERS.push(collider);
+    state.doorMeshes.push({ mesh: m, collider, pos: d.pos });
+  });
+}
+
+function toggleNearestDoor() {
+  let best = -1;
+  let bestD = 2.2; // reach
+  state.doorMeshes.forEach((dm, i) => {
+    const d = Math.hypot(dm.pos[0] - state.pose.x, dm.pos[1] - state.pose.y);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  if (best < 0) return;
+  state.doors[best] = !state.doors[best];
+  const dm = state.doorMeshes[best];
+  dm.mesh.visible = !state.doors[best];
+  dm.collider.off = state.doors[best];
+}
+
 function openColliderGap(axis, plane, at) {
   for (let i = COLLIDERS.length - 1; i >= 0; i--) {
     const c = COLLIDERS[i];
@@ -487,6 +529,7 @@ function buildWorld() {
   }
 }
 buildWorld();
+buildDoorPanels();
 
 // ------------------------------------------------------------ start
 
@@ -638,6 +681,7 @@ async function startAudio() {
   setInterval(() => {
     worker.postMessage({
       type: 'pose', x: state.pose.x, y: state.pose.y, yaw: 0,
+      doors: state.doors.map((d) => (d ? 1 : 0)),
       projs: state.projs.map((p) => [p.slot, p.x, p.y, p.z]),
     });
   }, 50);
@@ -654,7 +698,7 @@ function setupControls() {
   const isTouch = matchMedia('(pointer: coarse)').matches;
 
   if (!isTouch) {
-    hintEl.textContent = 'click: capture mouse, then click to throw · WASD to walk';
+    hintEl.textContent = 'click: capture mouse · WASD walk · Space throw · E door · R rain';
     glCanvas.addEventListener('click', () => {
       if (document.pointerLockElement !== glCanvas) glCanvas.requestPointerLock();
       else throwBall();
@@ -667,6 +711,7 @@ function setupControls() {
     addEventListener('keydown', (e) => {
       if (e.code === 'Space') throwBall();
       else if (e.code === 'KeyR') cycleRain();
+      else if (e.code === 'KeyE') toggleNearestDoor();
       else state.keys.add(e.code);
     });
     addEventListener('keyup', (e) => state.keys.delete(e.code));

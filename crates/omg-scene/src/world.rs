@@ -113,6 +113,16 @@ impl WorldSim {
         }
     }
 
+    /// Open/close a door (indices into the scene door list; glass panes
+    /// ignore this). Closed doors keep routing but pay panel transmission.
+    pub fn set_door(&mut self, i: usize, open: bool) {
+        if let Some(d) = self.doors.get_mut(i) {
+            if !d.glass && d.open != open {
+                d.open = open;
+            }
+        }
+    }
+
     /// Move dynamic source `slot` (0..DYN_SLOTS). Inactive → silent.
     pub fn set_dynamic(&mut self, slot: usize, x: f32, y: f32, z: f32, active: bool) {
         if slot >= walkthrough::DYN_SLOTS {
@@ -171,7 +181,7 @@ impl WorldSim {
                     if def.room == st.room {
                         pts.push(def.pos);
                     } else {
-                        pts.push(route_source(def, st.room, st.listener_world).virt_world);
+                        pts.push(route_source(def, st.room, st.listener_world, &self.doors).virt_world);
                         for ar in
                             aperture_routes(def, st.room, st.listener_world, &self.doors)
                         {
@@ -206,7 +216,7 @@ impl WorldSim {
             let mut sim_in_room = |state: &walkthrough::WalkState,
                                    w: f32|
              -> (ParamBlock, Vec<(f32, f32)>) {
-                let routed = route_source(def, state.room, state.listener_world);
+                let routed = route_source(def, state.room, state.listener_world, doors_l);
                 let margin = if routed.extra_dist > 0.0 { 0.06 } else { 0.3 };
                 // Speaker rigs only at (near-)full weight: during a portal
                 // blend both room states render at once, and the doubled
@@ -366,7 +376,7 @@ impl WorldSim {
                 // and WINDOW directly connecting the two rooms. Each one
                 // re-radiates the source room's field omnidirectionally —
                 // a window is audible off-axis, not only on the sight-line.
-                let chain = route_source(def, state.room, state.listener_world);
+                let chain = route_source(def, state.room, state.listener_world, &self.doors);
                 let mut radiators: Vec<(walkthrough::Routed, bool)> = vec![(chain, true)];
                 for ar in aperture_routes(def, state.room, state.listener_world, &self.doors) {
                     let d0 = &radiators[0].0.virt_world;
@@ -412,10 +422,12 @@ impl WorldSim {
                     core::array::from_fn(|b| t[b].max(fl[b]))
                 };
                 for b in 0..NBANDS {
+                    // panes/panels always pay their flat transmission; open
+                    // chains pay the bending of doors past the first
                     let ap_factor = if routed.glass {
                         walkthrough::GLASS_TRANSMISSION[b]
                     } else {
-                        chain_bend[b]
+                        routed.wet_trans[b] * chain_bend[b]
                     };
                     rem_send[b] += w2 * rp.level[b] * ap_factor * aperture * occ[b];
                     rem_rt60[b] = rp.rt60[b];
@@ -732,6 +744,41 @@ mod tests {
             prev = cur;
             x += 1.0;
         }
+    }
+
+    /// Closing a door turns the portal into a wood panel: markedly
+    /// quieter, bass-favoring (mass law), and fully reversible.
+    #[test]
+    fn closing_a_door_muffles_the_portal() {
+        let mut w = WorldSim::new();
+        // listener mid-corridor, music playing in the living room
+        let read = |w: &mut WorldSim| -> ([f32; NBANDS], f32) {
+            for _ in 0..4 {
+                let _ = w.tick_at(4.0, 9.0, 0.0);
+            }
+            let (blocks, _) = w.tick_at(4.0, 9.0, 0.0);
+            let mut sum = [0.0f32; NBANDS];
+            for t in &blocks[0].taps {
+                for b in 0..NBANDS {
+                    sum[b] += t.gains[b];
+                }
+            }
+            (sum, sum[1])
+        };
+        let (_, open_mid) = read(&mut w);
+        w.set_door(0, false); // Living ↔ Corridor
+        let (closed, closed_mid) = read(&mut w);
+        assert!(
+            closed_mid < 0.45 * open_mid,
+            "closed door should muffle: {closed_mid} vs {open_mid}"
+        );
+        assert!(
+            closed[0] > 2.0 * closed[2],
+            "panel transmission must favor lows: {closed:?}"
+        );
+        w.set_door(0, true);
+        let (_, reopened) = read(&mut w);
+        assert!(reopened > 0.75 * open_mid, "reopening should restore: {reopened} vs {open_mid}");
     }
 
     /// Deep shadow behind the Old House: the surviving energy must be
