@@ -17,16 +17,27 @@ const WALL_EPS: f32 = 1e-3;
 
 pub struct Echogram {
     pub bins: Vec<[f32; NBANDS]>,
+    /// Energy-weighted arrival direction per bin (mid band), pointing from
+    /// the listener toward where the energy came from. Its length relative
+    /// to the bin energy measures anisotropy: 1 = all energy from one
+    /// direction (e.g. through a doorway), 0 = fully diffuse.
+    pub dirs: Vec<[f32; 3]>,
 }
 
 impl Echogram {
     pub fn new() -> Self {
-        Self { bins: vec![[0.0; NBANDS]; NBINS] }
+        Self {
+            bins: vec![[0.0; NBANDS]; NBINS],
+            dirs: vec![[0.0; 3]; NBINS],
+        }
     }
 
     pub fn clear(&mut self) {
         for b in &mut self.bins {
             *b = [0.0; NBANDS];
+        }
+        for d in &mut self.dirs {
+            *d = [0.0; 3];
         }
     }
 
@@ -38,6 +49,31 @@ impl Echogram {
                 a[band] += alpha * (o[band] - a[band]);
             }
         }
+        for (a, o) in self.dirs.iter_mut().zip(other.dirs.iter()) {
+            for k in 0..3 {
+                a[k] += alpha * (o[k] - a[k]);
+            }
+        }
+    }
+
+    /// Aggregate direction of arrivals from `from_s` on: (unit direction,
+    /// anisotropy 0…1). A room heard through its doorway reports the
+    /// doorway's direction with high anisotropy — no portal bookkeeping.
+    pub fn late_direction(&self, from_s: f32) -> ([f32; 3], f32) {
+        let start = (from_s / BIN_DT) as usize;
+        let mut v = [0.0f32; 3];
+        let mut e = 0.0f32;
+        for i in start.min(NBINS)..NBINS {
+            for k in 0..3 {
+                v[k] += self.dirs[i][k];
+            }
+            e += self.bins[i][1];
+        }
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if len < 1e-12 || e < 1e-12 {
+            return ([1.0, 0.0, 0.0], 0.0);
+        }
+        ([v[0] / len, v[1] / len, v[2] / len], (len / e).min(1.0))
     }
 }
 
@@ -65,10 +101,11 @@ pub fn trace(
         // The honest budget lever is `n_rays`: fewer rays + EMA temporal
         // accumulation degrades variance, never bias.
         for _bounce in 0..64 {
-            let Some(hit) = room.raycast_hit(pos, dir) else {
-                break; // escaped open geometry
-            };
-            let t_hit = hit.t;
+            // A miss = the ray escapes open geometry; its final segment
+            // still passes the receiver check (that segment IS how sound
+            // leaves a room through a doorway and reaches you outside).
+            let hit = room.raycast_hit(pos, dir);
+            let t_hit = hit.as_ref().map_or(f32::MAX, |h| h.t);
 
             // Receiver sphere crossing along this segment.
             let to_l = listener - pos;
@@ -82,10 +119,17 @@ pub fn trace(
                         for b in 0..NBANDS {
                             out.bins[bin][b] += energy[b];
                         }
+                        // arrival direction: back along the ray
+                        out.dirs[bin][0] -= dir.x * energy[1];
+                        out.dirs[bin][1] -= dir.y * energy[1];
+                        out.dirs[bin][2] -= dir.z * energy[1];
                     }
                 }
             }
 
+            let Some(hit) = hit else {
+                break; // escaped
+            };
             // Advance to the surface, absorb, pick specular or diffuse bounce.
             pos = pos + dir * t_hit;
             dist_total += t_hit;
@@ -174,4 +218,59 @@ pub fn estimate_reverb(echo: &Echogram) -> ReverbParams {
     }
 
     ReverbParams { rt60, level }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::material::Material;
+    use crate::mesh::MeshBuilder;
+
+    /// The emergent-portal proof: a mesh room with a doorway hole in one
+    /// wall, listener OUTSIDE, zero portal/door/room authoring. Rays can
+    /// only reach the listener through the opening — so the late field's
+    /// aggregate direction must point at the doorway, with high
+    /// anisotropy. This is what replaces per-portal coupled reverb.
+    #[test]
+    fn reverb_through_a_hole_reports_the_hole_direction() {
+        let mut mb = MeshBuilder::new();
+        let m = mb.material(Material::CONCRETE);
+        let v = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
+        // room shell [0,8]×[0,6]×[0,3]: five solid faces...
+        mb.quad(v(0.0, 0.0, 0.0), v(0.0, 6.0, 0.0), v(0.0, 6.0, 3.0), v(0.0, 0.0, 3.0), m);
+        mb.quad(v(0.0, 0.0, 0.0), v(8.0, 0.0, 0.0), v(8.0, 0.0, 3.0), v(0.0, 0.0, 3.0), m);
+        mb.quad(v(0.0, 6.0, 0.0), v(8.0, 6.0, 0.0), v(8.0, 6.0, 3.0), v(0.0, 6.0, 3.0), m);
+        mb.quad(v(0.0, 0.0, 0.0), v(8.0, 0.0, 0.0), v(8.0, 6.0, 0.0), v(0.0, 6.0, 0.0), m);
+        mb.quad(v(0.0, 0.0, 3.0), v(8.0, 0.0, 3.0), v(8.0, 6.0, 3.0), v(0.0, 6.0, 3.0), m);
+        // ...and the x=8 wall with a doorway hole y∈[2.5,3.5], z∈[0,2.1]
+        mb.quad(v(8.0, 0.0, 0.0), v(8.0, 2.5, 0.0), v(8.0, 2.5, 3.0), v(8.0, 0.0, 3.0), m);
+        mb.quad(v(8.0, 3.5, 0.0), v(8.0, 6.0, 0.0), v(8.0, 6.0, 3.0), v(8.0, 3.5, 3.0), m);
+        mb.quad(v(8.0, 2.5, 2.1), v(8.0, 3.5, 2.1), v(8.0, 3.5, 3.0), v(8.0, 2.5, 3.0), m);
+        let mesh = mb.build();
+
+        let src = Vec3::new(2.0, 3.0, 1.5);
+        let lis = Vec3::new(12.0, 3.0, 1.6);
+        let mut rng = Rng::new(21);
+        let mut echo = Echogram::new();
+        trace(&mesh, src, lis, 16_384, [1.0; 3], &mut rng, &mut echo);
+
+        let (dir, aniso) = echo.late_direction(0.05);
+        // doorway center (8, 3, 1.05) seen from (12, 3, 1.6)
+        let to_hole = (Vec3::new(8.0, 3.0, 1.05) - lis).normalize();
+        let dot = dir[0] * to_hole.x + dir[1] * to_hole.y + dir[2] * to_hole.z;
+        assert!(dot > 0.85, "late field should point at the doorway: dir {dir:?} dot {dot}");
+        assert!(aniso > 0.5, "through-a-hole field should be anisotropic: {aniso}");
+    }
+
+    /// Inside a closed room the late field is diffuse: low anisotropy.
+    #[test]
+    fn closed_room_late_field_is_diffuse() {
+        use crate::scene::Shoebox;
+        let room = Shoebox::new(Vec3::new(8.0, 6.0, 3.0), [Material::DRYWALL; 6]);
+        let mut rng = Rng::new(5);
+        let mut echo = Echogram::new();
+        trace(&room, Vec3::new(2.0, 3.0, 1.5), Vec3::new(6.0, 2.0, 1.6), 16_384, [1.0; 3], &mut rng, &mut echo);
+        let (_, aniso) = echo.late_direction(0.15);
+        assert!(aniso < 0.35, "closed-room tail should be diffuse: {aniso}");
+    }
 }
