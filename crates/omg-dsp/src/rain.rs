@@ -19,7 +19,7 @@ use crate::ambi::{encode_gains, NCH};
 use crate::smooth::Smoothed;
 use omg_core::rng::Rng;
 
-const MAX_DROPS: usize = 24;
+const MAX_DROPS: usize = 32;
 /// Poisson rate at full intensity (drops audible as events; beyond this
 /// they'd fuse anyway, so the hiss carries the rest).
 const RATE_FULL_HZ: f32 = 260.0;
@@ -31,6 +31,11 @@ struct Drop {
     step: f32,   // radians/sample
     env: f32,    // exponential amplitude
     decay: f32,  // per-sample multiplier
+    /// Impact click transient (very fast noise burst) — the "tap".
+    click: f32,
+    /// Structure-borne (roof knock / window tick): heard at full level
+    /// indoors instead of being shell-attenuated like airborne drops.
+    surface: bool,
     enc: [f32; NCH],
 }
 
@@ -64,6 +69,8 @@ impl Rain {
                 step: 0.0,
                 env: 0.0,
                 decay: 0.0,
+                click: 0.0,
+                surface: false,
                 enc: [0.0; NCH],
             }),
             next: 0,
@@ -94,17 +101,39 @@ impl Rain {
     fn spawn_drop(&mut self, enclosure: f32) {
         let d = &mut self.drops[self.next];
         self.next = (self.next + 1) % MAX_DROPS;
-        // pitch: small drops ping high; occasional fat low splats
+        d.phase = 0.0;
+        let az = self.rng.next_f32() * core::f32::consts::TAU;
+
+        // Enclosed: most drops become discrete surface impacts — roof
+        // knocks from straight overhead, brighter glass ticks from the
+        // sides. That's the tappy part of rain heard from inside.
+        if self.rng.next_f32() < enclosure * 0.9 {
+            d.surface = true;
+            let glass = self.rng.next_f32() < 0.35;
+            let (f, tau, el) = if glass {
+                // window tick: bright, tiny
+                (1800.0 + self.rng.next_f32() * 2600.0, 0.002 + 0.005 * self.rng.next_f32(), 0.15 + 0.35 * self.rng.next_f32())
+            } else {
+                // roof knock: low panel resonance
+                (280.0 + self.rng.next_f32() * 620.0, 0.012 + 0.024 * self.rng.next_f32(), 1.1 + 0.4 * self.rng.next_f32())
+            };
+            d.step = core::f32::consts::TAU * f / self.sample_rate;
+            d.env = 0.012 + 0.038 * self.rng.next_f32().powi(2);
+            d.click = d.env * if glass { 0.9 } else { 0.5 };
+            d.decay = (-1.0 / (tau * self.sample_rate)).exp();
+            let (se, ce) = el.min(1.5).sin_cos();
+            d.enc = encode_gains([az.cos() * ce, az.sin() * ce, se]);
+            return;
+        }
+
+        // airborne drop: airy ping with a soft tick, from above
+        d.surface = false;
         let f = 1400.0 + self.rng.next_f32().powi(2) * 5200.0;
         d.step = core::f32::consts::TAU * f / self.sample_rate;
-        d.phase = 0.0;
         d.env = 0.010 + 0.030 * self.rng.next_f32().powi(3);
-        // 4–18 ms decay
+        d.click = d.env * 0.35;
         let tau = 0.004 + 0.014 * self.rng.next_f32();
         d.decay = (-1.0 / (tau * self.sample_rate)).exp();
-        // direction: random azimuth, elevated — rain comes from above;
-        // indoors the cone narrows toward straight overhead (the roof)
-        let az = self.rng.next_f32() * core::f32::consts::TAU;
         let el = 0.35 + 0.5 * self.rng.next_f32() + 0.6 * enclosure;
         let (se, ce) = el.min(1.5).sin_cos();
         d.enc = encode_gains([az.cos() * ce, az.sin() * ce, se]);
@@ -122,8 +151,9 @@ impl Rain {
             return; // fully dry and settled — costs nothing
         }
 
-        // Poisson drop scheduling
-        let rate = RATE_FULL_HZ * inten * inten + 14.0 * inten;
+        // Poisson drop scheduling; a roof concentrates the whole surface's
+        // impacts over your head, so enclosure raises the audible rate
+        let rate = (RATE_FULL_HZ * inten * inten + 14.0 * inten) * (1.0 + 0.8 * enclosure);
         if rate > 0.01 {
             self.spawn_in -= 1.0;
             if self.spawn_in <= 0.0 || self.spawn_in == f32::MAX - 1.0 {
@@ -136,27 +166,36 @@ impl Rain {
             self.spawn_in = f32::MAX;
         }
 
-        // drop pings (direct, dulled by the shell when indoors)
+        // drops: airborne pings are shell-attenuated indoors; surface
+        // impacts (roof knocks, window ticks) come through at full level
         let direct = 1.0 - 0.85 * enclosure;
         let mut drum_in = 0.0f32;
         for d in &mut self.drops {
             if d.env < 1e-6 {
                 continue;
             }
-            let s = d.phase.sin() * d.env;
+            let tick = if d.click > 1e-6 {
+                let w = self.rng.next_f32() * 2.0 - 1.0;
+                let c = w * d.click;
+                d.click *= 0.55; // ~0.1 ms burst
+                c
+            } else {
+                0.0
+            };
+            let s = d.phase.sin() * d.env + tick;
             d.phase += d.step;
             d.env *= d.decay;
             drum_in += s;
-            let g = s * direct * MASTER * user;
+            let g = s * if d.surface { 1.0 } else { direct } * MASTER * user;
             for k in 0..NCH {
                 bus[k] += g * d.enc[k];
             }
         }
 
-        // roof drumming: the same drop energy, structure-borne — heavy
-        // lowpass, from straight above, only meaningful indoors
+        // roof drumming: blurred structure-borne bed under the discrete
+        // taps — reduced now that impacts carry the presence
         self.drum_lp += 0.04 * (drum_in - self.drum_lp);
-        let drum_g = self.drum_lp * enclosure * 2.4 * MASTER * user;
+        let drum_g = self.drum_lp * enclosure * 1.2 * MASTER * user;
         for k in 0..NCH {
             bus[k] += drum_g * self.up_enc[k];
         }
@@ -218,6 +257,30 @@ mod tests {
         }
         let after = energy_over(&mut r, 48_000, 0.0);
         assert!(after < full * 1e-3, "should die away: {after} vs {full}");
+    }
+
+    /// Indoors, rain is TAPPY: discrete surface impacts give a much
+    /// higher crest factor than the fused outdoor wash.
+    #[test]
+    fn indoors_is_tappier() {
+        let crest = |enclosure: f32| -> f32 {
+            let mut r = Rain::new(48_000.0);
+            r.set_intensity(0.5); // moderate rain: events stay discrete
+            for _ in 0..48_000 * 12 {
+                let mut bus = [0.0f32; NCH];
+                r.process(&mut bus, enclosure, 0.05);
+            }
+            let (mut peak, mut e) = (0.0f32, 0.0f64);
+            for _ in 0..48_000 * 2 {
+                let mut bus = [0.0f32; NCH];
+                r.process(&mut bus, enclosure, 0.05);
+                peak = peak.max(bus[0].abs());
+                e += (bus[0] * bus[0]) as f64;
+            }
+            peak / ((e / (48_000.0 * 2.0)) as f32).sqrt().max(1e-9)
+        };
+        let (out_c, in_c) = (crest(0.0), crest(1.0));
+        assert!(in_c > 1.3 * out_c, "indoor rain should be tappier: crest {in_c} vs {out_c}");
     }
 
     #[test]
