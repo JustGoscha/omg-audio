@@ -71,6 +71,10 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.w.eng_set_ambient(m.gain, m.fc);
     } else if (m.type === 'rain' && this.ready) {
       this.w.eng_set_rain(m.intensity);
+    } else if (m.type === 'rainRoutes' && this.ready) {
+      const f = new Float32Array(m.routes);
+      new Float32Array(this.w.memory.buffer, this.w.eng_param_buf_ptr(), f.length).set(f);
+      this.w.eng_set_rain_routes(f.length);
     } else if (m.type === 'mixer' && this.ready) {
       if (m.target === 'ambient') this.w.eng_set_ambient_user(m.gain);
       else if (m.target === 'rainGain') this.w.eng_set_rain_gain(m.gain);

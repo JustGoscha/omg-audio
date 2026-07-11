@@ -712,6 +712,9 @@ async function startAudio() {
     node.port.postMessage({
       type: 'ambient', gain: state.simState[62], fc: state.simState[63],
     });
+    node.port.postMessage({
+      type: 'rainRoutes', routes: Array.from(state.simState.slice(64, 80)),
+    });
   };
 
   state.fx = (src, kind, action = 'play') =>

@@ -33,7 +33,7 @@ function tick() {
     const src = new Float32Array(w.memory.buffer, w.sim_params_ptr(i), len);
     blocks.push(src.slice().buffer);
   }
-  const state = new Float32Array(w.memory.buffer, w.sim_state_ptr(), 64).slice();
+  const state = new Float32Array(w.memory.buffer, w.sim_state_ptr(), 96).slice();
   postMessage({ type: 'tick', blocks, state: state.buffer },
               [...blocks, state.buffer]);
 }

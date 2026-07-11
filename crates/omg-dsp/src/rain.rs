@@ -29,6 +29,20 @@ const MASTER: f32 = 0.22;
 /// tools/make_drops.py.
 pub const BANK_SLOT: usize = 7200;
 
+#[derive(Clone, Copy)]
+struct RainRoute {
+    enc: [f32; NCH],
+    gain: f32,
+    lp_coef: f32,
+    lp: f32,
+}
+
+impl Default for RainRoute {
+    fn default() -> Self {
+        Self { enc: [0.0; NCH], gain: 0.0, lp_coef: 1.0, lp: 0.0 }
+    }
+}
+
 struct Drop {
     phase: f32,
     step: f32,   // radians/sample
@@ -67,6 +81,10 @@ pub struct Rain {
     muff_lp: f32,
     /// Bank of real recorded drop/splat hits (uniform BANK_SLOT slices).
     bank: Vec<f32>,
+    /// Aperture streams: rain heard THROUGH openings of the listener's
+    /// room (doorways, windows) — direction-encoded, gained and filtered
+    /// by what fills the opening (nothing / glass / a closed door panel).
+    routes: [RainRoute; 4],
     sample_rate: f32,
     up_enc: [f32; NCH],
 }
@@ -96,6 +114,7 @@ impl Rain {
             drum_lp: 0.0,
             muff_lp: 0.0,
             bank: Vec::new(),
+            routes: [RainRoute::default(); 4],
             sample_rate,
             up_enc: encode_gains([0.0, 0.0, 1.0]),
         }
@@ -121,8 +140,20 @@ impl Rain {
         self.bank = samples;
     }
 
-    fn bank_slices(&self) -> usize {
-        self.bank.len() / BANK_SLOT
+    /// Aperture routes from the simulation: up to 4 × [dir_x, dir_y,
+    /// gain, lp_coef]. gain 0 disables a slot. World-frame directions —
+    /// the SH bus rotates with the head downstream.
+    pub fn set_routes(&mut self, flat: &[f32]) {
+        for (i, r) in self.routes.iter_mut().enumerate() {
+            let o = i * 4;
+            if o + 4 > flat.len() || flat[o + 2] <= 1e-4 {
+                r.gain = 0.0;
+                continue;
+            }
+            r.enc = encode_gains([flat[o], flat[o + 1], 0.0]);
+            r.gain = flat[o + 2];
+            r.lp_coef = flat[o + 3].clamp(0.001, 1.0);
+        }
     }
 
     fn spawn_drop(&mut self, enclosure: f32) {
@@ -135,6 +166,42 @@ impl Rain {
         // knocks from straight overhead, brighter glass ticks from the
         // sides. That's the tappy part of rain heard from inside.
         let n_slices = self.bank.len() / BANK_SLOT;
+        // Through-the-opening drops: audible individual drops AT the
+        // doorway/window direction, weighted by how open it is.
+        let route_w: f32 = self.routes.iter().map(|r| r.gain).sum();
+        if enclosure > 0.3 && self.rng.next_f32() < (route_w * 0.5).min(0.45) {
+            let pick = self.rng.next_f32() * route_w;
+            let mut acc = 0.0;
+            let mut enc = self.routes[0].enc;
+            let mut g = 0.0;
+            for r in &self.routes {
+                acc += r.gain;
+                if pick <= acc {
+                    enc = r.enc;
+                    g = r.gain;
+                    break;
+                }
+            }
+            d.surface = true; // not shell-attenuated: it comes through the opening
+            if n_slices > 0 && self.rng.next_f32() < 0.4 {
+                d.bank_off = (self.rng.next_u64() as usize % n_slices) * BANK_SLOT;
+                d.bank_pos = 0.0;
+                d.bank_rate = 0.9 + self.rng.next_f32() * 0.5;
+                d.env = (0.02 + 0.05 * self.rng.next_f32()) * g.min(1.2);
+                d.decay = 1.0;
+                d.click = 0.0;
+            } else {
+                d.bank_off = usize::MAX;
+                let f = 1400.0 + self.rng.next_f32().powi(2) * 4200.0;
+                d.step = core::f32::consts::TAU * f / self.sample_rate;
+                d.env = (0.012 + 0.03 * self.rng.next_f32().powi(2)) * g.min(1.2);
+                d.click = d.env * 0.4;
+                let tau = 0.004 + 0.012 * self.rng.next_f32();
+                d.decay = (-1.0 / (tau * self.sample_rate)).exp();
+            }
+            d.enc = enc;
+            return;
+        }
         if self.rng.next_f32() < enclosure * 0.9 {
             d.surface = true;
             let glass = self.rng.next_f32() < 0.4;
@@ -286,6 +353,21 @@ impl Rain {
         // Hiss is what drops fuse into — it has no business at drizzle.
         // Below ~0.3 intensity there is none; it grows steeply after.
         let hiss_amt = ((inten - 0.28) / 0.72).clamp(0.0, 1.0).powf(1.6);
+        // Aperture streams: the outdoor rain heard THROUGH each opening,
+        // localized at its direction, filtered by what fills it. This is
+        // what makes an open door audibly pour and a closed one seal.
+        if enclosure > 0.05 && hiss_amt > 0.0 {
+            for r in &mut self.routes {
+                if r.gain <= 1e-4 {
+                    continue;
+                }
+                r.lp += r.lp_coef * (raw - r.lp);
+                let g = r.lp * hiss_amt * 0.55 * MASTER * user * r.gain * enclosure;
+                for k in 0..NCH {
+                    bus[k] += g * r.enc[k];
+                }
+            }
+        }
         let hg = hiss * hiss_amt * 0.5 * MASTER * user * (1.0 - 0.6 * enclosure);
         // diffuse: omni + a touch of overhead bias
         bus[0] += hg;

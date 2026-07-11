@@ -23,7 +23,7 @@ use omg_scene::world::WorldSim;
 
 const NSRC: usize = 6;
 const MAX_FLAT: usize = 4096; // f32s per param buffer (~450 taps headroom)
-const STATE_LEN: usize = 64;
+const STATE_LEN: usize = 96;
 const MAX_BLOCK: usize = 4096;
 
 // ------------------------------------------------------------------ helpers
@@ -138,6 +138,45 @@ pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
     };
     st[62] = ag;
     st[63] = afc;
+    // Rain routes: apertures between the listener's room and the outdoors
+    // — direction (world frame), gain, one-pole coefficient set by what
+    // fills the opening. st[64..80] = 4 × [dx, dy, gain, coef].
+    for v in st[64..80].iter_mut() {
+        *v = 0.0;
+    }
+    let outside = omg_scene::walkthrough::OUTSIDE;
+    if info.room != outside {
+        let sr = 48_000.0f32;
+        let coef_of = |fc: f32| 1.0 - (-core::f32::consts::TAU * fc / sr).exp();
+        let mut slot = 0usize;
+        for d in ctx.world.doors.iter() {
+            if slot >= 4 {
+                break;
+            }
+            let connects = (d.rooms.0 == info.room && d.rooms.1 == outside)
+                || (d.rooms.1 == info.room && d.rooms.0 == outside);
+            if !connects {
+                continue;
+            }
+            let (dx, dy) = (d.pos.0 - info.listener.0, d.pos.1 - info.listener.1);
+            let dist = (dx * dx + dy * dy).sqrt().max(0.5);
+            // aperture near-field: strong within a few meters, 1/d beyond
+            let reach = 3.0 / (3.0 + dist);
+            let (gain, fc) = if d.glass {
+                (0.35 * reach, 1800.0)
+            } else if d.open {
+                (1.4 * reach, 16_000.0)
+            } else {
+                (0.15 * reach, 500.0) // closed panel: dull seep
+            };
+            let o = 64 + slot * 4;
+            st[o] = dx / dist;
+            st[o + 1] = dy / dist;
+            st[o + 2] = gain;
+            st[o + 3] = coef_of(fc);
+            slot += 1;
+        }
+    }
     let mut o = 4;
     for route in info.routes.iter().take(NSRC) {
         let n = route.len().min(4);
@@ -435,6 +474,16 @@ pub extern "C" fn eng_rain_bank_commit() {
 #[no_mangle]
 pub extern "C" fn eng_set_rain(intensity: f32) {
     eng().rain.set_intensity(intensity);
+}
+
+/// Rain aperture routes staged in the param buffer: n × [dx, dy, gain,
+/// lp_coef] (see sim_tick's state layout).
+#[no_mangle]
+pub extern "C" fn eng_set_rain_routes(len: u32) {
+    let ctx = eng();
+    let n = (len as usize).min(16);
+    let flat: Vec<f32> = ctx.param_buf[..n].to_vec();
+    ctx.rain.set_routes(&flat);
 }
 
 /// Enclosure-dependent bed control: gain + lowpass cutoff (Hz).
