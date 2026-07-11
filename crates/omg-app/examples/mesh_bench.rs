@@ -4,6 +4,7 @@
 
 use omg_core::material::Material;
 use omg_core::mesh::{budget_edges, extract_edges, MeshBuilder};
+use omg_core::paths::{AutoPaths, PathBudget};
 use omg_core::rng::Rng;
 use omg_core::scene::Shoebox;
 use omg_core::tracer::{trace, Echogram};
@@ -77,6 +78,21 @@ fn main() {
     let t0 = Instant::now();
     trace(&sbox, src, Vec3::new(6.0, 2.0, 1.6), 4096, [1.0; 3], &mut rng, &mut echo);
     println!("trace shoebox (4096 rays): {:.2} ms", t0.elapsed().as_secs_f64() * 1e3);
+
+    // automatic path finding (replaces portal routing): per-source cost
+    let mut ap = AutoPaths::new(&mesh, 64);
+    let mut paths = Vec::new();
+    let t0 = Instant::now();
+    const Q: u32 = 1000;
+    for i in 0..Q {
+        let l = Vec3::new(20.0 + (i % 7) as f32, 20.0 + (i % 5) as f32, 1.6);
+        ap.find(&mesh, src, l, PathBudget::default(), &mut paths);
+    }
+    println!(
+        "auto paths (direct + bent, default budget): {:.0} µs/query, {} paths at last query",
+        t0.elapsed().as_secs_f64() * 1e6 / Q as f64,
+        paths.len()
+    );
 
     // diffraction edges + budget
     let t0 = Instant::now();

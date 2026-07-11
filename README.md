@@ -190,9 +190,15 @@ guess — `tools/bench_web.mjs` is the receipt:
   (`mesh_bench`, 2 520-tri city block): BVH build 2 ms, 2 M rays/s,
   full trace 79 ms at the 4096-ray desktop tier / 19 ms at the 1024-ray
   mobile tier — variance, not bias, is what degrades on cheaper tiers
-  (EMA accumulation smooths it). Wiring the scene layer (portals,
-  transmission, ISM) onto meshes is the next milestone; the wgpu compute
-  port comes after.
+  (EMA accumulation smooths it). On top of it, `omg_core::paths` finds
+  propagation paths on a raw mesh with ZERO authoring — no rooms, no
+  doors, no portals: wall thickness is emergent (entry/exit crossings
+  paired for the mass law), and door jambs, building corners and roof
+  lines are all just auto-extracted edges searched for single- and
+  double-bend paths (166 µs per source-listener query at the default
+  budget). The demo still runs the authored rect world; migrating it —
+  plus the directional late field that replaces per-portal coupled
+  reverb — is the next milestone, then the wgpu compute port.
 - **Diffraction is knife-edge Kurze–Anderson** (Fresnel-number insertion
   loss per edge, "rubber band" multi-edge construction) over corner and
   corner, roof and door-jamb edges — the dominant behavior, but not full
