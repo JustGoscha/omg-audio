@@ -1,55 +1,72 @@
 # omg-audio
 
-**Live demo: <https://justgoscha.github.io/omg-audio/web/>** — headphones on,
-works on Android Chrome (turn your body to look around). Desktop: WASD +
-mouse, Space throws a whistling, exploding ball.
+**Live demo: <https://justgoscha.github.io/omg-audio/web/>** — headphones on.
+Desktop: WASD + mouse, Space throws a whistling, exploding ball. Android
+Chrome: on-screen joystick, turn your body to look around (device
+orientation drives the binaural rendering).
 
+A real-time path-traced sound propagation engine in Rust, compiled to both
+native (reference build) and wasm (Web Worker + AudioWorklet). One scene —
+a small city square with a house playing music, a great hall with a
+narrator, a club with four synchronized speakers behind an entrance
+vestibule, a two-storey old house, a colonnade and a kiosk — and the sound
+field is *computed*, not authored:
 
-A path-traced sound propagation engine targeting the web (wasm + WebGPU +
-AudioWorklet) with binaural output. This is the native Rust skeleton — the
-same core compiles to both targets; native is the fast-iteration reference
-build.
+- **Image-source early reflections** (order 3) + **stochastic path tracer**
+  (4096 rays, 3 frequency bands) measuring per-room RT60 and late level.
+- **Portals**: sources in other rooms render as virtual sources at
+  doorways (BFS over the door graph), per-band muffled per door crossed,
+  equal-power blended near thresholds. Coupled rooms carry their *own*
+  reverb through the doorway as a directional wet emitter — you hear the
+  hall being a hall from the corridor.
+- **Wall transmission**: straight rays cross wall segments with mass-law
+  attenuation (amplitude ∝ reference/thickness) and a fitted one-pole
+  lowpass — European brick and concrete, not drywall. The club reads as
+  *oomp-oomp* from the street and opens up as you walk in.
+- **Aperture radiation**: doors and windows re-radiate what's inside —
+  including order-2 reflections from the source room — so a window is
+  audible off-axis, not just on the sight line.
+- **Corner diffraction** around building edges (per-band bend attenuation)
+  and **facade reflections** outdoors.
+- **Binaural output**: order-2 ambisonics decoded through 20 virtual
+  speakers (dodecahedron) × measured MIT KEMAR HRIRs, plus *point
+  rendering* — the strongest N paths per source get their own nearest-HRIR
+  convolution from a 710-direction grid, N adapting to measured CPU load.
+- **Ear adaptation (AGC)**: protects against ultra-loud content (club PA,
+  explosions) with fast clamp and ~30 s recovery; it never boosts quiet.
+- **Doppler by construction**: tap delays glide on motion; path identity
+  changes crossfade. Room transitions cannot click or chirp.
+- Dynamic sources (thrown projectiles: whistle in flight, bounce, explode),
+  a world-anchored night-city ambience bed, HUD meters + spectrogram.
 
 ## Hear it
+
+Web (what the live demo runs):
+
+```sh
+sh tools/build_web.sh          # cargo build wasm (+simd128) + stage into web/
+python3 tools/serve.py         # http://localhost:8000/web/
+node tools/web_smoke.mjs       # headless pipeline test
+node tools/bench_web.mjs       # realtime-factor benchmark (point budgets)
+```
+
+Native:
 
 ```sh
 cargo run --release              # live playback, Ctrl+C to quit
 cargo run --release -- --render demo.wav --secs 12   # offline render + level report
-
-# use any WAV as the source signal instead of the synthetic clapper
 cargo run --release -- --input assets/aria48.wav --render out.wav
 
-# scripted walkthrough (living room → corridor → great hall → open air) with
-# two FIXED sources: music in the living room, a narrator in the great hall.
-# Cross-room audibility uses a portal model: a source in another room renders
-# as a virtual source at the doorway, per-band muffled per door crossed.
-# Within 1.5 m of any doorway BOTH connected rooms are simulated and
-# equal-power crossfaded (that includes fading the world open at the exit:
-# outdoors = direct + grass-ground reflection, no walls, no reverb).
-# The renderer crossfades taps on path-identity change and glides them on
-# motion (Doppler) — room changes cannot click or chirp.
-# Coupled rooms: a cross-room source also carries its OWN room's reverb,
-# rendered as a directional wet emitter at the doorway (second FDN per
-# source) — you hear the hall being a hall from the corridor.
+# scripted walkthrough with fixed sources + 2D schematic video
 cargo run --release -- --walkthrough --render walk.wav --json walk.json \
-    [--music m.wav --voice v.wav]
-python3 tools/render_viz.py walk.json frames 30   # top-down schematic frames
+    [--music m.wav --voice v.wav --club c.wav]
+python3 tools/render_viz.py walk.json frames 30
 ffmpeg -framerate 30 -i frames/%05d.png -i walk.wav \
     -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest walkthrough.mp4
 ```
 
-Pre-rendered examples in the repo root: `walkthrough-two-sources.mp4`
-(fixed sources + doorway transitions — start here), `walkthrough-voice.mp4`,
-`walkthrough-music.mp4` (older: source follows the listener),
-`demo-music-orbit.wav`. Source material is
-public-domain/CC0: LibriVox *Alice in Wonderland* (voice) and Kimiko
-Ishizaka's *Open Goldberg Variations* (music, CC0).
-
-The demo: a percussive source orbiting the listener (8 s period) in an
-8×6×3 m room with mixed materials (concrete, drywall, carpet, wood,
-acoustic tile). You should hear the source circle around you, early
-reflections coloring with material absorption, and a ~0.75 s reverb tail
-whose decay was *measured by the path tracer*, not hand-tuned.
+Env knobs (native): `OMG_POINT_TAPS=n` point-render budget,
+`OMG_MUTE_TAPS` / `OMG_MUTE_OWN` / `OMG_MUTE_REMOTE` isolate signal paths.
 
 ## Architecture — the two clocks
 
@@ -57,98 +74,112 @@ The load-bearing decision: the **simulation clock** and the **audio clock**
 never share state except through `ParamBlock`.
 
 ```
-┌────────────────────────────┐   ParamBlock    ┌───────────────────────────────┐
-│ SIMULATION  (20 Hz thread) │  ───────────▶   │ AUDIO  (per-sample callback)  │
-│                            │                 │                               │
-│ omg-core                   │  taps: delay,   │ omg-dsp                       │
-│  · image sources (ISM ≤3)  │  direction,     │  · fractional delays (Doppler)│
-│  · stochastic path tracer  │  band gains     │  · per-tap 3-band shelf EQ    │
-│    → echogram → RT60/level │                 │  · FOA ambisonic bus          │
-│  · EMA temporal accumulation│ reverb: rt60[3]│  · 8-line FDN (traced RT60)   │
-│    (kills MC flutter)      │  + level        │  · stereo decode (→ MagLS)    │
-└────────────────────────────┘                 └───────────────────────────────┘
+┌─────────────────────────────────┐   ParamBlock   ┌──────────────────────────────────┐
+│ SIMULATION  (20 Hz)             │  ───────────▶  │ AUDIO  (per-sample)              │
+│ Web Worker / native thread     │                │ AudioWorklet / cpal callback     │
+│                                 │  taps: key,    │                                  │
+│ omg-core + omg-scene            │  delay, dir,   │ omg-dsp                          │
+│  · image sources (ISM ≤3)      │  band gains    │  · fractional delays (Doppler)   │
+│  · stochastic tracer → RT60    │                │  · per-tap shelf EQ + wall LP    │
+│  · portals, transmission,      │  reverb:       │  · point HRIR convolution        │
+│    apertures, diffraction      │  rt60[3],      │  · order-2 ambisonic bus         │
+│  · EMA temporal accumulation   │  level[3],     │  · 8-line FDN (traced RT60) ×2   │
+│    (kills MC flutter)          │  remote wet    │  · 20-speaker KEMAR decode + AGC │
+└─────────────────────────────────┘                └──────────────────────────────────┘
 ```
 
 - Every parameter crossing the boundary goes through a one-pole smoother —
   simulation updates can never click, and moving delays *are* the Doppler.
-- Tap index identity is stable across updates (deterministic ISM lattice
-  enumeration), which is what makes per-tap smoothing valid.
-- Native: thread + mutex mailbox. Web: Worker + SharedArrayBuffer, worklet
-  reads with atomics. `ParamBlock` is the serialization contract.
+- Taps carry stable path-identity keys: same key ⇒ glide (motion), new key
+  ⇒ crossfade from silence. Delay is never slid between two different
+  paths — that would be a pitch chirp.
+- Web transport is flat `ParamBlock`s over `postMessage` (~4 KB @ 20 Hz) —
+  no SharedArrayBuffer, no COOP/COEP headers, so it hosts on GitHub Pages.
+- Head yaw (mouse / device orientation) is a fast path straight into the
+  DSP: SH-bus z-rotation at the decode stage + per-block nearest-HRIR
+  re-selection for point taps.
 - The late field is an FDN driven by traced per-band RT60, not a convolved
   impulse response — parameters morph artifact-free in real time.
+
+## Rendering: bus + points
+
+Two tiers, chosen per tap by measured loudness:
+
+1. **Point rendering** — the strongest N taps per source (direct sound,
+   prominent early reflections) each get their own convolution with the
+   nearest of 710 measured KEMAR HRIRs: full localization sharpness where
+   localization actually happens. Cost is linear in N.
+2. **Ambisonic bus** — everything else (dense reflections, reverb tails,
+   the ambience bed) sums onto one shared order-2 bus, decoded once through
+   20 virtual speakers × KEMAR HRIRs. Fixed cost regardless of tap count,
+   and the physically right tool for *diffuse* content, which has no single
+   arrival direction to sharpen. Spatial resolution is bounded by the
+   ambisonic order (~±30° blur at order 2), not the speaker count — 20
+   speakers already saturates order 2, which is why the path to sharpness
+   is tier 1, not more speakers.
+
+N is not hardcoded: the AudioWorklet measures its own render load and walks
+the budget between 8 and 32 with hysteresis — a throttled CPU (Low Power
+Mode, phones) settles low, a desktop climbs to the cap. The HUD shows the
+current value (`hrtf ×N`). Measured on an M1 at the worst-case scene
+position (club/entrance doorway blend, ~446 live taps, SIMD kernel):
+
+| point budget / source | realtime factor |
+|---|---|
+| 0 (bus only) | 3.0× |
+| 8 | 2.5× |
+| 24 | 2.1× |
+| 32 | 1.9× |
+| 64 | 1.3× |
+
+Rendering *every* tap this way (up to 160/source × 6 sources) would be
+~10× over budget — that, and only that, is why the bus tier exists.
+The convolution kernel is written to vectorize (NEON / wasm simd128):
+pre-reversed HRIRs turn the ring convolution into contiguous dot products
+with explicit 4-lane accumulation.
 
 ## Crates
 
 | crate | role | wasm? |
 |---|---|---|
-| `omg-core` | scene, materials, ISM, path tracer, `ParamBlock`. Zero deps. | yes |
-| `omg-dsp` | delay lines, shelves, FDN, ambisonic bus, renderer. Alloc-free hot path. | yes (inside AudioWorklet) |
-| `omg-app` | native demo binary: cpal live output + hound offline render | native only |
+| `omg-core` | vec/rng, materials, shoebox raycast, ISM, path tracer, `ParamBlock`. Zero deps. | yes |
+| `omg-dsp` | delays, smoothers, EQ, FDN, ambisonics, HRTF (bus + point), renderer, output stage. Alloc-free hot path. | yes |
+| `omg-scene` | the world: rooms, doors, windows, materials/thickness, portal graph, transmission/aperture/diffraction routing, `WorldSim` | yes |
+| `omg-web` | wasm C-ABI exports (`sim_*` for the Worker, `eng_*` for the Worklet), no wasm-bindgen | is the wasm |
+| `omg-app` | native binary: cpal live output, offline render, walkthrough scripting, JSON export for the video tool | native |
 
-Planned:
+## Deliberate approximations (and what full fidelity would need)
 
-| crate | role |
-|---|---|
-| `omg-gpu` | the tracer as wgsl compute via `wgpu` — same shaders on Metal (native) and WebGPU (browser) |
-| `omg-web` | wasm bindings, Worker + AudioWorklet plumbing, SAB ring buffer, demo page |
+Everything here is a *measured* trade against the real-time budget, not a
+guess — `tools/bench_web.mjs` is the receipt:
 
-## Roadmap
-
-1. **M1 (this)** — shoebox ISM + stochastic RT60 → FDN, FOA panning, native. ✅
-2. **M2: real binaural** ✅ — order-2 ambisonics (ACN/SN3D), all sources on
-   one shared bus, single decode stage: 12 virtual speakers (icosahedron) ×
-   measured MIT KEMAR HRIRs (128-tap, resampled to 48 kHz by
-   `tools/make_hrir.py` into `assets/hrir_ico12.bin`; falls back to cardioid
-   stereo if the asset is missing). Data: MIT Media Lab KEMAR HRTF
-   measurements (Gardner & Martin), free with attribution. Still open:
-   MagLS decoder, SOFA loading, head-tracking rotation of the bus.
-3. **M3: web build** ✅ — `omg-web` (cdylib, no wasm-bindgen: plain C-ABI
-   over linear memory): WorldSim in a Web Worker at 20 Hz, renderer inside
-   the AudioWorklet, flat `ParamBlock`s over postMessage (~4 KB @ 20 Hz — no
-   SharedArrayBuffer or COOP/COEP needed). Head yaw (device orientation /
-   drag) is a fast path straight to the DSP: SH-bus z-rotation at the decode
-   stage + per-block nearest-HRIR re-selection for point taps.
-
-   ```sh
-   sh tools/build_web.sh          # cargo build wasm + stage into web/
-   python3 tools/serve.py         # http://localhost:8000/web/
-   node tools/web_smoke.mjs       # headless pipeline test
-   # Android (Chrome): plug in via USB, then
-   adb reverse tcp:8000 tcp:8000  # phone's localhost:8000 → this machine
-   # open http://localhost:8000/web/ on the phone — localhost is a secure
-   # context, so AudioWorklet + orientation sensors work without HTTPS.
-   ```
-   Android is the mobile target (deviceorientationabsolute, no permission
-   dance); iOS untested/out of scope for now.
-4. **M4: arbitrary geometry** — triangle meshes + BVH; ISM needs path
-   validation rays; tracer bounces off triangles. This is where `omg-gpu`
-   (wgpu compute) replaces the CPU tracer.
-5. **M5: diffraction** — UTD over an edge graph for the dominant occlusion
-   paths (the single biggest realism item; see research notes). Until then
-   occlusion is binary and will sound wrong behind obstacles.
-6. **M6: multiple sources** — renderer already sums on one FOA bus;
-   per-source early taps + one shared FDN.
-
-## Known simplifications (deliberate, skeleton-stage)
-
-- 3 frequency bands (low <250 Hz, mid, high >2.5 kHz); production wants 4–9.
-- Stereo decode is virtual cardioids, not HRTF — headphones sound like
-  wide stereo, not yet "outside your head". M2 fixes this.
-- FDN low-band decay follows mid (no low shelf in the loop yet).
-- Late-field level calibration is heuristic (energy after 80 ms, clamped).
-- Reverb params are traced per-listener/source pair but the FDN is global —
-  correct for one room, revisit for coupled spaces.
-- No diffraction, no transmission, shoebox-only geometry.
+- **3 frequency bands** (<250 Hz, 250–2500, >2500). Wall/air filtering is
+  fitted continuously from the bands (one-pole lowpass through the band
+  gains), so nothing sounds stepped; production engines use 4–9 bands.
+- **Rectangular rooms + wall segments** (height-aware), not arbitrary
+  meshes. Arbitrary geometry needs triangle BVH + path-validation rays —
+  planned as a wgpu compute port of the tracer.
+- **Corner diffraction is calibrated geometry** (per-band attenuation by
+  bend angle), not the Uniform Theory of Diffraction. A UTD edge graph is
+  the biggest remaining realism item indoors.
+- **Order-2 bus for the diffuse tier** — see the rendering section; the
+  sharp tier bypasses it entirely.
+- **Nearest-HRIR selection** (with 10 ms crossfades) rather than
+  interpolation; the 710-point grid keeps neighbor error small.
+- One FDN per source room pair (own + coupled), not a full acoustic
+  radiance transfer.
 
 ## License & attribution
 
-Code: MIT. Acoustic data and demo media:
+Code: Apache-2.0. Acoustic data and demo media:
+
 - MIT KEMAR HRTF measurements (Gardner & Martin, MIT Media Lab) — free with attribution.
 - Kimiko Ishizaka, *Open Goldberg Variations* — CC0.
 - LibriVox *Alice's Adventures in Wonderland* — public domain.
-- Street ambience: "Karlova 0001", Wikimedia Commons — public domain.
+- Night-city ambience: ["Ambient night city, far away party, walla, crowd,
+  insects, air"](https://freesound.org/people/ValentinPetiteau/sounds/649075/)
+  by Valentin Petiteau — CC0.
 - Club track, projectile FX: synthesized by this repo's tools (CC0).
 
-`assets/*.wav` are gitignored; regenerate via `tools/` (see build scripts) or
-use the shipped `.ogg` versions (what the web demo loads).
+`assets/*.wav` are gitignored; regenerate via `tools/` or use the shipped
+`.ogg` versions (what the web demo loads).
