@@ -3,6 +3,7 @@
 //! ParamBlock per source plus viz/telemetry info. Drives both the native
 //! scripted walkthrough and the interactive web build.
 
+use crate::dome::{door_panels, DomeProbe, DOME_ID_BASE};
 use crate::environment::AcousticsGraph;
 use crate::sim::{Facade, Sim};
 use crate::walkthrough::{
@@ -51,8 +52,15 @@ pub struct WorldSim {
     corner_vis: Vec<bool>,
     /// Room-coupling graph for the outdoor-field power balance.
     acoustics: AcousticsGraph,
+    /// Ray-sampled ambient dome (the audio skybox).
+    dome: DomeProbe,
     tick_no: u64,
 }
+
+/// Maps the dome's escaped-ray energy fraction to route amplitude,
+/// calibrated so the open field lands at the loudness the old horizon
+/// sectors had (Σ gains² ≈ 3 in the open).
+const DOME_GAIN: f32 = 4.5;
 
 impl WorldSim {
     pub fn new() -> Self {
@@ -112,6 +120,7 @@ impl WorldSim {
                 f
             },
             acoustics: AcousticsGraph::new(&rooms, &doors),
+            dome: DomeProbe::new(&rooms, &doors),
             corners,
             corner_vis,
             rooms,
@@ -570,8 +579,9 @@ impl WorldSim {
                     let gains: [f32; NBANDS] = core::array::from_fn(|b| {
                         tref.gains[b] * routed.muffle[b] * scale * occ[b] * w
                     });
+                    // arrival direction: from the listener TOWARD the exit
                     let (ex, ey, ez) =
-                        ((lis3[0] - e3[0]) / post, (lis3[1] - e3[1]) / post, (lis3[2] - e3[2]) / post);
+                        ((e3[0] - lis3[0]) / post, (e3[1] - lis3[1]) / post, (e3[2] - lis3[2]) / post);
                     pb.taps.push(Tap {
                         key: 7000 + ai as u32 * 128 + state.room as u32 * 16 + ri as u32,
                         delay_s: (pre + post) / omg_core::SPEED_OF_SOUND,
@@ -650,12 +660,14 @@ impl WorldSim {
         (blocks, info)
     }
 
-    /// Environment routing for a pose: run the outdoor-field power balance,
-    /// then describe every inlet the outdoor sound (ambience, rain) takes
-    /// to this listener. Blend states accumulate equal-power per stable
-    /// route id, so room transitions and door swings are continuous by
-    /// construction — there is no per-room constant left to snap.
-    fn environment(&self, bs: &BlendedState) -> Environment {
+    /// Environment routing for a pose. The directional inflow is the
+    /// ambient DOME sampled by rays against the real geometry: apertures,
+    /// swinging leaves, panes and multi-room hops all emerge from ray
+    /// paths, continuously in position — no horizon hand-sampling, no
+    /// aperture bookkeeping, no blend anchoring. The power balance keeps
+    /// what rays cannot carry: the through-shell seep; enclosure and roof
+    /// exposure blend across the doorway states.
+    fn environment(&mut self, bs: &BlendedState) -> Environment {
         let field = self.acoustics.outdoor_field(&self.doors);
         let mut states: Vec<(&walkthrough::WalkState, f32)> =
             vec![(&bs.primary, bs.primary_weight)];
@@ -663,120 +675,52 @@ impl WorldSim {
             states.push((o, w));
         }
 
-        struct Acc {
-            dir: [f32; 3],
-            e: [f32; NBANDS],
-            dist: f32,
-        }
-        let mut accs: std::collections::BTreeMap<u32, Acc> = std::collections::BTreeMap::new();
         let mut seep_e = [0.0f32; NBANDS];
         let (mut enclosure, mut roof) = (0.0f32, 0.0f32);
         let mut windows: Vec<EnvWindow> = Vec::new();
-
         for (state, w) in states {
             let w2 = w * w;
+            if self.rooms[state.room].outdoor {
+                continue;
+            }
             let (lx, ly) = state.listener_world;
             let lz = self.rooms[state.room].floor_z + state.listener_local.z;
-            if self.rooms[state.room].outdoor {
-                // A blend can hold the outdoor state while the body is
-                // already across the plane (positions clamp per room):
-                // anchor the horizon at the doorway then — the aperture
-                // is where the open air actually is, and it re-radiates
-                // the whole horizon into the room.
-                let (mut hx, mut hy) = (lx, ly);
-                let mut horizon_fill = [1.0f32; NBANDS];
-                if walkthrough::room_of_z(&self.rooms, hx, hy, lz) != state.room {
-                    if let Some(di) = bs.door {
-                        let d = &self.doors[di];
-                        let interior =
-                            if self.rooms[d.rooms.0].outdoor { d.rooms.1 } else { d.rooms.0 };
-                        let rc = &self.rooms[interior];
-                        let (cx, cy) =
-                            (0.5 * (rc.min.0 + rc.max.0), 0.5 * (rc.min.1 + rc.max.1));
-                        if d.axis == 0 {
-                            hx = d.pos.0 + 0.35 * (d.pos.0 - cx).signum();
-                            hy = d.pos.1;
-                        } else {
-                            hx = d.pos.0;
-                            hy = d.pos.1 + 0.35 * (d.pos.1 - cy).signum();
-                        }
-                        // the horizon reaches this body THROUGH the blend
-                        // doorway — it pays whatever fills it (a swinging
-                        // leaf sweeps this continuously)
-                        horizon_fill = d.fill_energy();
-                    }
+            for b in 0..NBANDS {
+                seep_e[b] += w2 * field[state.room][b];
+            }
+            // Enclosure is GEOMETRIC (a shell stands between you and the
+            // weather), not reverberant; blend zones make it continuous.
+            enclosure += w2;
+            roof += w2 * self.acoustics.roof_sky[state.room];
+            // glass panes of this room: rain drops anchor ON them
+            for d in self.doors.iter().filter(|d| d.glass) {
+                if d.rooms.0 != state.room && d.rooms.1 != state.room {
+                    continue;
                 }
-                // Open sky: the field arrives as four horizon sectors,
-                // each dimmed by whatever stands in that direction —
-                // over-roof / around-corner bending keeps it alive behind
-                // buildings instead of cutting it.
-                for (k, (dx, dy)) in
-                    [(0.0f32, 1.0f32), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)].iter().enumerate()
-                {
-                    let far = (hx + 35.0 * dx, hy + 35.0 * dy);
-                    let t = straight_path_transmission(&self.rooms, &self.doors, far, (hx, hy));
-                    let bend = self.bend_factor(far, (hx, hy), 3.0);
-                    let a = accs.entry(100 + k as u32).or_insert(Acc {
-                        dir: [*dx, *dy, 0.0],
-                        e: [0.0; NBANDS],
-                        dist: 35.0,
-                    });
-                    for b in 0..NBANDS {
-                        let amp = t[b].max(bend[b]);
-                        a.e[b] += w2 * amp * amp * horizon_fill[b];
-                    }
+                if windows.len() >= MAX_ENV_WINDOWS {
+                    break;
                 }
-            } else {
-                for b in 0..NBANDS {
-                    seep_e[b] += w2 * field[state.room][b];
-                }
-                // Enclosure is GEOMETRIC (a shell stands between you and
-                // the weather), not reverberant: an open door changes what
-                // pours through it — the routes — never whether you are
-                // under a roof. Blend zones make the doorway continuous.
-                enclosure += w2;
-                roof += w2 * self.acoustics.roof_sky[state.room];
-                // Every aperture of this room is an inlet: it radiates the
-                // field level of whatever is on its other side (the open
-                // air, or a neighbor room's leaked share) through its
-                // filler — pane, swinging panel, open slit.
-                for (di, d) in self.doors.iter().enumerate() {
-                    let n = if d.rooms.0 == state.room {
-                        d.rooms.1
-                    } else if d.rooms.1 == state.room {
-                        d.rooms.0
-                    } else {
-                        continue;
-                    };
-                    let (dx, dy, dz) = (d.pos.0 - lx, d.pos.1 - ly, d.zc - lz);
-                    let dist = (dx * dx + dy * dy + dz * dz).sqrt().max(0.3);
-                    let reach = 3.0 / (3.0 + dist); // near-field radiator
-                    let fe = d.fill_energy();
-                    let a = accs.entry(di as u32).or_insert(Acc {
-                        dir: [dx / dist, dy / dist, dz / dist],
-                        e: [0.0; NBANDS],
-                        dist,
-                    });
-                    for b in 0..NBANDS {
-                        a.e[b] += w2 * field[n][b] * fe[b] * reach * reach;
-                    }
-                    if d.glass && windows.len() < MAX_ENV_WINDOWS {
-                        // rain lands ON this pane — the drops anchor here
-                        windows.push(EnvWindow {
-                            dir: [dx / dist, dy / dist, dz / dist],
-                            gain: w * reach,
-                        });
-                    }
-                }
+                let (dx, dy, dz) = (d.pos.0 - lx, d.pos.1 - ly, d.zc - lz);
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt().max(0.3);
+                windows.push(EnvWindow {
+                    dir: [dx / dist, dy / dist, dz / dist],
+                    gain: w * 3.0 / (3.0 + dist),
+                });
             }
         }
-        let mut routes: Vec<EnvRoute> = accs
-            .into_iter()
-            .map(|(id, a)| EnvRoute {
-                id,
-                dir: a.dir,
-                gains: core::array::from_fn(|b| a.e[b].sqrt()),
-                dist: a.dist,
+
+        let leaves = door_panels(&self.doors);
+        let eye = Vec3::new(bs.raw.0, bs.raw.1, bs.raw.2);
+        let bins = self.dome.sample(eye, &leaves);
+        let mut routes: Vec<EnvRoute> = bins
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.energy[1] * DOME_GAIN > 1e-8)
+            .map(|(k, b)| EnvRoute {
+                id: DOME_ID_BASE + k as u32,
+                dir: b.dir,
+                gains: core::array::from_fn(|band| (b.energy[band] * DOME_GAIN).sqrt()),
+                dist: 10.0,
             })
             .collect();
         routes.sort_by(|a, b| b.gains[1].total_cmp(&a.gains[1]));
@@ -845,11 +789,44 @@ impl WorldSim {
                 }
             }
         }
+        // Over the roofs: ONE rubber band over EVERY building the sight
+        // line crosses, in order. Pricing each building separately and
+        // keeping the best would credit a low roof while a taller
+        // building blocks that same route — the club read nearly
+        // free-field standing behind two buildings.
+        let seg_d2 = (lis.0 - e.0).powi(2) + (lis.1 - e.1).powi(2);
+        let mut spans: Vec<(f32, f32, f32)> = Vec::new(); // (t_in, t_out, barrier h)
         for r in self.rooms.iter().filter(|r| !r.outdoor) {
             if let Some((pin, pout)) = segment_rect_crossing(e, lis, r.min, r.max) {
-                let h = r.barrier_height;
-                consider(&[e3, [pin.0, pin.1, h], [pout.0, pout.1, h], lst3]);
+                let t_of = |p: (f32, f32)| {
+                    ((p.0 - e.0) * (lis.0 - e.0) + (p.1 - e.1) * (lis.1 - e.1)) / seg_d2.max(1e-9)
+                };
+                let (t0, t1) = (t_of(pin), t_of(pout));
+                spans.push((t0.min(t1), t0.max(t1), r.barrier_height));
             }
+        }
+        if !spans.is_empty() {
+            spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut merged: Vec<(f32, f32, f32)> = Vec::new();
+            for s in spans {
+                match merged.last_mut() {
+                    Some(m) if s.0 <= m.1 + 1e-3 => {
+                        m.1 = m.1.max(s.1);
+                        m.2 = m.2.max(s.2); // stacked storeys: the taller wins
+                    }
+                    _ => merged.push(s),
+                }
+            }
+            let at = |t: f32, h: f32| {
+                [e.0 + t * (lis.0 - e.0), e.1 + t * (lis.1 - e.1), h]
+            };
+            let mut path = vec![e3];
+            for (t0, t1, h) in merged {
+                path.push(at(t0, h));
+                path.push(at(t1, h));
+            }
+            path.push(lst3);
+            consider(&path);
         }
         best
     }
@@ -1068,6 +1045,12 @@ mod tests {
             refl.iter().any(|t| t.dir[2].abs() > 0.05),
             "no vertical spread — exit heights are not being used"
         );
+        // and they must ARRIVE from the door (south of the listener),
+        // not from its mirror image — an inverted direction once slipped
+        // through because only the spread was pinned
+        for t in &refl {
+            assert!(t.dir[1] < -0.3, "reflection arrives from the wrong side: {:?}", t.dir);
+        }
         let (dmin, dmax) = refl.iter().fold((f32::MAX, 0.0f32), |(lo, hi), t| {
             (lo.min(t.delay_s), hi.max(t.delay_s))
         });

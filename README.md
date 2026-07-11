@@ -51,16 +51,20 @@ field is *computed*, not authored:
   The HUD shows `muffled N%` while it holds.
 - **Doppler by construction**: tap delays glide on motion; path identity
   changes crossfade. Room transitions cannot click or chirp.
-- **Environment routing**: ambience and rain are not listener-glued beds —
-  they are the *outdoor field*, routed through the same geometry as every
-  source. A Sabine power balance over the room-coupling graph (shared
-  walls, floor slabs, sky-exposed roofs, exterior surfaces, live
-  apertures — all derived from the scene, no per-room constants) gives
-  each room its share of the field per band; the listener hears it as
-  directional inlets (each door slit, pane and stairwell of the room, and
-  the four horizon sectors outdoors) plus a dark diffuse shell seep.
-  Rooms with no outside opening get theirs through the rooms that do,
-  because that is what the balance says.
+- **The ambient dome**: ambience and rain are not listener-glued beds —
+  they are the *outdoor field*, an audio skybox sampled by rays. Every
+  tick a deterministic fan of 512 rays traces from the listener against a
+  real mesh of the scene (walls with true aperture holes, slabs, roofs,
+  transmissive glass panes, swinging door leaves); rays that escape to
+  the sky deliver the dome's sound from their departure direction,
+  attenuated by whatever they bounced off or passed through. Standing
+  outside, the whole dome arrives; indoors, the openings localize the
+  world outside; a room with no direct opening receives it through the
+  rooms that do — after threading two doorways, emergently. What rays
+  cannot carry — the through-shell seep — comes from a Sabine power
+  balance over the room-coupling graph (shared walls, slabs, roofs,
+  exterior surfaces, live apertures, all derived from the scene). No
+  per-room constants anywhere.
 - **Doors are moving geometry**: a leaf's openness (0…1, the animated
   swing) prices every filter as the area-weighted energy mix of the open
   slit and the wood panel — opening a door *sweeps* the sound, it never

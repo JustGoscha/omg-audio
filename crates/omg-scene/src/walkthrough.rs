@@ -541,8 +541,9 @@ pub struct BlendedState {
     pub primary: WalkState,
     pub primary_weight: f32,
     pub other: Option<(WalkState, f32)>,
-    /// The doorway this blend crosses (scene door index), when blending.
-    pub door: Option<usize>,
+    /// The UNCLAMPED pose (x, y, eye z): ray probes want the true body
+    /// position, not one snapped into a room's rectangle.
+    pub raw: (f32, f32, f32),
 }
 
 pub fn blended_state_at(rooms: &[RoomDef], t: f32) -> BlendedState {
@@ -554,6 +555,7 @@ pub fn blended_state_at(rooms: &[RoomDef], t: f32) -> BlendedState {
 /// Blend state for an arbitrary listener pose (interactive/web input).
 /// `lz` is the EYE height in world coordinates (feet + 1.6).
 pub fn blended_state_for(rooms: &[RoomDef], lx: f32, ly: f32, lz: f32, yaw: f32) -> BlendedState {
+    let raw = (lx, ly, lz);
     let primary = state_in_room(rooms, room_of_z(rooms, lx, ly, lz), lx, ly, lz, yaw);
     let (lx, ly) = primary.listener_world;
 
@@ -586,12 +588,12 @@ pub fn blended_state_for(rooms: &[RoomDef], lx: f32, ly: f32, lz: f32, yaw: f32)
                     primary,
                     primary_weight: theta.cos(),
                     other: Some((other, theta.sin())),
-                    door: Some(door),
+                    raw,
                 };
             }
         }
     }
-    BlendedState { primary, primary_weight: 1.0, other: None, door: None }
+    BlendedState { primary, primary_weight: 1.0, other: None, raw }
 }
 
 /// How a fixed source reaches the listener's room.
