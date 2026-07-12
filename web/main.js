@@ -31,7 +31,7 @@ const DOORS = [
   { pos: [20, 31], axis: 0 },
   { pos: [22, 31], axis: 0 },
   { pos: [26.5, 23], axis: 1 }, // old house front door
-  { pos: [8, 52], axis: 1 },    // cathedral portal
+  { pos: [8, 52], axis: 1, hw: 1.2, h: 3.5 }, // cathedral portal (grand)
 ];
 const DOOR_HALF = 0.55;
 const DOOR_H = 2.1;
@@ -42,8 +42,6 @@ const WINDOWS = [
   { pos: [26.0, 38.0], axis: 1, hw: 1.8 },
   { pos: [29.3, 23.0], axis: 1, hw: 1.4 }, // house ground floor → square
   { pos: [24.0, 19.5], axis: 0, hw: 1.4 }, // house ground floor → hall
-  { pos: [0.0, 63.0], axis: 0, hw: 3.0 },  // cathedral west flank
-  { pos: [16.0, 63.0], axis: 0, hw: 3.0 }, // cathedral east flank
 ];
 const SOURCES = [
   { name: 'music', pos: [2, 3], color: 0xffaa3c },
@@ -283,15 +281,16 @@ function addBox(cx, cy, cz, sx, sy, sz) {
 // and window insets (glass panes; collision keeps the full span solid).
 function wallY(y, x0, x1, h) {
   let spans = [[x0, x1]];
-  for (const { pos: [dx, dy], axis } of DOORS) {
-    if (axis !== 1 || Math.abs(dy - y) > 0.01) continue;
+  for (const d of DOORS) {
+    const [dx, dy] = d.pos;
+    const hw = d.hw ?? DOOR_HALF;
+    const dh = d.h ?? DOOR_H;
+    if (d.axis !== 1 || Math.abs(dy - y) > 0.01) continue;
     spans = spans.flatMap(([a, b]) =>
-      dx - DOOR_HALF > a && dx + DOOR_HALF < b
-        ? [[a, dx - DOOR_HALF], [dx + DOOR_HALF, b]]
-        : [[a, b]],
+      dx - hw > a && dx + hw < b ? [[a, dx - hw], [dx + hw, b]] : [[a, b]],
     );
-    if (dx - DOOR_HALF > x0 && dx + DOOR_HALF < x1 && h > DOOR_H) {
-      addBox(dx, y, (DOOR_H + h) / 2, 2 * DOOR_HALF, 0.15, h - DOOR_H); // lintel
+    if (dx - hw > x0 && dx + hw < x1 && h > dh) {
+      addBox(dx, y, (dh + h) / 2, 2 * hw, 0.15, h - dh); // lintel
     }
   }
   for (const { pos: [wx, wy], axis, hw } of WINDOWS) {
@@ -312,9 +311,9 @@ function wallY(y, x0, x1, h) {
   }
   COLLIDERS.push({ axis: 1, plane: y, lo: x0, hi: x1, h });
   // reopen the doorway gaps in the collider
-  for (const { pos: [dx, dy], axis } of DOORS) {
-    if (axis === 1 && Math.abs(dy - y) < 0.01 && dx > x0 && dx < x1) {
-      openColliderGap(1, y, dx);
+  for (const d of DOORS) {
+    if (d.axis === 1 && Math.abs(d.pos[1] - y) < 0.01 && d.pos[0] > x0 && d.pos[0] < x1) {
+      openColliderGap(1, y, d.pos[0], d.hw ?? DOOR_HALF, d.h ?? DOOR_H);
     }
   }
 }
@@ -323,15 +322,16 @@ function wallY(y, x0, x1, h) {
 // and window insets.
 function wallX(x, y0, y1, h) {
   let spans = [[y0, y1]];
-  for (const { pos: [dx, dy], axis } of DOORS) {
-    if (axis !== 0 || Math.abs(dx - x) > 0.01) continue;
+  for (const d of DOORS) {
+    const [dx, dy] = d.pos;
+    const hw = d.hw ?? DOOR_HALF;
+    const dh = d.h ?? DOOR_H;
+    if (d.axis !== 0 || Math.abs(dx - x) > 0.01) continue;
     spans = spans.flatMap(([a, b]) =>
-      dy - DOOR_HALF > a && dy + DOOR_HALF < b
-        ? [[a, dy - DOOR_HALF], [dy + DOOR_HALF, b]]
-        : [[a, b]],
+      dy - hw > a && dy + hw < b ? [[a, dy - hw], [dy + hw, b]] : [[a, b]],
     );
-    if (dy - DOOR_HALF > y0 && dy + DOOR_HALF < y1 && h > DOOR_H) {
-      addBox(x, dy, (DOOR_H + h) / 2, 0.15, 2 * DOOR_HALF, h - DOOR_H); // lintel
+    if (dy - hw > y0 && dy + hw < y1 && h > dh) {
+      addBox(x, dy, (dh + h) / 2, 0.15, 2 * hw, h - dh); // lintel
     }
   }
   for (const { pos: [wx, wy], axis, hw } of WINDOWS) {
@@ -351,14 +351,70 @@ function wallX(x, y0, y1, h) {
     addBox(x, (a + b) / 2, h / 2, 0.15, b - a, h);
   }
   COLLIDERS.push({ axis: 0, plane: x, lo: y0, hi: y1, h });
-  for (const { pos: [dx, dy], axis } of DOORS) {
-    if (axis === 0 && Math.abs(dx - x) < 0.01 && dy > y0 && dy < y1) {
-      openColliderGap(0, x, dy);
+  for (const d of DOORS) {
+    if (d.axis === 0 && Math.abs(d.pos[0] - x) < 0.01 && d.pos[1] > y0 && d.pos[1] < y1) {
+      openColliderGap(0, x, d.pos[1], d.hw ?? DOOR_HALF, d.h ?? DOOR_H);
     }
   }
 }
 
 // split a collider around a doorway so it stays walkable
+// Romanesque interior: two arcades of columns with rounded arches, a
+// transverse arch per bay, tall glowing panes, a rose window, warm light.
+// Visual only — acoustically the arcades are the cathedral material's
+// high scattering fraction (the tracer diffuses reflections off it).
+function buildCathedralInterior() {
+  const stone = new THREE.MeshLambertMaterial({ color: 0x4c4c58 });
+  const stoneD = new THREE.MeshLambertMaterial({ color: 0x3a3a44 });
+  const rows = [4.0, 12.0];
+  const ys = [];
+  for (let y = 55.0; y <= 71.01; y += 3.2) ys.push(y);
+  const colGeo = new THREE.CylinderGeometry(0.45, 0.52, 8.0, 10);
+  const capGeo = new THREE.BoxGeometry(1.3, 0.5, 1.3);
+  for (const x of rows) {
+    for (const y of ys) {
+      const c = new THREE.Mesh(colGeo, stone);
+      c.position.copy(v3(x, y, 4.0));
+      scene.add(c);
+      const cap = new THREE.Mesh(capGeo, stoneD);
+      cap.position.copy(v3(x, y, 8.25));
+      scene.add(cap);
+      const base = new THREE.Mesh(capGeo, stoneD);
+      base.position.copy(v3(x, y, 0.25));
+      scene.add(base);
+      // slim cross colliders so you don't ghost through columns
+      COLLIDERS.push({ axis: 0, plane: x, lo: y - 0.45, hi: y + 0.45, h: 8 });
+      COLLIDERS.push({ axis: 1, plane: y, lo: x - 0.45, hi: x + 0.45, h: 8 });
+    }
+    // rounded arches between neighboring columns (radius = half the bay)
+    const archGeo = new THREE.TorusGeometry(1.6, 0.22, 8, 14, Math.PI);
+    for (let i = 0; i + 1 < ys.length; i++) {
+      const a = new THREE.Mesh(archGeo, stone);
+      a.position.copy(v3(x, (ys[i] + ys[i + 1]) / 2, 8.5));
+      a.rotation.y = Math.PI / 2; // arch spans along world y
+      scene.add(a);
+    }
+  }
+  // transverse arches across the nave at every bay line
+  const bigArch = new THREE.TorusGeometry(4.0, 0.3, 8, 18, Math.PI);
+  for (const y of ys) {
+    const a = new THREE.Mesh(bigArch, stoneD);
+    a.position.copy(v3(8, y, 8.5));
+    scene.add(a);
+  }
+  // portal surround
+  const pArch = new THREE.Mesh(new THREE.TorusGeometry(1.35, 0.25, 8, 14, Math.PI), stoneD);
+  pArch.position.copy(v3(8, 52, 3.5));
+  scene.add(pArch);
+  // candle-warm crossing light + cool clerestory wash
+  const warm = new THREE.PointLight(0xffd9a0, 40, 30);
+  warm.position.copy(v3(8, 62, 5));
+  scene.add(warm);
+  const cool = new THREE.PointLight(0x91b7ff, 30, 40);
+  cool.position.copy(v3(8, 70, 10));
+  scene.add(cool);
+}
+
 // Openable door panels: a wood slab in each doorway with its own
 // toggleable collider. E toggles the nearest door; the sim hears the
 // closed panel as mass-law transmission instead of a free aperture.
@@ -366,28 +422,30 @@ const doorMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2e });
 function buildDoorPanels() {
   DOORS.forEach((d) => {
     const [dx, dy] = d.pos;
+    const hw = d.hw ?? DOOR_HALF;
+    const dh = d.h ?? DOOR_H;
     // hinge pivot at one jamb; the leaf hangs off it and swings ~112°
     const hinge = new THREE.Group();
     const leaf = new THREE.Mesh(
       d.axis === 0
-        ? new THREE.BoxGeometry(0.08, DOOR_H, 2 * DOOR_HALF)
-        : new THREE.BoxGeometry(2 * DOOR_HALF, DOOR_H, 0.08),
+        ? new THREE.BoxGeometry(0.08, dh, 2 * hw)
+        : new THREE.BoxGeometry(2 * hw, dh, 0.08),
       doorMat,
     );
     if (d.axis === 0) {
-      hinge.position.copy(v3(dx, dy - DOOR_HALF, DOOR_H / 2));
-      leaf.position.set(0, 0, -DOOR_HALF); // three -z = world +y
+      hinge.position.copy(v3(dx, dy - hw, dh / 2));
+      leaf.position.set(0, 0, -hw); // three -z = world +y
     } else {
-      hinge.position.copy(v3(dx - DOOR_HALF, dy, DOOR_H / 2));
-      leaf.position.set(DOOR_HALF, 0, 0);
+      hinge.position.copy(v3(dx - hw, dy, dh / 2));
+      leaf.position.set(hw, 0, 0);
     }
     hinge.add(leaf);
     scene.add(hinge);
     const collider = {
       axis: d.axis, plane: d.axis === 0 ? dx : dy,
-      lo: (d.axis === 0 ? dy : dx) - DOOR_HALF,
-      hi: (d.axis === 0 ? dy : dx) + DOOR_HALF,
-      h: DOOR_H, off: true,
+      lo: (d.axis === 0 ? dy : dx) - hw,
+      hi: (d.axis === 0 ? dy : dx) + hw,
+      h: dh, off: true,
     };
     COLLIDERS.push(collider);
     // doors start open: leaf swung back against the wall
@@ -417,16 +475,16 @@ function toggleNearestDoor() {
   state.doorMeshes[best].target = state.doors[best] ? 1 : 0;
 }
 
-function openColliderGap(axis, plane, at) {
+function openColliderGap(axis, plane, at, hw = DOOR_HALF, dh = DOOR_H) {
   for (let i = COLLIDERS.length - 1; i >= 0; i--) {
     const c = COLLIDERS[i];
     if (c.axis !== axis || Math.abs(c.plane - plane) > 0.01) continue;
-    if (at - DOOR_HALF > c.lo && at + DOOR_HALF < c.hi) {
+    if (at - hw > c.lo && at + hw < c.hi) {
       COLLIDERS.splice(i, 1,
-        { ...c, hi: at - DOOR_HALF },
-        { ...c, lo: at + DOOR_HALF },
+        { ...c, hi: at - hw },
+        { ...c, lo: at + hw },
         // the wall above the doorway stays solid
-        { ...c, lo: at - DOOR_HALF, hi: at + DOOR_HALF, zlo: DOOR_H });
+        { ...c, lo: at - hw, hi: at + hw, zlo: dh });
     }
   }
 }
@@ -483,6 +541,7 @@ function buildWorld() {
   wallY(74, 0, 16, 15);
   wallX(0, 52, 74, 15);           // stained-glass west flank
   wallX(16, 52, 74, 15);          // stained-glass east flank
+  buildCathedralInterior();
 
   // bunker: an underground box; only the stair ramp touches the surface.
   // Collider tops sit at -0.8 (the buried ceiling): surface walkers pass

@@ -11,6 +11,17 @@
 //! no per-door muffle constants.
 
 use omg_core::material::Material;
+
+/// Cathedral stone: acoustically hard, but arcades, columns and rounded
+/// arches break flat-wall specularity — the path tracer sees that as a
+/// high scattering fraction (denser, smoother tail), which is the honest
+/// shoebox-level stand-in for curved geometry until the mesh migration
+/// makes arches traceable surfaces.
+const ORNATE_STONE: Material = Material {
+    absorption: [0.015, 0.03, 0.06],
+    scattering: 0.35,
+    transmission: [0.10, 0.014, 0.0015],
+};
 use omg_core::scene::Shoebox;
 use omg_core::vec3::Vec3;
 use omg_core::NBANDS;
@@ -151,7 +162,7 @@ pub fn rooms() -> Vec<RoomDef> {
             height: 15.0,
             barrier_height: 16.5,
             floor_z: 0.0,
-            walls: [Material::CONCRETE; 6],
+            walls: [ORNATE_STONE; 6],
             wall_thickness: 0.5,
             outdoor: false,
         },
@@ -263,9 +274,6 @@ pub fn doors() -> Vec<Door> {
         // upper-storey windows onto the square and toward the club
         Door { rooms: (HOUSE_UP, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, height: 1.4, zc: 4.5, glass: true, openness: 1.0 },
         Door { rooms: (HOUSE_UP, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, height: 1.4, zc: 4.5, glass: true, openness: 1.0 },
-        // tall stained-glass windows along the cathedral's flanks
-        Door { rooms: (CATHEDRAL, OUTSIDE), pos: (0.0, 63.0), axis: 0, half: 3.0, height: 6.0, zc: 6.0, glass: true, openness: 1.0 },
-        Door { rooms: (CATHEDRAL, OUTSIDE), pos: (16.0, 63.0), axis: 0, half: 3.0, height: 6.0, zc: 6.0, glass: true, openness: 1.0 },
         // stairwell: the vertical portal between the two storeys — always
         // open, never toggled (indices ≥ 7 are outside the E-key range)
         Door { rooms: (HOUSE, HOUSE_UP), pos: (24.8, 21.5), axis: 0, half: 0.7, height: 2.2, zc: 3.0, glass: false, openness: 1.0 },
