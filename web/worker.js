@@ -28,7 +28,7 @@ function tick() {
   });
   w.sim_tick(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw);
   const blocks = [];
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 8; i++) {
     const len = w.sim_params_len(i);
     const src = new Float32Array(w.memory.buffer, w.sim_params_ptr(i), len);
     blocks.push(src.slice().buffer);

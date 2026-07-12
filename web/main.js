@@ -19,7 +19,9 @@ const ROOMS = [
   { name: 'Colonnade', min: [16, 15], max: [16.5, 21], h: 2.5, solid: true },
   { name: 'Kiosk', min: [14.5, 34], max: [16.5, 36], h: 2.7, solid: true },
   { name: 'Old House Upper', min: [24, 16], max: [31, 23], upper: true }, // index-aligned with the sim
-  { name: 'Outside', min: [-8, -8], max: [42, 46], outdoor: true, floor: 0x1c2a20 },
+  { name: 'Cathedral', min: [0, 52], max: [16, 74], h: 15, floor: 0x2b2b36 },
+  { name: 'Bunker', min: [34, 6], max: [40, 14], h: 2.2, fz: -3, floor: 0x20241f },
+  { name: 'Outside', min: [-8, -8], max: [48, 80], outdoor: true, floor: 0x1c2a20 },
 ];
 // axis: 0 = opening in an x=const wall, 1 = opening in a y=const wall
 const DOORS = [
@@ -29,6 +31,7 @@ const DOORS = [
   { pos: [20, 31], axis: 0 },
   { pos: [22, 31], axis: 0 },
   { pos: [26.5, 23], axis: 1 }, // old house front door
+  { pos: [8, 52], axis: 1 },    // cathedral portal
 ];
 const DOOR_HALF = 0.55;
 const DOOR_H = 2.1;
@@ -39,12 +42,16 @@ const WINDOWS = [
   { pos: [26.0, 38.0], axis: 1, hw: 1.8 },
   { pos: [29.3, 23.0], axis: 1, hw: 1.4 }, // house ground floor → square
   { pos: [24.0, 19.5], axis: 0, hw: 1.4 }, // house ground floor → hall
+  { pos: [0.0, 63.0], axis: 0, hw: 3.0 },  // cathedral west flank
+  { pos: [16.0, 63.0], axis: 0, hw: 3.0 }, // cathedral east flank
 ];
 const SOURCES = [
   { name: 'music', pos: [2, 3], color: 0xffaa3c },
   { name: 'voice', pos: [10.5, 20.5], color: 0x6ee0a0 },
   { name: 'club', pos: [27, 32], color: 0xff5a9e,
     emitters: [[23.5, 27.5], [30.5, 27.5], [23.5, 36.5], [30.5, 36.5]] },
+  { name: 'flute', pos: [8, 66], color: 0x9ad2ff },
+  { name: 'radio', pos: [37.5, 12.5], color: 0xd2b06e },
 ];
 const MARGIN = 0.35;
 const EYE = 1.6;
@@ -100,9 +107,11 @@ const MIXER = [
   { name: 'music', srcs: [0], base: 90, def: 72, meters: [0], spl: true },
   { name: 'voice', srcs: [1], base: 84, def: 65, meters: [1], spl: true },
   { name: 'club', srcs: [2], base: 104, def: 104, meters: [2], spl: true },
-  { name: 'balls', srcs: [3, 4, 5], base: 89, def: 89, meters: [3, 4, 5], spl: true },
-  { name: 'ambience', target: 'ambient', def: -9, meters: [6] },
-  { name: 'rain', target: 'rainGain', def: 0, meters: [7] },
+  { name: 'flute', srcs: [3], base: 88, def: 76, meters: [3], spl: true },
+  { name: 'radio', srcs: [4], base: 80, def: 64, meters: [4], spl: true },
+  { name: 'balls', srcs: [5, 6, 7], base: 89, def: 89, meters: [5, 6, 7], spl: true },
+  { name: 'ambience', target: 'ambient', def: -9, meters: [8] },
+  { name: 'rain', target: 'rainGain', def: 0, meters: [9] },
   { name: 'master', target: 'master', def: 0, meters: 'lr' },
 ];
 const SPL_MIN = 20, SPL_MAX = 130, TRIM_MIN = -30, TRIM_MAX = 12;
@@ -434,12 +443,13 @@ function buildWorld() {
     );
     floor.rotation.x = -Math.PI / 2;
     // outdoor ground sits below room floors (they overlap: z-fighting)
-    floor.position.copy(v3(r.min[0] + w / 2, r.min[1] + d / 2, r.outdoor ? -0.03 : 0.02));
+    floor.position.copy(v3(r.min[0] + w / 2, r.min[1] + d / 2,
+      r.fz !== undefined ? r.fz + 0.02 : (r.outdoor ? -0.03 : 0.02)));
     scene.add(floor);
     if (!r.outdoor) {
       const ceil = new THREE.Mesh(new THREE.PlaneGeometry(w, d), ceilMat);
       ceil.rotation.x = Math.PI / 2;
-      ceil.position.copy(v3(r.min[0] + w / 2, r.min[1] + d / 2, r.h));
+      ceil.position.copy(v3(r.min[0] + w / 2, r.min[1] + d / 2, (r.fz || 0) + r.h));
       scene.add(ceil);
     }
   }
@@ -467,6 +477,38 @@ function buildWorld() {
   wallX(32, 26, 38, 4.5);         // club east
   wallY(26, 22, 32, 4.5);         // club south
   wallY(38, 22, 32, 4.5);         // club north
+
+  // cathedral, far north across the field (portal = door 6)
+  wallY(52, 0, 16, 15);
+  wallY(74, 0, 16, 15);
+  wallX(0, 52, 74, 15);           // stained-glass west flank
+  wallX(16, 52, 74, 15);          // stained-glass east flank
+
+  // bunker: an underground box; only the stair ramp touches the surface.
+  // Collider tops sit at -0.8 (the buried ceiling): surface walkers pass
+  // clean over them, anyone at -3 is properly boxed in.
+  addBox(37, 6, -1.9, 6, 0.2, 2.2);
+  addBox(37, 14, -1.9, 6, 0.2, 2.2);
+  addBox(40, 10, -1.9, 0.2, 8, 2.2);
+  addBox(34, 11, -1.9, 0.2, 6, 2.2); // west wall, hatch gap at y≈7
+  COLLIDERS.push({ axis: 1, plane: 6, lo: 34, hi: 40, h: -0.8 });
+  COLLIDERS.push({ axis: 1, plane: 14, lo: 34, hi: 40, h: -0.8 });
+  COLLIDERS.push({ axis: 0, plane: 40, lo: 6, hi: 14, h: -0.8 });
+  COLLIDERS.push({ axis: 0, plane: 34, lo: 6, hi: 14, h: -0.8 });
+  openColliderGap(0, 34, 7);
+  // ramp rails keep surface walkers from strolling into the pit sideways
+  COLLIDERS.push({ axis: 1, plane: 6.15, lo: 32.4, hi: 34, h: 1.0 });
+  COLLIDERS.push({ axis: 1, plane: 7.85, lo: 32.4, hi: 34, h: 1.0 });
+  const pitMat = new THREE.MeshBasicMaterial({ color: 0x05070a });
+  const pit = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 1.9), pitMat);
+  pit.rotation.x = -Math.PI / 2;
+  pit.position.copy(v3(33.3, 7, 0.015));
+  scene.add(pit);
+  const ramp = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.14, 1.6),
+    new THREE.MeshLambertMaterial({ color: 0x3a3f3a }));
+  ramp.position.copy(v3(33.25, 7, -1.5));
+  ramp.rotation.z = -Math.atan2(3.0, 1.6);
+  scene.add(ramp);
 
   // old house: ground floor enterable, second storey visual mass
   wallY(16, 24, 31, 2.8);          // south
@@ -599,7 +641,7 @@ async function startAudio() {
     return r.arrayBuffer();
   };
   statusEl.textContent = 'loading…';
-  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fxW, fxT, fxB, ambRaw, dropsRaw] =
+  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxW, fxT, fxB, ambRaw, dropsRaw] =
     await Promise.all([
     fetchBuf('omg_web.wasm'),
     fetchBuf('omg_web.wasm'),
@@ -608,6 +650,8 @@ async function startAudio() {
     fetchBuf('../assets/aria48.ogg'),
     fetchBuf('../assets/alice48.ogg'),
     fetchBuf('../assets/club48.ogg'),
+    fetchBuf('../assets/flute48.ogg'),
+    fetchBuf('../assets/radio48.ogg'),
     fetchBuf('../assets/fx_whistle.ogg'),
     fetchBuf('../assets/fx_thump.ogg'),
     fetchBuf('../assets/fx_boom.ogg'),
@@ -632,10 +676,12 @@ async function startAudio() {
     for (let i = 0; i < ch.length; i++) out[i] = ch[i] * g;
     return out;
   };
-  const [aria, alice, club, whistle, thumpFx, boomFx, drops, ambience] = await Promise.all([
+  const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops, ambience] = await Promise.all([
     decodeMono(ariaRaw),
     decodeMono(aliceRaw),
     decodeMono(clubRaw),
+    decodeMono(fluteRaw),
+    decodeMono(radioRaw),
     decodeMono(fxW, 0.18), // whistle: background-y
     decodeMono(fxT, 0.55),
     decodeMono(fxB, 1.9), // boom: BIG (AGC + tanh keep it safe)
@@ -660,7 +706,8 @@ async function startAudio() {
       return out;
     })(),
   ]);
-  const silent = new Float32Array(480); // projectile slot: fx voices only
+  // projectile slots: fx voices only (one buffer each — transferables)
+  const silents = [new Float32Array(480), new Float32Array(480), new Float32Array(480)];
 
   await audio.audioWorklet.addModule('worklet.js');
   const node = new AudioWorkletNode(audio, 'omg-engine', {
@@ -678,10 +725,12 @@ async function startAudio() {
   state.specBins = new Uint8Array(analyser.frequencyBinCount);
   node.port.postMessage(
     { type: 'wasm', bytes: wasm1, grid, speakers,
-      sources: [aria.buffer, alice.buffer, club.buffer, silent.buffer],
+      sources: [aria.buffer, alice.buffer, club.buffer, flute.buffer, radio.buffer,
+                silents[0].buffer, silents[1].buffer, silents[2].buffer],
       fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer],
       ambient: ambience.buffer, drops: drops.buffer },
-    [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, silent.buffer,
+    [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,
+     radio.buffer, silents[0].buffer, silents[1].buffer, silents[2].buffer,
      whistle.buffer, thumpFx.buffer, boomFx.buffer, ambience.buffer, drops.buffer],
   );
   await new Promise((res) => {
@@ -835,7 +884,7 @@ function throwBall() {
     vx: ch * cp * speed, vy: sh * cp * speed, vz: sp * speed + 2.5,
     landedAt: 0, boomAt: 0, mesh, light,
   });
-  state.fx(3 + slot, 0, 'play'); // whistle
+  state.fx(5 + slot, 0, 'play'); // whistle
 }
 
 function roomHeightAt(x, y) {
@@ -850,7 +899,7 @@ function updateProjectiles(dt, now) {
 }
 
 function updateProjectile(p, dt, now) {
-  const fx = (kind, action = 'play') => state.fx(3 + p.slot, kind, action);
+  const fx = (kind, action = 'play') => state.fx(5 + p.slot, kind, action);
 
   if (p.boomAt) {
     // explosion flash decays, then the source goes silent and disappears
@@ -933,6 +982,12 @@ function floorHeightAt(x, y, curZ) {
     return 3.0 * Math.min(1, Math.max(0, (y - 17.0) / (21.3 - 17.0)));
   }
   if (inHouse && curZ > 1.5) return 3.0; // upper floor
+  // bunker: the ramp descends eastward into the pit; the surface above
+  // the buried box stays solid ground
+  if (x > 32.4 && x < 34.1 && y > 6.15 && y < 7.85) {
+    return -3.0 * Math.min(1, Math.max(0, (x - 32.5) / 1.4));
+  }
+  if (x > 34.05 && x < 39.95 && y > 6.05 && y < 13.95 && curZ < -0.5) return -3.0;
   return 0;
 }
 

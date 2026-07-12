@@ -25,7 +25,7 @@ put(readFileSync(join(root, 'assets/hrir_grid.bin')), eng.eng_hrir_grid_alloc, e
 put(readFileSync(join(root, 'assets/hrir_dodeca20.bin')), eng.eng_hrir_speakers_alloc, eng.eng_hrir_speakers_done);
 
 // Synthetic sources: click train (music slot) + 220 Hz tone bursts (voice).
-for (let i = 0; i < 6; i++) {
+for (let i = 0; i < 8; i++) {
   const n = FS; // 1 s loop
   const ptr = eng.eng_source_alloc(i, n);
   const buf = new Float32Array(eng.memory.buffer, ptr, n);
@@ -40,7 +40,7 @@ for (let i = 0; i < 6; i++) {
 sim.sim_setup();
 
 const setParamsFromSim = () => {
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 8; i++) {
     const len = sim.sim_params_len(i);
     const src = new Float32Array(sim.memory.buffer, sim.sim_params_ptr(i), len);
     new Float32Array(eng.memory.buffer, eng.eng_param_buf_ptr(), len).set(src);

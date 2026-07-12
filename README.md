@@ -85,7 +85,12 @@ field is *computed*, not authored:
   decides the energy it emits.
 - Dynamic sources (thrown projectiles: whistle in flight, bounce, explode),
   a night-nature ambience, openable doors, simulated rain, a mixer panel
-  with per-channel meters, HUD meters + spectrogram.
+  with per-channel meters, HUD meters + spectrogram. The world: a square
+  with a club, an old two-storey house, a great hall with a piano room, a
+  stone cathedral far to the north (a flute inside it, its nave's reverb
+  audible through the portal), and an underground bunker with a little
+  radio — earth is modeled, so the bunker is sealed except its stair
+  shaft.
 
 ## Hear it
 
@@ -267,6 +272,10 @@ Code: Apache-2.0. Acoustic data and demo media:
 - LibriVox *Alice's Adventures in Wonderland* — public domain.
 - Night ambience: ["nature_ambient_night_5-min"](https://freesound.org/people/edmondsr/sounds/711207/)
   by edmondsr — CC0.
+- Cathedral flute: ["Natural Native Flute with Lush Reverb"](https://freesound.org/people/CVLTIV8R/sounds/816095/)
+  by CVLTIV8R, performed by RJ Roush — CC0.
+- Bunker radio: ["An old radio playing in a Sri Lankan sewing factory"](https://freesound.org/people/florianreichelt/sounds/423446/)
+  by florianreichelt — CC0.
 - Club track, projectile FX: synthesized by this repo's tools (CC0).
 - Rain splat bank: 22 hits sliced from CC0 freesound recordings
   (sources listed in `tools/make_drops.py`).
