@@ -27,7 +27,7 @@ SOURCES = [
 ]
 
 FS = 48000
-SLOT = 7200  # 150 ms — keep in sync with rain.rs BANK_SLOT
+SLOT = 7200  # 150 ms at the 48 kHz authoring rate (rain.rs BANK_SLOT_S)
 MAX_PER_FILE = 6
 
 

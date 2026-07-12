@@ -109,7 +109,7 @@ const MIXER = [
   { name: 'flute', srcs: [3], base: 88, def: 76, meters: [3], spl: true },
   { name: 'radio', srcs: [4], base: 80, def: 64, meters: [4], spl: true },
   { name: 'balls', srcs: [5, 6, 7], base: 89, def: 89, meters: [5, 6, 7], spl: true },
-  { name: 'ambience', target: 'ambient', def: -9, meters: [8] },
+  { name: 'ambience', target: 'ambient', def: -16, meters: [8] },
   { name: 'rain', target: 'rainGain', def: 0, meters: [9] },
   { name: 'master', target: 'master', def: 0, meters: 'lr' },
 ];
@@ -785,7 +785,10 @@ document.getElementById('start').onclick = async () => {
 requestAnimationFrame(frame);
 
 async function startAudio() {
-  const audio = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+  // Native device rate: forcing 48 kHz makes some Android audio paths
+  // run silent. The engine is rate-parametric (assets resample on
+  // decode; the worklet passes its real sampleRate to eng_init).
+  const audio = new AudioContext({ latencyHint: 'interactive' });
   const fetchBuf = async (url) => {
     const r = await fetch(url);
     if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
@@ -884,9 +887,12 @@ async function startAudio() {
      radio.buffer, silents[0].buffer, silents[1].buffer, silents[2].buffer,
      whistle.buffer, thumpFx.buffer, boomFx.buffer, ambience.buffer, drops.buffer],
   );
-  await new Promise((res) => {
+  await new Promise((res, rej) => {
+    const watchdog = setTimeout(
+      () => rej(new Error('engine init timed out (worklet never became ready)')), 12000);
     node.port.onmessage = (e) => {
-      if (e.data.type === 'ready') res();
+      if (e.data.type === 'ready') { clearTimeout(watchdog); res(); }
+      if (e.data.type === 'error') { clearTimeout(watchdog); rej(new Error('worklet: ' + e.data.message)); }
       if (e.data.type === 'meters') {
         state.meters.l = e.data.l;
         state.meters.r = e.data.r;
@@ -999,6 +1005,11 @@ function setupControls() {
         state.orientationOffset = state.heading + (e.alpha * Math.PI) / 180;
       }
       state.heading = state.orientationOffset - (e.alpha * Math.PI) / 180;
+      // pitch from device tilt (portrait: upright beta ≈ 90°) — tilting
+      // the phone up looks up, like turning the body drives heading
+      if (e.beta != null) {
+        state.pitch = Math.max(-1.4, Math.min(1.4, ((e.beta - 90) * Math.PI) / 180));
+      }
     });
   }
 

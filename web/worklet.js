@@ -19,6 +19,15 @@ class OmgProcessor extends AudioWorkletProcessor {
   }
 
   async onMessage(m) {
+    try {
+      await this.handle(m);
+    } catch (e) {
+      // surface init failures to the page (mobile has no console)
+      this.port.postMessage({ type: 'error', message: String(e && e.stack || e) });
+    }
+  }
+
+  async handle(m) {
     if (m.type === 'wasm') {
       const { instance } = await WebAssembly.instantiate(m.bytes, {});
       this.w = instance.exports;

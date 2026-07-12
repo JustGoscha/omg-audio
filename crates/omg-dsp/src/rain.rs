@@ -40,9 +40,10 @@ const ROUTE_HISS: f32 = 0.3;
 /// Diffuse noise residual per unit seep amplitude: the shell transmits
 /// pressure, but the splash noise loses its coherence going through.
 const SEEP_HISS: f32 = 0.3;
-/// Sample bank slot length (150 ms @ 48 kHz) — keep in sync with
-/// tools/make_drops.py.
-pub const BANK_SLOT: usize = 7200;
+/// Sample bank slot length in SECONDS — the bank file is authored in
+/// uniform 150 ms slices (tools/make_drops.py); the decoder resamples to
+/// the engine rate, so slot length in samples derives from the rate.
+pub const BANK_SLOT_S: f32 = 0.15;
 
 /// Modal impact synthesis: a surface is a small set of resonant modes;
 /// a drop is a soft noise burst driving them. The practical middle path
@@ -108,8 +109,10 @@ pub struct Rain {
     seep_hi: f32,
     // roof drumming: heavy lowpass on its own drop layer
     drum_lp: f32,
-    /// Bank of real recorded drop/splat hits (uniform BANK_SLOT slices).
+    /// Bank of real recorded drop/splat hits (uniform 150 ms slices).
     bank: Vec<f32>,
+    /// Slot length in samples at the engine rate.
+    bank_slot: usize,
     /// Environment inlets (apertures / horizon sectors), id-keyed and
     /// smoothed — the outdoor rain heard THROUGH the room's openings.
     routes: RouteSlots,
@@ -161,6 +164,7 @@ impl Rain {
             seep_hi: 0.0,
             drum_lp: 0.0,
             bank: Vec::new(),
+            bank_slot: (BANK_SLOT_S * sample_rate).round() as usize,
             routes: RouteSlots::new(sample_rate, 0.25),
             windows: [([0.0; NCH], 0.0); MAX_ENV_WINDOWS],
             n_windows: 0,
@@ -188,13 +192,13 @@ impl Rain {
         self.gain.set(g.clamp(0.0, 8.0));
     }
 
-    /// Load the recorded-splat bank (uniform BANK_SLOT slices). Without
+    /// Load the recorded-splat bank (uniform 150 ms slices). Without
     /// it, everything falls back to synthesis. Slices are dulled at load
     /// (one-pole lowpass ~3 kHz): raw drip recordings are bubbly plinks;
     /// rain against a building reads duller.
     pub fn set_bank(&mut self, mut samples: Vec<f32>) {
         let coef = 1.0 - (-core::f32::consts::TAU * 3_000.0 / self.sample_rate).exp();
-        for slice in samples.chunks_mut(BANK_SLOT) {
+        for slice in samples.chunks_mut(self.bank_slot) {
             let mut lp = 0.0f32;
             for x in slice.iter_mut() {
                 lp += coef * (*x - lp);
@@ -260,7 +264,7 @@ impl Rain {
         let d = &mut self.drops[self.next];
         self.next = (self.next + 1) % MAX_DROPS;
         let az = self.rng.next_f32() * core::f32::consts::TAU;
-        let n_slices = self.bank.len() / BANK_SLOT;
+        let n_slices = self.bank.len() / self.bank_slot;
 
         // Through-the-opening drops: audible individual drops AT the
         // doorway/window direction, weighted by what pours through —
@@ -281,7 +285,7 @@ impl Rain {
             }
             d.surface = true; // not shell-attenuated: it comes through the opening
             if n_slices > 0 && self.rng.next_f32() < 0.4 {
-                d.bank_off = (self.rng.next_u64() as usize % n_slices) * BANK_SLOT;
+                d.bank_off = (self.rng.next_u64() as usize % n_slices) * self.bank_slot;
                 d.bank_pos = 0.0;
                 d.bank_rate = 0.85 + self.rng.next_f32() * 0.3;
                 d.env = (0.012 + 0.03 * self.rng.next_f32()) * g.min(1.2);
@@ -328,7 +332,7 @@ impl Rain {
                 let lg = (1.6 * wg).min(1.0) * STRUCTURE_LEVEL;
                 if n_slices > 0 && self.rng.next_f32() < 0.3 {
                     // a REAL recorded hit, hot and harsh, pitch/gain varied
-                    d.bank_off = (self.rng.next_u64() as usize % n_slices) * BANK_SLOT;
+                    d.bank_off = (self.rng.next_u64() as usize % n_slices) * self.bank_slot;
                     d.bank_pos = 0.0;
                     d.bank_rate = 0.8 + self.rng.next_f32() * 0.3;
                     d.env = (0.025 + 0.05 * self.rng.next_f32().powi(2)) * lg;
@@ -379,7 +383,7 @@ impl Rain {
         // the listener; sometimes a real recorded splat
         d.surface = false;
         if n_slices > 0 && self.rng.next_f32() < 0.2 {
-            d.bank_off = (self.rng.next_u64() as usize % n_slices) * BANK_SLOT;
+            d.bank_off = (self.rng.next_u64() as usize % n_slices) * self.bank_slot;
             d.bank_pos = 0.0;
             d.bank_rate = 0.85 + self.rng.next_f32() * 0.3;
             d.env = 0.01 + 0.02 * self.rng.next_f32().powi(2);
@@ -479,7 +483,7 @@ impl Rain {
             } else if d.bank_off != usize::MAX {
                 // recorded hit: linear-interp read at the drop's rate
                 let i = d.bank_pos as usize;
-                if i + 1 >= BANK_SLOT {
+                if i + 1 >= self.bank_slot {
                     d.env = 0.0;
                     continue;
                 }
