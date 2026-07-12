@@ -113,13 +113,13 @@ impl SpatialEngine {
         }
     }
 
-    /// Fast head rotation (camera yaw), applied at the DSP without waiting
-    /// for a simulation tick.
-    pub fn set_head_yaw(&mut self, yaw: f32) {
+    /// Fast head rotation (camera yaw/pitch/roll, yaw+ left / pitch+ up /
+    /// roll+ right), applied at the DSP without waiting for a sim tick.
+    pub fn set_head(&mut self, yaw: f32, pitch: f32, roll: f32) {
         for r in &mut self.renderers {
-            r.set_head_yaw(yaw);
+            r.set_head(yaw, pitch, roll);
         }
-        self.out.set_head_yaw(yaw);
+        self.out.set_head(yaw, pitch, roll);
     }
 
     pub fn set_point_budget(&mut self, n: usize) {

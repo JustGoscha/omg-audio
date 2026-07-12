@@ -70,6 +70,12 @@ const state = {
   orientationOffset: null,
   simState: null,
   running: false,
+  // camera face tracking: smoothed head offsets (rotation rad,
+  // translation m in camera terms: dx left, dy up, dz forward) applied
+  // on top of mouse/touch heading — audio only, the view stays put
+  face: { yaw: 0, pitch: 0, roll: 0, dx: 0, dy: 0, dz: 0 },
+  faceTarget: null,
+  faceTrack: null,
   rainLevel: 0, // index into RAIN_LEVELS
   chanHist: [], // per-channel meter frames, ~1 s
   mixerRows: null,
@@ -873,6 +879,8 @@ document.getElementById('start').onclick = async (ev) => {
     document.getElementById('recenter').hidden = false;
     document.getElementById('rain').hidden = false;
     document.getElementById('mixerbtn').hidden = false;
+    document.getElementById('face').hidden = false;
+    document.getElementById('face').onclick = toggleFaceTracking;
     buildMixer();
     document.getElementById('mixerbtn').onclick = (e) => {
       e.target.blur();
@@ -1043,8 +1051,17 @@ async function startAudio() {
   state.fx = (src, kind, action = 'play') =>
     node.port.postMessage({ type: 'fx', src, kind, action });
   setInterval(() => {
+    // face-tracked head translation: a small world-space offset of the
+    // listening position (lean left → ears move left)
+    const ch = Math.cos(state.heading);
+    const sh = Math.sin(state.heading);
+    const f = state.face;
     worker.postMessage({
-      type: 'pose', x: state.pose.x, y: state.pose.y, z: EYE + (state.pose.z || 0), yaw: 0,
+      type: 'pose',
+      x: state.pose.x + ch * f.dz - sh * f.dx,
+      y: state.pose.y + sh * f.dz + ch * f.dx,
+      z: EYE + (state.pose.z || 0) + f.dy,
+      yaw: 0,
       // animated leaf positions: the sim prices the swing continuously
       doors: state.doorMeshes.map((dm) => dm.openness),
       projs: [
@@ -1054,7 +1071,12 @@ async function startAudio() {
     });
   }, 50);
   setInterval(() => {
-    node.port.postMessage({ type: 'head', yaw: state.heading });
+    node.port.postMessage({
+      type: 'head',
+      yaw: state.heading + state.face.yaw,
+      pitch: Math.max(-1.5, Math.min(1.5, state.pitch + state.face.pitch)),
+      roll: state.face.roll,
+    });
   }, 16);
 
   await audio.resume();
@@ -1142,7 +1164,47 @@ function setupControls() {
       state.heading = Math.PI / 2;
       state.pitch = 0;
     }
+    // face tracking re-zeros on the current sitting pose
+    state.faceTrack?.recenter();
   };
+}
+
+// Camera face tracking: real head movements drive the engine's head
+// (audio only — the view stays put, that's the point: turn your head
+// and HEAR the world stay fixed while the screen keeps facing you).
+async function toggleFaceTracking() {
+  const btn = document.getElementById('face');
+  btn.blur();
+  if (state.faceTrack) {
+    state.faceTrack.stop();
+    state.faceTrack = null;
+    state.faceTarget = null;
+    state.face = { yaw: 0, pitch: 0, roll: 0, dx: 0, dy: 0, dz: 0 };
+    btn.textContent = '🎥 face';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '🎥 …';
+  try {
+    const { startFaceTracking } = await import('./facetrack.js');
+    const clamp = (v, r) => Math.max(-r, Math.min(r, v));
+    state.faceTrack = await startFaceTracking((p) => {
+      state.faceTarget = {
+        yaw: clamp(p.yaw, 1.2),
+        pitch: clamp(p.pitch, 1.2),
+        roll: clamp(p.roll, 1.0),
+        dx: clamp(p.dx, 0.35),
+        dy: clamp(p.dy, 0.35),
+        dz: clamp(p.dz, 0.5),
+      };
+    });
+    btn.textContent = '🎥 on';
+  } catch (e) {
+    console.error('face tracking unavailable:', e);
+    btn.textContent = '🎥 ✗';
+    setTimeout(() => { btn.textContent = '🎥 face'; }, 2500);
+  }
+  btn.disabled = false;
 }
 
 function throwBall() {
@@ -1337,6 +1399,17 @@ function frame(t) {
     updateProjectiles(dt, t);
     updateDoors(dt);
     updateCars(dt, t);
+    if (state.faceTarget) {
+      // one-pole toward the last camera-frame pose (τ 45 ms) bridges
+      // 30–60 fps detections to render rate; the engine smooths 30 ms
+      // more on top
+      const k = 1 - Math.exp(-dt / 0.045);
+      const f = state.face;
+      const g = state.faceTarget;
+      for (const key of ['yaw', 'pitch', 'roll', 'dx', 'dy', 'dz']) {
+        f[key] += (g[key] - f[key]) * k;
+      }
+    }
     camera.position.copy(v3(state.pose.x, state.pose.y, EYE + (state.pose.z || 0)));
     camera.rotation.y = state.heading - Math.PI / 2;
     camera.rotation.x = state.pitch;
@@ -1357,7 +1430,16 @@ function frame(t) {
 
   const st = state.simState;
   if (st) {
-    statusEl.textContent = `${ROOMS[st[2] | 0].name} · RT60 ${st[3].toFixed(2)}s`;
+    let line = `${ROOMS[st[2] | 0].name} · RT60 ${st[3].toFixed(2)}s`;
+    if (state.faceTrack) {
+      // live sign check in the field: turn left → yaw +, look up → pitch +
+      const deg = (r) => (r * 57.2958).toFixed(0).padStart(3);
+      const s = state.faceTrack.stats;
+      line += s.tracking
+        ? ` · 🎥 y${deg(state.face.yaw)}° p${deg(state.face.pitch)}° ${s.fps.toFixed(0)}fps ${s.ms.toFixed(0)}ms`
+        : ' · 🎥 no face';
+    }
+    statusEl.textContent = line;
   }
   requestAnimationFrame(frame);
 }

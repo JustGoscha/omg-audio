@@ -56,11 +56,13 @@ impl OmgEngine {
         }
     }
 
-    /// Fast head/camera yaw — applied at the DSP immediately.
+    /// Fast head/camera orientation — applied at the DSP immediately.
+    /// Yaw positive turns left, pitch positive looks up, roll positive
+    /// tilts right (right ear down).
     #[func]
-    fn set_head_yaw(&mut self, yaw: f32) {
+    fn set_head(&mut self, yaw: f32, pitch: f32, roll: f32) {
         if let Some(e) = &mut self.engine {
-            e.set_head_yaw(yaw);
+            e.set_head(yaw, pitch, roll);
         }
     }
 

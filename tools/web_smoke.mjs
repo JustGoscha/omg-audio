@@ -66,7 +66,7 @@ for (let sec = 0; sec < positions.length; sec++) {
     sim.sim_tick(px, py, 1.6, 0.0);
     setParamsFromSim();
     // head turns slowly during second 3 to exercise rotation + reselection
-    if (sec === 3) eng.eng_set_head((tick / 20) * Math.PI);
+    if (sec === 3) eng.eng_set_head((tick / 20) * Math.PI, 0.15, 0.0);
     for (let blk = 0; blk < FS / 20 / 128; blk++) {
       eng.eng_process(128);
       const l = new Float32Array(eng.memory.buffer, eng.eng_out_l(), 128);

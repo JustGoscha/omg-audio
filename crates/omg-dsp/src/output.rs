@@ -1,9 +1,11 @@
 //! The single decode stage for the summed SH bus of all sources: rotates
-//! the field by (smoothed) head yaw, then decodes — measured-HRIR binaural
-//! when speaker HRIRs are provided, virtual-cardioid stereo otherwise —
-//! and mixes in the point-rendered stereo. Shared by native and web builds.
+//! the field by (smoothed) head orientation — yaw, pitch and roll, so
+//! mouse look, device tilt and camera face tracking all move the field —
+//! then decodes: measured-HRIR binaural when speaker HRIRs are provided,
+//! virtual-cardioid stereo otherwise — and mixes in the point-rendered
+//! stereo. Shared by native and web builds.
 
-use crate::ambi::{rotate_z, StereoDecoder, NCH};
+use crate::ambi::{HeadRotation, StereoDecoder, NCH};
 use crate::hrtf::BinauralDecoder;
 use crate::smooth::Smoothed;
 
@@ -14,7 +16,9 @@ enum Decode {
 
 pub struct OutputStage {
     decode: Decode,
-    head_yaw: Smoothed,
+    /// Smoothed head orientation [yaw, pitch, roll] (see `HeadRotation`
+    /// for the conventions).
+    head: [Smoothed; 3],
     // "HDR audio": slow automatic gain riding, like the ear adapting —
     // loud scenes get pulled down quickly (acoustic reflex), quiet scenes
     // get eased up slowly, tanh stays as the final safety.
@@ -70,7 +74,7 @@ impl OutputStage {
         let tc = |tau: f32| 1.0 - (-1.0 / (tau * sample_rate)).exp();
         Self {
             decode,
-            head_yaw: Smoothed::new(0.0, 0.03, sample_rate),
+            head: core::array::from_fn(|_| Smoothed::new(0.0, 0.03, sample_rate)),
             env: AGC_TARGET,
             agc_gain: 1.0,
             env_att: tc(0.008),
@@ -103,8 +107,10 @@ impl OutputStage {
         }
     }
 
-    pub fn set_head_yaw(&mut self, yaw: f32) {
-        self.head_yaw.set(yaw);
+    pub fn set_head(&mut self, yaw: f32, pitch: f32, roll: f32) {
+        self.head[0].set(yaw);
+        self.head[1].set(pitch);
+        self.head[2].set(roll);
     }
 
     pub fn agc_gain(&self) -> f32 {
@@ -126,7 +132,8 @@ impl OutputStage {
     #[inline]
     pub fn process(&mut self, sh: &[f32; NCH], pl: f32, pr: f32) -> (f32, f32) {
         let mut rotated = *sh;
-        rotate_z(&mut rotated, self.head_yaw.tick());
+        HeadRotation::new(self.head[0].tick(), self.head[1].tick(), self.head[2].tick())
+            .apply(&mut rotated);
         let (l, r) = match &mut self.decode {
             Decode::Hrtf(d) => d.process(&rotated),
             Decode::Cardioid(d) => d.decode(&rotated),

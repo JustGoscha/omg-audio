@@ -1,6 +1,7 @@
 // AudioWorkletProcessor hosting the wasm engine. Everything arrives via
 // port messages: the wasm binary, HRIR assets, decoded source audio, then a
-// steady stream of flat ParamBlocks (20 Hz) and head-yaw updates (~60 Hz).
+// steady stream of flat ParamBlocks (20 Hz) and head-pose updates (~60 Hz,
+// yaw/pitch/roll — mouse look, device tilt and camera face tracking).
 class OmgProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -76,7 +77,7 @@ class OmgProcessor extends AudioWorkletProcessor {
         this.w.eng_set_params(i, f.length);
       });
     } else if (m.type === 'head' && this.ready) {
-      this.w.eng_set_head(m.yaw);
+      this.w.eng_set_head(m.yaw, m.pitch || 0, m.roll || 0);
     } else if (m.type === 'rain' && this.ready) {
       this.w.eng_set_rain(m.intensity);
     } else if (m.type === 'env' && this.ready) {

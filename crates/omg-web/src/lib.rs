@@ -454,14 +454,16 @@ pub extern "C" fn eng_set_params(src: u32, len: u32) {
     }
 }
 
+/// Fast head orientation (yaw/pitch/roll, see `HeadRotation` for the
+/// conventions) — applied at the DSP without waiting for a sim tick.
 #[no_mangle]
-pub extern "C" fn eng_set_head(yaw: f32) {
+pub extern "C" fn eng_set_head(yaw: f32, pitch: f32, roll: f32) {
     let ctx = eng();
     for r in &mut ctx.renderers {
-        r.set_head_yaw(yaw);
+        r.set_head(yaw, pitch, roll);
     }
     if let Some(o) = &mut ctx.out {
-        o.set_head_yaw(yaw);
+        o.set_head(yaw, pitch, roll);
     }
 }
 

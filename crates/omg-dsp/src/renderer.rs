@@ -8,7 +8,7 @@
 //! final delay. Vanished key ⇒ the slot fades out and is recycled. Delay is
 //! never slid between two different paths — that would be a pitch chirp.
 
-use crate::ambi::{encode_gains, rotate_z, NCH};
+use crate::ambi::{encode_gains, rotate_z, HeadRotation, NCH};
 use crate::delay::DelayLine;
 use crate::fdn::{Fdn, NLINES};
 use crate::filter::{OnePoleLp, TapEq};
@@ -141,9 +141,10 @@ pub struct Renderer {
     retarget_thresh: f32,
     /// Per-source point-render budget (see `DEFAULT_POINT_TAPS`).
     point_budget: usize,
-    /// Fast head rotation (device orientation / mouse look), applied to
-    /// point-tap HRIR selection here and to the bus at the decode stage.
-    head_yaw: Smoothed,
+    /// Fast head rotation [yaw, pitch, roll] (device orientation, mouse
+    /// look, face tracking), applied to point-tap HRIR selection here and
+    /// to the bus at the decode stage.
+    head: [Smoothed; 3],
     reselect_countdown: u32,
     version_seen: u64,
     first_params: bool,
@@ -207,7 +208,7 @@ impl Renderer {
             sample_rate,
             retarget_thresh: RETARGET_MS * 1e-3 * sample_rate,
             point_budget: DEFAULT_POINT_TAPS,
-            head_yaw: Smoothed::new(0.0, 0.03, sample_rate),
+            head: core::array::from_fn(|_| Smoothed::new(0.0, 0.03, sample_rate)),
             reselect_countdown: 0,
             version_seen: 0,
             first_params: true,
@@ -217,8 +218,10 @@ impl Renderer {
         }
     }
 
-    pub fn set_head_yaw(&mut self, yaw: f32) {
-        self.head_yaw.set(yaw);
+    pub fn set_head(&mut self, yaw: f32, pitch: f32, roll: f32) {
+        self.head[0].set(yaw);
+        self.head[1].set(pitch);
+        self.head[2].set(roll);
     }
 
     /// Set how many of the strongest taps are point-rendered. Takes effect
@@ -315,8 +318,12 @@ impl Renderer {
                         slot.eq = TapEq::default();
                         if want_point {
                             if let Some(g) = &self.grid {
-                                let psi = self.head_yaw.target_val();
-                                slot.conv.reset(g.nearest(rotate_dir(t.dir, psi)));
+                                let rot = HeadRotation::new(
+                                    self.head[0].target_val(),
+                                    self.head[1].target_val(),
+                                    self.head[2].target_val(),
+                                );
+                                slot.conv.reset(g.nearest(rot.rotate_dir(t.dir)));
                             }
                         }
                         for k in 0..NCH {
@@ -377,17 +384,20 @@ impl Renderer {
         let foa = bus;
         let mut pl = 0.0f32;
         let mut pr = 0.0f32;
-        let psi = self.head_yaw.tick();
+        let yaw = self.head[0].tick();
+        let pitch = self.head[1].tick();
+        let roll = self.head[2].tick();
 
         // Every 128 samples (~375 Hz): re-select point-tap HRIRs against the
-        // current head yaw (PointConv crossfades index changes), and refresh
+        // current head pose (PointConv crossfades index changes), and refresh
         // the remote-reverb aperture spread from the smoothed door direction.
         if self.reselect_countdown == 0 {
             self.reselect_countdown = 128;
             if let Some(grid) = &self.grid {
+                let rot = HeadRotation::new(yaw, pitch, roll);
                 for tap in &mut self.taps {
                     if tap.point && tap.key.is_some() {
-                        tap.conv.set_dir(grid, rotate_dir(tap.base_dir, psi));
+                        tap.conv.set_dir(grid, rot.rotate_dir(tap.base_dir));
                     }
                 }
             }
@@ -490,9 +500,3 @@ impl Renderer {
     }
 }
 
-/// Listener-frame direction under head yaw ψ: dir' = Rz(-ψ)·dir.
-#[inline]
-fn rotate_dir(d: [f32; 3], psi: f32) -> [f32; 3] {
-    let (s, c) = psi.sin_cos();
-    [c * d[0] + s * d[1], -s * d[0] + c * d[1], d[2]]
-}

@@ -132,7 +132,7 @@ sh tools/build_godot.sh        # cargo build the extension + stage into godot/bi
 
 `OmgEngine` (RefCounted) is the whole integration surface: `setup(rate)`,
 `set_source_samples(i, PackedFloat32Array)`, `set_listener(x, y, yaw)`,
-`set_head_yaw(yaw)`, `set_dynamic(slot, x, y, z, active)`, and
+`set_head(yaw, pitch, roll)`, `set_dynamic(slot, x, y, z, active)`, and
 `render(frames) -> PackedVector2Array` which you push into an
 `AudioStreamGenerator`. The simulation runs on its own 20 Hz thread inside
 the extension; `render()` never blocks on it — the same two-clock
@@ -167,9 +167,15 @@ never share state except through `ParamBlock`.
   paths — that would be a pitch chirp.
 - Web transport is flat `ParamBlock`s over `postMessage` (~4 KB @ 20 Hz) —
   no SharedArrayBuffer, no COOP/COEP headers, so it hosts on GitHub Pages.
-- Head yaw (mouse / device orientation) is a fast path straight into the
-  DSP: SH-bus z-rotation at the decode stage + per-block nearest-HRIR
-  re-selection for point taps.
+- Head orientation (mouse look, device orientation, camera face tracking)
+  is a fast path straight into the DSP: a full yaw/pitch/roll SH rotation
+  (exact block-diagonal 3×3 + 5×5 on the order-2 bus) at the decode stage
+  + per-block nearest-HRIR re-selection for point taps.
+- The 🎥 button in the demo enables **camera face tracking** (MediaPipe
+  FaceLandmarker, fetched on demand): your real head movements — small
+  turns, tilts, even leaning — drive the engine's head while the view
+  stays put. Turn your head and hear the world hold still. `recenter`
+  re-zeros on your current sitting pose.
 - The late field is an FDN driven by traced per-band RT60, not a convolved
   impulse response — parameters morph artifact-free in real time.
 

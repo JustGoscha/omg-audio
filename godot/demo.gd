@@ -51,7 +51,7 @@ func _ready() -> void:
 func _process(_dt: float) -> void:
 	_move(_dt)
 	engine.set_listener(pos.x, pos.y, 0.0)
-	engine.set_head_yaw(heading)
+	engine.set_head(heading, 0.0, 0.0)
 	var pb: AudioStreamGeneratorPlayback = player.get_stream_playback()
 	while pb.get_frames_available() > 512:
 		pb.push_buffer(engine.render(mini(pb.get_frames_available(), 2048)))

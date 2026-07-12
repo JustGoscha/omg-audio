@@ -27,7 +27,7 @@ func _initialize() -> void:
 	assert(peak < 1.0, "engine is clipping")
 
 	# Turning the head must change the ear signals (binaural sanity).
-	e.set_head_yaw(PI / 2.0)
+	e.set_head(PI / 2.0, 0.0, 0.0)
 	var out2: PackedVector2Array = e.render(4800)
 	var diff := 0.0
 	for v in out2:
