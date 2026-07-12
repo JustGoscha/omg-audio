@@ -245,9 +245,15 @@ guess — `tools/bench_web.mjs` is the receipt:
   paired for the mass law), and door jambs, building corners and roof
   lines are all just auto-extracted edges searched for single- and
   double-bend paths (166 µs per source-listener query at the default
-  budget). The demo still runs the authored rect world; migrating it —
-  plus the directional late field that replaces per-portal coupled
-  reverb — is the next milestone, then the wgpu compute port.
+  budget). The demo's OCCLUSION now runs on this: the old hand-built
+  corner list, corner-visibility matrix and multi-roof rubber band are
+  deleted — occlusion floors come from AutoPaths over the same world
+  mesh the ambient dome traces (bound-ranked single bends, branch-and-
+  bound double bends, an over-the-silhouette hull path for any number
+  of buildings, bent energy averaged over each aperture's real extent,
+  and per-cell caching with a fixed refresh budget). In-room acoustics
+  remain per-room shoeboxes (which these rooms are); the directional
+  late field and the wgpu compute port are the remaining milestone.
 - **Diffraction is knife-edge Kurze–Anderson** (Fresnel-number insertion
   loss per edge, "rubber band" multi-edge construction) over corner, roof
   and door-jamb edges — the dominant behavior, but not full UTD wedge
