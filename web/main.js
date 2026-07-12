@@ -360,8 +360,8 @@ function wallX(x, y0, y1, h) {
 }
 
 // split a collider around a doorway so it stays walkable
-// Romanesque interior: two arcades of columns with rounded arches, a
-// transverse arch per bay, tall glowing panes, a rose window, warm light.
+// Romanesque interior: arcades with rounded arches, a triforium tier,
+// rib-vaulted ceiling, an apse with altar, checkered stone floor.
 // Visual only — acoustically the arcades are the cathedral material's
 // high scattering fraction (the tracer diffuses reflections off it).
 function buildCathedralInterior() {
@@ -370,6 +370,28 @@ function buildCathedralInterior() {
   const rows = [4.0, 12.0];
   const ys = [];
   for (let y = 55.0; y <= 71.01; y += 3.2) ys.push(y);
+
+  // checkered stone floor (replaces the flat color inside the nave)
+  const fc = document.createElement('canvas');
+  fc.width = fc.height = 256;
+  const fg = fc.getContext('2d');
+  for (let i = 0; i < 8; i++) {
+    for (let j = 0; j < 8; j++) {
+      fg.fillStyle = (i + j) % 2 ? '#3c3c46' : '#55555f';
+      fg.fillRect(i * 32, j * 32, 32, 32);
+    }
+  }
+  const fTex = new THREE.CanvasTexture(fc);
+  fTex.wrapS = fTex.wrapT = THREE.RepeatWrapping;
+  fTex.repeat.set(4, 5.5);
+  const cathFloor = new THREE.Mesh(
+    new THREE.PlaneGeometry(16, 22),
+    new THREE.MeshLambertMaterial({ map: fTex }),
+  );
+  cathFloor.rotation.x = -Math.PI / 2;
+  cathFloor.position.copy(v3(8, 63, 0.03));
+  scene.add(cathFloor);
+
   const colGeo = new THREE.CylinderGeometry(0.45, 0.52, 8.0, 10);
   const capGeo = new THREE.BoxGeometry(1.3, 0.5, 1.3);
   for (const x of rows) {
@@ -383,36 +405,81 @@ function buildCathedralInterior() {
       const base = new THREE.Mesh(capGeo, stoneD);
       base.position.copy(v3(x, y, 0.25));
       scene.add(base);
-      // slim cross colliders so you don't ghost through columns
       COLLIDERS.push({ axis: 0, plane: x, lo: y - 0.45, hi: y + 0.45, h: 8 });
       COLLIDERS.push({ axis: 1, plane: y, lo: x - 0.45, hi: x + 0.45, h: 8 });
     }
-    // rounded arches between neighboring columns (radius = half the bay)
+    // rounded arcade arches between neighboring columns
     const archGeo = new THREE.TorusGeometry(1.6, 0.22, 8, 14, Math.PI);
     for (let i = 0; i + 1 < ys.length; i++) {
       const a = new THREE.Mesh(archGeo, stone);
       a.position.copy(v3(x, (ys[i] + ys[i + 1]) / 2, 8.5));
-      a.rotation.y = Math.PI / 2; // arch spans along world y
+      a.rotation.y = Math.PI / 2;
       scene.add(a);
     }
+    // triforium: a second, smaller arch tier above the arcade
+    const triGeo = new THREE.TorusGeometry(0.8, 0.12, 6, 10, Math.PI);
+    for (let i = 0; i + 1 < ys.length; i++) {
+      const mid = (ys[i] + ys[i + 1]) / 2;
+      for (const off of [-0.85, 0.85]) {
+        const a = new THREE.Mesh(triGeo, stoneD);
+        a.position.copy(v3(x, mid + off, 10.6));
+        a.rotation.y = Math.PI / 2;
+        scene.add(a);
+      }
+      const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 3.2), stoneD);
+      shelf.position.copy(v3(x, mid, 9.9));
+      scene.add(shelf);
+    }
   }
-  // transverse arches across the nave at every bay line
+  // transverse arches + vault ribs across the nave at every bay line
   const bigArch = new THREE.TorusGeometry(4.0, 0.3, 8, 18, Math.PI);
+  const rib = new THREE.TorusGeometry(4.6, 0.16, 6, 18, Math.PI);
   for (const y of ys) {
     const a = new THREE.Mesh(bigArch, stoneD);
     a.position.copy(v3(8, y, 8.5));
     scene.add(a);
+    const r = new THREE.Mesh(rib, stone);
+    r.position.copy(v3(8, y, 10.2));
+    scene.add(r);
   }
+  // longitudinal ridge line along the vault crest
+  const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 19), stoneD);
+  ridge.position.copy(v3(8, 63.5, 14.8));
+  scene.add(ridge);
+
+  // apse: a faceted alcove at the north end with the altar
+  for (let k = 0; k < 5; k++) {
+    const ang = Math.PI * (0.15 + (0.7 * k) / 4);
+    const px = 8 + 4.2 * Math.cos(ang);
+    const py = 74 - 3.4 * Math.abs(Math.sin(ang));
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(2.4, 12, 0.3), stone);
+    panel.position.copy(v3(px, py, 6));
+    panel.rotation.y = ang + Math.PI / 2;
+    scene.add(panel);
+  }
+  const altar = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.1, 1.2), stoneD);
+  altar.position.copy(v3(8, 70.5, 0.55));
+  scene.add(altar);
+  const cloth = new THREE.Mesh(
+    new THREE.BoxGeometry(2.5, 0.06, 1.3),
+    new THREE.MeshLambertMaterial({ color: 0x7a1f2b }),
+  );
+  cloth.position.copy(v3(8, 70.5, 1.13));
+  scene.add(cloth);
+  COLLIDERS.push({ axis: 1, plane: 70.5, lo: 6.8, hi: 9.2, h: 1.2 });
   // portal surround
   const pArch = new THREE.Mesh(new THREE.TorusGeometry(1.35, 0.25, 8, 14, Math.PI), stoneD);
   pArch.position.copy(v3(8, 52, 3.5));
   scene.add(pArch);
-  // candle-warm crossing light + cool clerestory wash
-  const warm = new THREE.PointLight(0xffd9a0, 40, 30);
-  warm.position.copy(v3(8, 62, 5));
+  // candle-warm apse glow, crossing light, cool vault wash
+  const apseGlow = new THREE.PointLight(0xffc37a, 50, 22);
+  apseGlow.position.copy(v3(8, 70, 3));
+  scene.add(apseGlow);
+  const warm = new THREE.PointLight(0xffd9a0, 35, 28);
+  warm.position.copy(v3(8, 60, 5));
   scene.add(warm);
-  const cool = new THREE.PointLight(0x91b7ff, 30, 40);
-  cool.position.copy(v3(8, 70, 10));
+  const cool = new THREE.PointLight(0x8faddf, 30, 45);
+  cool.position.copy(v3(8, 64, 12));
   scene.add(cool);
 }
 
