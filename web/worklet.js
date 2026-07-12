@@ -29,6 +29,7 @@ class OmgProcessor extends AudioWorkletProcessor {
 
   async handle(m) {
     if (m.type === 'wasm') {
+      if (this.w) return; // never re-init a live engine
       const { instance } = await WebAssembly.instantiate(m.bytes, {});
       this.w = instance.exports;
       this.w.eng_init(sampleRate);

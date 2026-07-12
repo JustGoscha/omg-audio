@@ -836,8 +836,15 @@ buildDoorPanels();
 const statusEl = document.getElementById('status');
 const hintEl = document.getElementById('controls-hint');
 
-document.getElementById('start').onclick = async () => {
+document.getElementById('start').onclick = async (ev) => {
   const err = document.getElementById('err');
+  // The load takes seconds; an impatient second tap must NOT start a
+  // second audio graph (it played everything twice, one copy without
+  // its mixer defaults — the "super loud on load" bug).
+  if (state.starting) return;
+  state.starting = true;
+  ev.target.disabled = true;
+  ev.target.textContent = 'loading…';
   try {
     await startAudio();
     document.getElementById('overlay').remove();
@@ -855,6 +862,9 @@ document.getElementById('start').onclick = async () => {
   } catch (e) {
     err.textContent = String(e);
     console.error(e);
+    state.starting = false;
+    ev.target.disabled = false;
+    ev.target.textContent = 'start';
   }
 };
 
