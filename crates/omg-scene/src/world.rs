@@ -210,6 +210,7 @@ impl WorldSim {
         let mut blocks = Vec::with_capacity(self.defs.len());
         let mut routes = Vec::with_capacity(self.defs.len());
         let mut rt60_mid = 0.0f32;
+        let mut rt60_vote = 0.0f32;
 
         // per-tick budget of fresh occlusion-floor evaluations; everything
         // beyond it reuses its last (spatially nearby) value one tick longer
@@ -745,10 +746,12 @@ impl WorldSim {
             pb.version = self.tick_no;
             self.last_level[si] = pb.taps.iter().map(|t| t.gains[1]).sum::<f32>()
                 + pb.remote.as_ref().map_or(0.0, |r| r.send[1]);
-            // HUD RT60: only audible sources vote — a near-silent distant
-            // source's trace estimates a decay slope from numerical dust
-            // and would jitter the display
-            if self.last_level[si] > LOD_QUIET || rt60_mid == 0.0 {
+            // HUD RT60: the dominant source votes — that block's decay is
+            // the reverb the listener is actually hearing. (Any fixed pick
+            // can land on a never-traced quiet source, which reports the
+            // estimator's 0.5 s fallback, not a measurement.)
+            if self.last_level[si] >= rt60_vote {
+                rt60_vote = self.last_level[si];
                 rt60_mid = pb.reverb.rt60[1];
             }
             self.last_blocks[si] = pb.clone();
