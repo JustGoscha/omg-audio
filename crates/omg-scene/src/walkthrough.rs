@@ -679,8 +679,30 @@ pub struct Routed {
     /// doors; 1.0 through open apertures. The wet path pays this even
     /// where it pays no bending.
     pub wet_trans: [f32; NBANDS],
+    /// Wall axis of the exit aperture (`Door::axis`: 0 = x-const wall,
+    /// 1 = y-const wall), None when the source radiates unrouted. Lets
+    /// the diffuse re-radiation pay Lambert obliquity toward the target.
+    pub exit_axis: Option<usize>,
     /// Full apparent path (source → doors → listener), for visualization.
     pub route: Vec<(f32, f32)>,
+}
+
+impl Routed {
+    /// Lambert obliquity of the exit aperture toward `to`: a diffuse
+    /// radiator is loudest on-axis and near-silent seen edge-on; the
+    /// floor is the energy that edge diffraction wraps around anyway.
+    pub fn lambert_toward(&self, to: (f32, f32)) -> f32 {
+        const FLOOR: f32 = 0.15;
+        match self.exit_axis {
+            Some(axis) => {
+                let (dx, dy) = (to.0 - self.virt_world.0, to.1 - self.virt_world.1);
+                let len = (dx * dx + dy * dy).sqrt().max(1e-3);
+                let cos = if axis == 0 { dx.abs() } else { dy.abs() } / len;
+                cos.max(FLOOR)
+            }
+            None => 1.0,
+        }
+    }
 }
 
 pub fn route_source(
@@ -696,6 +718,7 @@ pub fn route_source(
             extra_dist: 0.0,
             muffle: [1.0; NBANDS],
             wet_trans: [1.0; NBANDS],
+            exit_axis: None,
             route: vec![src.pos, lis],
         };
     }
@@ -809,6 +832,7 @@ pub fn price_chain(
             extra_dist: 0.0,
             muffle: [1.0; NBANDS],
             wet_trans: [1.0; NBANDS],
+            exit_axis: None,
             route: vec![src_pos, target],
         };
     }
@@ -842,6 +866,7 @@ pub fn price_chain(
         extra_dist: extra,
         muffle,
         wet_trans,
+        exit_axis: chain.last().map(|&di| all_doors[di].axis),
         route: pts,
     }
 }
@@ -873,6 +898,7 @@ pub fn aperture_routes(
                 extra_dist: dist(src.pos, v),
                 muffle: if d.glass { GLASS_TRANSMISSION } else { ke },
                 wet_trans: d.fill_amplitude(),
+                exit_axis: Some(d.axis),
                 route: vec![src.pos, v, lis],
             }
         })

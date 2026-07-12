@@ -496,8 +496,9 @@ impl WorldSim {
                 }
                 // Radiators: the walk chain's entry aperture + every door
                 // and WINDOW directly connecting the two rooms. Each one
-                // re-radiates the source room's field omnidirectionally —
-                // a window is audible off-axis, not only on the sight-line.
+                // re-radiates the source room's field like a diffuse patch
+                // (Lambert: loudest on-axis, floored edge-on) — a window
+                // stays audible off-axis, but no longer at full strength.
                 let chain = route_source(&def, state.room, state.listener_world, &self.doors);
                 let mut radiators: Vec<(walkthrough::Routed, bool)> = vec![(chain, true)];
                 for ar in aperture_routes(&def, state.room, state.listener_world, &self.doors) {
@@ -543,6 +544,7 @@ impl WorldSim {
                     let fl = floor_of(routed.virt_world);
                     core::array::from_fn(|b| t[b].max(fl[b]))
                 };
+                let lam = routed.lambert_toward(state.listener_world);
                 for b in 0..NBANDS {
                     // panes/panels always pay their flat transmission; open
                     // chains pay the bending of doors past the first
@@ -551,7 +553,7 @@ impl WorldSim {
                     } else {
                         routed.wet_trans[b] * chain_bend[b]
                     };
-                    rem_send[b] += w2 * rp.level[b] * ap_factor * aperture * occ[b];
+                    rem_send[b] += w2 * rp.level[b] * ap_factor * aperture * occ[b] * lam;
                     rem_rt60[b] = rp.rt60[b];
                 }
                 let (dxw, dyw) = (
@@ -1112,6 +1114,61 @@ mod tests {
         assert!(
             inside < 0.5 * outside,
             "walls must attenuate the car: inside {inside} vs outside {outside}"
+        );
+    }
+
+    /// Field report: an open doorway should MATTER. With your ear right
+    /// at the opening the source must be dramatically louder than with
+    /// your head beside the wall a couple of meters off-axis — a doorway
+    /// radiates like an aperture (Lambert-ish), it is not an omni point.
+    #[test]
+    fn doorway_contrast_walking_past() {
+        let mut w = WorldSim::new();
+        const VOICE: usize = 1; // in the Great Hall at (10.5, 20.5)
+        let level_at = |w: &mut WorldSim, x: f32, y: f32| -> f32 {
+            for _ in 0..24 {
+                let _ = w.tick_at(x, y, 0.0);
+            }
+            let (blocks, _) = w.tick_at(x, y, 0.0);
+            let pb = &blocks[VOICE];
+            let taps: f32 = pb.taps.iter().map(|t| t.gains[1]).sum();
+            taps + pb.remote.as_ref().map_or(0.0, |r| r.send[1])
+        };
+        // profile 1.2 m outside the hall's north wall, past the door at x=7
+        let mut profile = Vec::new();
+        let mut x = 1.0f32;
+        while x <= 13.0 + 1e-6 {
+            profile.push((x, level_at(&mut w, x, 25.2)));
+            x += 0.75;
+        }
+        let db = |v: f32| 20.0 * v.max(1e-9).log10();
+        eprintln!(
+            "walk-past profile @y=25.2: {}",
+            profile
+                .iter()
+                .map(|(x, v)| format!("x{x:.1}:{:.1}dB", db(*v)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let at_door = profile
+            .iter()
+            .filter(|(x, _)| (*x - 7.0).abs() <= 0.8)
+            .map(|(_, v)| *v)
+            .fold(0.0f32, f32::max);
+        let beside = profile
+            .iter()
+            .filter(|(x, _)| (*x - 3.0).abs() <= 0.8) // ~4 m off-axis, next to the wall
+            .map(|(_, v)| *v)
+            .fold(0.0f32, f32::max);
+        eprintln!(
+            "at door {:.1} dB, beside wall {:.1} dB, contrast {:.1} dB",
+            db(at_door),
+            db(beside),
+            db(at_door) - db(beside)
+        );
+        assert!(
+            at_door > 3.98 * beside, // ≥ 12 dB
+            "the opening must dominate: at door {at_door} vs beside wall {beside}"
         );
     }
 
