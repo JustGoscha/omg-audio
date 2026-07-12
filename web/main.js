@@ -49,7 +49,7 @@ const SOURCES = [
   { name: 'club', pos: [27, 32], color: 0xff5a9e,
     emitters: [[23.5, 27.5], [30.5, 27.5], [23.5, 36.5], [30.5, 36.5]] },
   { name: 'flute', pos: [8, 66], color: 0x9ad2ff },
-  { name: 'radio', pos: [37.5, 12.5], color: 0xd2b06e },
+  { name: 'radio', pos: [37.5, 12.5], z: -2.2, color: 0xd2b06e },
 ];
 const MARGIN = 0.35;
 const EYE = 1.6;
@@ -635,12 +635,12 @@ function buildWorld() {
           : new THREE.SphereGeometry(0.16, 24, 16),
         new THREE.MeshBasicMaterial({ color: src.color }),
       );
-      mesh.position.copy(v3(ex, ey, isRig ? 1.9 : 1.5));
+      mesh.position.copy(v3(ex, ey, src.z ?? (isRig ? 1.9 : 1.5)));
       scene.add(mesh);
       src.meshes.push(mesh);
     }
     const light = new THREE.PointLight(src.color, 6, 8);
-    light.position.copy(v3(src.pos[0], src.pos[1], 1.8));
+    light.position.copy(v3(src.pos[0], src.pos[1], (src.z ?? 1.5) + 0.3));
     scene.add(light);
 
     const c = document.createElement('canvas');

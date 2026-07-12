@@ -104,7 +104,10 @@ impl WorldSim {
                 .map(|_| (0..rooms.len()).map(|_| Sim::new()).collect())
                 .collect(),
             sim_remotes: defs.iter().map(|_| Sim::new()).collect(),
-            src_z: defs.iter().map(|_| walkthrough::SRC_HEIGHT).collect(),
+            src_z: defs
+                .iter()
+                .map(|d| rooms[d.room].floor_z + walkthrough::SRC_HEIGHT)
+                .collect(),
             dynamic_active: [false; walkthrough::DYN_SLOTS],
             facades: {
                 let out = rooms.last().unwrap();
