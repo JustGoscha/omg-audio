@@ -98,6 +98,30 @@ field is *computed*, not authored:
   and render load. Slot leaks, level pile-ups and perf spikes are
   measurable on sight instead of reconstructed from ear-memory.
 
+## Demos
+
+[![walkthrough preview](https://github.com/JustGoscha/omg-audio/releases/download/walkthroughs/walkthrough-preview.gif)](https://github.com/JustGoscha/omg-audio/releases/tag/walkthroughs)
+
+Every engine version re-renders the **same scripted 98 s walk** (living
+room → corridor → great hall → outside → entrance → club) as a top-down
+schematic video with binaural audio — the whole history is on the
+[walkthroughs release](https://github.com/JustGoscha/omg-audio/releases/tag/walkthroughs),
+headphones on:
+
+| version | what it demonstrates |
+| --- | --- |
+| [v12 – huygens-doorways](https://github.com/JustGoscha/omg-audio/releases/download/walkthroughs/walkthrough-v12-huygens-doorways.mp4) | apertures re-radiate as Huygens sources; doorway wet pays Lambert obliquity — a real on-axis peak walking past an open door |
+| [v11 – mesh-dome-cathedral](https://github.com/JustGoscha/omg-audio/releases/download/walkthroughs/walkthrough-v11-mesh-dome-cathedral.mp4) | ambient dome, mesh-emergent knife-edge occlusion, cathedral + bunker |
+| [v10 – club-transmission](https://github.com/JustGoscha/omg-audio/releases/download/walkthroughs/walkthrough-v10-club-transmission.mp4) | mass-law wall transmission — *oomp-oomp* from the street |
+| [v8 – point-hrtf](https://github.com/JustGoscha/omg-audio/releases/download/walkthroughs/walkthrough-v8-point-hrtf.mp4) | per-path nearest-HRIR convolution for the strongest paths |
+| [v7 – hrtf-binaural](https://github.com/JustGoscha/omg-audio/releases/download/walkthroughs/walkthrough-v7-hrtf-binaural.mp4) | measured KEMAR HRIR binaural decode |
+| [v6](https://github.com/JustGoscha/omg-audio/releases/download/walkthroughs/walkthrough-v6-audible-coupled-reverb.mp4) / [v5 – coupled reverb](https://github.com/JustGoscha/omg-audio/releases/download/walkthroughs/walkthrough-v5-coupled-reverb.mp4) | coupled rooms carry their own reverb through doorways |
+| [two-sources](https://github.com/JustGoscha/omg-audio/releases/download/walkthroughs/walkthrough-two-sources.mp4) / [voice](https://github.com/JustGoscha/omg-audio/releases/download/walkthroughs/walkthrough-voice.mp4) / [music](https://github.com/JustGoscha/omg-audio/releases/download/walkthroughs/walkthrough-music.mp4) | the earliest renders |
+
+New versions join with
+`gh release upload walkthroughs walkthrough-vN-<name>.mp4` after the
+render recipe below.
+
 ## Hear it
 
 Web (what the live demo runs):
