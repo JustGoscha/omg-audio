@@ -1009,6 +1009,7 @@ async function startAudio() {
     node.port.onmessage = (e) => {
       if (e.data.type === 'ready') { clearTimeout(watchdog); res(); }
       if (e.data.type === 'error') { clearTimeout(watchdog); rej(new Error('worklet: ' + e.data.message)); }
+      if (e.data.type === 'error') console.error('worklet:', e.data.message);
       if (e.data.type === 'meters') {
         state.meters.l = e.data.l;
         state.meters.r = e.data.r;
