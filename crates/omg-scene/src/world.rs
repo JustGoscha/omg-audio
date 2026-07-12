@@ -140,6 +140,19 @@ impl WorldSim {
         }
     }
 
+    /// True when one room is buried and the other is not: the 2D
+    /// straight ray between them would tunnel through the earth — no
+    /// such path exists (buried rooms are exempt from 2D wall crossings,
+    /// which otherwise makes an underground source leak out UNMUFFLED).
+    /// Everything real travels the stair-shaft door chain.
+    fn grade_separated(&self, a: usize, b: usize) -> bool {
+        let buried = |r: usize| {
+            let rm = &self.rooms[r];
+            !rm.outdoor && rm.floor_z + rm.height <= 0.2
+        };
+        buried(a) != buried(b)
+    }
+
     /// Door panel openness 0 (closed) … 1 (open) — pass the ANIMATED leaf
     /// position each tick, so the swing sweeps every transmission filter
     /// continuously (glass panes ignore this).
@@ -438,7 +451,8 @@ impl WorldSim {
             // door apertures pass freely. With clear line of sight through
             // open doors this IS the unmuffled direct sound the portal
             // model used to fake; through walls it is the bass rumble.
-            if def.room != st.room {
+            // Grade-separated pairs have no straight path at all (earth).
+            if def.room != st.room && !self.grade_separated(def.room, st.room) {
                 let trans = straight_path_transmission(
                     &self.rooms,
                     &self.doors,
@@ -556,14 +570,18 @@ impl WorldSim {
                 // Wall-transmitted wet: the source room's diffuse field
                 // leaking through its walls (mass law) — the club "oomp"
                 // from outside is reverberant bass, not dry signal.
+                // Buried walls back onto earth: nothing leaks through.
                 let sr = &self.rooms[def.room];
+                let wall_leaks = !self.grade_separated(def.room, state.room);
                 let wx = state.listener_world.0.clamp(sr.min.0, sr.max.0);
                 let wy = state.listener_world.1.clamp(sr.min.1, sr.max.1);
                 let (tdx, tdy) = (wx - state.listener_world.0, wy - state.listener_world.1);
                 let dwall = (tdx * tdx + tdy * tdy).sqrt().max(0.5);
                 let wall_trans = sr.walls[0].transmission_at(sr.wall_thickness);
-                for b in 0..NBANDS {
-                    rem_send[b] += w2 * rp.level[b] * wall_trans[b] * (1.6 / dwall.max(1.6));
+                if wall_leaks {
+                    for b in 0..NBANDS {
+                        rem_send[b] += w2 * rp.level[b] * wall_trans[b] * (1.6 / dwall.max(1.6));
+                    }
                 }
                 let wdl = (tdx * tdx + tdy * tdy).sqrt().max(1e-3);
                 let (wdx, wdy) =
@@ -1016,6 +1034,29 @@ mod tests {
             (lo.min(t.delay_s), hi.max(t.delay_s))
         });
         assert!(dmax - dmin > 0.002, "delays too uniform: {:.4}..{:.4}", dmin, dmax);
+    }
+
+    /// The radio is 3 m underground: standing on the field ABOVE the
+    /// bunker you hear (almost) nothing — earth is opaque; the only way
+    /// out is the stair-shaft door, so it IS audible at the blockhouse.
+    #[test]
+    fn buried_radio_stays_buried() {
+        let mut w = WorldSim::new();
+        let sum_at = |w: &mut WorldSim, x: f32, y: f32| -> f32 {
+            for _ in 0..4 {
+                let _ = w.tick_at(x, y, 0.0);
+            }
+            let (blocks, _) = w.tick_at(x, y, 0.0);
+            blocks[4].taps.iter().map(|t| t.gains[1]).sum::<f32>()
+                + blocks[4].remote.as_ref().map_or(0.0, |r| r.send[1])
+        };
+        let above = sum_at(&mut w, 37.0, 11.0); // right over the bunker
+        let at_door = sum_at(&mut w, 30.8, 7.0); // outside the blockhouse
+        assert!(
+            above < 0.15 * at_door,
+            "the earth must swallow the radio: above {above} vs door {at_door}"
+        );
+        assert!(at_door > 1e-4, "the open shaft door must carry it: {at_door}");
     }
 
     /// Deep shadow behind the Old House: the surviving energy must be
