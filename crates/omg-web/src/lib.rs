@@ -217,6 +217,8 @@ struct EngCtx {
     /// (peak², Σm², n) since the last commit.
     meter_acc: [(f32, f64, u32); NSRC + 2],
     meter_out: &'static mut [f32],
+    /// Field-debug snapshot buffer (eng_debug_render).
+    debug_out: &'static mut [f32],
 }
 
 static mut ENG: Option<EngCtx> = None;
@@ -245,6 +247,7 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         master: omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate),
         meter_acc: [(0.0, 0.0, 0); NSRC + 2],
         meter_out: leak_f32(2 * (NSRC + 2)),
+        debug_out: leak_f32(NSRC * 5),
     };
     unsafe { *(&raw mut ENG) = Some(ctx) };
 }
@@ -452,6 +455,24 @@ pub extern "C" fn eng_set_params(src: u32, len: u32) {
     if let Some(r) = ctx.renderers.get_mut(src as usize) {
         r.set_params(&pb);
     }
+}
+
+/// Per-source render occupancy → [live_taps, point_taps, tap_gain_mid,
+/// fdn_send, remote_send] × NSRC. The debug panel's "what is actually
+/// playing right now, and why" — read alongside the per-channel meters.
+#[no_mangle]
+pub extern "C" fn eng_debug_render() -> *const f32 {
+    let ctx = eng();
+    for (i, r) in ctx.renderers.iter().enumerate().take(NSRC) {
+        let (live, points, gain, fdn, remote) = r.debug_stats();
+        let o = i * 5;
+        ctx.debug_out[o] = live as f32;
+        ctx.debug_out[o + 1] = points as f32;
+        ctx.debug_out[o + 2] = gain;
+        ctx.debug_out[o + 3] = fdn;
+        ctx.debug_out[o + 4] = remote;
+    }
+    ctx.debug_out.as_ptr()
 }
 
 /// Fast head orientation (yaw/pitch/roll, see `HeadRotation` for the

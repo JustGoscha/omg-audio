@@ -26,7 +26,9 @@ function tick() {
     const slot = p[0];
     if (slot >= 0 && slot < 5) dyn.set([p[1], p[2], p[3], p[4] === undefined ? 1 : p[4]], slot * 4);
   });
+  const t0 = performance.now();
   w.sim_tick(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw);
+  const tickMs = performance.now() - t0;
   const blocks = [];
   for (let i = 0; i < 10; i++) {
     const len = w.sim_params_len(i);
@@ -34,6 +36,6 @@ function tick() {
     blocks.push(src.slice().buffer);
   }
   const state = new Float32Array(w.memory.buffer, w.sim_state_ptr(), w.sim_state_len()).slice();
-  postMessage({ type: 'tick', blocks, state: state.buffer, envOff: w.sim_env_off() },
+  postMessage({ type: 'tick', blocks, state: state.buffer, envOff: w.sim_env_off(), tickMs },
               [...blocks, state.buffer]);
 }

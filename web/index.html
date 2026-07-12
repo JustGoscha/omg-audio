@@ -50,7 +50,19 @@
 </head>
 <body>
 <canvas id="gl"></canvas>
+<script>
+  // inline favicon: kills the /favicon.ico 404 that pollutes the console
+  const fav = document.createElement('link');
+  fav.rel = 'icon';
+  fav.href = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><text y="13" font-size="13">🔊</text></svg>');
+  document.head.appendChild(fav);
+</script>
 <canvas id="minimap" width="300" height="480"></canvas>
+<canvas id="debug" width="560" height="760" hidden
+  style="position:absolute;right:170px;bottom:12px;width:280px;height:380px;z-index:6;pointer-events:none;border-radius:8px;background:#0e1116e6;"></canvas>
+<button id="dbgbtn" hidden
+  style="position:absolute;top:94px;right:12px;z-index:6;padding:8px 14px;font-size:13px;background:#2a3648;color:#c8d2e1;">debug</button>
 <canvas id="meters" width="260" height="240" style="position:absolute;left:12px;bottom:150px;width:130px;height:120px;z-index:5;pointer-events:none;border-radius:8px;"></canvas>
 <canvas id="spec" width="360" height="260" style="position:absolute;left:12px;bottom:12px;width:180px;height:130px;z-index:5;pointer-events:none;border-radius:8px;background:#0e1116cc;"></canvas>
 <div id="crosshair"></div>

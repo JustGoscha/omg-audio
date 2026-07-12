@@ -224,6 +224,32 @@ impl Renderer {
         self.head[2].set(roll);
     }
 
+    /// Live render occupancy for the field-debug panel: (live tap slots,
+    /// point-rendered among them, summed mid-channel gain, own-FDN send,
+    /// remote-FDN send). "Live" includes releasing slots still fading out
+    /// — exactly what still costs CPU and still sounds.
+    pub fn debug_stats(&self) -> (u32, u32, f32, f32, f32) {
+        let mut live = 0u32;
+        let mut points = 0u32;
+        let mut gain = 0.0f32;
+        for t in &self.taps {
+            if t.key.is_some() || t.g_sh[0].current().abs() > 1e-6 {
+                live += 1;
+                if t.point {
+                    points += 1;
+                }
+                gain += t.g_sh[0].current().abs();
+            }
+        }
+        (
+            live,
+            points,
+            gain,
+            self.fdn_level.current(),
+            self.remote_level.current(),
+        )
+    }
+
     /// Set how many of the strongest taps are point-rendered. Takes effect
     /// on the next ParamBlock; taps whose mode changes re-slot with a
     /// crossfade (a live slot never switches mode in place).

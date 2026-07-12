@@ -91,6 +91,12 @@ field is *computed*, not authored:
   audible through the portal), and an underground bunker with a little
   radio — earth is modeled, so the bunker is sealed except its stair
   shaft.
+- **Field-debug panel** (the `debug` button): what is actually playing
+  right now, and why — per-source level, live/point tap slots, own- and
+  remote-reverb sends, distance, ambience inlet occupancy, plus ~45 s
+  scrolling graphs of per-source levels, total tap count, sim tick time
+  and render load. Slot leaks, level pile-ups and perf spikes are
+  measurable on sight instead of reconstructed from ear-memory.
 
 ## Hear it
 

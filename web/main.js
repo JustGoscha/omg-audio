@@ -76,6 +76,8 @@ const state = {
   face: { yaw: 0, pitch: 0, roll: 0, dx: 0, dy: 0, dz: 0 },
   faceTarget: null,
   faceTrack: null,
+  // field-debug panel: latest engine snapshots + decimated history
+  debug: { on: false, hist: [], chans: null, amb: null, dbg: null, load: 0, tickMs: 0 },
   rainLevel: 0, // index into RAIN_LEVELS
   chanHist: [], // per-channel meter frames, ~1 s
   mixerRows: null,
@@ -881,6 +883,12 @@ document.getElementById('start').onclick = async (ev) => {
     document.getElementById('mixerbtn').hidden = false;
     document.getElementById('face').hidden = false;
     document.getElementById('face').onclick = toggleFaceTracking;
+    document.getElementById('dbgbtn').hidden = false;
+    document.getElementById('dbgbtn').onclick = (e) => {
+      e.target.blur();
+      state.debug.on = !state.debug.on;
+      document.getElementById('debug').hidden = !state.debug.on;
+    };
     buildMixer();
     document.getElementById('mixerbtn').onclick = (e) => {
       e.target.blur();
@@ -1030,6 +1038,30 @@ async function startAudio() {
         }
         state.meters.hist.push(e.data.agc);
         if (state.meters.hist.length > 220) state.meters.hist.shift();
+        // field-debug snapshots (chans/amb/dbg arrive ~43 Hz; the panel
+        // keeps a decimated ~11 Hz history, ≈45 s deep)
+        state.debug.chans = e.data.chans;
+        state.debug.amb = e.data.amb;
+        state.debug.dbg = e.data.dbg;
+        state.debug.load = e.data.load || 0;
+        if ((state.debug.seq = (state.debug.seq || 0) + 1) % 4 === 0) {
+          const d = e.data.dbg || [];
+          let taps = 0;
+          let gain = 0;
+          for (let i = 0; i < 10; i++) {
+            taps += d[i * 5] || 0;
+            gain += d[i * 5 + 2] || 0;
+          }
+          state.debug.hist.push({
+            rms: (e.data.chans || []).filter((_, k) => k % 2 === 1),
+            taps,
+            gain,
+            pts: e.data.pts || 0,
+            load: e.data.load || 0,
+            tickMs: state.debug.tickMs || 0,
+          });
+          if (state.debug.hist.length > 500) state.debug.hist.shift();
+        }
       }
     };
   });
@@ -1040,6 +1072,8 @@ async function startAudio() {
     if (e.data.type !== 'tick') return;
     node.port.postMessage({ type: 'params', blocks: e.data.blocks }, e.data.blocks);
     state.simState = new Float32Array(e.data.state);
+    state.debug.tickMs = Math.max(state.debug.tickMs || 0, e.data.tickMs || 0) * 0.9
+      + (e.data.tickMs || 0) * 0.1; // decaying peak-ish: spikes stay visible
     // environment block — offset comes from the sim (ONE source of
     // truth for the state layout; a hardcoded 58 once parsed car
     // positions as ambience gains)
@@ -1426,6 +1460,7 @@ function frame(t) {
     drawMinimap();
     drawMeters();
     drawSpec();
+    if (state.debug.on) drawDebug();
   }
 
   const st = state.simState;
@@ -1442,6 +1477,129 @@ function frame(t) {
     statusEl.textContent = line;
   }
   requestAnimationFrame(frame);
+}
+
+// ------------------------------------------------------- debug panel
+// "What is actually playing right now, and why": per-source live state
+// straight from the engine (levels, tap slots, reverb sends) plus
+// scrolling history of the totals — pile-ups, leaks and perf spikes are
+// visible at a glance instead of reconstructed from ear-memory.
+
+const DBG_NAMES = ['music', 'voice', 'club', 'flute', 'radio',
+  'ball0', 'ball1', 'ball2', 'car0', 'car1', 'amb', 'rain'];
+const DBG_COLORS = ['#ffaa3c', '#6ee0a0', '#ff5a9e', '#9ad2ff', '#d2b06e',
+  '#fff1a8', '#fff1a8', '#fff1a8', '#7ad7ff', '#7ad7ff', '#8a95ff', '#59c9e8'];
+
+function dbgSourceDist(i) {
+  if (i < 5) {
+    const s = SOURCES[i];
+    return Math.hypot(s.pos[0] - state.pose.x, s.pos[1] - state.pose.y);
+  }
+  if (i < 8) {
+    const p = state.projs.find((q) => q.slot === i - 5);
+    return p ? Math.hypot(p.x - state.pose.x, p.y - state.pose.y) : null;
+  }
+  const c = state.cars.find((q) => q.slot === i - 5);
+  return c ? Math.hypot(c.x - state.pose.x, c.y - state.pose.y) : null;
+}
+
+function drawDebug() {
+  const c = document.getElementById('debug');
+  if (!c) return;
+  const g = c.getContext('2d');
+  const W = c.width;
+  const H = c.height;
+  g.clearRect(0, 0, W, H);
+  const chans = state.debug.chans || [];
+  const dbg = state.debug.dbg || [];
+  const db = (x) => 20 * Math.log10((x || 0) + 1e-6);
+
+  // --- per-source table: level, tap slots (points), reverb sends, dist
+  g.font = '17px monospace';
+  g.textAlign = 'left';
+  g.fillStyle = '#7a8496';
+  g.fillText('source    dB  taps  fdn  rem    d', 14, 30);
+  let y = 54;
+  for (let i = 0; i < 12; i++) {
+    const rms = chans[i * 2 + 1] || 0;
+    const audible = rms > 1e-5;
+    g.fillStyle = audible ? DBG_COLORS[i] : '#3a4456';
+    let line = DBG_NAMES[i].padEnd(7)
+      + db(rms).toFixed(0).padStart(5);
+    if (i < 10) {
+      const live = dbg[i * 5] || 0;
+      const pts = dbg[i * 5 + 1] || 0;
+      const fdn = dbg[i * 5 + 3] || 0;
+      const rem = dbg[i * 5 + 4] || 0;
+      line += ` ${String(live).padStart(2)}/${String(pts).padEnd(2)}`
+        + ` ${fdn > 1e-4 ? db(fdn).toFixed(0).padStart(4) : '   ·'}`
+        + ` ${rem > 1e-4 ? db(rem).toFixed(0).padStart(4) : '   ·'}`;
+      const d = dbgSourceDist(i);
+      line += d == null ? '    —' : `${d.toFixed(0).padStart(5)}m`;
+    }
+    g.fillText(line, 14, y);
+    y += 24;
+  }
+  // ambience inlets (routes through the dome bins + seep)
+  const amb = state.debug.amb;
+  if (amb) {
+    g.fillStyle = '#8a95ff';
+    const slots = amb.slice(4).filter((v) => v > 1e-4).length;
+    g.fillText(
+      `amb inlets ${slots}/8  seep ${amb.slice(1, 4).map((v) => v.toFixed(2)).join(' ')}`,
+      14, y);
+  }
+  y += 34;
+
+  // --- scrolling graphs
+  const hist = state.debug.hist;
+  const graph = (label, h, fn, opts = {}) => {
+    g.fillStyle = '#161c26';
+    g.fillRect(10, y, W - 20, h);
+    g.strokeStyle = opts.color || '#50dcff';
+    g.lineWidth = 2;
+    g.beginPath();
+    for (let k = 0; k < hist.length; k++) {
+      const gx = 10 + (k / 499) * (W - 20);
+      const v = Math.max(0, Math.min(1, fn(hist[k])));
+      const gy = y + h - v * (h - 4) - 2;
+      k ? g.lineTo(gx, gy) : g.moveTo(gx, gy);
+    }
+    g.stroke();
+    g.fillStyle = '#7a8496';
+    g.fillText(label, 14, y + 20);
+    y += h + 10;
+  };
+  // per-source levels overlaid (audible channels only)
+  {
+    const h = 120;
+    g.fillStyle = '#161c26';
+    g.fillRect(10, y, W - 20, h);
+    for (let i = 0; i < 12; i++) {
+      const latest = hist.length ? hist[hist.length - 1].rms[i] || 0 : 0;
+      if (latest < 1e-5) continue;
+      g.strokeStyle = DBG_COLORS[i];
+      g.lineWidth = 2;
+      g.beginPath();
+      for (let k = 0; k < hist.length; k++) {
+        const gx = 10 + (k / 499) * (W - 20);
+        const v = Math.max(0, Math.min(1, (db(hist[k].rms[i]) + 80) / 80));
+        const gy = y + h - v * (h - 4) - 2;
+        k ? g.lineTo(gx, gy) : g.moveTo(gx, gy);
+      }
+      g.stroke();
+    }
+    g.fillStyle = '#7a8496';
+    g.fillText('levels −80…0 dB', 14, y + 20);
+    y += h + 10;
+  }
+  const last = hist.length ? hist[hist.length - 1] : null;
+  graph(`render taps ${last ? last.taps : 0} · budget ${state.meters.pts}/src`,
+    90, (s) => s.taps / 96, { color: '#6ee0a0' });
+  graph(`sim tick ${state.debug.tickMs.toFixed(1)} ms (budget 50)`,
+    90, (s) => s.tickMs / 50, { color: '#ffaa3c' });
+  graph(`render load ${(state.debug.load * 100).toFixed(0)}% of realtime`,
+    90, (s) => s.load, { color: '#ff6a5a' });
 }
 
 function drawMeters() {

@@ -114,6 +114,7 @@ class OmgProcessor extends AudioWorkletProcessor {
     this.loadFrames += n;
     if (this.loadFrames >= sampleRate * 4) {
       const ratio = this.loadMs / (this.loadFrames / sampleRate * 1000);
+      this.loadRatio = ratio; // exposed via the meters message
       if (ratio > 0.55 && this.budget > this.BUDGET_MIN) {
         this.budget = Math.max(this.BUDGET_MIN, this.budget - 4);
         this.w.eng_set_point_budget(this.budget);
@@ -138,9 +139,17 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.mR = Math.max(this.mR, Math.abs(r[i]));
     }
     if (this.mN >= 8) {
+      // copy each snapshot before the next call — amb_debug reuses the
+      // meter buffer
       const mp = this.w.eng_meters_commit();
       const chans = Array.from(new Float32Array(this.w.memory.buffer, mp, 24));
-      this.port.postMessage({ type: 'meters', l: this.mL, r: this.mR, agc: this.w.eng_agc_gain(), tts: this.w.eng_ear_fatigue(), pts: this.budget, chans });
+      const amb = Array.from(new Float32Array(this.w.memory.buffer, this.w.eng_amb_debug(), 12));
+      const dbg = Array.from(new Float32Array(this.w.memory.buffer, this.w.eng_debug_render(), 50));
+      this.port.postMessage({
+        type: 'meters', l: this.mL, r: this.mR, agc: this.w.eng_agc_gain(),
+        tts: this.w.eng_ear_fatigue(), pts: this.budget,
+        load: this.loadRatio || 0, chans, amb, dbg,
+      });
       this.mL = 0;
       this.mR = 0;
       this.mN = 0;
