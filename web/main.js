@@ -1001,7 +1001,6 @@ async function startAudio() {
       ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,
      radio.buffer, silents[0].buffer, silents[1].buffer, silents[2].buffer,
-     motorA.buffer, motorB.buffer,
      whistle.buffer, thumpFx.buffer, boomFx.buffer, ambience.buffer, drops.buffer],
   );
   await new Promise((res, rej) => {
