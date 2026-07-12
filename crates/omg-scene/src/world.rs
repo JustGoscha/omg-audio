@@ -743,9 +743,14 @@ impl WorldSim {
             }
 
             pb.version = self.tick_no;
-            rt60_mid = pb.reverb.rt60[1];
             self.last_level[si] = pb.taps.iter().map(|t| t.gains[1]).sum::<f32>()
                 + pb.remote.as_ref().map_or(0.0, |r| r.send[1]);
+            // HUD RT60: only audible sources vote — a near-silent distant
+            // source's trace estimates a decay slope from numerical dust
+            // and would jitter the display
+            if self.last_level[si] > LOD_QUIET || rt60_mid == 0.0 {
+                rt60_mid = pb.reverb.rt60[1];
+            }
             self.last_blocks[si] = pb.clone();
             self.last_routes[si] = route.clone();
             blocks.push(pb);
