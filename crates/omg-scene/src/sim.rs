@@ -13,6 +13,10 @@ use omg_core::{NBANDS, SPEED_OF_SOUND};
 
 pub const ISM_ORDER: u32 = 3;
 pub const N_RAYS: u32 = 4096;
+/// Near-field radius of a doorway acting as a secondary source,
+/// √(aperture area / 2π) for a ~2.3 m² door: within it the re-radiated
+/// field is the incoming field; beyond it the 1/d spreading takes over.
+const APERTURE_RERADIATION: f32 = 0.6;
 
 /// Exterior building wall, for first-order outdoor reflections
 /// (coordinates in the outdoor room's local frame).
@@ -116,17 +120,23 @@ impl Sim {
         image_source_taps(room, src, listener, ISM_ORDER, &mut self.taps_buf);
 
         // World → listener frame (listener faces +x at yaw = 0), then fold
-        // the pre-door path into each tap: extra delay, extra spreading
-        // loss (1/d_total instead of 1/d_room), per-band door muffling.
+        // the pre-door path into each tap. The aperture is a Huygens
+        // secondary source: the field arriving at the door (∝ 1/extra)
+        // re-radiates into the room and decays with IN-ROOM distance —
+        // the ISM's own 1/d — not with total path length. Folding extra
+        // into each image's length instead (1/(d_room + extra)) held all
+        // ~63 image taps at direct-path strength: a distant motor summed
+        // to +18 dB inside the room and got LOUDER as it drove away.
+        // True line-of-sight continuation through the opening is the
+        // straight tap's job (world.rs, key 9000), not this path's.
         let (sin, cos) = yaw.sin_cos();
+        let a_in = APERTURE_RERADIATION / extra_dist.max(APERTURE_RERADIATION);
         for t in &mut self.taps_buf {
             let [dx, dy, dz] = t.dir;
             t.dir = [cos * dx + sin * dy, -sin * dx + cos * dy, dz];
             if extra_dist > 0.0 {
-                let d_room = t.delay_s * SPEED_OF_SOUND;
-                let scale = d_room / (d_room + extra_dist);
                 for b in 0..NBANDS {
-                    t.gains[b] *= muffle[b] * scale;
+                    t.gains[b] *= muffle[b] * a_in;
                 }
                 t.delay_s += extra_dist / SPEED_OF_SOUND;
             }

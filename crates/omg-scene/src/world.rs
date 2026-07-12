@@ -1059,6 +1059,62 @@ mod tests {
         assert!(at_door > 1e-4, "the open shaft door must carry it: {at_door}");
     }
 
+    /// Field report: motors sound "like they run inside" the Old House
+    /// even with cars far away. A car's received level indoors must fall
+    /// with its distance and stay far below an in-room source.
+    #[test]
+    fn distant_cars_stay_distant_indoors() {
+        let mut w = WorldSim::new();
+        const CAR0: usize = 8; // 5 static + ball0..2
+        let level_at = |w: &mut WorldSim, lx: f32, ly: f32, lz: f32, car_y: f32| {
+            w.set_dynamic(3, -18.0, car_y, 0.7, 1.0);
+            // long settle: the reverb estimate EMAs over traced ticks
+            for _ in 0..40 {
+                let _ = w.tick_at_z(lx, ly, lz, 0.0);
+            }
+            let (blocks, _) = w.tick_at_z(lx, ly, lz, 0.0);
+            let pb = &blocks[CAR0];
+            let taps: f32 = pb.taps.iter().map(|t| t.gains[1]).sum();
+            let rev = pb.reverb.level[1];
+            let rem = pb.remote.as_ref().map_or(0.0, |r| r.send[1]);
+            eprintln!(
+                "lis ({lx},{ly},{lz}) car_y {car_y}: taps {taps:.5} reverb {rev:.5} remote {rem:.5} ({} taps)",
+                pb.taps.len()
+            );
+            taps + rev + rem
+        };
+        // Southwest corner of the Old House (no sightline through the
+        // north door for any car position), both storeys. Distance and
+        // door diffraction partly trade against each other here (a far
+        // car aligns with the north door, a near one bends hard around
+        // it), so the pinned invariants are the perceptual ones:
+        // no in-room pile-up, walls matter, and far means faint.
+        for &(lx, ly, lz) in &[(25.2f32, 17.0f32, 1.6f32), (25.2, 17.0, 4.6)] {
+            let near = level_at(&mut w, lx, ly, lz, 30.0);
+            let mid = level_at(&mut w, lx, ly, lz, 200.0);
+            let far = level_at(&mut w, lx, ly, lz, 900.0);
+            // The bug this pins: routed image taps each carried full
+            // direct-path amplitude, summing to 0.12–0.42 indoors and
+            // RISING with distance ("a motor running in this room").
+            assert!(
+                near.max(mid) < 0.02,
+                "in-room pile-up at lz {lz}: near {near} mid {mid}"
+            );
+            assert!(
+                far < 0.5 * mid && far < 4e-3,
+                "a car ~900 m away must be a whisper indoors at lz {lz}: mid {mid} far {far}"
+            );
+        }
+        // And the wall must matter: same car, listener just outside the
+        // west facade vs inside behind it — inside is clearly quieter.
+        let outside = level_at(&mut w, 22.0, 17.0, 1.6, 30.0);
+        let inside = level_at(&mut w, 25.2, 17.0, 1.6, 30.0);
+        assert!(
+            inside < 0.5 * outside,
+            "walls must attenuate the car: inside {inside} vs outside {outside}"
+        );
+    }
+
     /// Deep shadow behind the Old House: the surviving energy must be
     /// bass-heavy — the bend floor is knife-edge shaped, not flat.
     #[test]
