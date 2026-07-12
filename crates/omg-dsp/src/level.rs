@@ -36,6 +36,82 @@ pub fn normalize_rms(samples: &mut [f32], target_rms: f32) {
     }
 }
 
+/// Beds must be BEDS. A field recording is not stationary — somewhere a
+/// cricket chirps right next to the microphone for a few seconds — and
+/// once `normalize_rms` sets the overall level, such a passage SURGES
+/// out of the background (localized at whatever inlet happens to be
+/// reading it: "a super loud ambience appears out of nowhere, then
+/// fades"). This equalizes the slow loudness across the loop: windowed
+/// RMS toward the median, gains clamped to −18/+12 dB and interpolated
+/// per-sample (loop-circular), so second-scale passages level out while
+/// chirp-scale texture inside a window survives untouched.
+pub fn flatten_slow_loudness(samples: &mut [f32], channels: usize, sample_rate: f32) {
+    // two scales: second-scale passages corrected deeply, then a gentler
+    // sub-second pass so a single chirp burst cannot pop out of a quiet
+    // room while ordinary texture keeps its shape
+    flatten_pass(samples, channels, sample_rate, 1.0, 0.125, 4.0);
+    flatten_pass(samples, channels, sample_rate, 0.35, 0.5, 2.0);
+}
+
+fn flatten_pass(
+    samples: &mut [f32],
+    channels: usize,
+    sample_rate: f32,
+    win_s: f32,
+    g_min: f32,
+    g_max: f32,
+) {
+    let ch = channels.max(1);
+    let frames = samples.len() / ch;
+    let win = (sample_rate * win_s) as usize;
+    let hop = (win / 2).max(1);
+    if frames < 3 * win {
+        return; // too short for a slow-loudness profile
+    }
+    let n_win = frames / hop;
+    let mut rms: Vec<f32> = (0..n_win)
+        .map(|w| {
+            let start = w * hop;
+            let mut e = 0.0f64;
+            let mut n = 0u64;
+            let mut i = start;
+            while i < (start + win).min(frames) {
+                for c in 0..ch {
+                    let v = samples[i * ch + c] as f64;
+                    e += v * v;
+                }
+                n += ch as u64;
+                i += 1;
+            }
+            ((e / n.max(1) as f64) as f32).sqrt().max(1e-6)
+        })
+        .collect();
+    let mut sorted = rms.clone();
+    sorted.sort_by(f32::total_cmp);
+    let target = sorted[sorted.len() / 2];
+    // per-window gains, lightly smoothed (circular — the bed loops)
+    let mut gains: Vec<f32> = rms.iter().map(|r| (target / r).clamp(g_min, g_max)).collect();
+    let raw = gains.clone();
+    for w in 0..n_win {
+        let prev = raw[(w + n_win - 1) % n_win];
+        let next = raw[(w + 1) % n_win];
+        gains[w] = 0.25 * prev + 0.5 * raw[w] + 0.25 * next;
+    }
+    let _ = &mut rms;
+    // apply: linear interpolation between window centers
+    for f in 0..frames {
+        let pos = f as f32 / hop as f32 - 0.5;
+        let w0 = pos.floor();
+        let t = pos - w0;
+        let i0 = ((w0 as i64).rem_euclid(n_win as i64)) as usize;
+        let i1 = (i0 + 1) % n_win;
+        let g = gains[i0] * (1.0 - t) + gains[i1] * t;
+        for c in 0..ch {
+            samples[f * ch + c] *= g;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +170,47 @@ mod tests {
         normalize_rms(&mut bare, REF_CLIP_RMS);
         let ratio = gated_rms(&padded[..24_000].to_vec()) / gated_rms(&bare);
         assert!((ratio - 1.0).abs() < 0.02, "padding changed loudness: {ratio}");
+    }
+
+    /// The bed guarantee: a loop with a few loud seconds (the cricket at
+    /// the microphone) comes out with its slow loudness flat — no
+    /// passage can surge out of the background anymore.
+    #[test]
+    fn hot_passages_are_flattened() {
+        let sr = 48_000usize;
+        let mut rng = 1u64;
+        let mut noise = || {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((rng >> 33) as f32 / 2147483648.0) - 1.0
+        };
+        let n = sr * 20;
+        let mut x: Vec<f32> = (0..n)
+            .map(|i| {
+                let hot = i >= sr * 8 && i < sr * 11; // 3 loud seconds
+                noise() * if hot { 0.8 } else { 0.1 }
+            })
+            .collect();
+        flatten_slow_loudness(&mut x, 1, sr as f32);
+        let rms = |a: usize, b: usize| -> f32 {
+            (x[a..b].iter().map(|v| (v * v) as f64).sum::<f64>() / (b - a) as f64).sqrt() as f32
+        };
+        let quiet = rms(2 * sr, 5 * sr);
+        let was_hot = rms(sr * 9, sr * 10); // center of the hot region
+        let ratio = was_hot / quiet;
+        assert!(
+            ratio < 1.6,
+            "hot passage must flatten into the bed: ratio {ratio}"
+        );
+        // and a stationary signal passes through nearly untouched
+        let mut flat: Vec<f32> = (0..n).map(|_| noise() * 0.1).collect();
+        let before = flat.clone();
+        flatten_slow_loudness(&mut flat, 1, sr as f32);
+        let drift = flat
+            .iter()
+            .zip(before.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(drift < 0.03, "stationary input must be ~transparent: {drift}");
     }
 
     #[test]

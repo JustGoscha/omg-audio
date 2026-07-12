@@ -21,8 +21,13 @@ use crate::smooth::Smoothed;
 /// Level of a unit-gain inlet. Calibrated so the open sky (four unit
 /// horizon sectors) sits at the loudness the old bed had outdoors.
 const ROUTE_LEVEL: f32 = 0.047;
-/// The diffuse residual, spread over four feeds.
-const SEEP_LEVEL: f32 = 0.047;
+/// The diffuse residual, spread over four feeds. Sits 4 dB under the
+/// route level: the power balance's bare-box absorption overestimates
+/// interior buildup (its α tables imply far longer RT60s than the
+/// acoustic sim measures), and a bed indoors should stay UNDER the
+/// room's own sounds. TODO(#16 tail): derive the balance's absorption
+/// from the same estimate the reverb uses and drop this correction.
+const SEEP_LEVEL: f32 = 0.03;
 
 pub struct Ambience {
     data: Vec<f32>,

@@ -349,6 +349,9 @@ pub extern "C" fn eng_ambient_commit(channels: u32) {
     let ctx = eng();
     let buf = ctx.ambient_stage.take().expect("alloc first");
     let mut data = buf.to_vec();
+    // beds get their slow loudness flattened BEFORE leveling: a passage
+    // recorded next to a cricket must not surge out of the background
+    omg_dsp::level::flatten_slow_loudness(&mut data, channels as usize, ctx.sample_rate);
     omg_dsp::level::normalize_rms(&mut data, omg_dsp::level::REF_CLIP_RMS);
     ctx.ambience.set_loop(data, channels == 2);
 }
