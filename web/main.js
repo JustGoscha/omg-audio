@@ -520,6 +520,20 @@ function spawnCar() {
   tail.position.set(0, 0.62, north ? 2.0 : -2.0);
   body.add(tail);
   scene.add(body);
+  if (state.motors) {
+    // every car its own vehicle: a random motor loop, resampled for a
+    // per-spawn engine pitch, swapped into the slot's source
+    const m = state.motors[(Math.random() * state.motors.length) | 0];
+    const rate = 0.85 + Math.random() * 0.4;
+    const n = Math.floor(m.length / rate);
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const p = i * rate;
+      const j = p | 0;
+      out[i] = m[j % m.length] * (1 - (p - j)) + m[(j + 1) % m.length] * (p - j);
+    }
+    state.node.port.postMessage({ type: 'motor', src: free + 5, buf: out.buffer }, [out.buffer]);
+  }
   state.cars.push({
     slot: free,
     mesh: body,
@@ -890,7 +904,7 @@ async function startAudio() {
     return r.arrayBuffer();
   };
   statusEl.textContent = 'loading…';
-  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxW, fxT, fxB, ambRaw, dropsRaw] =
+  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxW, fxT, fxB, ambRaw, dropsRaw, mot0, mot1, mot2, mot3] =
     await Promise.all([
     fetchBuf('omg_web.wasm'),
     fetchBuf('omg_web.wasm'),
@@ -906,6 +920,10 @@ async function startAudio() {
     fetchBuf('../assets/fx_boom.ogg'),
     fetchBuf('../assets/night-nature48.ogg'),
     fetchBuf('../assets/drops48.ogg'),
+    fetchBuf('../assets/motor048.ogg'),
+    fetchBuf('../assets/motor148.ogg'),
+    fetchBuf('../assets/motor248.ogg'),
+    fetchBuf('../assets/motor348.ogg'),
   ]);
 
   // Sources go to the engine raw — import loudness is normalized there
@@ -925,7 +943,7 @@ async function startAudio() {
     for (let i = 0; i < ch.length; i++) out[i] = ch[i] * g;
     return out;
   };
-  const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops, ambience] = await Promise.all([
+  const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops, m0, m1, m2, m3, ambience] = await Promise.all([
     decodeMono(ariaRaw),
     decodeMono(aliceRaw),
     decodeMono(clubRaw),
@@ -935,6 +953,10 @@ async function startAudio() {
     decodeMono(fxT, 0.55),
     decodeMono(fxB, 1.9), // boom: BIG (AGC + tanh keep it safe)
     decodeMono(dropsRaw), // recorded splat bank (pre-normalized slices)
+    decodeMono(mot0),
+    decodeMono(mot1),
+    decodeMono(mot2),
+    decodeMono(mot3),
     (async () => {
       const ab = await audio.decodeAudioData(ambRaw);
       const L = ab.getChannelData(0);
@@ -952,39 +974,9 @@ async function startAudio() {
       return out;
     })(),
   ]);
+  state.motors = [m0, m1, m2, m3]; // CC0 motor loops, swapped per spawn
   // projectile slots: fx voices only (one buffer each — transferables)
   const silents = [new Float32Array(480), new Float32Array(480), new Float32Array(480)];
-  // car motors: synthesized loops — a wobbling harmonic hum (engine)
-  // under a shaped noise band (tires on asphalt). Two pitches so the
-  // two slots never sound like the same car.
-  const motorLoop = (f0) => {
-    const n = Math.floor(audio.sampleRate * 2.0);
-    const out = new Float32Array(n);
-    let lp = 0;
-    let lp2 = 0;
-    let seed = f0 | 0;
-    const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x40000000 - 1);
-    for (let k = 0; k < n; k++) {
-      const t = k / audio.sampleRate;
-      const wob = 1 + 0.02 * Math.sin(2 * Math.PI * 4.3 * t) + 0.01 * Math.sin(2 * Math.PI * 0.7 * t);
-      const ph = 2 * Math.PI * f0 * wob * t;
-      let eng = 0.5 * Math.sin(ph) + 0.3 * Math.sin(2 * ph + 0.7) + 0.15 * Math.sin(3 * ph + 2.1)
-        + 0.08 * Math.sin(4.5 * ph);
-      // tire/road noise: lowpassed twice → dark whoosh
-      lp += 0.12 * (rnd() - lp);
-      lp2 += 0.5 * (lp - lp2);
-      out[k] = eng * 0.35 + lp2 * 1.4;
-    }
-    // seamless-ish loop: short crossfade at the seam
-    const f = Math.floor(audio.sampleRate * 0.03);
-    for (let k = 0; k < f; k++) {
-      const a = k / f;
-      out[n - f + k] = out[n - f + k] * (1 - a) + out[k] * a;
-    }
-    return out;
-  };
-  const motorA = motorLoop(84);
-  const motorB = motorLoop(103);
 
   await audio.audioWorklet.addModule('worklet.js');
   const node = new AudioWorkletNode(audio, 'omg-engine', {
@@ -1004,7 +996,7 @@ async function startAudio() {
     { type: 'wasm', bytes: wasm1, grid, speakers,
       sources: [aria.buffer, alice.buffer, club.buffer, flute.buffer, radio.buffer,
                 silents[0].buffer, silents[1].buffer, silents[2].buffer,
-                motorA.buffer, motorB.buffer],
+                m0.buffer, m1.buffer],
       fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer],
       ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,

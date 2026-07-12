@@ -282,6 +282,11 @@ Code: Apache-2.0. Acoustic data and demo media:
   by CVLTIV8R, performed by RJ Roush — CC0.
 - Bunker radio: ["An old radio playing in a Sri Lankan sewing factory"](https://freesound.org/people/florianreichelt/sounds/423446/)
   by florianreichelt — CC0.
+- Car motors: ["car_idle_loop"](https://freesound.org/people/AndrewAlexander/sounds/369053/)
+  by AndrewAlexander, ["Bus Motor/Engine Sound Loop"](https://freesound.org/people/qubodup/sounds/54909/)
+  by qubodup, ["Diesel Generator 03"](https://freesound.org/people/KVV_Audio/sounds/748274/)
+  by KVV_Audio, ["Motor Loop"](https://freesound.org/people/soundjoao/sounds/325808/)
+  by soundjoao — all CC0, loopified via `tools/make_motors.py`.
 - Club track, projectile FX: synthesized by this repo's tools (CC0).
 - Rain splat bank: 22 hits sliced from CC0 freesound recordings
   (sources listed in `tools/make_drops.py`).

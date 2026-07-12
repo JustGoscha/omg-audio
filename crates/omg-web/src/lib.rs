@@ -465,6 +465,18 @@ pub extern "C" fn eng_set_head(yaw: f32) {
     }
 }
 
+/// Replace source `i`'s loop buffer (the demo swaps car motors per
+/// spawn). Write samples at the returned pointer, then
+/// eng_source_commit(i) to import-normalize. The old buffer is freed.
+#[no_mangle]
+pub extern "C" fn eng_source_replace_alloc(i: u32, nsamples: u32) -> *mut f32 {
+    let ctx = eng();
+    let s = &mut ctx.sources[i as usize];
+    s.data = vec![0.0; nsamples as usize];
+    s.pos = 0;
+    s.data.as_mut_ptr()
+}
+
 /// Ambience internals for field debugging: [user, seep×3, slot mid ×8].
 #[no_mangle]
 pub extern "C" fn eng_amb_debug() -> *const f32 {
