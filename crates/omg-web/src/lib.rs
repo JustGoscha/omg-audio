@@ -23,9 +23,12 @@ use omg_scene::world::WorldSim;
 
 const NSRC: usize = 10;
 const MAX_FLAT: usize = 4096; // f32s per param buffer (~450 taps headroom)
-/// State layout: [0..4] pose/room/rt60, [4..58] per-source route viz,
-/// [58..] the flat Environment block (see omg_dsp::env).
-const ENV_OFF: usize = 58;
+/// State layout: [0..4] pose/room/rt60, then NSRC route-viz entries of
+/// 9 floats each, then the flat Environment block (see omg_dsp::env).
+/// ENV_OFF derives from NSRC — it silently overflowed once when NSRC
+/// grew (car positions parsed as ambience route gains: the loud-burst
+/// bug), so the layout now has ONE source of truth, exported to JS.
+const ENV_OFF: usize = 4 + NSRC * 9;
 const STATE_LEN: usize = ENV_OFF + omg_dsp::env::ENV_FLAT_LEN;
 const MAX_BLOCK: usize = 4096;
 
@@ -100,6 +103,11 @@ pub extern "C" fn sim_door_ptr() -> *mut f32 {
 #[no_mangle]
 pub extern "C" fn sim_state_len() -> u32 {
     STATE_LEN as u32
+}
+
+#[no_mangle]
+pub extern "C" fn sim_env_off() -> u32 {
+    ENV_OFF as u32
 }
 
 #[no_mangle]
@@ -349,10 +357,12 @@ pub extern "C" fn eng_ambient_commit(channels: u32) {
     let ctx = eng();
     let buf = ctx.ambient_stage.take().expect("alloc first");
     let mut data = buf.to_vec();
-    // beds get their slow loudness flattened BEFORE leveling: a passage
-    // recorded next to a cricket must not surge out of the background
+    // Beds play at their AUTHORED loudness — no gated re-normalization
+    // (a gate over a sparse cricket bed measures only the chirps and
+    // boosts the whole file to chirp level). Slow-loudness flattening
+    // still applies: a passage recorded next to a cricket must not
+    // surge out of the background.
     omg_dsp::level::flatten_slow_loudness(&mut data, channels as usize, ctx.sample_rate);
-    omg_dsp::level::normalize_rms(&mut data, omg_dsp::level::REF_CLIP_RMS);
     ctx.ambience.set_loop(data, channels == 2);
 }
 
@@ -453,6 +463,14 @@ pub extern "C" fn eng_set_head(yaw: f32) {
     if let Some(o) = &mut ctx.out {
         o.set_head_yaw(yaw);
     }
+}
+
+/// Ambience internals for field debugging: [user, seep×3, slot mid ×8].
+#[no_mangle]
+pub extern "C" fn eng_amb_debug() -> *const f32 {
+    let ctx = eng();
+    ctx.ambience.debug_state(&mut ctx.meter_out[..12]);
+    ctx.meter_out.as_ptr()
 }
 
 /// Current ear-adaptation (AGC) gain, for the HUD meters.

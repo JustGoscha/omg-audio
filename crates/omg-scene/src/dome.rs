@@ -529,6 +529,74 @@ mod tests {
         assert!(lo > 8.0 * hi, "a sealed room's seep must be bass-only: {lo} vs {hi}");
     }
 
+    /// Georg's model, pinned: standing in the alley between the house
+    /// and the club (walls left and right), the lateral sky is blocked —
+    /// those sectors must sit well under the along-alley sectors that
+    /// see open air.
+    #[test]
+    fn walls_beside_you_dampen_their_directions() {
+        let mut p = probe();
+        // alley between house (y ≤ 23) and club (y ≥ 26)
+        let bins = p.sample(Vec3::new(27.5, 24.5, 1.6), &[]);
+        let (mut lateral, mut along) = (0.0f32, 0.0f32);
+        let (mut lat_zw, mut lat_e) = (0.0f32, 0.0f32);
+        for b in bins.iter() {
+            if b.dir[2] > 0.8 {
+                continue; // zenith is open either way
+            }
+            if b.dir[1].abs() > 0.7 {
+                lateral += b.energy[1];
+                lat_zw += b.dir[2] * b.energy[1];
+                lat_e += b.energy[1];
+            } else if b.dir[0].abs() > 0.7 {
+                along += b.energy[1];
+            }
+        }
+        // the walls block the lateral HORIZON; what survives laterally is
+        // the sky folded down by the facades — weaker, and from above
+        assert!(
+            lateral < 0.72 * along,
+            "walls beside you must dampen their directions: lateral {lateral} vs along {along}"
+        );
+        assert!(
+            lat_zw / lat_e.max(1e-9) > 0.03,
+            "surviving lateral energy should tilt upward (facade-folded sky)"
+        );
+    }
+
+    /// Indoors, NOTHING arrives unfiltered: with the room sealed (or
+    /// even just enclosed by masonry), the high band only survives via
+    /// panes/openings — through the shell it must die by mass law.
+    #[test]
+    fn indoor_inflow_is_never_unfiltered() {
+        // the cathedral: sealed stone, one (open) portal
+        let mut p = probe();
+        let bins = p.sample(Vec3::new(8.0, 66.0, 1.6), &[]);
+        let (mut lo, mut hi) = (0.0f32, 0.0f32);
+        for b in bins.iter() {
+            lo += b.energy[0];
+            hi += b.energy[2];
+        }
+        let mut po = probe();
+        let open = total_mid(&po.sample(Vec3::new(8.0, 40.0, 1.6), &[]));
+        // deep in the nave the total inflow is a sliver of open air, and
+        // whatever highs remain came through the portal, not the walls
+        assert!(lo + hi < 0.25 * open, "the nave must be strongly sheltered");
+        let mut sealed = walkthrough::doors();
+        sealed[6].openness = 0.0; // portal shut
+        let mut ps = DomeProbe::new(&walkthrough::rooms(), &sealed);
+        let b2 = ps.sample(Vec3::new(8.0, 66.0, 1.6), &door_panels(&sealed));
+        let (mut lo2, mut hi2) = (0.0f32, 0.0f32);
+        for b in b2.iter() {
+            lo2 += b.energy[0];
+            hi2 += b.energy[2];
+        }
+        assert!(
+            lo2 > 8.0 * hi2,
+            "sealed stone must be bass-only (mass law): lo {lo2} hi {hi2}"
+        );
+    }
+
     /// Behind a window: rays pass the pane with glass loss — brighter
     /// bands lose more (mass law), and the inflow survives.
     #[test]

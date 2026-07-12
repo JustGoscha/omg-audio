@@ -117,6 +117,7 @@ const MIXER = [
 ];
 const SPL_MIN = 20, SPL_MAX = 130, TRIM_MIN = -30, TRIM_MAX = 12;
 
+window.__omg = state; // field-debug handle
 function buildMixer() {
   const panel = document.getElementById('mixer');
   panel.innerHTML = '<div class="scale"><span>20</span><span>needle</span>' +
@@ -883,7 +884,7 @@ async function startAudio() {
     return r.arrayBuffer();
   };
   statusEl.textContent = 'loading…';
-  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxW, fxT, fxB, dropsRaw] =
+  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxW, fxT, fxB, ambRaw, dropsRaw] =
     await Promise.all([
     fetchBuf('omg_web.wasm'),
     fetchBuf('omg_web.wasm'),
@@ -897,7 +898,7 @@ async function startAudio() {
     fetchBuf('../assets/fx_whistle.ogg'),
     fetchBuf('../assets/fx_thump.ogg'),
     fetchBuf('../assets/fx_boom.ogg'),
-    // ambience bed removed (hotfix): loud-burst bug under investigation
+    fetchBuf('../assets/night-nature48.ogg'),
     fetchBuf('../assets/drops48.ogg'),
   ]);
 
@@ -918,7 +919,7 @@ async function startAudio() {
     for (let i = 0; i < ch.length; i++) out[i] = ch[i] * g;
     return out;
   };
-  const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops] = await Promise.all([
+  const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops, ambience] = await Promise.all([
     decodeMono(ariaRaw),
     decodeMono(aliceRaw),
     decodeMono(clubRaw),
@@ -928,6 +929,22 @@ async function startAudio() {
     decodeMono(fxT, 0.55),
     decodeMono(fxB, 1.9), // boom: BIG (AGC + tanh keep it safe)
     decodeMono(dropsRaw), // recorded splat bank (pre-normalized slices)
+    (async () => {
+      const ab = await audio.decodeAudioData(ambRaw);
+      const L = ab.getChannelData(0);
+      let R = ab.numberOfChannels > 1 ? ab.getChannelData(1) : null;
+      if (!R) {
+        R = new Float32Array(L.length);
+        const off = Math.floor(L.length / 3);
+        for (let i = 0; i < L.length; i++) R[i] = L[(i + off) % L.length];
+      }
+      const out = new Float32Array(L.length * 2);
+      for (let i = 0; i < L.length; i++) {
+        out[i * 2] = L[i];
+        out[i * 2 + 1] = R[i];
+      }
+      return out;
+    })(),
   ]);
   // projectile slots: fx voices only (one buffer each — transferables)
   const silents = [new Float32Array(480), new Float32Array(480), new Float32Array(480)];
@@ -983,11 +1000,11 @@ async function startAudio() {
                 silents[0].buffer, silents[1].buffer, silents[2].buffer,
                 motorA.buffer, motorB.buffer],
       fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer],
-      drops: drops.buffer },
+      ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,
      radio.buffer, silents[0].buffer, silents[1].buffer, silents[2].buffer,
      motorA.buffer, motorB.buffer,
-     whistle.buffer, thumpFx.buffer, boomFx.buffer, drops.buffer],
+     whistle.buffer, thumpFx.buffer, boomFx.buffer, ambience.buffer, drops.buffer],
   );
   await new Promise((res, rej) => {
     const watchdog = setTimeout(
@@ -1017,9 +1034,11 @@ async function startAudio() {
     if (e.data.type !== 'tick') return;
     node.port.postMessage({ type: 'params', blocks: e.data.blocks }, e.data.blocks);
     state.simState = new Float32Array(e.data.state);
-    // environment block (offset 58: see omg-web STATE layout) — the
-    // geometry-priced ambience/rain routing
-    const env = state.simState.slice(58).buffer;
+    // environment block — offset comes from the sim (ONE source of
+    // truth for the state layout; a hardcoded 58 once parsed car
+    // positions as ambience gains)
+    state.envOff = e.data.envOff;
+    const env = state.simState.slice(e.data.envOff).buffer;
     node.port.postMessage({ type: 'env', env }, [env]);
   };
 
@@ -1388,6 +1407,26 @@ function drawMeters() {
     // hearing fatigue after ultra-loud exposure (muffle depth)
     g.fillStyle = '#ff6a5a';
     g.fillText(`muffled ${Math.round(state.meters.tts * 100)}%`, 200, 18);
+  }
+  {
+    // ambience field meter: channel level + the loudest inlets — so a
+    // misbehaving burst is measurable on sight, not by ear-memory
+    const c = state.chanHist && state.chanHist.length
+      ? state.chanHist[state.chanHist.length - 1] : null;
+    const st = state.simState;
+    if (c && st && state.envOff) {
+      const eo = state.envOff;
+      const db = 20 * Math.log10(c[21] + 1e-6);
+      const n = Math.min(st[eo + 5] | 0, 2);
+      let line = `amb ${db.toFixed(0)}dB`;
+      for (let i = 0; i < n; i++) {
+        const o = eo + 6 + i * 8;
+        line += ` ${st[o] | 0}:${st[o + 5].toFixed(2)}`;
+      }
+      line += ` seep:${st[eo + 1].toFixed(2)}`;
+      g.fillStyle = '#8fb8d8';
+      g.fillText(line, 86, H - 26);
+    }
   }
   if (state.meters.pts) {
     // adaptive point-HRTF budget (per source), set by the worklet from load

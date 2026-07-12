@@ -42,7 +42,7 @@ for (let i = 0; i < 6; i++) eng.eng_source_alloc(i, 256);
 eng.eng_set_rain(1.0);
 
 sim.sim_setup();
-const ENV_OFF = 58;
+const ENV_OFF = sim.sim_env_off();
 const stateLen = sim.sim_state_len();
 // NB: create views fresh at every use — wasm memory growth detaches them
 const setDoor = (i, openness) => {

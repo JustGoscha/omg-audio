@@ -98,6 +98,18 @@ impl Ambience {
         }
     }
 
+    /// Field-debug snapshot: [user, seep×3, slot mid gain ×MAX] — the
+    /// actual values the render path is using right now.
+    pub fn debug_state(&self, out: &mut [f32]) {
+        out[0] = self.user.current();
+        for b in 0..3 {
+            out[1 + b] = self.seep[b].current();
+        }
+        for (i, s) in self.routes.slots.iter().enumerate() {
+            out[4 + i] = s.gains[1].current();
+        }
+    }
+
     /// One sample onto the world-anchored SH bus.
     #[inline]
     pub fn process(&mut self, bus: &mut [f32; NCH]) {
