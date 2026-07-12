@@ -203,7 +203,7 @@ function updateMixerMeters() {
 // surrounds all buildings — everything was "inside a room".
 const COLLIDERS = []; // { axis, plane, lo, hi }  axis 0: x=plane, 1: y=plane
 const PLAYER_R = 0.22;
-const WORLD = { min: [-7.6, -7.6], max: [41.6, 45.6] };
+const WORLD = { min: [-7.6, -7.6], max: [47.6, 79.6] }; // Outside rect − margin
 
 function crossesWall(x0, y0, x1, y1, z = 1.6) {
   for (const c of COLLIDERS) {
@@ -453,8 +453,8 @@ function buildWorld() {
       scene.add(ceil);
     }
   }
-  const grid = new THREE.GridHelper(80, 80, 0x24402e, 0x16281d);
-  grid.position.copy(v3(17, 19, 0.0));
+  const grid = new THREE.GridHelper(100, 100, 0x24402e, 0x16281d);
+  grid.position.copy(v3(20, 36, 0.0));
   scene.add(grid);
 
   // hand-authored wall list (avoids coplanar duplicates between rooms)
