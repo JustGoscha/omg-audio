@@ -338,9 +338,14 @@ impl DomeProbe {
                 return None;
             }
             let n = self.mesh.tri_normal(tri);
+            // nudge off the surface along the INCOMING side's normal — a
+            // nudge along the reflected ray leaks through the adjacent
+            // wall at concave corners (a sealed room lost 85% treble
+            // through the seam at one corner hit)
+            let n_o = if dir.dot(n) > 0.0 { n * -1.0 } else { n };
             let hit = pos + dir * t;
             dir = (dir - n * (2.0 * dir.dot(n))).normalize();
-            pos = hit + dir * 1e-3;
+            pos = hit + n_o * 1e-3;
         }
         None
     }
@@ -509,14 +514,17 @@ mod tests {
         // what remains is the shell's mass-law seep: clearly quieter, and
         // with the highs gone (that is the "closed door" muffle)
         assert!(prev < 0.2 * open_t, "a closed leaf leaves only panel seep: {prev} vs {open_t}");
-        doors[2].openness = 0.0;
+        // With ONLY the front door closed, treble legitimately survives:
+        // rays thread the open interior door → corridor → living room →
+        // out its single-glass window (verified by sealing the interior
+        // door below). Sealing BOTH hall doors leaves the mass-law shell:
+        // bass-only.
+        doors[1].openness = 0.0; // hall ↔ corridor
+        doors[2].openness = 0.0; // hall ↔ outside
         let mut p = DomeProbe::new(&walkthrough::rooms(), &doors);
         let bins = p.sample(Vec3::new(7.0, 20.0, 1.6), &door_panels(&doors));
         let (lo, hi) = bins.iter().fold((0.0f32, 0.0f32), |(l, h), b| (l + b.energy[0], h + b.energy[2]));
-        // TODO(investigate): expected ≫ this — some high-band path
-        // survives the closed leaf (suspect: a through-trace crossing not
-        // paying what it should). Pinned loosely until root-caused.
-        assert!(lo > 1.4 * hi, "closed-door seep must favor lows: {lo} vs {hi}");
+        assert!(lo > 8.0 * hi, "a sealed room's seep must be bass-only: {lo} vs {hi}");
     }
 
     /// Behind a window: rays pass the pane with glass loss — brighter

@@ -24,18 +24,71 @@ pub struct Facade {
     pub refl: [f32; NBANDS],
 }
 
+/// Trace-skip gate: the late field is a slowly-varying STATISTIC. When
+/// the trace inputs haven't meaningfully changed, another 4096 rays only
+/// re-measure the same distribution — the EMA absorbs the variance either
+/// way, so skipping trades nothing but staleness, and the stagger keeps
+/// even that bounded (~2.5 Hz refresh). Motion and door swings re-trace
+/// immediately.
+struct TraceGate {
+    last_src: Vec3,
+    last_lis: Vec3,
+    last_energy: [f32; NBANDS],
+    age: u32,
+}
+
+impl TraceGate {
+    fn new(phase: u32) -> Self {
+        Self {
+            last_src: Vec3::new(f32::MAX, 0.0, 0.0),
+            last_lis: Vec3::new(f32::MAX, 0.0, 0.0),
+            last_energy: [0.0; NBANDS],
+            age: phase,
+        }
+    }
+
+    fn should_trace(&mut self, src: Vec3, lis: Vec3, energy: [f32; NBANDS]) -> bool {
+        self.age += 1;
+        let d = |a: Vec3, b: Vec3| (a - b).length();
+        let energy_moved = (0..NBANDS).any(|b| {
+            let (e0, e1) = (self.last_energy[b], energy[b]);
+            (e1 - e0).abs() > 0.1 * e0.max(e1).max(1e-6)
+        });
+        if self.age >= 8
+            || d(src, self.last_src) > 0.25
+            || d(lis, self.last_lis) > 0.25
+            || energy_moved
+        {
+            self.last_src = src;
+            self.last_lis = lis;
+            self.last_energy = energy;
+            self.age = 0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub struct Sim {
     rng: Rng,
+    gate: TraceGate,
     echo_avg: Echogram,
     echo_cur: Echogram,
     taps_buf: Vec<omg_core::params::Tap>,
     version: u64,
 }
 
+static SIM_COUNTER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 impl Sim {
     pub fn new() -> Self {
+        // stagger refresh phases across instances so idle re-traces don't
+        // all land on the same tick
+        let phase = SIM_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed) % 8;
         Self {
             rng: Rng::new(0xC0FFEE),
+            gate: TraceGate::new(phase),
             echo_avg: Echogram::new(),
             echo_cur: Echogram::new(),
             taps_buf: Vec::new(),
@@ -104,8 +157,11 @@ impl Sim {
         // spreading loss over the pre-door path).
         let src_energy: [f32; NBANDS] =
             core::array::from_fn(|b| muffle[b] * muffle[b] / (1.0 + extra_dist * extra_dist));
-        trace(room, src, listener, N_RAYS, src_energy, &mut self.rng, &mut self.echo_cur);
-        self.finish_update()
+        let traced = self.gate.should_trace(src, listener, src_energy);
+        if traced {
+            trace(room, src, listener, N_RAYS, src_energy, &mut self.rng, &mut self.echo_cur);
+        }
+        self.finish_update(traced)
     }
 
     /// Same-room speaker rig: identical signal from several emitters
@@ -138,8 +194,11 @@ impl Sim {
         }
         // Reverb: one trace from the rig centroid-ish (first emitter);
         // in-room late statistics barely depend on the exact position.
-        trace(room, emitters[0], listener, N_RAYS, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur);
-        self.finish_update()
+        let traced = self.gate.should_trace(emitters[0], listener, [1.0; NBANDS]);
+        if traced {
+            trace(room, emitters[0], listener, N_RAYS, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur);
+        }
+        self.finish_update(traced)
     }
 
     /// Open air: direct path + ground reflection + first-order slap-back
@@ -226,10 +285,11 @@ impl Sim {
         }
     }
 
-    fn finish_update(&mut self) -> ParamBlock {
-        let alpha = if self.version == 0 { 1.0 } else { 0.3 };
-        self.echo_avg.ema(&self.echo_cur, alpha);
-
+    fn finish_update(&mut self, traced: bool) -> ParamBlock {
+        if traced {
+            let alpha = if self.version == 0 { 1.0 } else { 0.3 };
+            self.echo_avg.ema(&self.echo_cur, alpha);
+        }
         let reverb = estimate_reverb(&self.echo_avg);
 
         self.version += 1;
@@ -244,9 +304,11 @@ impl Sim {
         src: Vec3,
         receiver: Vec3,
     ) -> omg_core::params::ReverbParams {
-        trace(room, src, receiver, N_RAYS, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur);
-        let alpha = if self.version == 0 { 1.0 } else { 0.3 };
-        self.echo_avg.ema(&self.echo_cur, alpha);
+        if self.gate.should_trace(src, receiver, [1.0; NBANDS]) {
+            trace(room, src, receiver, N_RAYS, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur);
+            let alpha = if self.version == 0 { 1.0 } else { 0.3 };
+            self.echo_avg.ema(&self.echo_cur, alpha);
+        }
         self.version += 1;
         estimate_reverb(&self.echo_avg)
     }
