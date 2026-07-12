@@ -32,6 +32,7 @@ const DOORS = [
   { pos: [22, 31], axis: 0 },
   { pos: [26.5, 23], axis: 1 }, // old house front door
   { pos: [8, 52], axis: 1, hw: 1.2, h: 3.5 }, // cathedral portal (grand)
+  { pos: [31.4, 7], axis: 0, hw: 0.7, h: 2.0, steel: true }, // bunker blast door
 ];
 const DOOR_HALF = 0.55;
 const DOOR_H = 2.1;
@@ -419,6 +420,7 @@ function buildCathedralInterior() {
 // toggleable collider. E toggles the nearest door; the sim hears the
 // closed panel as mass-law transmission instead of a free aperture.
 const doorMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2e });
+const steelMat = new THREE.MeshLambertMaterial({ color: 0x59616b });
 function buildDoorPanels() {
   DOORS.forEach((d) => {
     const [dx, dy] = d.pos;
@@ -428,9 +430,9 @@ function buildDoorPanels() {
     const hinge = new THREE.Group();
     const leaf = new THREE.Mesh(
       d.axis === 0
-        ? new THREE.BoxGeometry(0.08, dh, 2 * hw)
-        : new THREE.BoxGeometry(2 * hw, dh, 0.08),
-      doorMat,
+        ? new THREE.BoxGeometry(d.steel ? 0.16 : 0.08, dh, 2 * hw)
+        : new THREE.BoxGeometry(2 * hw, dh, d.steel ? 0.16 : 0.08),
+      d.steel ? steelMat : doorMat,
     );
     if (d.axis === 0) {
       hinge.position.copy(v3(dx, dy - hw, dh / 2));
@@ -555,19 +557,42 @@ function buildWorld() {
   COLLIDERS.push({ axis: 0, plane: 40, lo: 6, hi: 14, h: -0.8 });
   COLLIDERS.push({ axis: 0, plane: 34, lo: 6, hi: 14, h: -0.8 });
   openColliderGap(0, 34, 7);
-  // ramp rails keep surface walkers from strolling into the pit sideways
-  COLLIDERS.push({ axis: 1, plane: 6.15, lo: 32.4, hi: 34, h: 1.0 });
-  COLLIDERS.push({ axis: 1, plane: 7.85, lo: 32.4, hi: 34, h: 1.0 });
+  // entrance blockhouse over the stair head: heavy door on its west face
+  wallY(6, 31.2, 34, 2.4);
+  wallY(8, 31.2, 34, 2.4);
+  wallX(31.4, 6, 8, 2.4);          // blast door (door 7) lives here
+  addBox(32.7, 7, 2.45, 3.0, 2.2, 0.18); // roof slab
   const pitMat = new THREE.MeshBasicMaterial({ color: 0x05070a });
-  const pit = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 1.9), pitMat);
+  const pit = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 1.9), pitMat);
   pit.rotation.x = -Math.PI / 2;
-  pit.position.copy(v3(33.3, 7, 0.015));
+  pit.position.copy(v3(33.25, 7, 0.015));
   scene.add(pit);
-  const ramp = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.14, 1.6),
-    new THREE.MeshLambertMaterial({ color: 0x3a3f3a }));
-  ramp.position.copy(v3(33.25, 7, -1.5));
-  ramp.rotation.z = -Math.atan2(3.0, 1.6);
-  scene.add(ramp);
+  // stairs down the shaft (walkable height stays the smooth ramp)
+  const stepMat = new THREE.MeshLambertMaterial({ color: 0x40453f });
+  for (let i = 0; i < 10; i++) {
+    const step = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.32, 1.5), stepMat);
+    step.position.copy(v3(32.55 + i * 0.15, 7, -0.15 - i * 0.3));
+    scene.add(step);
+  }
+  // sign: BUNKER, at the door
+  const signC = document.createElement('canvas');
+  signC.width = 256; signC.height = 96;
+  const sg = signC.getContext('2d');
+  sg.fillStyle = '#2a2e26'; sg.fillRect(0, 0, 256, 96);
+  sg.strokeStyle = '#c8b060'; sg.lineWidth = 6; sg.strokeRect(4, 4, 248, 88);
+  sg.fillStyle = '#c8b060'; sg.font = 'bold 52px sans-serif';
+  sg.textAlign = 'center'; sg.textBaseline = 'middle';
+  sg.fillText('BUNKER', 128, 50);
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.3, 0.5),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(signC) }),
+  );
+  sign.position.copy(v3(31.32, 5.4, 1.8));
+  sign.rotation.y = -Math.PI / 2; // faces west, toward the square
+  scene.add(sign);
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.8, 0.08), stepMat);
+  post.position.copy(v3(31.35, 5.4, 0.9));
+  scene.add(post);
 
   // old house: ground floor enterable, second storey visual mass
   wallY(16, 24, 31, 2.8);          // south

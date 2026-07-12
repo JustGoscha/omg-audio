@@ -105,7 +105,7 @@ pub extern "C" fn sim_state_len() -> u32 {
 #[no_mangle]
 pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
     let ctx = sim();
-    for i in 0..7 {
+    for i in 0..8 {
         // animated leaf position — the swing sweeps the filters
         ctx.world.set_door(i, ctx.door_in[i]);
     }

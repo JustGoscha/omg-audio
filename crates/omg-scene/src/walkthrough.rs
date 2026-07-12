@@ -226,9 +226,11 @@ pub struct Door {
     pub glass: bool,
     /// Panel openness 0 (closed) … 1 (fully open). The swinging leaf IS
     /// the filter: transmission is the area-weighted energy mix of the
-    /// open slit and the wood panel, so opening a door sweeps the sound
+    /// open slit and the panel, so opening a door sweeps the sound
     /// continuously instead of snapping it (see `fill_energy`).
     pub openness: f32,
+    /// Heavy steel panel (blast door) instead of wood.
+    pub heavy: bool,
 }
 
 impl Door {
@@ -241,9 +243,9 @@ impl Door {
             core::array::from_fn(|b| GLASS_TRANSMISSION[b] * GLASS_TRANSMISSION[b])
         } else {
             let o = self.openness.clamp(0.0, 1.0);
-            core::array::from_fn(|b| {
-                o + (1.0 - o) * DOOR_PANEL_TRANSMISSION[b] * DOOR_PANEL_TRANSMISSION[b]
-            })
+            let panel =
+                if self.heavy { HEAVY_PANEL_TRANSMISSION } else { DOOR_PANEL_TRANSMISSION };
+            core::array::from_fn(|b| o + (1.0 - o) * panel[b] * panel[b])
         }
     }
 
@@ -256,29 +258,29 @@ impl Door {
 
 pub fn doors() -> Vec<Door> {
     vec![
-        Door { rooms: (LIVING, CORRIDOR), pos: (4.0, 6.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
-        Door { rooms: (CORRIDOR, HALL), pos: (4.0, 14.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
-        Door { rooms: (HALL, OUTSIDE), pos: (7.0, 24.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
-        Door { rooms: (OUTSIDE, ENTRANCE), pos: (20.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
-        Door { rooms: (ENTRANCE, CLUB), pos: (22.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
-        Door { rooms: (OUTSIDE, HOUSE), pos: (26.5, 23.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0 },
+        Door { rooms: (LIVING, CORRIDOR), pos: (4.0, 6.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
+        Door { rooms: (CORRIDOR, HALL), pos: (4.0, 14.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
+        Door { rooms: (HALL, OUTSIDE), pos: (7.0, 24.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
+        Door { rooms: (OUTSIDE, ENTRANCE), pos: (20.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
+        Door { rooms: (ENTRANCE, CLUB), pos: (22.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
+        Door { rooms: (OUTSIDE, HOUSE), pos: (26.5, 23.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
         // cathedral portal: a tall double door (E-toggleable, index 6)
-        Door { rooms: (OUTSIDE, CATHEDRAL), pos: (8.0, 52.0), axis: 1, half: 1.2, height: 3.5, zc: 1.75, glass: false, openness: 1.0 },
+        Door { rooms: (OUTSIDE, CATHEDRAL), pos: (8.0, 52.0), axis: 1, half: 1.2, height: 3.5, zc: 1.75, glass: false, openness: 1.0, heavy: false },
+        // bunker blockhouse: a heavy steel door at the stair head (index 7)
+        Door { rooms: (OUTSIDE, BUNKER), pos: (31.4, 7.0), axis: 0, half: 0.7, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: true },
         // windows
-        Door { rooms: (LIVING, OUTSIDE), pos: (3.0, 0.0), axis: 1, half: 1.3, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
-        Door { rooms: (CLUB, OUTSIDE), pos: (32.0, 32.0), axis: 0, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
-        Door { rooms: (CLUB, OUTSIDE), pos: (26.0, 38.0), axis: 1, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
+        Door { rooms: (LIVING, OUTSIDE), pos: (3.0, 0.0), axis: 1, half: 1.3, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
+        Door { rooms: (CLUB, OUTSIDE), pos: (32.0, 32.0), axis: 0, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
+        Door { rooms: (CLUB, OUTSIDE), pos: (26.0, 38.0), axis: 1, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
         // house windows look out onto the square, club and hall
-        Door { rooms: (HOUSE, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
-        Door { rooms: (HOUSE, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, height: 1.4, zc: 1.5, glass: true, openness: 1.0 },
+        Door { rooms: (HOUSE, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
+        Door { rooms: (HOUSE, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
         // upper-storey windows onto the square and toward the club
-        Door { rooms: (HOUSE_UP, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, height: 1.4, zc: 4.5, glass: true, openness: 1.0 },
-        Door { rooms: (HOUSE_UP, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, height: 1.4, zc: 4.5, glass: true, openness: 1.0 },
+        Door { rooms: (HOUSE_UP, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, height: 1.4, zc: 4.5, glass: true, openness: 1.0, heavy: false },
+        Door { rooms: (HOUSE_UP, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, height: 1.4, zc: 4.5, glass: true, openness: 1.0, heavy: false },
         // stairwell: the vertical portal between the two storeys — always
-        // open, never toggled (indices ≥ 7 are outside the E-key range)
-        Door { rooms: (HOUSE, HOUSE_UP), pos: (24.8, 21.5), axis: 0, half: 0.7, height: 2.2, zc: 3.0, glass: false, openness: 1.0 },
-        // bunker stair shaft: a vertical hatch in the bunker's ceiling
-        Door { rooms: (OUTSIDE, BUNKER), pos: (35.0, 7.0), axis: 0, half: 0.7, height: 2.2, zc: -0.8, glass: false, openness: 1.0 },
+        // open, never toggled (indices ≥ 8 are outside the E-key range)
+        Door { rooms: (HOUSE, HOUSE_UP), pos: (24.8, 21.5), axis: 0, half: 0.7, height: 2.2, zc: 3.0, glass: false, openness: 1.0, heavy: false },
     ]
 }
 
@@ -289,6 +291,9 @@ pub const GLASS_TRANSMISSION: [f32; NBANDS] = [0.50, 0.32, 0.20];
 
 /// A closed door: ~4 cm wood panel filling the aperture (mass law).
 pub const DOOR_PANEL_TRANSMISSION: [f32; NBANDS] = [0.28, 0.12, 0.05];
+
+/// A heavy steel blast door (the bunker): nearly a wall when shut.
+pub const HEAVY_PANEL_TRANSMISSION: [f32; NBANDS] = [0.10, 0.03, 0.01];
 
 /// Half-width of the portal blend zone: within this distance of a doorway
 /// the acoustics of both connected rooms are simulated and crossfaded.
@@ -966,6 +971,7 @@ mod tests {
             zc: 1.0,
             glass: false,
             openness,
+            heavy: false,
         }
     }
 
