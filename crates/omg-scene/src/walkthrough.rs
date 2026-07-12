@@ -184,8 +184,8 @@ pub fn rooms() -> Vec<RoomDef> {
         // room_of matches in order. It surrounds all buildings.
         RoomDef {
             name: "Outside",
-            min: (-28.0, -32.0),
-            max: (48.0, 96.0),
+            min: (-28.0, -230.0),
+            max: (48.0, 290.0),
             height: 30.0,
             barrier_height: 30.0,
             floor_z: 0.0,

@@ -21,7 +21,7 @@ const ROOMS = [
   { name: 'Old House Upper', min: [24, 16], max: [31, 23], upper: true }, // index-aligned with the sim
   { name: 'Cathedral', min: [0, 52], max: [16, 74], h: 15, floor: 0x2b2b36 },
   { name: 'Bunker', min: [34, 6], max: [40, 14], h: 2.2, fz: -3, floor: 0x20241f },
-  { name: 'Outside', min: [-28, -32], max: [48, 96], outdoor: true, floor: 0x1c2a20 },
+  { name: 'Outside', min: [-28, -230], max: [48, 290], outdoor: true, floor: 0x1c2a20 },
 ];
 // axis: 0 = opening in an x=const wall, 1 = opening in a y=const wall
 const DOORS = [
@@ -204,7 +204,7 @@ function updateMixerMeters() {
 // surrounds all buildings — everything was "inside a room".
 const COLLIDERS = []; // { axis, plane, lo, hi }  axis 0: x=plane, 1: y=plane
 const PLAYER_R = 0.22;
-const WORLD = { min: [-27.6, -31.6], max: [47.6, 95.6] }; // Outside rect − margin
+const WORLD = { min: [-27.6, -31.6], max: [47.6, 95.6] }; // playable region (the road runs on)
 
 function crossesWall(x0, y0, x1, y1, z = 1.6) {
   for (const c of COLLIDERS) {
@@ -523,22 +523,23 @@ function spawnCar() {
     slot: free,
     mesh: body,
     x: CAR_LANES[north ? 1 : 0],
-    y: north ? -30 : 94,
-    vy: (north ? 1 : -1) * (11 + Math.random() * 4),
+    y: north ? -220 : 275,
+    vy: (north ? 1 : -1) * (9 + Math.random() * 8),
+    vol: 0.6 + Math.random(), // some cars are just louder
   });
 }
 
 function updateCars(dt, now) {
   if (now > (state.nextCarAt || 0)) {
     spawnCar();
-    state.nextCarAt = now + 12000 + Math.random() * 18000;
+    state.nextCarAt = now + 7000 + Math.random() * 11000;
   }
   for (const c of state.cars) {
     c.y += c.vy * dt;
     c.mesh.position.copy(v3(c.x, c.y, 0));
   }
   state.cars = state.cars.filter((c) => {
-    const gone = c.y < -31 || c.y > 95;
+    const gone = c.y < -225 || c.y > 280;
     if (gone) scene.remove(c.mesh);
     return !gone;
   });
@@ -724,14 +725,14 @@ function buildWorld() {
 
   // the street: an asphalt strip along the west side; cars pass on it
   const asphalt = new THREE.Mesh(
-    new THREE.PlaneGeometry(4.4, 128),
+    new THREE.PlaneGeometry(4.4, 520),
     new THREE.MeshLambertMaterial({ color: 0x23252a }),
   );
   asphalt.rotation.x = -Math.PI / 2;
-  asphalt.position.copy(v3(-18, 32, 0.01));
+  asphalt.position.copy(v3(-18, 30, 0.01));
   scene.add(asphalt);
   const dashMat = new THREE.MeshBasicMaterial({ color: 0x8a8f7a });
-  for (let y = -30; y < 94; y += 6) {
+  for (let y = -228; y < 288; y += 6) {
     const dash = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 2.2), dashMat);
     dash.rotation.x = -Math.PI / 2;
     dash.position.copy(v3(-18, y, 0.02));
@@ -1031,7 +1032,7 @@ async function startAudio() {
       doors: state.doorMeshes.map((dm) => dm.openness),
       projs: [
         ...state.projs.map((p) => [p.slot, p.x, p.y, p.z]),
-        ...state.cars.map((c) => [c.slot, c.x, c.y, 0.7]),
+        ...state.cars.map((c) => [c.slot, c.x, c.y, 0.7, c.vol]),
       ],
     });
   }, 50);
@@ -1471,7 +1472,9 @@ function drawMinimap() {
   mm.fillRect(0, 0, W, H);
   const xs = ROOMS.flatMap((r) => [r.min[0], r.max[0]]);
   const ys = ROOMS.flatMap((r) => [r.min[1], r.max[1]]);
-  const [mx0, mx1, my0, my1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  // map the interesting region, not the 500 m road corridor
+  const [mx0, mx1, my0, my1] = [Math.max(Math.min(...xs), -28), Math.min(Math.max(...xs), 48),
+    Math.max(Math.min(...ys), -32), Math.min(Math.max(...ys), 96)];
   const s = Math.min(W / (mx1 - mx0 + 2), H / (my1 - my0 + 2));
   const sx = (wx) => (wx - mx0 + 1) * s;
   const sy = (wy) => H - (wy - my0 + 1) * s;

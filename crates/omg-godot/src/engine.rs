@@ -67,7 +67,7 @@ impl SpatialEngine {
                 while !stop.load(Ordering::Relaxed) {
                     let p = *pose.lock().unwrap();
                     for (slot, (x, y, z, active)) in p.dynamics.iter().enumerate() {
-                        world.set_dynamic(slot, *x, *y, *z, *active);
+                        world.set_dynamic(slot, *x, *y, *z, if *active { 1.0 } else { 0.0 });
                     }
                     let (blocks, info) = world.tick_at(p.x, p.y, p.yaw);
                     let mut mb = mailbox.lock().unwrap();

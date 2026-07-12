@@ -43,6 +43,8 @@ pub struct WorldSim {
     /// Per source emission height (dynamic sources fly).
     src_z: Vec<f32>,
     dynamic_active: [bool; walkthrough::DYN_SLOTS],
+    /// Authored gain of each dynamic slot (per-spawn variation scales it).
+    dyn_base: Vec<f32>,
     /// Exterior building walls in outdoor-local coordinates.
     facades: Vec<Facade>,
     /// Mesh-emergent propagation paths (M4): jambs, building corners and
@@ -96,6 +98,10 @@ impl WorldSim {
                 .map(|d| rooms[d.room].floor_z + walkthrough::SRC_HEIGHT)
                 .collect(),
             dynamic_active: [false; walkthrough::DYN_SLOTS],
+            dyn_base: defs[defs.len() - walkthrough::DYN_SLOTS..]
+                .iter()
+                .map(|d| d.gain)
+                .collect(),
             facades: {
                 let out = rooms.last().unwrap();
                 let (ox, oy) = out.min;
@@ -145,16 +151,19 @@ impl WorldSim {
         }
     }
 
-    /// Move dynamic source `slot` (0..DYN_SLOTS). Inactive → silent.
-    pub fn set_dynamic(&mut self, slot: usize, x: f32, y: f32, z: f32, active: bool) {
+    /// Move dynamic source `slot` (0..DYN_SLOTS). `gain` scales the
+    /// slot's authored gain per spawn (one car is louder than another);
+    /// ≤ 0 deactivates.
+    pub fn set_dynamic(&mut self, slot: usize, x: f32, y: f32, z: f32, gain: f32) {
         if slot >= walkthrough::DYN_SLOTS {
             return;
         }
         let i = self.defs.len() - walkthrough::DYN_SLOTS + slot;
         self.defs[i].pos = (x, y);
         self.defs[i].room = walkthrough::room_of_z(&self.rooms, x, y, z);
+        self.defs[i].gain = self.dyn_base[slot] * gain.max(0.0);
         self.src_z[i] = z.clamp(0.2, 12.0);
-        self.dynamic_active[slot] = active;
+        self.dynamic_active[slot] = gain > 0.01;
     }
 
     /// Scripted-path tick (native walkthrough render).

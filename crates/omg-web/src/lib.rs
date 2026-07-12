@@ -116,7 +116,7 @@ pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
             ctx.dyn_in[o],
             ctx.dyn_in[o + 1],
             ctx.dyn_in[o + 2],
-            ctx.dyn_in[o + 3] > 0.5,
+            ctx.dyn_in[o + 3],
         );
     }
     let (blocks, info) = ctx.world.tick_at_z(lx, ly, lz, yaw);

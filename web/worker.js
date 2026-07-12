@@ -24,7 +24,7 @@ function tick() {
   dyn.fill(0);
   (pose.projs || []).forEach((p) => {
     const slot = p[0];
-    if (slot >= 0 && slot < 5) dyn.set([p[1], p[2], p[3], 1], slot * 4);
+    if (slot >= 0 && slot < 5) dyn.set([p[1], p[2], p[3], p[4] === undefined ? 1 : p[4]], slot * 4);
   });
   w.sim_tick(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw);
   const blocks = [];
