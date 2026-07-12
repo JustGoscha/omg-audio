@@ -882,7 +882,7 @@ async function startAudio() {
     return r.arrayBuffer();
   };
   statusEl.textContent = 'loading…';
-  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxW, fxT, fxB, ambRaw, dropsRaw] =
+  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxW, fxT, fxB, dropsRaw] =
     await Promise.all([
     fetchBuf('omg_web.wasm'),
     fetchBuf('omg_web.wasm'),
@@ -896,7 +896,7 @@ async function startAudio() {
     fetchBuf('../assets/fx_whistle.ogg'),
     fetchBuf('../assets/fx_thump.ogg'),
     fetchBuf('../assets/fx_boom.ogg'),
-    fetchBuf('../assets/night-nature48.ogg'),
+    // ambience bed removed (hotfix): loud-burst bug under investigation
     fetchBuf('../assets/drops48.ogg'),
   ]);
 
@@ -917,7 +917,7 @@ async function startAudio() {
     for (let i = 0; i < ch.length; i++) out[i] = ch[i] * g;
     return out;
   };
-  const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops, ambience] = await Promise.all([
+  const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops] = await Promise.all([
     decodeMono(ariaRaw),
     decodeMono(aliceRaw),
     decodeMono(clubRaw),
@@ -927,25 +927,6 @@ async function startAudio() {
     decodeMono(fxT, 0.55),
     decodeMono(fxB, 1.9), // boom: BIG (AGC + tanh keep it safe)
     decodeMono(dropsRaw), // recorded splat bank (pre-normalized slices)
-    (async () => {
-      const ab = await audio.decodeAudioData(ambRaw);
-      const L = ab.getChannelData(0);
-      let R = ab.numberOfChannels > 1 ? ab.getChannelData(1) : null;
-      if (!R) {
-        // mono bed: decorrelate the second channel with an offset read
-        R = new Float32Array(L.length);
-        const off = Math.floor(L.length / 3);
-        for (let i = 0; i < L.length; i++) R[i] = L[(i + off) % L.length];
-      }
-      // raw interleave — the engine import-normalizes the bed
-      const out = new Float32Array(L.length * 2);
-      const g = 1.0;
-      for (let i = 0; i < L.length; i++) {
-        out[i * 2] = L[i] * g;
-        out[i * 2 + 1] = R[i] * g;
-      }
-      return out;
-    })(),
   ]);
   // projectile slots: fx voices only (one buffer each — transferables)
   const silents = [new Float32Array(480), new Float32Array(480), new Float32Array(480)];
@@ -1001,11 +982,11 @@ async function startAudio() {
                 silents[0].buffer, silents[1].buffer, silents[2].buffer,
                 motorA.buffer, motorB.buffer],
       fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer],
-      ambient: ambience.buffer, drops: drops.buffer },
+      drops: drops.buffer },
     [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,
      radio.buffer, silents[0].buffer, silents[1].buffer, silents[2].buffer,
      motorA.buffer, motorB.buffer,
-     whistle.buffer, thumpFx.buffer, boomFx.buffer, ambience.buffer, drops.buffer],
+     whistle.buffer, thumpFx.buffer, boomFx.buffer, drops.buffer],
   );
   await new Promise((res, rej) => {
     const watchdog = setTimeout(
