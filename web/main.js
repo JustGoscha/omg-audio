@@ -21,7 +21,7 @@ const ROOMS = [
   { name: 'Old House Upper', min: [24, 16], max: [31, 23], upper: true }, // index-aligned with the sim
   { name: 'Cathedral', min: [0, 52], max: [16, 74], h: 15, floor: 0x2b2b36 },
   { name: 'Bunker', min: [34, 6], max: [40, 14], h: 2.2, fz: -3, floor: 0x20241f },
-  { name: 'Outside', min: [-28, -230], max: [48, 290], outdoor: true, floor: 0x1c2a20 },
+  { name: 'Outside', min: [-28, -1900], max: [48, 2000], outdoor: true, floor: 0x1c2a20 },
 ];
 // axis: 0 = opening in an x=const wall, 1 = opening in a y=const wall
 const DOORS = [
@@ -524,8 +524,11 @@ function spawnCar() {
     slot: free,
     mesh: body,
     x: CAR_LANES[north ? 1 : 0],
-    y: north ? -220 : 275,
-    vy: (north ? 1 : -1) * (9 + Math.random() * 8),
+    // spawn KILOMETERS out — genuinely inaudible, the approach is a
+    // true fade-in from nothing (distance loss + air absorption)
+    y: (north ? -1 : 1) * (900 + Math.random() * 900),
+    north,
+    vy: (north ? 1 : -1) * (12 + Math.random() * 12),
     vol: 0.6 + Math.random(), // some cars are just louder
   });
 }
@@ -533,14 +536,16 @@ function spawnCar() {
 function updateCars(dt, now) {
   if (now > (state.nextCarAt || 0)) {
     spawnCar();
-    state.nextCarAt = now + 7000 + Math.random() * 11000;
+    state.nextCarAt = now + 5000 + Math.random() * 10000;
   }
   for (const c of state.cars) {
     c.y += c.vy * dt;
     c.mesh.position.copy(v3(c.x, c.y, 0));
   }
   state.cars = state.cars.filter((c) => {
-    const gone = c.y < -225 || c.y > 280;
+    // free the slot once it is inaudible again on the far side — no
+    // need to drive the remaining kilometers in silence
+    const gone = c.north ? c.y > 560 : c.y < -500;
     if (gone) scene.remove(c.mesh);
     return !gone;
   });
@@ -726,14 +731,14 @@ function buildWorld() {
 
   // the street: an asphalt strip along the west side; cars pass on it
   const asphalt = new THREE.Mesh(
-    new THREE.PlaneGeometry(4.4, 520),
+    new THREE.PlaneGeometry(4.4, 3900),
     new THREE.MeshLambertMaterial({ color: 0x23252a }),
   );
   asphalt.rotation.x = -Math.PI / 2;
-  asphalt.position.copy(v3(-18, 30, 0.01));
+  asphalt.position.copy(v3(-18, 50, 0.01));
   scene.add(asphalt);
   const dashMat = new THREE.MeshBasicMaterial({ color: 0x8a8f7a });
-  for (let y = -228; y < 288; y += 6) {
+  for (let y = -300; y < 360; y += 6) {
     const dash = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 2.2), dashMat);
     dash.rotation.x = -Math.PI / 2;
     dash.position.copy(v3(-18, y, 0.02));
