@@ -21,7 +21,7 @@ const ROOMS = [
   { name: 'Old House Upper', min: [24, 16], max: [31, 23], upper: true }, // index-aligned with the sim
   { name: 'Cathedral', min: [0, 52], max: [16, 74], h: 15, floor: 0x2b2b36 },
   { name: 'Bunker', min: [34, 6], max: [40, 14], h: 2.2, fz: -3, floor: 0x20241f },
-  { name: 'Outside', min: [-8, -8], max: [48, 80], outdoor: true, floor: 0x1c2a20 },
+  { name: 'Outside', min: [-28, -32], max: [48, 96], outdoor: true, floor: 0x1c2a20 },
 ];
 // axis: 0 = opening in an x=const wall, 1 = opening in a y=const wall
 const DOORS = [
@@ -57,6 +57,7 @@ const EYE = 1.6;
 
 const state = {
   projs: [],
+  cars: [],
   fx: null,
   meters: { l: 0, r: 0, agc: 1, tts: 0, pts: 0, hist: [] },
   pose: { x: 3, y: 3 },
@@ -109,8 +110,9 @@ const MIXER = [
   { name: 'flute', srcs: [3], base: 88, def: 76, meters: [3], spl: true },
   { name: 'radio', srcs: [4], base: 80, def: 64, meters: [4], spl: true },
   { name: 'balls', srcs: [5, 6, 7], base: 89, def: 89, meters: [5, 6, 7], spl: true },
-  { name: 'ambience', target: 'ambient', def: -16, meters: [8] },
-  { name: 'rain', target: 'rainGain', def: 0, meters: [9] },
+  { name: 'cars', srcs: [8, 9], base: 92, def: 86, meters: [8, 9], spl: true },
+  { name: 'ambience', target: 'ambient', def: -16, meters: [10] },
+  { name: 'rain', target: 'rainGain', def: 0, meters: [11] },
   { name: 'master', target: 'master', def: 0, meters: 'lr' },
 ];
 const SPL_MIN = 20, SPL_MAX = 130, TRIM_MIN = -30, TRIM_MAX = 12;
@@ -202,7 +204,7 @@ function updateMixerMeters() {
 // surrounds all buildings — everything was "inside a room".
 const COLLIDERS = []; // { axis, plane, lo, hi }  axis 0: x=plane, 1: y=plane
 const PLAYER_R = 0.22;
-const WORLD = { min: [-7.6, -7.6], max: [47.6, 79.6] }; // Outside rect − margin
+const WORLD = { min: [-27.6, -31.6], max: [47.6, 95.6] }; // Outside rect − margin
 
 function crossesWall(x0, y0, x1, y1, z = 1.6) {
   for (const c of COLLIDERS) {
@@ -483,6 +485,65 @@ function buildCathedralInterior() {
   scene.add(cool);
 }
 
+// Passing cars: dynamic sources on the west street. Spawn beyond
+// audibility, drive through, despawn — the pass-by fade and the Doppler
+// both come from the engine (distance loss + tap-delay glide).
+const CAR_LANES = [-18.9, -17.1]; // southbound, northbound
+function spawnCar() {
+  const free = [3, 4].find((slot) => !state.cars.some((c) => c.slot === slot));
+  if (free === undefined) return;
+  const north = free === 4;
+  const body = new THREE.Group();
+  const shell = new THREE.Mesh(
+    new THREE.BoxGeometry(1.7, 0.55, 4.0),
+    new THREE.MeshLambertMaterial({ color: north ? 0x4a5a72 : 0x6a4a3a }),
+  );
+  shell.position.y = 0.55;
+  body.add(shell);
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(1.5, 0.5, 2.0),
+    new THREE.MeshLambertMaterial({ color: 0x22262c }),
+  );
+  cabin.position.set(0, 1.05, -0.3);
+  body.add(cabin);
+  const head = new THREE.Mesh(
+    new THREE.BoxGeometry(1.5, 0.14, 0.06),
+    new THREE.MeshBasicMaterial({ color: 0xffe9b0 }),
+  );
+  head.position.set(0, 0.6, north ? -2.0 : 2.0);
+  body.add(head);
+  const tail = new THREE.Mesh(
+    new THREE.BoxGeometry(1.5, 0.1, 0.06),
+    new THREE.MeshBasicMaterial({ color: 0xd23a2e }),
+  );
+  tail.position.set(0, 0.62, north ? 2.0 : -2.0);
+  body.add(tail);
+  scene.add(body);
+  state.cars.push({
+    slot: free,
+    mesh: body,
+    x: CAR_LANES[north ? 1 : 0],
+    y: north ? -30 : 94,
+    vy: (north ? 1 : -1) * (11 + Math.random() * 4),
+  });
+}
+
+function updateCars(dt, now) {
+  if (now > (state.nextCarAt || 0)) {
+    spawnCar();
+    state.nextCarAt = now + 12000 + Math.random() * 18000;
+  }
+  for (const c of state.cars) {
+    c.y += c.vy * dt;
+    c.mesh.position.copy(v3(c.x, c.y, 0));
+  }
+  state.cars = state.cars.filter((c) => {
+    const gone = c.y < -31 || c.y > 95;
+    if (gone) scene.remove(c.mesh);
+    return !gone;
+  });
+}
+
 // Openable door panels: a wood slab in each doorway with its own
 // toggleable collider. E toggles the nearest door; the sim hears the
 // closed panel as mass-law transmission instead of a free aperture.
@@ -660,6 +721,22 @@ function buildWorld() {
   const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.8, 0.08), stepMat);
   post.position.copy(v3(31.35, 5.4, 0.9));
   scene.add(post);
+
+  // the street: an asphalt strip along the west side; cars pass on it
+  const asphalt = new THREE.Mesh(
+    new THREE.PlaneGeometry(4.4, 128),
+    new THREE.MeshLambertMaterial({ color: 0x23252a }),
+  );
+  asphalt.rotation.x = -Math.PI / 2;
+  asphalt.position.copy(v3(-18, 32, 0.01));
+  scene.add(asphalt);
+  const dashMat = new THREE.MeshBasicMaterial({ color: 0x8a8f7a });
+  for (let y = -30; y < 94; y += 6) {
+    const dash = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 2.2), dashMat);
+    dash.rotation.x = -Math.PI / 2;
+    dash.position.copy(v3(-18, y, 0.02));
+    scene.add(dash);
+  }
 
   // old house: ground floor enterable, second storey visual mass
   wallY(16, 24, 31, 2.8);          // south
@@ -862,6 +939,37 @@ async function startAudio() {
   ]);
   // projectile slots: fx voices only (one buffer each — transferables)
   const silents = [new Float32Array(480), new Float32Array(480), new Float32Array(480)];
+  // car motors: synthesized loops — a wobbling harmonic hum (engine)
+  // under a shaped noise band (tires on asphalt). Two pitches so the
+  // two slots never sound like the same car.
+  const motorLoop = (f0) => {
+    const n = Math.floor(audio.sampleRate * 2.0);
+    const out = new Float32Array(n);
+    let lp = 0;
+    let lp2 = 0;
+    let seed = f0 | 0;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x40000000 - 1);
+    for (let k = 0; k < n; k++) {
+      const t = k / audio.sampleRate;
+      const wob = 1 + 0.02 * Math.sin(2 * Math.PI * 4.3 * t) + 0.01 * Math.sin(2 * Math.PI * 0.7 * t);
+      const ph = 2 * Math.PI * f0 * wob * t;
+      let eng = 0.5 * Math.sin(ph) + 0.3 * Math.sin(2 * ph + 0.7) + 0.15 * Math.sin(3 * ph + 2.1)
+        + 0.08 * Math.sin(4.5 * ph);
+      // tire/road noise: lowpassed twice → dark whoosh
+      lp += 0.12 * (rnd() - lp);
+      lp2 += 0.5 * (lp - lp2);
+      out[k] = eng * 0.35 + lp2 * 1.4;
+    }
+    // seamless-ish loop: short crossfade at the seam
+    const f = Math.floor(audio.sampleRate * 0.03);
+    for (let k = 0; k < f; k++) {
+      const a = k / f;
+      out[n - f + k] = out[n - f + k] * (1 - a) + out[k] * a;
+    }
+    return out;
+  };
+  const motorA = motorLoop(84);
+  const motorB = motorLoop(103);
 
   await audio.audioWorklet.addModule('worklet.js');
   const node = new AudioWorkletNode(audio, 'omg-engine', {
@@ -880,11 +988,13 @@ async function startAudio() {
   node.port.postMessage(
     { type: 'wasm', bytes: wasm1, grid, speakers,
       sources: [aria.buffer, alice.buffer, club.buffer, flute.buffer, radio.buffer,
-                silents[0].buffer, silents[1].buffer, silents[2].buffer],
+                silents[0].buffer, silents[1].buffer, silents[2].buffer,
+                motorA.buffer, motorB.buffer],
       fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer],
       ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,
      radio.buffer, silents[0].buffer, silents[1].buffer, silents[2].buffer,
+     motorA.buffer, motorB.buffer,
      whistle.buffer, thumpFx.buffer, boomFx.buffer, ambience.buffer, drops.buffer],
   );
   await new Promise((res, rej) => {
@@ -928,7 +1038,10 @@ async function startAudio() {
       type: 'pose', x: state.pose.x, y: state.pose.y, z: EYE + (state.pose.z || 0), yaw: 0,
       // animated leaf positions: the sim prices the swing continuously
       doors: state.doorMeshes.map((dm) => dm.openness),
-      projs: state.projs.map((p) => [p.slot, p.x, p.y, p.z]),
+      projs: [
+        ...state.projs.map((p) => [p.slot, p.x, p.y, p.z]),
+        ...state.cars.map((c) => [c.slot, c.x, c.y, 0.7]),
+      ],
     });
   }, 50);
   setInterval(() => {
@@ -1214,6 +1327,7 @@ function frame(t) {
     movePose(t);
     updateProjectiles(dt, t);
     updateDoors(dt);
+    updateCars(dt, t);
     camera.position.copy(v3(state.pose.x, state.pose.y, EYE + (state.pose.z || 0)));
     camera.rotation.y = state.heading - Math.PI / 2;
     camera.rotation.x = state.pitch;

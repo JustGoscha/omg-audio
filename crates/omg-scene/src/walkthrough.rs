@@ -184,8 +184,8 @@ pub fn rooms() -> Vec<RoomDef> {
         // room_of matches in order. It surrounds all buildings.
         RoomDef {
             name: "Outside",
-            min: (-8.0, -8.0),
-            max: (48.0, 80.0),
+            min: (-28.0, -32.0),
+            max: (48.0, 96.0),
             height: 30.0,
             barrier_height: 30.0,
             floor_z: 0.0,
@@ -403,7 +403,7 @@ pub struct SourceDef {
 pub const CLUB_SPEAKERS: [(f32, f32); 4] =
     [(23.5, 27.5), (30.5, 27.5), (23.5, 36.5), (30.5, 36.5)];
 
-pub fn sources() -> [SourceDef; 8] {
+pub fn sources() -> [SourceDef; 10] {
     [
         SourceDef {
             name: "music",
@@ -443,14 +443,17 @@ pub fn sources() -> [SourceDef; 8] {
             gain: 0.5,
             emitters: &[(37.5, 12.5)],
         },
-        // Dynamic slots: thrown projectiles (positions set per tick).
+        // Dynamic slots: thrown projectiles + passing cars (positions
+        // set per tick by the frontend).
         SourceDef { name: "ball0", pos: (0.0, 0.0), room: OUTSIDE, gain: 0.9, emitters: &[(0.0, 0.0)] },
         SourceDef { name: "ball1", pos: (0.0, 0.0), room: OUTSIDE, gain: 0.9, emitters: &[(0.0, 0.0)] },
         SourceDef { name: "ball2", pos: (0.0, 0.0), room: OUTSIDE, gain: 0.9, emitters: &[(0.0, 0.0)] },
+        SourceDef { name: "car0", pos: (-18.0, 0.0), room: OUTSIDE, gain: 2.2, emitters: &[(-18.0, 0.0)] },
+        SourceDef { name: "car1", pos: (-18.0, 0.0), room: OUTSIDE, gain: 2.2, emitters: &[(-18.0, 0.0)] },
     ]
 }
 
-pub const DYN_SLOTS: usize = 3;
+pub const DYN_SLOTS: usize = 5;
 
 /// (time s, x, y) — piecewise-linear listener path.
 /// Lingers near the music, walks the corridor, pauses at the narrator,

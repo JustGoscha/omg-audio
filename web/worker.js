@@ -20,15 +20,15 @@ function tick() {
   if (!w) return;
   const doors = new Float32Array(w.memory.buffer, w.sim_door_ptr(), 16);
   (pose.doors || []).forEach((v, i) => { doors[i] = v; });
-  const dyn = new Float32Array(w.memory.buffer, w.sim_dyn_ptr(), 12);
+  const dyn = new Float32Array(w.memory.buffer, w.sim_dyn_ptr(), 20);
   dyn.fill(0);
   (pose.projs || []).forEach((p) => {
     const slot = p[0];
-    if (slot >= 0 && slot < 3) dyn.set([p[1], p[2], p[3], 1], slot * 4);
+    if (slot >= 0 && slot < 5) dyn.set([p[1], p[2], p[3], 1], slot * 4);
   });
   w.sim_tick(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw);
   const blocks = [];
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 10; i++) {
     const len = w.sim_params_len(i);
     const src = new Float32Array(w.memory.buffer, w.sim_params_ptr(i), len);
     blocks.push(src.slice().buffer);

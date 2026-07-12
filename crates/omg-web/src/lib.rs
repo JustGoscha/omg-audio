@@ -21,7 +21,7 @@ use omg_dsp::output::OutputStage;
 use omg_dsp::Renderer;
 use omg_scene::world::WorldSim;
 
-const NSRC: usize = 8;
+const NSRC: usize = 10;
 const MAX_FLAT: usize = 4096; // f32s per param buffer (~450 taps headroom)
 /// State layout: [0..4] pose/room/rt60, [4..58] per-source route viz,
 /// [58..] the flat Environment block (see omg_dsp::env).
@@ -70,7 +70,7 @@ pub extern "C" fn sim_setup() {
         params: core::array::from_fn(|_| leak_f32(MAX_FLAT)),
         param_lens: [0; NSRC],
         state: leak_f32(STATE_LEN),
-        dyn_in: leak_f32(12),
+        dyn_in: leak_f32(20),
         door_in: {
             let b = leak_f32(16);
             b.fill(1.0);
@@ -109,7 +109,7 @@ pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
         // animated leaf position — the swing sweeps the filters
         ctx.world.set_door(i, ctx.door_in[i]);
     }
-    for slot in 0..3 {
+    for slot in 0..5 {
         let o = slot * 4;
         ctx.world.set_dynamic(
             slot,
