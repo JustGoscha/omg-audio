@@ -536,6 +536,7 @@ function spawnCar() {
 function updateCars(dt, now) {
   if (now > (state.nextCarAt || 0)) {
     spawnCar();
+    if (Math.random() < 0.35) spawnCar(); // sometimes two come at once
     state.nextCarAt = now + 5000 + Math.random() * 10000;
   }
   for (const c of state.cars) {
