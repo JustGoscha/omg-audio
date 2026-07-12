@@ -128,16 +128,54 @@ impl AutoPaths {
             return;
         }
 
-        // Rank edges by static importance over distance to the corridor.
-        let mid = (src + lis) * 0.5;
-        let mut ranked: Vec<(f32, usize)> = self
-            .edges
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                let c = (e.a + e.b) * 0.5;
-                let d = (c - mid).length().max(1.0);
-                (e.importance / (d * d), i)
+        // Rank edges by static importance over distance to the CORRIDOR
+        // (the blocked segment itself): the edges that matter silhouette
+        // it — endpoint-distance ranking let a facade's window-hole edges
+        // crowd out the alley corners the sound actually rounds.
+        let seg = lis - src;
+        let seg_len2 = seg.dot(seg).max(1e-6);
+        let rank_corridor = |edges: &[DiffractionEdge], lo_t: f32, hi_t: f32, n: usize| {
+            let mut r: Vec<(f32, usize)> = edges
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| {
+                    let c = (e.a + e.b) * 0.5;
+                    let t = ((c - src).dot(seg) / seg_len2).clamp(0.0, 1.0);
+                    if t < lo_t || t > hi_t {
+                        return None;
+                    }
+                    let on = src + seg * t;
+                    let d2 = (c - on).dot(c - on);
+                    Some((e.importance / (d2 + 0.5), i))
+                })
+                .collect();
+            r.sort_by(|x, y| y.0.total_cmp(&x.0));
+            r.truncate(n);
+            r.into_iter().map(|(_, i)| i).collect::<Vec<usize>>()
+        };
+        // Single bends, ranked by their TRUE knife-edge bound: the bend
+        // point is closed-form, so we can price every edge's detour and
+        // spend transmission queries on the best — a distance heuristic
+        // kept ranking long roof edges over the short vertical corner
+        // that actually carried the path. (For dense meshes the corridor
+        // prefilter below caps the pool first.)
+        let prefilter: Vec<usize> = if self.edges.len() > 1024 {
+            rank_corridor(&self.edges, 0.0, 1.0, 1024)
+        } else {
+            (0..self.edges.len()).collect()
+        };
+        let mut ranked: Vec<(f32, usize)> = prefilter
+            .into_iter()
+            .filter_map(|ei| {
+                let e = self.edges[ei];
+                let p = bend_point(e.a, e.b, src, lis);
+                let d1 = (p - src).length();
+                let d2 = (lis - p).length();
+                if d1 < 0.2 || d2 < 0.2 {
+                    return None;
+                }
+                let detour = d1 + d2 - (lis - src).length();
+                Some((knife_edge_bands(detour.max(1e-4))[1], ei))
             })
             .collect();
         ranked.sort_by(|x, y| y.0.total_cmp(&x.0));
@@ -152,10 +190,14 @@ impl AutoPaths {
             if d1 < 0.2 || d2 < 0.2 {
                 continue;
             }
-            // both legs must be essentially clear (bend around, not through)
+            // Legs PAY their transmission instead of hard-rejecting: a
+            // leg that grazes a corner clips a thin sliver of wall and
+            // degrades smoothly (mass law), so paths fade at clearance
+            // boundaries instead of vanishing — hard thresholds made
+            // shadow levels jump as candidate paths popped in and out.
             let l1 = self.transmission(mesh, src, p);
             let l2 = self.transmission(mesh, p, lis);
-            if l1[1] < 0.7 || l2[1] < 0.7 {
+            if l1[0] * l2[0] < 1e-4 {
                 continue;
             }
             let detour = d1 + d2 - (lis - src).length();
@@ -174,21 +216,23 @@ impl AutoPaths {
         // Double bends: deep obstacles need an entry and an exit bend.
         // Candidates: edges nearest the source × edges nearest the
         // listener; bend points refined by alternating optimization.
-        let rank_near = |pt: Vec3, edges: &[DiffractionEdge], n: usize| -> Vec<usize> {
-            let mut r: Vec<(f32, usize)> = edges
-                .iter()
-                .enumerate()
-                .map(|(i, e)| {
-                    let c = (e.a + e.b) * 0.5;
-                    (e.importance / (c - pt).length().max(1.0).powi(2), i)
-                })
-                .collect();
-            r.sort_by(|x, y| y.0.total_cmp(&x.0));
-            r.truncate(n);
-            r.into_iter().map(|(_, i)| i).collect()
-        };
-        let near_src = rank_near(src, &self.edges, budget.pair_edges);
-        let near_lis = rank_near(lis, &self.edges, budget.pair_edges);
+        // entry bends live on the source half of the corridor, exit bends
+        // on the listener half (overlapping so mid-corridor edges serve both)
+        let near_src = rank_corridor(&self.edges, 0.0, 0.65, budget.pair_edges);
+        let near_lis = rank_corridor(&self.edges, 0.35, 1.0, budget.pair_edges);
+        // Branch and bound: geometric refinement is cheap (no mesh
+        // queries), so refine EVERY pair, bound it by its pure knife-edge
+        // product, and spend the expensive transmission queries on the
+        // best bounds only. Finds the strong alley pairs a hard NxN
+        // evaluation cap used to miss.
+        struct PairCand {
+            bound: f32,
+            p1: Vec3,
+            p2: Vec3,
+            ei: usize,
+            ej: usize,
+        }
+        let mut cands: Vec<PairCand> = Vec::new();
         for &ei in &near_src {
             for &ej in &near_lis {
                 if ei == ej {
@@ -207,10 +251,24 @@ impl AutoPaths {
                 if d1 < 0.2 || dm < 0.2 || d2 < 0.2 {
                     continue;
                 }
+                let det1 = d1 + dm - (p2 - src).length();
+                let det2 = dm + d2 - (lis - p1).length();
+                let bound =
+                    knife_edge_bands(det1.max(1e-4))[1] * knife_edge_bands(det2.max(1e-4))[1];
+                cands.push(PairCand { bound, p1, p2, ei, ej });
+            }
+        }
+        cands.sort_by(|x, y| y.bound.total_cmp(&x.bound));
+        cands.truncate(64); // transmission-query budget
+        for c in cands {
+            let (p1, p2, ei, ej) = (c.p1, c.p2, c.ei, c.ej);
+            {
+                let (d1, dm, d2) =
+                    ((p1 - src).length(), (p2 - p1).length(), (lis - p2).length());
                 let l1 = self.transmission(mesh, src, p1);
                 let lm = self.transmission(mesh, p1, p2);
                 let l2 = self.transmission(mesh, p2, lis);
-                if l1[1] < 0.7 || lm[1] < 0.7 || l2[1] < 0.7 {
+                if l1[0] * lm[0] * l2[0] < 1e-4 {
                     continue;
                 }
                 // rubber-band detours per vertex
@@ -231,9 +289,91 @@ impl AutoPaths {
             }
         }
 
+        // Over the silhouette: the taut string over EVERYTHING standing
+        // in the segment's vertical plane — one rubber band regardless of
+        // how many buildings block (edge pairs cap at two bends; a path
+        // over club AND house needs more).
+        if let Some(pth) = self.over_silhouette(mesh, src, lis) {
+            bent.push(pth);
+        }
+
         bent.sort_by(|x, y| y.gains[1].total_cmp(&x.gains[1]));
         bent.truncate(budget.max_paths);
         out.extend(bent);
+    }
+
+    /// Shortest path over the height profile between src and lis: sample
+    /// the geometry's top by downward raycasts along the segment, take
+    /// the upper convex hull in the vertical plane (the taut string), and
+    /// price each hull vertex as a knife edge with its local detour.
+    fn over_silhouette(&mut self, mesh: &Mesh, src: Vec3, lis: Vec3) -> Option<FoundPath> {
+        const K: usize = 24;
+        let flat = Vec3::new(lis.x - src.x, lis.y - src.y, 0.0);
+        let run = flat.length();
+        if run < 1.0 {
+            return None;
+        }
+        let down = Vec3::new(0.0, 0.0, -1.0);
+        // (s along the run, z) profile points that poke above the sight line
+        let mut pts: Vec<(f32, f32)> = vec![(0.0, src.z)];
+        for i in 1..K {
+            let t = i as f32 / K as f32;
+            let x = src.x + flat.x * t;
+            let y = src.y + flat.y * t;
+            let line_z = src.z + (lis.z - src.z) * t;
+            if let Some((th, _)) = mesh.raycast(Vec3::new(x, y, 60.0), down) {
+                let top = 60.0 - th;
+                if top > line_z + 0.05 {
+                    pts.push((run * t, top + 0.03));
+                }
+            }
+        }
+        if pts.len() == 1 {
+            return None; // nothing pokes above the line
+        }
+        pts.push((run, lis.z));
+        // upper convex hull (points are already sorted by s)
+        let mut hull: Vec<(f32, f32)> = Vec::with_capacity(pts.len());
+        for p in pts {
+            while hull.len() >= 2 {
+                let (ax, az) = hull[hull.len() - 2];
+                let (bx, bz) = hull[hull.len() - 1];
+                // keep only left turns looking along +s (upper hull)
+                if (bx - ax) * (p.1 - az) - (bz - az) * (p.0 - ax) >= 0.0 {
+                    hull.pop();
+                } else {
+                    break;
+                }
+            }
+            hull.push(p);
+        }
+        if hull.len() < 3 {
+            return None;
+        }
+        let d2 = |a: (f32, f32), b: (f32, f32)| {
+            ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+        };
+        let mut gains = [1.0f32; NBANDS];
+        let mut length = 0.0f32;
+        for w in hull.windows(2) {
+            length += d2(w[0], w[1]);
+        }
+        for i in 1..hull.len() - 1 {
+            let detour = d2(hull[i - 1], hull[i]) + d2(hull[i], hull[i + 1])
+                - d2(hull[i - 1], hull[i + 1]);
+            let ke = knife_edge_bands(detour.max(1e-4));
+            for band in 0..NBANDS {
+                gains[band] *= ke[band];
+            }
+        }
+        let points = hull
+            .iter()
+            .map(|&(sv, z)| {
+                let t = sv / run;
+                Vec3::new(src.x + flat.x * t, src.y + flat.y * t, z)
+            })
+            .collect();
+        Some(FoundPath { points, length, gains, key: 90_000 })
     }
 }
 

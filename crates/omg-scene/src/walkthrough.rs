@@ -386,6 +386,7 @@ pub fn chain_bend_muffle(points: &[(f32, f32)]) -> [f32; NBANDS] {
     g
 }
 
+#[derive(Clone, Copy)]
 pub struct SourceDef {
     pub name: &'static str,
     /// Centroid: used for routing, transmission and cross-room rendering.

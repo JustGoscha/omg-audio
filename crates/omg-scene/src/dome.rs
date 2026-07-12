@@ -264,7 +264,9 @@ pub fn door_panels(doors: &[Door]) -> Vec<Panel> {
 }
 
 pub struct DomeProbe {
-    mesh: Mesh,
+    /// The world as triangles — shared acoustic truth (dome rays here,
+    /// AutoPaths propagation in WorldSim run on the same mesh).
+    pub mesh: Mesh,
     glass: Vec<Panel>,
     dirs: Vec<Vec3>,
     /// EMA'd per-bin energies.
