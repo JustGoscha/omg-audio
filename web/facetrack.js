@@ -32,12 +32,15 @@ function headPose(m) {
 }
 
 export async function startFaceTracking(onPose) {
+  // Small frame + 30 fps: the landmarker resizes internally anyway, and
+  // detection shares the main thread and GPU with the renderer AND the
+  // audio pipeline — tracking must never be the reason audio underruns.
   const stream = await navigator.mediaDevices.getUserMedia({
     video: {
       facingMode: 'user',
-      width: { ideal: 640 },
-      height: { ideal: 480 },
-      frameRate: { ideal: 60 },
+      width: { ideal: 480 },
+      height: { ideal: 360 },
+      frameRate: { ideal: 30 },
     },
     audio: false,
   });
@@ -78,6 +81,10 @@ export async function startFaceTracking(onPose) {
 
   const step = () => {
     if (stopped) return;
+    // cap the detect rate (~30 Hz): more buys nothing audibly — the
+    // engine smooths 30 ms on top — and the saved main-thread time is
+    // headroom the audio render needs
+    if (performance.now() - lastTs < 28) { schedule(); return; }
     // monotonically increasing timestamps are required in VIDEO mode
     const ts = Math.max(performance.now(), lastTs + 1e-3);
     lastTs = ts;
@@ -88,6 +95,9 @@ export async function startFaceTracking(onPose) {
     stats.tracking = !!m;
     if (m) {
       const pose = headPose(m);
+      // one garbage frame must not poison the engine: NaN slips through
+      // min/max clamps and sticks in every smoother it reaches
+      if (!Object.values(pose).every(Number.isFinite)) { schedule(); return; }
       last = pose;
       neutral ??= pose;
       onPose({

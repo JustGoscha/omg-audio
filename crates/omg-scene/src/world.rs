@@ -1197,4 +1197,54 @@ mod tests {
         }
         assert!(low > 2.0 * high, "shadow spectrum not bass-heavy: low {low} high {high}");
     }
+#[test]
+fn door_walk_probe() {
+    let mut w = WorldSim::new();
+    // walk outside → through the hall door at (7,24) → to the voice
+    for src in [1usize, 0] {
+        eprintln!("--- source {src} ---");
+        let mut y = 27.0f32;
+        while y >= 17.0 {
+            for _ in 0..6 { let _ = w.tick_at(7.0, y, 0.0); }
+            let (blocks, _) = w.tick_at(7.0, y, 0.0);
+            let pb = &blocks[src];
+            let taps: f32 = pb.taps.iter().map(|t| t.gains[1]).sum();
+            let rem = pb.remote.as_ref().map_or(0.0, |r| r.send[1]);
+            eprintln!("y {y:5.2}: taps {taps:.5} rev {:.5} rem {rem:.5} n {}",
+                pb.reverb.level[1], pb.taps.len());
+            y -= 0.25;
+        }
+    }
+}
+#[test]
+fn door_walk_probe2() {
+    // club via the entrance vestibule (speaker rig gating), source 2
+    let mut w = WorldSim::new();
+    eprintln!("--- club entry: walk x 17->27 at y=31, source 2 ---");
+    let mut x = 17.0f32;
+    while x <= 27.0 {
+        for _ in 0..6 { let _ = w.tick_at(x, 31.0, 0.0); }
+        let (blocks, _) = w.tick_at(x, 31.0, 0.0);
+        let pb = &blocks[2];
+        let taps: f32 = pb.taps.iter().map(|t| t.gains[1]).sum();
+        let rem = pb.remote.as_ref().map_or(0.0, |r| r.send[1]);
+        eprintln!("x {x:5.2}: taps {taps:.5} rev {:.5} rem {rem:.5} n {}",
+            pb.reverb.level[1], pb.taps.len());
+        x += 0.25;
+    }
+    // cathedral portal, source 3 (flute)
+    let mut w = WorldSim::new();
+    eprintln!("--- cathedral: walk y 48->58 at x=8, source 3 ---");
+    let mut y = 48.0f32;
+    while y <= 58.0 {
+        for _ in 0..6 { let _ = w.tick_at(8.0, y, 0.0); }
+        let (blocks, _) = w.tick_at(8.0, y, 0.0);
+        let pb = &blocks[3];
+        let taps: f32 = pb.taps.iter().map(|t| t.gains[1]).sum();
+        let rem = pb.remote.as_ref().map_or(0.0, |r| r.send[1]);
+        eprintln!("y {y:5.2}: taps {taps:.5} rev {:.5} rem {rem:.5} n {}",
+            pb.reverb.level[1], pb.taps.len());
+        y += 0.25;
+    }
+}
 }

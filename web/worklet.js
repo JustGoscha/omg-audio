@@ -108,11 +108,24 @@ class OmgProcessor extends AudioWorkletProcessor {
       return true;
     }
     const n = out[0].length;
+    // Underrun detection: process() is called once per rendered quantum;
+    // when the audio thread gets starved (main-thread GPU/CPU pressure,
+    // e.g. face tracking), currentFrame jumps by more than one quantum
+    // between calls and the browser has inserted SILENCE for the gap.
+    // Counting them makes "the sound stopped" measurable.
+    if (this.lastFrame !== undefined && currentFrame - this.lastFrame > n) {
+      this.gaps = (this.gaps || 0) + 1;
+      this.gapFrames = (this.gapFrames || 0) + (currentFrame - this.lastFrame - n);
+    }
+    this.lastFrame = currentFrame;
     const t0 = Date.now();
     this.w.eng_process(n);
     this.loadMs += Date.now() - t0; // 1 ms quantization averages out over the window
     this.loadFrames += n;
-    if (this.loadFrames >= sampleRate * 4) {
+    // 1 s adaptation window: a sudden squeeze (camera turns on, thermal
+    // throttle) must shed point-render load before it audibly starves
+    // the output, not 4 s later.
+    if (this.loadFrames >= sampleRate) {
       const ratio = this.loadMs / (this.loadFrames / sampleRate * 1000);
       this.loadRatio = ratio; // exposed via the meters message
       if (ratio > 0.55 && this.budget > this.BUDGET_MIN) {
@@ -148,7 +161,8 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.port.postMessage({
         type: 'meters', l: this.mL, r: this.mR, agc: this.w.eng_agc_gain(),
         tts: this.w.eng_ear_fatigue(), pts: this.budget,
-        load: this.loadRatio || 0, chans, amb, dbg,
+        load: this.loadRatio || 0, gaps: this.gaps || 0,
+        gapMs: ((this.gapFrames || 0) / sampleRate) * 1000, chans, amb, dbg,
       });
       this.mL = 0;
       this.mR = 0;

@@ -1053,11 +1053,14 @@ async function startAudio() {
           for (let i = 0; i < 20; i += 2) srcRms = Math.max(srcRms, e.data.chans[i + 1]);
           bb.ring.push({
             t: +now.toFixed(2), peak: +peak.toFixed(5), agc: +e.data.agc.toFixed(3),
-            src: +srcRms.toFixed(5),
+            tts: +(e.data.tts || 0).toFixed(2), src: +srcRms.toFixed(5),
             x: +state.pose.x.toFixed(1), y: +state.pose.y.toFixed(1),
             room: state.simState ? state.simState[2] | 0 : -1,
             tick: +state.debug.tickMs.toFixed(1),
+            gaps: e.data.gaps || 0, load: +(e.data.load || 0).toFixed(2),
+            raf: +((state.debug.rafGap || 0)).toFixed(0),
           });
+          state.debug.rafGap = 0;
           if (bb.ring.length > 180) bb.ring.shift(); // ~4 s at 43 Hz
           const ago = bb.ring.filter((s) => now - s.t > 1.0 && now - s.t < 3.0);
           if (ago.length > 20 && now > bb.cooldownUntil) {
@@ -1079,6 +1082,8 @@ async function startAudio() {
         state.debug.amb = e.data.amb;
         state.debug.dbg = e.data.dbg;
         state.debug.load = e.data.load || 0;
+        state.debug.gaps = e.data.gaps || 0;
+        state.debug.gapMs = e.data.gapMs || 0;
         if ((state.debug.seq = (state.debug.seq || 0) + 1) % 4 === 0) {
           const d = e.data.dbg || [];
           let taps = 0;
@@ -1121,14 +1126,24 @@ async function startAudio() {
     node.port.postMessage({ type: 'fx', src, kind, action });
   setInterval(() => {
     // face-tracked head translation: a small world-space offset of the
-    // listening position (lean left → ears move left)
+    // listening position (lean left → ears move left). A lean must never
+    // put the ears through geometry — crossing a jamb wall would slam
+    // every source behind masonry at once — so it holds at the body when
+    // the offset segment crosses a wall.
     const ch = Math.cos(state.heading);
     const sh = Math.sin(state.heading);
     const f = state.face;
+    let px = state.pose.x + ch * f.dz - sh * f.dx;
+    let py = state.pose.y + sh * f.dz + ch * f.dx;
+    if ((f.dx || f.dz)
+        && crossesWall(state.pose.x, state.pose.y, px, py, (state.pose.z || 0) + 1.0)) {
+      px = state.pose.x;
+      py = state.pose.y;
+    }
     worker.postMessage({
       type: 'pose',
-      x: state.pose.x + ch * f.dz - sh * f.dx,
-      y: state.pose.y + sh * f.dz + ch * f.dx,
+      x: px,
+      y: py,
       z: EYE + (state.pose.z || 0) + f.dy,
       yaw: 0,
       // animated leaf positions: the sim prices the swing continuously
@@ -1463,6 +1478,9 @@ function frame(t) {
     camera.lookAt(v3(17, 19, 1));
   } else {
     const dt = Math.min((t - (state.prevT || t)) / 1000, 0.05);
+    // main-thread stall detector: the longest rAF gap since the last
+    // black-box snapshot (face tracking, GC and layout all show up here)
+    state.debug.rafGap = Math.max(state.debug.rafGap || 0, t - (state.prevT || t));
     state.prevT = t;
     movePose(t);
     updateProjectiles(dt, t);
@@ -1640,7 +1658,8 @@ function drawDebug() {
     90, (s) => s.taps / 96, { color: '#6ee0a0' });
   graph(`sim tick ${state.debug.tickMs.toFixed(1)} ms (budget 50)`,
     90, (s) => s.tickMs / 50, { color: '#ffaa3c' });
-  graph(`render load ${(state.debug.load * 100).toFixed(0)}% of realtime`,
+  graph(`render load ${(state.debug.load * 100).toFixed(0)}% of realtime`
+    + ` · ${state.debug.gaps || 0} gaps (${(state.debug.gapMs || 0).toFixed(0)}ms silent)`,
     90, (s) => s.load, { color: '#ff6a5a' });
 }
 

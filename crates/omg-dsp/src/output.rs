@@ -78,9 +78,15 @@ impl OutputStage {
             env: AGC_TARGET,
             agc_gain: 1.0,
             env_att: tc(0.008),
-            env_rel: tc(1.0),
+            // Release near the real stapedius reflex (~0.3 s): after a
+            // blast the world must come back within a couple of seconds —
+            // a field report of "sounds stop completely" was this stage
+            // sitting at −8 dB for ~7 s after one explosion. The lingering
+            // dullness after sustained exposure is the fatigue stage's
+            // job, not the reflex's.
+            env_rel: tc(0.35),
             gain_down: tc(0.05),
-            gain_up_fast: tc(4.0),
+            gain_up_fast: tc(1.2),
             gain_up_slow: tc(45.0),
             tts: 0.0,
             tts_up: tc(4.0),
@@ -265,6 +271,52 @@ mod tests {
             out.process(&[0.0; NCH], 0.0, 0.0);
         }
         assert!(out.tinnitus() < 0.01, "ring should fade: {}", out.tinnitus());
+    }
+
+    /// The reflex must protect during a blast but RELEASE like a reflex:
+    /// moderate content is back within ~2.5 s, not dulled for ~7 s (the
+    /// "walking around stops the sounds" field report).
+    #[test]
+    fn reflex_releases_quickly_after_a_blast() {
+        let mut out = OutputStage::from_speaker_bytes(None, 48_000.0);
+        let tone = |k: usize, a: f32, f: f32| {
+            a * (core::f32::consts::TAU * f * k as f32 / 48_000.0).sin()
+        };
+        // settle on moderate content and take the reference level
+        let mut before = 0.0f32;
+        for k in 0..48_000 * 2 {
+            let x = tone(k, 0.25, 400.0);
+            let (l, _) = out.process(&[0.0; NCH], x, x);
+            if k > 48_000 {
+                before = before.max(l.abs());
+            }
+        }
+        // 150 ms explosion
+        for k in 0..7200 {
+            let x = tone(k, 4.0, 90.0);
+            out.process(&[0.0; NCH], x, x);
+        }
+        // protection is real: right after, the same content is well down
+        let mut ducked = 0.0f32;
+        for k in 0..9600 {
+            let x = tone(k, 0.25, 400.0);
+            let (l, _) = out.process(&[0.0; NCH], x, x);
+            ducked = ducked.max(l.abs());
+        }
+        assert!(ducked < 0.6 * before, "blast should duck: {ducked} vs {before}");
+        // ...and the reflex lets go: within 2.5 s the world is back
+        let mut after = 0.0f32;
+        for k in 0..48_000 * 5 / 2 {
+            let x = tone(k, 0.25, 400.0);
+            let (l, _) = out.process(&[0.0; NCH], x, x);
+            if k > 48_000 * 2 {
+                after = after.max(l.abs());
+            }
+        }
+        assert!(
+            after > 0.65 * before,
+            "reflex must release within seconds: {after} vs {before}"
+        );
     }
 
     #[test]
