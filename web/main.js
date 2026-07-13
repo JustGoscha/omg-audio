@@ -78,6 +78,8 @@ const state = {
   faceTrack: null,
   // field-debug panel: latest engine snapshots + decimated history
   debug: { on: false, hist: [], chans: null, amb: null, dbg: null, load: 0, tickMs: 0 },
+  // black-box recorder: rolling fine-grained snapshots + collapse events
+  bbox: { ring: [], collapses: [], cooldownUntil: 0 },
   rainLevel: 0, // index into RAIN_LEVELS
   chanHist: [], // per-channel meter frames, ~1 s
   mixerRows: null,
@@ -1038,6 +1040,39 @@ async function startAudio() {
         }
         state.meters.hist.push(e.data.agc);
         if (state.meters.hist.length > 220) state.meters.hist.shift();
+        // Black-box recorder for the "sound suddenly stops" class of
+        // field report: keep ~4 s of fine-grained context; when the
+        // OUTPUT collapses >30 dB below its own recent level while the
+        // engine still believes sources are audible, dump the window to
+        // the console — one repro turns ear-memory into data.
+        {
+          const bb = state.bbox;
+          const now = performance.now() / 1000;
+          const peak = Math.max(e.data.l, e.data.r);
+          let srcRms = 0;
+          for (let i = 0; i < 20; i += 2) srcRms = Math.max(srcRms, e.data.chans[i + 1]);
+          bb.ring.push({
+            t: +now.toFixed(2), peak: +peak.toFixed(5), agc: +e.data.agc.toFixed(3),
+            src: +srcRms.toFixed(5),
+            x: +state.pose.x.toFixed(1), y: +state.pose.y.toFixed(1),
+            room: state.simState ? state.simState[2] | 0 : -1,
+            tick: +state.debug.tickMs.toFixed(1),
+          });
+          if (bb.ring.length > 180) bb.ring.shift(); // ~4 s at 43 Hz
+          const ago = bb.ring.filter((s) => now - s.t > 1.0 && now - s.t < 3.0);
+          if (ago.length > 20 && now > bb.cooldownUntil) {
+            const ref = ago.map((s) => s.peak).sort((a, b) => a - b)[ago.length >> 1];
+            const recent = bb.ring.slice(-12); // ~280 ms
+            const collapsed = ref > 0.02
+              && recent.every((s) => s.peak < ref / 32 && s.src > 1e-4);
+            if (collapsed) {
+              bb.cooldownUntil = now + 10;
+              bb.collapses.push(now);
+              console.warn('[blackbox] output collapse — last 4 s:\n'
+                + bb.ring.map((s) => JSON.stringify(s)).join('\n'));
+            }
+          }
+        }
         // field-debug snapshots (chans/amb/dbg arrive ~43 Hz; the panel
         // keeps a decimated ~11 Hz history, ≈45 s deep)
         state.debug.chans = e.data.chans;
@@ -1548,6 +1583,13 @@ function drawDebug() {
     g.fillText(
       `amb inlets ${slots}/8  seep ${amb.slice(1, 4).map((v) => v.toFixed(2)).join(' ')}`,
       14, y);
+  }
+  if (state.bbox.collapses.length) {
+    g.fillStyle = '#ff6a5a';
+    const last = state.bbox.collapses[state.bbox.collapses.length - 1];
+    g.fillText(
+      `⚠ ${state.bbox.collapses.length} output collapse(s) — last @${last.toFixed(0)}s (console)`,
+      280, y);
   }
   y += 34;
 
