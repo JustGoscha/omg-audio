@@ -32,6 +32,11 @@ const POINT_GAIN: f32 = 0.8;
 /// the worst-case scene position on an M1 (tools/bench_web.mjs). The web
 /// worklet overrides this adaptively from its own measured load.
 const DEFAULT_POINT_TAPS: usize = 24;
+/// Samples of joint input+tail silence before an FDN goes to sleep
+/// (~21 ms at 48 kHz: long enough to never clip a real tail — the energy
+/// check keeps it awake while anything rings — short enough that silent
+/// sources stop costing within a frame).
+const FDN_IDLE_AFTER: u32 = 1024;
 /// Angular spread of the remote-reverb lines around the doorway (±~30°).
 const REMOTE_SPREAD_RAD: [f32; NLINES] =
     [-0.55, -0.38, -0.22, -0.08, 0.08, 0.22, 0.38, 0.55];
@@ -145,6 +150,10 @@ pub struct Renderer {
     /// look, face tracking), applied to point-tap HRIR selection here and
     /// to the bus at the decode stage.
     head: [Smoothed; 3],
+    /// Samples of joint input+tail silence per FDN; at FDN_IDLE_AFTER the
+    /// FDN sleeps (see process). Starts asleep.
+    fdn_idle: u32,
+    remote_idle: u32,
     reselect_countdown: u32,
     version_seen: u64,
     first_params: bool,
@@ -209,6 +218,8 @@ impl Renderer {
             retarget_thresh: RETARGET_MS * 1e-3 * sample_rate,
             point_budget: DEFAULT_POINT_TAPS,
             head: core::array::from_fn(|_| Smoothed::new(0.0, 0.03, sample_rate)),
+            fdn_idle: FDN_IDLE_AFTER,
+            remote_idle: FDN_IDLE_AFTER,
             reselect_countdown: 0,
             version_seen: 0,
             first_params: true,
@@ -481,6 +492,9 @@ impl Renderer {
         // level — independent of source distance, like a real diffuse field.
         // Scaling the FDN *input* (not output) lets the tail ring out
         // naturally when the level parameter drops (e.g. stepping outdoors).
+        // An FDN whose input AND tail have been silent goes to sleep — the
+        // demo carries 10 sources × 2 FDNs and most are inaudible at any
+        // moment; waking is instant on the first nonzero input sample.
         let wet_in = self.send_eq.tick(
             x * self.fdn_level.tick(),
             self.send_low.tick(),
@@ -488,8 +502,28 @@ impl Renderer {
             self.c_low,
             self.c_high,
         );
-        let mut lines = [0.0f32; NLINES];
-        self.fdn.process(if self.mute_own_fdn { 0.0 } else { wet_in }, &mut lines);
+        let own_in = if self.mute_own_fdn { 0.0 } else { wet_in };
+        if own_in.abs() > 1e-7 {
+            self.fdn_idle = 0;
+        }
+        if self.fdn_idle < FDN_IDLE_AFTER {
+            let mut lines = [0.0f32; NLINES];
+            self.fdn.process(own_in, &mut lines);
+            let mut e = 0.0f32;
+            let lvl = 0.5;
+            for i in 0..NLINES {
+                let g = lines[i] * lvl;
+                e += g.abs();
+                for k in 0..NCH {
+                    foa[k] += g * self.fdn_dirs[i][k];
+                }
+            }
+            if e < 1e-6 && own_in.abs() <= 1e-7 {
+                self.fdn_idle += 1;
+            } else {
+                self.fdn_idle = 0;
+            }
+        }
 
         // Coupled-room wet: source room's reverb as a directional emitter
         // at the doorway (mono sum — a distant aperture, not a diffuse field
@@ -502,24 +536,29 @@ impl Renderer {
             self.c_low,
             self.c_high,
         );
-        let mut rlines = [0.0f32; NLINES];
-        self.remote_fdn.process(if self.mute_remote { 0.0 } else { rin }, &mut rlines);
         // Tick the direction smoothers (spread cache reads them at 375 Hz).
         for k in 0..NCH {
             self.remote_sh[k].tick();
         }
-        for (i, line) in rlines.iter().enumerate() {
-            let g = line * 0.9;
-            for k in 0..NCH {
-                foa[k] += g * self.remote_spread[i][k];
-            }
+        let rem_in = if self.mute_remote { 0.0 } else { rin };
+        if rem_in.abs() > 1e-7 {
+            self.remote_idle = 0;
         }
-
-        let lvl = 0.5;
-        for i in 0..NLINES {
-            let g = lines[i] * lvl;
-            for k in 0..NCH {
-                foa[k] += g * self.fdn_dirs[i][k];
+        if self.remote_idle < FDN_IDLE_AFTER {
+            let mut rlines = [0.0f32; NLINES];
+            self.remote_fdn.process(rem_in, &mut rlines);
+            let mut e = 0.0f32;
+            for (i, line) in rlines.iter().enumerate() {
+                let g = line * 0.9;
+                e += g.abs();
+                for k in 0..NCH {
+                    foa[k] += g * self.remote_spread[i][k];
+                }
+            }
+            if e < 1e-6 && rem_in.abs() <= 1e-7 {
+                self.remote_idle += 1;
+            } else {
+                self.remote_idle = 0;
             }
         }
         (pl, pr)

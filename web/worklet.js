@@ -12,7 +12,10 @@ class OmgProcessor extends AudioWorkletProcessor {
     // — a throttled CPU (Low Power Mode, phones) settles low, a fast
     // desktop climbs to the cap. Bench: tools/bench_web.mjs.
     this.budget = 16;
-    this.BUDGET_MIN = 8;
+    // floor 2: point rendering is a sharpness tier, not a requirement —
+    // the order-2 bus keeps everything spatialized when a squeezed CPU
+    // (camera on, thermal throttle) needs the headroom back
+    this.BUDGET_MIN = 2;
     this.BUDGET_MAX = 32;
     this.loadMs = 0;
     this.loadFrames = 0;
@@ -128,7 +131,12 @@ class OmgProcessor extends AudioWorkletProcessor {
     if (this.loadFrames >= sampleRate) {
       const ratio = this.loadMs / (this.loadFrames / sampleRate * 1000);
       this.loadRatio = ratio; // exposed via the meters message
-      if (ratio > 0.55 && this.budget > this.BUDGET_MIN) {
+      if (ratio > 0.85) {
+        // emergency: the render is close to (or past) realtime — shed to
+        // the floor NOW; audible breakup costs more than soft focus
+        this.budget = this.BUDGET_MIN;
+        this.w.eng_set_point_budget(this.budget);
+      } else if (ratio > 0.55 && this.budget > this.BUDGET_MIN) {
         this.budget = Math.max(this.BUDGET_MIN, this.budget - 4);
         this.w.eng_set_point_budget(this.budget);
       } else if (ratio < 0.30 && this.budget < this.BUDGET_MAX) {

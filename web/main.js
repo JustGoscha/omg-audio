@@ -916,6 +916,7 @@ async function startAudio() {
   // run silent. The engine is rate-parametric (assets resample on
   // decode; the worklet passes its real sampleRate to eng_init).
   const audio = new AudioContext({ latencyHint: 'interactive' });
+  state.audio = audio; // debug panel reads live output latency from it
   const fetchBuf = async (url) => {
     const r = await fetch(url);
     if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
@@ -1059,6 +1060,7 @@ async function startAudio() {
             tick: +state.debug.tickMs.toFixed(1),
             gaps: e.data.gaps || 0, load: +(e.data.load || 0).toFixed(2),
             raf: +((state.debug.rafGap || 0)).toFixed(0),
+            lat: state.audio ? +(state.audio.outputLatency * 1000).toFixed(0) : -1,
           });
           state.debug.rafGap = 0;
           if (bb.ring.length > 180) bb.ring.shift(); // ~4 s at 43 Hz
@@ -1658,8 +1660,12 @@ function drawDebug() {
     90, (s) => s.taps / 96, { color: '#6ee0a0' });
   graph(`sim tick ${state.debug.tickMs.toFixed(1)} ms (budget 50)`,
     90, (s) => s.tickMs / 50, { color: '#ffaa3c' });
+  // outputLatency is the device-side buffer: stable = healthy output
+  // path; jumping around = the DEVICE is struggling (Bluetooth), not us
+  const lat = state.audio ? (state.audio.outputLatency * 1000).toFixed(0) : '?';
   graph(`render load ${(state.debug.load * 100).toFixed(0)}% of realtime`
-    + ` · ${state.debug.gaps || 0} gaps (${(state.debug.gapMs || 0).toFixed(0)}ms silent)`,
+    + ` · ${state.debug.gaps || 0} gaps (${(state.debug.gapMs || 0).toFixed(0)}ms silent)`
+    + ` · out-lat ${lat}ms`,
     90, (s) => s.load, { color: '#ff6a5a' });
 }
 
