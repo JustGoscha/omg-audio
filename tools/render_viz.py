@@ -37,9 +37,19 @@ def main():
     ticks = data["ticks"]
     duration = data["duration"]
 
-    xs = [c for r in rooms for c in (r["min"][0], r["max"][0])]
-    ys = [c for r in rooms for c in (r["min"][1], r["max"][1])]
-    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    # Fit the view to the actual architecture plus the walked path: the
+    # open-air "room" spans kilometers of street and would zoom every
+    # building into a sliver. Oversized rooms neither bound nor draw.
+    def compact(r):
+        return (r["max"][0] - r["min"][0] < 120
+                and r["max"][1] - r["min"][1] < 120)
+
+    PAD = 3.0
+    xs = [c for r in rooms if compact(r) for c in (r["min"][0], r["max"][0])]
+    ys = [c for r in rooms if compact(r) for c in (r["min"][1], r["max"][1])]
+    xs += [tk["pos"][0] for tk in ticks]
+    ys += [tk["pos"][1] for tk in ticks]
+    x0, x1, y0, y1 = min(xs) - PAD, max(xs) + PAD, min(ys) - PAD, max(ys) + PAD
     scale = min((W - 2 * MARGIN) / (x1 - x0), (H - 2 * MARGIN) / (y1 - y0))
     ox = (W - (x1 - x0) * scale) / 2
     oy = (H - (y1 - y0) * scale) / 2
@@ -85,8 +95,11 @@ def main():
         img = Image.new("RGB", (W, H), BG)
         dr = ImageDraw.Draw(img)
 
-        # Rooms ("Outside" is open air: thin border, no walls implied)
+        # Rooms ("Outside" is open air: thin border, no walls implied;
+        # oversized open-air rects stay invisible — the HUD names them)
         for i, r in enumerate(rooms):
+            if not compact(r):
+                continue
             p0 = sxy(r["min"][0], r["max"][1])
             p1 = sxy(r["max"][0], r["min"][1])
             active = i == st["room"]
@@ -97,8 +110,11 @@ def main():
                          outline=ROOM_LINE_ACTIVE if active else ROOM_LINE,
                          width=1 if outdoor else (4 if active else 3))
             cx, cy = (p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2
+            # stacked storeys share a footprint: stagger their labels
+            stack = sum(1 for q in rooms[:i]
+                        if q["min"] == r["min"] and q["max"] == r["max"])
             label = r["name"] + (" (open air)" if outdoor else "")
-            dr.text((cx, cy), label, font=font, anchor="mm",
+            dr.text((cx, cy + stack * 32), label, font=font, anchor="mm",
                     fill=TEXT if active else TEXT_DIM)
 
         # Doorways: erase a gap in the shared wall
@@ -120,8 +136,12 @@ def main():
         if len(done) > 1:
             dr.line(done, fill=PATH_LIT, width=3)
 
-        # Fixed sources: pulsing dot + routed path (through doorways) to listener
+        # Fixed sources: pulsing dot + routed path (through doorways) to
+        # listener. Dynamic slots (thrown balls, cars) never play in the
+        # scripted walkthrough — skip their parked placeholders.
         for si, sdef in enumerate(data["sources"]):
+            if sdef["name"].startswith(("ball", "car")):
+                continue
             col = SOURCE_COLORS[si % len(SOURCE_COLORS)]
             route = [(p[0], p[1]) for p in st["routes"][si]]
             rpts = [sxy(*p) for p in route[:-1]] + [sxy(*st["pos"])]
