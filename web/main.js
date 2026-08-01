@@ -188,7 +188,7 @@ const QUAL_TIER_VALS = {
   domeEvents: [6, 5, 4], ism: [3, 3, 2],
 };
 const QUAL_SLIDERS = [
-  { key: 'rays', id: 0, label: 'trace rays', min: 256, max: 8192, step: 256, section: 'simulation · 20 Hz',
+  { key: 'rays', id: 0, label: 'trace rays', min: 256, max: 32768, step: 256, section: 'simulation · 20 Hz',
     tip: 'Stochastic rays per reverb trace, per source. Fewer rays = a noisier RT60/level estimate that the running average smooths out — more flutter, never a different sound. The single biggest sim-CPU lever.' },
   { key: 'ism', id: 4, label: 'ism order', min: 2, max: 3, step: 1,
     tip: 'Image-source reflection order: how many wall bounces the early echoes are traced through. 3 ≈ 63 discrete reflections per source, 2 ≈ 15 — roughly halving the tap count the audio thread must render. 2 keeps the audible early pattern; the late reverb covers the rest.' },
@@ -213,7 +213,7 @@ const QUAL_STAT_TIPS = {
   'sim tick': 'Worker-side cost of one 20 Hz simulation tick. The budget is 50 ms; above ~40 the auto governor sheds a tier.',
   'render load': 'Audio-thread render time as a share of realtime. Above 85% the worklet governor sheds to its floor.',
   gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
-  'late field': 'Where the reverb ray traces run: WebGPU when the browser exposes an adapter (with per-dispatch ms), the in-wasm CPU tracer otherwise. Identical sound either way — the GPU just buys the sim thread headroom.',
+  'late field': 'Where the reverb ray traces run: WebGPU (with per-dispatch ms, 8× the ray budget) or the in-wasm CPU tracer. Click to A/B live — statistically identical sound, the GPU buys the sim thread headroom and a steadier estimate.',
 };
 
 function buildQuality() {
@@ -276,6 +276,12 @@ function buildQuality() {
     c.className = 'cell';
     c.title = QUAL_STAT_TIPS[k];
     c.innerHTML = `<span class="k">${k}</span><span class="v">–</span>`;
+    if (k === 'late field') {
+      c.style.cursor = 'pointer';
+      c.onclick = () => {
+        if (state.debug.gpuAvail && state.setGpu) state.setGpu(!state.debug.gpu);
+      };
+    }
     stats.append(c);
     return c.querySelector('.v');
   });
@@ -309,6 +315,8 @@ function buildQuality() {
       } else {
         pinned = state.qual.over[s.key] != null;
         v = pinned ? state.qual.over[s.key] : QUAL_TIER_VALS[s.key][q.tier];
+        // a GPU late-field backend runs the tier ray budget at 8x
+        if (!pinned && s.key === 'rays' && state.debug.gpu) v = Math.min(v * 8, 32768);
       }
       if (document.activeElement !== input) input.value = v;
       val.textContent = `${v}${pinned ? ' ⏚' : ''}`;
@@ -323,7 +331,8 @@ function buildQuality() {
     cells[2].textContent = `${state.debug.gaps || 0}`;
     cells[2].classList.toggle('hot', (state.debug.gaps || 0) > 0);
     cells[3].textContent = state.debug.gpu
-      ? `gpu ${(state.debug.gpuMs || 0).toFixed(1)}` : 'cpu';
+      ? `gpu ${(state.debug.gpuMs || 0).toFixed(1)} ⇄`
+      : (state.debug.gpuAvail ? 'cpu ⇄' : 'cpu');
     const btn = document.getElementById('qualbtn');
     btn.textContent = `⚙ ${state.qual.manual || Object.keys(state.qual.over).length
       ? 'custom' : ['high', 'med', 'low'][q.tier] + (q.auto ? ' ·auto' : '')}`;
@@ -1338,6 +1347,7 @@ async function startAudio() {
     state.setOverride = (id, value) => worker.postMessage({ type: 'override', id, value });
     state.setAudioManual = (on, points, ceiling) =>
       node.port.postMessage({ type: 'manual', on, points, ceiling });
+    state.setGpu = (on) => worker.postMessage({ type: 'gpu', on });
   }
   worker.onmessage = (e) => {
     if (e.data.type !== 'tick') return;
@@ -1346,6 +1356,7 @@ async function startAudio() {
     state.debug.tickMs = Math.max(state.debug.tickMs || 0, e.data.tickMs || 0) * 0.9
       + (e.data.tickMs || 0) * 0.1; // decaying peak-ish: spikes stay visible
     state.debug.gpu = e.data.gpu || 0;
+    state.debug.gpuAvail = e.data.gpuAvail || 0;
     state.debug.gpuMs = e.data.gpuMs || 0;
     const q = state.quality;
     if (q.auto) {

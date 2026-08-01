@@ -202,6 +202,17 @@ pub extern "C" fn sim_gpu_job_version() -> u32 {
 #[no_mangle]
 pub extern "C" fn sim_gpu_enable() {
     omg_scene::late::set_late_backend(Box::new(WebGpuProxy));
+    omg_scene::quality::set_gpu_backend(true);
+}
+
+/// Live A/B back to the CPU tracer (tuning-panel toggle). In-flight
+/// jobs/results are dropped; the trace gate re-fires them on CPU.
+#[no_mangle]
+pub extern "C" fn sim_gpu_disable() {
+    omg_scene::late::clear_late_backend();
+    omg_scene::quality::set_gpu_backend(false);
+    GPU_JOBS.lock().unwrap().clear();
+    GPU_RESULTS.lock().unwrap().clear();
 }
 
 static mut GPU_JOBS_OUT: Option<&'static mut [f32]> = None;

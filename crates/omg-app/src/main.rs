@@ -186,7 +186,8 @@ fn main() {
         match omg_gpu::GpuLateBackend::new() {
             Some(b) => {
                 omg_scene::late::set_late_backend(Box::new(b));
-                println!("late field: GPU (wgpu)");
+                omg_scene::quality::set_gpu_backend(true);
+                println!("late field: GPU (wgpu, 8x ray budget)");
             }
             None => println!("late field: CPU (OMG_GPU=1 but no adapter)"),
         }

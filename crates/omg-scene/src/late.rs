@@ -56,6 +56,12 @@ pub fn set_late_backend(b: Box<dyn LateBackend>) {
     *BACKEND.lock().unwrap() = Some(b);
 }
 
+/// Drop the registered backend: traces return to the inline CPU tracer
+/// on the next call (a live A/B toggle for the tuning panel).
+pub fn clear_late_backend() {
+    *BACKEND.lock().unwrap() = None;
+}
+
 /// Deliver an async backend's finished trace for `id`, if one arrived.
 pub(crate) fn poll_into(id: u32, out: &mut Echogram) -> bool {
     let mut guard = BACKEND.lock().unwrap();

@@ -42,6 +42,22 @@ pub fn set_tier(t: u32) {
     TIER.store(t.min(2), Ordering::Relaxed);
 }
 
+/// Whether a GPU late-field backend is active. A 32768-ray dispatch
+/// costs ~1.5 ms where the CPU needs 7.3 ms for 4096 (omg-gpu speed
+/// probe), so the tier ray budgets multiply 8× — pure variance
+/// reduction, the estimate just gets steadier. Bounce depth stays at
+/// the shared 64 cap: raising it changes the measured tail (a real
+/// improvement, not noise) and therefore needs re-goldening first —
+/// that's the phase 5 item, not a flag.
+static GPU: AtomicU32 = AtomicU32::new(0);
+
+pub fn set_gpu_backend(on: bool) {
+    GPU.store(on as u32, Ordering::Relaxed);
+}
+
+const GPU_RAY_MULT: u32 = 8;
+const GPU_RAY_CAP: u32 = 32768;
+
 /// Manually pin one lever (see `OVERRIDES` for ids); `value` 0 hands the
 /// lever back to the tier. Out-of-range ids are ignored.
 pub fn set_override(id: u32, value: u32) {
@@ -106,9 +122,15 @@ impl Tier {
         }
     }
 
-    /// Stochastic tracer rays per trace (High is the historical 4096).
+    /// Stochastic tracer rays per trace (High is the historical 4096;
+    /// ×8 on a GPU backend). A manual override is absolute either way.
     pub fn trace_rays(self) -> u32 {
-        over(0, self.trace_rays_tier()).clamp(64, 32768)
+        let tier = if GPU.load(Ordering::Relaxed) != 0 {
+            (self.trace_rays_tier() * GPU_RAY_MULT).min(GPU_RAY_CAP)
+        } else {
+            self.trace_rays_tier()
+        };
+        over(0, tier).clamp(64, GPU_RAY_CAP)
     }
 
     /// TraceGate refresh age (ticks at 20 Hz) for an idle scene.

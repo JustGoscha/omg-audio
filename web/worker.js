@@ -5,6 +5,7 @@
 // the worker; any init failure keeps the inline CPU tracer).
 let w = null;
 let gpu = null;
+let gpuOn = false;
 let pose = { x: 3.0, y: 3.0, z: 1.6, yaw: 0.0, projs: [] };
 
 onmessage = async (e) => {
@@ -16,7 +17,10 @@ onmessage = async (e) => {
     try {
       const { initGpu } = await import('./gpu.js');
       gpu = await initGpu(w);
-      if (gpu) w.sim_gpu_enable();
+      if (gpu) {
+        w.sim_gpu_enable();
+        gpuOn = true;
+      }
       console.log(`[gpu] late field: ${gpu ? 'WebGPU' : 'CPU'}`);
     } catch (err) {
       console.warn('[gpu] unavailable, late field on CPU:', err);
@@ -31,6 +35,13 @@ onmessage = async (e) => {
     // pin one sim lever (id: 0 rays, 1 gate, 2 dome rays, 3 dome events,
     // 4 ISM order); value 0 hands it back to the tier
     if (w) w.sim_set_override(m.id, m.value);
+  } else if (m.type === 'gpu') {
+    // live A/B toggle; only meaningful when the driver initialized
+    if (w && gpu) {
+      gpuOn = !!m.on;
+      if (gpuOn) w.sim_gpu_enable();
+      else w.sim_gpu_disable();
+    }
   }
 };
 
@@ -43,18 +54,18 @@ function tick() {
   if (!w) return;
   const doors = new Float32Array(w.memory.buffer, w.sim_door_ptr(), 16);
   (pose.doors || []).forEach((v, i) => { doors[i] = v; });
-  const dyn = new Float32Array(w.memory.buffer, w.sim_dyn_ptr(), 20);
+  const dyn = new Float32Array(w.memory.buffer, w.sim_dyn_ptr(), 24);
   dyn.fill(0);
   (pose.projs || []).forEach((p) => {
     const slot = p[0];
-    if (slot >= 0 && slot < 5) dyn.set([p[1], p[2], p[3], p[4] === undefined ? 1 : p[4]], slot * 4);
+    if (slot >= 0 && slot < 6) dyn.set([p[1], p[2], p[3], p[4] === undefined ? 1 : p[4]], slot * 4);
   });
   const t0 = performance.now();
   w.sim_tick(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw);
   const tickMs = performance.now() - t0;
-  if (gpu) gpu.pump(w, inject);
+  if (gpu && gpuOn) gpu.pump(w, inject);
   const blocks = [];
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 11; i++) {
     const len = w.sim_params_len(i);
     const src = new Float32Array(w.memory.buffer, w.sim_params_ptr(i), len);
     blocks.push(src.slice().buffer);
@@ -62,6 +73,6 @@ function tick() {
   const state = new Float32Array(w.memory.buffer, w.sim_state_ptr(), w.sim_state_len()).slice();
   postMessage({
     type: 'tick', blocks, state: state.buffer, envOff: w.sim_env_off(), tickMs,
-    gpu: gpu ? 1 : 0, gpuMs: gpu ? gpu.stats() : 0,
+    gpu: gpu && gpuOn ? 1 : 0, gpuAvail: gpu ? 1 : 0, gpuMs: gpu ? gpu.stats() : 0,
   }, [...blocks, state.buffer]);
 }
