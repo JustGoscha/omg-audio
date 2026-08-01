@@ -22,6 +22,7 @@ export async function initGpu(wasm) {
   }
   let device;
   let pipeline;
+  let ptPipeline;
   try {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) return null;
@@ -31,6 +32,11 @@ export async function initGpu(wasm) {
     pipeline = device.createComputePipeline({
       layout: 'auto',
       compute: { module, entryPoint: 'trace' },
+    });
+    const ptCode = await (await fetch('../crates/omg-gpu/shaders/pt_early.wgsl')).text();
+    ptPipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: device.createShaderModule({ code: ptCode }), entryPoint: 'discover' },
     });
   } catch (e) {
     console.warn('[gpu] init failed — staying on CPU:', e);
@@ -141,6 +147,60 @@ export async function initGpu(wasm) {
     }
   };
 
+  // PT-early discovery (Track C phase C4): one tiny slot — jobs are
+  // 8 f32 in, 9 u32 out, and the wasm-side seeds keep the early field
+  // correct while a bitmap is in flight.
+  const PT_RAYS = 4096;
+  const pt = {
+    busy: false,
+    job: device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+    bitmap: device.createBuffer({
+      size: 36,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    }),
+    read: device.createBuffer({ size: 36, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }),
+  };
+  pt.bind = device.createBindGroup({
+    layout: ptPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: pt.job } },
+      { binding: 1, resource: { buffer: pt.bitmap } },
+    ],
+  });
+
+  const ptDispatch = async (id, jobF32, injectPt) => {
+    pt.busy = true;
+    const t0 = performance.now();
+    try {
+      const buf = new ArrayBuffer(32);
+      const f32 = new Float32Array(buf);
+      const u32 = new Uint32Array(buf);
+      f32[0] = jobF32[1]; f32[1] = jobF32[2]; f32[2] = jobF32[3]; // size
+      u32[3] = PT_RAYS;
+      f32[4] = jobF32[4]; f32[5] = jobF32[5]; f32[6] = jobF32[6]; // listener
+      u32[7] = jobF32[7]; // rot
+      device.queue.writeBuffer(pt.job, 0, buf);
+      const enc = device.createCommandEncoder();
+      enc.clearBuffer(pt.bitmap);
+      const pass = enc.beginComputePass();
+      pass.setPipeline(ptPipeline);
+      pass.setBindGroup(0, pt.bind);
+      pass.dispatchWorkgroups(Math.ceil(PT_RAYS / 64));
+      pass.end();
+      enc.copyBufferToBuffer(pt.bitmap, 0, pt.read, 0, 36);
+      device.queue.submit([enc.finish()]);
+      await pt.read.mapAsync(GPUMapMode.READ);
+      const words = new Uint32Array(pt.read.getMappedRange()).slice();
+      pt.read.unmap();
+      injectPt(id, words);
+      noteBusy(performance.now() - t0);
+    } catch (e) {
+      console.warn('[gpu] pt dispatch failed:', e);
+    } finally {
+      pt.busy = false;
+    }
+  };
+
   return {
     /// Drain wasm's queued jobs and dispatch them. `inject(id, echoF32)`
     /// delivers each decoded result. Jobs with no free slot are dropped —
@@ -154,6 +214,14 @@ export async function initGpu(wasm) {
         if (!slot) break;
         dispatch(slot, jobs[o], jobs[o + 1], packJob(jobs, o), inject);
       }
+    },
+    /// PT-early discovery jobs (8 f32 each). One in flight at a time;
+    /// dropped jobs re-queue next tick and the seeds cover the gap.
+    pumpPt(wasmExports, injectPt) {
+      const n = wasmExports.sim_pt_jobs_len();
+      if (!n || pt.busy) return;
+      const jobs = new Float32Array(wasmExports.memory.buffer, wasmExports.sim_pt_jobs_ptr(), n);
+      ptDispatch(jobs[0], jobs.slice(0, 8), injectPt);
     },
     stats: () => ({ ms: lastMs, duty }),
   };

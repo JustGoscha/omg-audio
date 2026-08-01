@@ -53,6 +53,11 @@ const inject = (id, echo) => {
   w.sim_gpu_inject(id);
 };
 
+const injectPt = (id, words) => {
+  new Uint32Array(w.memory.buffer, w.sim_pt_buf_ptr(), 9).set(words);
+  w.sim_pt_inject(id);
+};
+
 function tick() {
   if (!w) return;
   const doors = new Float32Array(w.memory.buffer, w.sim_door_ptr(), 16);
@@ -66,7 +71,10 @@ function tick() {
   const t0 = performance.now();
   w.sim_tick(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw);
   const tickMs = performance.now() - t0;
-  if (gpu && gpuOn) gpu.pump(w, inject);
+  if (gpu && gpuOn) {
+    gpu.pump(w, inject);
+    gpu.pumpPt(w, injectPt);
+  }
   const blocks = [];
   for (let i = 0; i < 11; i++) {
     const len = w.sim_params_len(i);

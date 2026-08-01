@@ -205,11 +205,128 @@ pub extern "C" fn sim_gpu_job_version() -> u32 {
     GPU_JOB_VERSION
 }
 
+// -------------------------------------------------- PT-early bridge (C4)
+// Same proxy pattern as the late-field bridge: when the JS driver is
+// live and `early = traced`, each PathCache's discovery call queues a
+// tiny job (id, box size, listener, rot — 8 f32) and consumes chain
+// bitmaps injected from earlier dispatches. The permanent ≤2-order
+// seeds keep the early field correct while a bitmap is in flight;
+// with no driver the in-wasm CPU fan runs as always.
+
+/// One PT job: [id, sx, sy, sz, lx, ly, lz, rot].
+pub const PT_JOB_F32S: usize = 8;
+const PT_MAX_JOBS: usize = 16;
+
+struct WebPtProxy;
+
+static PT_JOBS: std::sync::Mutex<Vec<f32>> = std::sync::Mutex::new(Vec::new());
+static PT_BITMAPS: std::sync::Mutex<Vec<(u32, [u32; 9])>> = std::sync::Mutex::new(Vec::new());
+
+/// Decode a pt_early.wgsl chain bitmap (layout v1: 6 + 36 + 216 slots).
+fn decode_bitmap(words: &[u32; 9], out: &mut Vec<omg_core::pt::Chain>) {
+    let bit = |i: usize| words[i >> 5] >> (i & 31) & 1 == 1;
+    const NO: u8 = omg_core::pt::NO_WALL;
+    for w1 in 0..6usize {
+        if bit(w1) {
+            out.push(([w1 as u8, NO, NO], 1));
+        }
+        for w2 in 0..6usize {
+            if bit(6 + w1 * 6 + w2) {
+                out.push(([w1 as u8, w2 as u8, NO], 2));
+            }
+            for w3 in 0..6usize {
+                if bit(42 + w1 * 36 + w2 * 6 + w3) {
+                    out.push(([w1 as u8, w2 as u8, w3 as u8], 3));
+                }
+            }
+        }
+    }
+}
+
+impl omg_scene::early::EarlyDiscovery for WebPtProxy {
+    fn discover(
+        &mut self,
+        id: u32,
+        room: &omg_core::scene::Shoebox,
+        listener: omg_core::vec3::Vec3,
+        rot: u32,
+        out: &mut Vec<omg_core::pt::Chain>,
+    ) -> bool {
+        {
+            let mut jobs = PT_JOBS.lock().unwrap();
+            if jobs.len() < PT_MAX_JOBS * PT_JOB_F32S {
+                jobs.extend_from_slice(&[
+                    id as f32,
+                    room.size.x,
+                    room.size.y,
+                    room.size.z,
+                    listener.x,
+                    listener.y,
+                    listener.z,
+                    rot as f32,
+                ]);
+            }
+        }
+        let mut maps = PT_BITMAPS.lock().unwrap();
+        if let Some(i) = maps.iter().position(|(mid, _)| *mid == id) {
+            let (_, words) = maps.swap_remove(i);
+            decode_bitmap(&words, out);
+        }
+        true // seeds carry the early field while dispatches are in flight
+    }
+}
+
+/// Drain queued PT discovery jobs (f32 count, multiple of PT_JOB_F32S).
+#[no_mangle]
+pub extern "C" fn sim_pt_jobs_len() -> u32 {
+    let out = unsafe {
+        (*(&raw mut PT_JOBS_OUT)).get_or_insert_with(|| leak_f32(PT_MAX_JOBS * PT_JOB_F32S))
+    };
+    let mut jobs = PT_JOBS.lock().unwrap();
+    let n = jobs.len().min(out.len());
+    out[..n].copy_from_slice(&jobs[..n]);
+    jobs.clear();
+    n as u32
+}
+
+#[no_mangle]
+pub extern "C" fn sim_pt_jobs_ptr() -> *const f32 {
+    let out = unsafe {
+        (*(&raw mut PT_JOBS_OUT)).get_or_insert_with(|| leak_f32(PT_MAX_JOBS * PT_JOB_F32S))
+    };
+    out.as_ptr()
+}
+
+static mut PT_JOBS_OUT: Option<&'static mut [f32]> = None;
+static mut PT_INJECT: Option<&'static mut [u32]> = None;
+
+fn leak_u32(n: usize) -> &'static mut [u32] {
+    Box::leak(vec![0u32; n].into_boxed_slice())
+}
+
+/// Staging for one chain bitmap (9 u32 words) before sim_pt_inject.
+#[no_mangle]
+pub extern "C" fn sim_pt_buf_ptr() -> *mut u32 {
+    let buf = unsafe { (*(&raw mut PT_INJECT)).get_or_insert_with(|| leak_u32(9)) };
+    buf.as_mut_ptr()
+}
+
+/// Deliver the staged bitmap as cache `id`'s discovery result.
+#[no_mangle]
+pub extern "C" fn sim_pt_inject(id: u32) {
+    let buf = unsafe { (*(&raw mut PT_INJECT)).get_or_insert_with(|| leak_u32(9)) };
+    let words: [u32; 9] = buf[..9].try_into().unwrap();
+    let mut maps = PT_BITMAPS.lock().unwrap();
+    maps.retain(|(mid, _)| *mid != id);
+    maps.push((id, words));
+}
+
 /// Route traces through the JS WebGPU driver. Call once, before the
 /// first tick, and only after gpu.js initialized successfully.
 #[no_mangle]
 pub extern "C" fn sim_gpu_enable() {
     omg_scene::late::set_late_backend(Box::new(WebGpuProxy));
+    omg_scene::early::set_early_discovery(Box::new(WebPtProxy));
     omg_scene::quality::set_gpu_backend(true);
 }
 
@@ -218,9 +335,12 @@ pub extern "C" fn sim_gpu_enable() {
 #[no_mangle]
 pub extern "C" fn sim_gpu_disable() {
     omg_scene::late::clear_late_backend();
+    omg_scene::early::clear_early_discovery();
     omg_scene::quality::set_gpu_backend(false);
     GPU_JOBS.lock().unwrap().clear();
     GPU_RESULTS.lock().unwrap().clear();
+    PT_JOBS.lock().unwrap().clear();
+    PT_BITMAPS.lock().unwrap().clear();
 }
 
 static mut GPU_JOBS_OUT: Option<&'static mut [f32]> = None;
