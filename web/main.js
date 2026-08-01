@@ -1394,7 +1394,11 @@ async function startAudio() {
         q.forced = `tick ${e.data.tickMs.toFixed(0)}ms`;
         worker.postMessage({ type: 'quality', tier: q.tier });
       } else if (e.data.tickMs < 15 && q.tier > 0) {
-        if (++q.calm >= 200) { // 200 ticks ≈ 10 s
+        // climb only with AUDIO headroom too: a higher tier raises tap
+        // counts, and the render load must never be pushed past 90%
+        if (state.debug.load >= 0.9) {
+          q.calm = 0;
+        } else if (++q.calm >= 200) { // 200 ticks ≈ 10 s
           q.tier--;
           q.calm = 0;
           q.forced = '';
