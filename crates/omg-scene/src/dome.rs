@@ -127,6 +127,7 @@ pub fn build_world_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>)
 
     let outdoor = rooms.iter().find(|r| r.outdoor).expect("an outdoor room");
     let ground = b.material(outdoor.walls[4]);
+    b.begin_surface(); // the ground plane (one surface, shaft holes and all)
     // holes where vertical shafts pierce the grade (the bunker stairs)
     let shafts: Vec<(f32, f32, f32, f32)> = doors
         .iter()
@@ -171,6 +172,7 @@ pub fn build_world_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>)
             let mut m = r.walls[wi];
             m.transmission = r.walls[wi].transmission_at(r.wall_thickness);
             let mat = b.material(m);
+            b.begin_surface(); // this wall plane: door holes share the id
             // apertures in this wall plane touching this room
             let mut holes = Vec::new();
             for d in doors {
@@ -207,6 +209,7 @@ pub fn build_world_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>)
         let mut mc = r.walls[5];
         mc.transmission = r.walls[5].transmission_at(r.wall_thickness);
         let mat = b.material(mc);
+        b.begin_surface(); // this room's slab/roof plane
         let mut holes = Vec::new();
         for d in doors {
             let (a, bb) = d.rooms;

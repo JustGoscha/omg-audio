@@ -22,6 +22,8 @@ pub struct Mesh {
     /// Per-triangle index into `materials`.
     pub tri_material: Vec<u16>,
     pub materials: Vec<Material>,
+    /// Per-triangle authored-surface id (chain-key identity, C6a).
+    tri_surface: Vec<u16>,
     nodes: Vec<BvhNode>,
     /// Intersection primitives in BVH-leaf order. Oversized triangles are
     /// tessellated into patches here (coplanar, same original id) — one
@@ -68,6 +70,10 @@ pub struct MeshBuilder {
     indices: Vec<[u32; 3]>,
     tri_material: Vec<u16>,
     materials: Vec<Material>,
+    tri_surface: Vec<u16>,
+    /// 1 + the last id begin_surface returned (0 = "no surface yet";
+    /// tris pushed before the first begin_surface land on id 0).
+    next_surface: u16,
     lookup: std::collections::HashMap<(i64, i64, i64), u32>,
 }
 
@@ -79,6 +85,16 @@ impl MeshBuilder {
     pub fn material(&mut self, m: Material) -> u16 {
         self.materials.push(m);
         (self.materials.len() - 1) as u16
+    }
+
+    /// Open a new SURFACE: one authored plane (a wall with its aperture
+    /// holes, a slab, a roof pitch, a furniture face group). Every tri
+    /// pushed until the next call carries this id — path-space chain
+    /// keys hash surface ids, so identity must survive tessellation and
+    /// door holes (C6a). Returns the id.
+    pub fn begin_surface(&mut self) -> u16 {
+        self.next_surface += 1;
+        self.next_surface - 1
     }
 
     pub fn vertex(&mut self, p: Vec3) -> u32 {
@@ -93,6 +109,7 @@ impl MeshBuilder {
         let (ia, ib, ic) = (self.vertex(a), self.vertex(b), self.vertex(c));
         self.indices.push([ia, ib, ic]);
         self.tri_material.push(material);
+        self.tri_surface.push(self.next_surface.saturating_sub(1));
     }
 
     /// Quad a-b-c-d (planar, in winding order) as two triangles.
@@ -115,7 +132,13 @@ impl MeshBuilder {
     }
 
     pub fn build(self) -> Mesh {
-        Mesh::new(self.positions, self.indices, self.tri_material, self.materials)
+        Mesh::with_surfaces(
+            self.positions,
+            self.indices,
+            self.tri_material,
+            self.materials,
+            self.tri_surface,
+        )
     }
 }
 
@@ -126,17 +149,37 @@ impl Mesh {
         tri_material: Vec<u16>,
         materials: Vec<Material>,
     ) -> Self {
+        let n = indices.len();
+        Self::with_surfaces(positions, indices, tri_material, materials, vec![0; n])
+    }
+
+    /// `Mesh::new` with per-triangle surface ids (see
+    /// `MeshBuilder::begin_surface`).
+    pub fn with_surfaces(
+        positions: Vec<Vec3>,
+        indices: Vec<[u32; 3]>,
+        tri_material: Vec<u16>,
+        materials: Vec<Material>,
+        tri_surface: Vec<u16>,
+    ) -> Self {
         assert_eq!(indices.len(), tri_material.len());
+        assert_eq!(indices.len(), tri_surface.len());
         let mut mesh = Self {
             positions,
             indices,
             tri_material,
             materials,
+            tri_surface,
             nodes: Vec::new(),
             packed: Vec::new(),
         };
         mesh.build_bvh();
         mesh
+    }
+
+    /// Stable surface id of a triangle (chain-key identity).
+    pub fn tri_surface(&self, tri: u32) -> u16 {
+        self.tri_surface[tri as usize]
     }
 
     pub fn tri_count(&self) -> usize {
