@@ -402,7 +402,19 @@ the measured 2.5× doorway tick). C6 removes them:
   TRANSMISSION segments (a chain may cross glass/walls with mass-law
   loss — trace_through semantics inside path records). Gate: in a
   mesh-built empty box, identical output to the analytic solver.
-- **C6c — one listener context.** Sources and listener in world
+- **C6c — one listener context.** *(SHIPPED: early_world.rs — one
+  listener-launched chain cache over the world mesh shared by all
+  sources; portal routing/virtual sources/aperture re-radiation/blend
+  gone behind `early=traced` (ism keeps them); door leaves, glass
+  panes and furniture are transmissive `extras` boxes in the solve;
+  AutoPaths supplies ONE dominant-edge diffraction tap per source,
+  scaled by the complement of the solved direct; the late field is a
+  per-ROOM probe per tick — the diffuse level is a room statistic —
+  so a doorway blend probes two rooms, not two rooms × N sources.
+  Gates: walk-in continuity, walk-past aperture contrast 7.1 dB with
+  a step-free profile, door-leaf muffle/restore, and doorway tick
+  0.98×/0.90× open-square — the door spike is structurally gone.)*
+  Sources and listener in world
   coordinates, one PathCache for the world (not per room): doorways
   and windows are just holes the chains thread. Portal routing,
   virtual sources, aperture re-radiation and the crossing blend are
@@ -411,6 +423,11 @@ the measured 2.5× doorway tick). C6 removes them:
   (C5) — jamb edges come from the same mesh edges AutoPaths extracts.
   Gate: env_probe-style walkthrough — level continuity through every
   doorway with the portal code off; doorway tick ≤ 1.2× open-square.
+  Deferred to C6d: world discovery is CPU `mesh_chains` for now (the
+  box-bitmap GPU kernel can't express surface-id chains — the BVH
+  kernel that replaces it is the same work item as the dome/late
+  port), and the coupled-room wet send still uses the door-chain
+  route for its excitation heuristic.
 - **C6d — late field + dome follow.** K1 traces the world mesh per
   source (already GPU); the per-room FDN reduces to region estimates;
   phase 4's dome kernel shares the same BVH buffers.

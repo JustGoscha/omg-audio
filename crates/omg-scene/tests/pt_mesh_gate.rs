@@ -77,12 +77,12 @@ fn mesh_solver_matches_analytic_in_a_box() {
     let mut buf = Vec::new();
     let mut recs = Vec::new();
     // direct path is always a candidate
-    if let Some(r) = mesh_record(&mesh, &table, &[], 0, src, lis, &mut buf) {
+    if let Some(r) = mesh_record(&mesh, &table, &[], 0, src, lis, &[], &mut buf) {
         recs.push(r);
     }
     for (chain, order) in &chains {
         if let Some(r) =
-            mesh_record(&mesh, &table, &chain[..*order as usize], 0, src, lis, &mut buf)
+            mesh_record(&mesh, &table, &chain[..*order as usize], 0, src, lis, &[], &mut buf)
         {
             recs.push(r);
         }
@@ -137,7 +137,7 @@ fn doorways_thread_with_zero_portal_code() {
     // through the opening:
     let src = Vec3::new(2.0, 3.0, 1.5);
     let clear = Vec3::new(4.4, 7.5, 1.6);
-    let r = mesh_record(&mesh, &table, &[], 0, src, clear, &mut buf)
+    let r = mesh_record(&mesh, &table, &[], 0, src, clear, &[], &mut buf)
         .expect("direct through the door hole");
     let free_space = 1.0 / (src - clear).length();
     assert!(
@@ -152,7 +152,7 @@ fn doorways_thread_with_zero_portal_code() {
     // treble gone) — or the path is dropped as inaudible. Either way,
     // FAR below the doorway path.
     let blocked = Vec3::new(1.0, 7.5, 1.6);
-    let r2 = mesh_record(&mesh, &table, &[], 0, src, blocked, &mut buf);
+    let r2 = mesh_record(&mesh, &table, &[], 0, src, blocked, &[], &mut buf);
     if let Some(r2) = r2 {
         assert!(
             db(r2.gains[1]) < db(r.gains[1]) - 20.0,

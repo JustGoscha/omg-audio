@@ -15,6 +15,7 @@
 
 use crate::material::air_attenuation;
 use crate::mesh::{Mesh, SegHit};
+use crate::pt::Aabb;
 use crate::rng::Rng;
 use crate::vec3::Vec3;
 use crate::{NBANDS, SPEED_OF_SOUND};
@@ -101,11 +102,16 @@ fn mirror(p: Vec3, s: &Surface) -> Vec3 {
 
 /// Transmission of every surface the OPEN segment a→b crosses, skipping
 /// crossings that belong to `skip` (the reflection surface itself).
+/// `extras` are transient blockers the mesh doesn't carry — door leaves,
+/// glass panes, furniture — as boxes with per-band transmission; each box
+/// the leg passes through multiplies in once (a leaf across a door hole
+/// is exactly what turns "free" back into "mass law").
 fn leg_transmission(
     mesh: &Mesh,
     a: Vec3,
     b: Vec3,
     skip: Option<(u16, f32)>,
+    extras: &[Aabb],
     buf: &mut Vec<SegHit>,
     trans: &mut [f32; NBANDS],
 ) -> bool {
@@ -125,6 +131,16 @@ fn leg_transmission(
             return false;
         }
     }
+    for x in extras {
+        if x.clip(a, b).is_some() {
+            for b in 0..NBANDS {
+                trans[b] *= x.transmission[b];
+            }
+            if trans.iter().all(|&x| x < 1e-6) {
+                return false;
+            }
+        }
+    }
     true
 }
 
@@ -137,6 +153,7 @@ pub fn mesh_record(
     source: u16,
     src_pos: Vec3,
     listener: Vec3,
+    extras: &[Aabb],
     buf: &mut Vec<SegHit>,
 ) -> Option<MeshRecord> {
     // image: mirror source across the chain planes, listener-first
@@ -193,7 +210,7 @@ pub fn mesh_record(
         }
         // transmission across everything this leg crosses (the
         // reflection surface itself excluded at its own t)
-        if !leg_transmission(mesh, pos, hit, Some((sid, 1.0)), buf, &mut gains_mul) {
+        if !leg_transmission(mesh, pos, hit, Some((sid, 1.0)), extras, buf, &mut gains_mul) {
             return None;
         }
         for b in 0..NBANDS {
@@ -203,7 +220,7 @@ pub fn mesh_record(
         d = d - s.n * (2.0 * s.n.dot(d));
     }
     // final leg to the source, transmission for every crossing
-    if !leg_transmission(mesh, pos, src_pos, None, buf, &mut gains_mul) {
+    if !leg_transmission(mesh, pos, src_pos, None, extras, buf, &mut gains_mul) {
         return None;
     }
     if !chain.is_empty() {
@@ -233,6 +250,48 @@ pub fn mesh_record(
         dir: [dir.x, dir.y, dir.z],
         gains,
     })
+}
+
+/// Debug: the world-space polyline of a chain (listener, hit points…,
+/// source). Pure geometry — no validation, no transmission; callers only
+/// pass chains whose records already solved this tick.
+pub fn mesh_vertices(
+    table: &SurfaceTable,
+    chain: &[u16],
+    src_pos: Vec3,
+    listener: Vec3,
+    out: &mut Vec<Vec3>,
+) -> bool {
+    out.clear();
+    let mut img = src_pos;
+    for &sid in chain.iter().rev() {
+        let Some(s) = table.surfaces.get(sid as usize) else { return false };
+        img = mirror(img, s);
+    }
+    let to_img = img - listener;
+    let dist = to_img.length();
+    if dist < 1e-4 {
+        return false;
+    }
+    let mut d = to_img * (1.0 / dist);
+    let mut pos = listener;
+    out.push(pos);
+    for &sid in chain {
+        let Some(s) = table.surfaces.get(sid as usize) else { return false };
+        let denom = s.n.dot(d);
+        if denom.abs() < 1e-9 {
+            return false;
+        }
+        let t = (s.d - s.n.dot(pos)) / denom;
+        if t <= 1e-4 {
+            return false;
+        }
+        pos = pos + d * t;
+        out.push(pos);
+        d = d - s.n * (2.0 * s.n.dot(d));
+    }
+    out.push(src_pos);
+    true
 }
 
 /// Discovery over the mesh: listener-launched rotating golden fan,

@@ -4,6 +4,7 @@
 
 pub mod dome;
 pub mod early;
+pub mod early_world;
 pub mod environment;
 pub mod late;
 pub mod quality;

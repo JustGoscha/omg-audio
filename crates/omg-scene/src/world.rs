@@ -4,6 +4,7 @@
 //! scripted walkthrough and the interactive web build.
 
 use crate::dome::{door_panels, DomeProbe, DOME_ID_BASE};
+use crate::early_world::WorldEarly;
 use crate::environment::AcousticsGraph;
 use crate::sim::{Facade, Sim};
 use crate::walkthrough::{
@@ -15,6 +16,7 @@ use omg_core::ism::image_source_taps;
 use omg_core::paths::{AutoPaths, PathBudget};
 use omg_core::material::{air_attenuation, Material};
 use omg_core::params::{ParamBlock, RemoteReverb, Tap};
+use omg_core::pt::Aabb;
 use omg_core::SPEED_OF_SOUND;
 use omg_core::scene::Shoebox;
 use omg_core::vec3::Vec3;
@@ -55,6 +57,25 @@ pub struct WorldSim {
     acoustics: AcousticsGraph,
     /// Ray-sampled ambient dome (the audio skybox).
     dome: DomeProbe,
+    /// C6c: the one world listener context (`early = traced`) — a shared
+    /// chain cache over the dome's world mesh; portals dissolve.
+    early_world: Option<WorldEarly>,
+    /// Furniture in world coordinates (authored per-room, lifted once).
+    furniture_world: Vec<Aabb>,
+    /// Per-tick transient blockers: furniture + glass panes + door leaves.
+    extras_buf: Vec<Aabb>,
+    recs_buf: Vec<omg_core::pt_mesh::MeshRecord>,
+    /// Per-source cached diffraction taps (world-frame dir, un-rotated)
+    /// and the (listener, source) cell they were computed for.
+    bend_taps: Vec<Vec<Tap>>,
+    bend_key: Vec<[i32; 5]>,
+    /// C6c late field: the diffuse level is a ROOM statistic (measured
+    /// distance-independent), so one probe per room per tick serves every
+    /// source — per-source excitation is a scalar on top. This is what
+    /// keeps the doorway tick at open-square cost: a blend probes two
+    /// rooms, not two rooms × eleven sources.
+    room_reverb: Vec<Sim>,
+    room_rp: Vec<(u64, omg_core::params::ReverbParams)>,
     /// Occlusion-floor cache: floors vary smoothly in space, so per
     /// (exit, listener-cell) results are reused and refreshed round-robin
     /// — same philosophy as the trace gate (staleness bounded, no bias).
@@ -71,6 +92,42 @@ pub struct WorldSim {
 /// Below this summed mid-band gain a source is treated as inaudible for
 /// LOD purposes (well under the quietest thing the mix resolves).
 const LOD_QUIET: f32 = 0.004;
+
+/// What currently fills a door's hole, as a thin transmissive box for the
+/// world solver: a glass pane always, a swinging leaf for its covered
+/// fraction (from one jamb — coverage is what matters acoustically).
+/// `None` when the hole is acoustically open.
+fn aperture_box(d: &Door) -> Option<Aabb> {
+    let (lat_c, plane) = if d.axis == 0 { (d.pos.1, d.pos.0) } else { (d.pos.0, d.pos.1) };
+    let (lat0, lat1, trans) = if d.glass {
+        (lat_c - d.half, lat_c + d.half, walkthrough::GLASS_TRANSMISSION)
+    } else {
+        if d.openness >= 0.999 {
+            return None;
+        }
+        let covered = (1.0 - d.openness) * 2.0 * d.half;
+        let t = if d.heavy {
+            walkthrough::HEAVY_PANEL_TRANSMISSION
+        } else {
+            walkthrough::DOOR_PANEL_TRANSMISSION
+        };
+        (lat_c - d.half, lat_c - d.half + covered, t)
+    };
+    let (z0, z1) = (d.zc - 0.5 * d.height, d.zc + 0.5 * d.height);
+    Some(if d.axis == 0 {
+        Aabb {
+            min: Vec3::new(plane - 0.04, lat0, z0),
+            max: Vec3::new(plane + 0.04, lat1, z1),
+            transmission: trans,
+        }
+    } else {
+        Aabb {
+            min: Vec3::new(lat0, plane - 0.04, z0),
+            max: Vec3::new(lat1, plane + 0.04, z1),
+            transmission: trans,
+        }
+    })
+}
 
 /// Maps the dome's escaped-ray energy fraction to route amplitude,
 /// calibrated so the open field lands at the loudness the old horizon
@@ -129,6 +186,25 @@ impl WorldSim {
             dome,
             auto,
             paths_buf: Vec::new(),
+            early_world: None,
+            furniture_world: {
+                let mut f = Vec::new();
+                for (ri, r) in rooms.iter().enumerate() {
+                    for a in walkthrough::furniture(ri) {
+                        let o = Vec3::new(r.min.0, r.min.1, r.floor_z);
+                        f.push(Aabb { min: a.min + o, max: a.max + o, transmission: a.transmission });
+                    }
+                }
+                f
+            },
+            extras_buf: Vec::new(),
+            recs_buf: Vec::new(),
+            bend_taps: defs.iter().map(|_| Vec::new()).collect(),
+            bend_key: defs.iter().map(|_| [i32::MAX; 5]).collect(),
+            room_reverb: (0..rooms.len()).map(|_| Sim::new()).collect(),
+            room_rp: (0..rooms.len())
+                .map(|_| (u64::MAX, omg_core::params::ReverbParams::default()))
+                .collect(),
             rooms,
             doors,
             bend_cache: std::collections::HashMap::new(),
@@ -171,6 +247,16 @@ impl WorldSim {
     /// [src_idx, n_verts, x,y,z × n]…, capped. Consumes each Sim's
     /// last-traced geometry so rooms you left stop emitting.
     pub fn debug_rays(&mut self, out: &mut Vec<f32>) {
+        if crate::quality::early_traced() {
+            // C6c: polylines come from the world solver, already in world
+            // coordinates. The first call switches capture on; each tick
+            // refills the buffer, each call drains it.
+            if let Some(ew) = &mut self.early_world {
+                ew.debug_on = true;
+                out.append(&mut ew.debug_buf);
+            }
+            return;
+        }
         let mut local = Vec::new();
         for (si, per_room) in self.sims.iter_mut().enumerate() {
             for (ri, sim) in per_room.iter_mut().enumerate() {
@@ -237,6 +323,28 @@ impl WorldSim {
     fn tick_blended(&mut self, bs: BlendedState) -> (Vec<ParamBlock>, TickInfo) {
         self.tick_no += 1;
         let st = &bs.primary;
+        // C6c: `early = traced` renders every source through ONE world
+        // listener context — chains over the world mesh, discovered once
+        // per tick. Portal routing, virtual sources, aperture
+        // re-radiation and the crossing blend are not on this path; the
+        // room-based LATE field remains (blend for reverb only) until
+        // C6d moves it onto the same mesh.
+        let traced = crate::quality::early_traced();
+        let eye = Vec3::new(bs.raw.0, bs.raw.1, bs.raw.2);
+        if traced {
+            if self.early_world.is_none() {
+                self.early_world = Some(WorldEarly::new(&self.dome.mesh));
+            }
+            let ew = self.early_world.as_mut().unwrap();
+            ew.begin_tick(&self.dome.mesh, eye);
+            self.extras_buf.clear();
+            self.extras_buf.extend_from_slice(&self.furniture_world);
+            for d in &self.doors {
+                if let Some(b) = aperture_box(d) {
+                    self.extras_buf.push(b);
+                }
+            }
+        }
         let mut blocks = Vec::with_capacity(self.defs.len());
         let mut routes = Vec::with_capacity(self.defs.len());
         let mut rt60_mid = 0.0f32;
@@ -359,157 +467,169 @@ impl WorldSim {
                     .map_or([0.0; NBANDS], |(_, f)| *f)
             };
 
-            let rooms = &self.rooms;
-            let doors_l = &self.doors;
-            let facades = &self.facades;
-            let sims = &mut self.sims[si];
+            let (mut pb, route) = if traced {
+                // ---- C6c: portal-free early field ----
+                let (sin, cos) = st.yaw.sin_cos();
+                let rot = |d: [f32; 3]| {
+                    [cos * d[0] + sin * d[1], -sin * d[0] + cos * d[1], d[2]]
+                };
+                let mut pb = ParamBlock::default();
 
-            // One (room-state, weight) simulation → weighted ParamBlock.
-            let mut sim_in_room = |state: &walkthrough::WalkState,
-                                   w: f32|
-             -> (ParamBlock, Vec<(f32, f32)>) {
-                let routed = route_source(&def, state.room, state.listener_world, doors_l);
-                let margin = if routed.extra_dist > 0.0 { 0.06 } else { 0.3 };
-                // Speaker rigs only at (near-)full weight: during a portal
-                // blend both room states render at once, and the doubled
-                // tap load is what makes throttled CPUs glitch at doorways.
-                let rig_ok = w > 0.72;
-                let virt = walkthrough::to_local_margin(
-                    &rooms[state.room],
-                    routed.virt_world.0,
-                    routed.virt_world.1,
-                    if routed.extra_dist > 0.0 { walkthrough::SRC_HEIGHT } else { src_z },
-                    margin,
-                );
-                let sim = &mut sims[state.room];
-                let mut pb = if state.room == def.room && def.emitters.len() > 1 && rig_ok {
-                    // Speaker rig in this room: per-emitter image sources.
-                    let ems: Vec<Vec3> = def
-                        .emitters
-                        .iter()
-                        .map(|e| to_local(&rooms[state.room], e.0, e.1, src_z))
-                        .collect();
-                    sim.update_multi(&state.shoebox, &ems, state.listener_local, state.yaw)
-                } else if rooms[state.room].outdoor {
-                    sim.update_outdoor(
-                        &Material::GRASS,
-                        facades,
-                        virt,
-                        state.listener_local,
-                        state.yaw,
-                        routed.extra_dist,
-                        routed.muffle,
-                    )
-                } else {
-                    sim.update_routed(
-                        &state.shoebox,
-                        virt,
-                        state.listener_local,
-                        state.yaw,
-                        routed.extra_dist,
-                        routed.muffle,
-                        walkthrough::furniture(state.room),
-                    )
-                };
-                // Door-routed sound radiates FROM the doorway: whatever
-                // stands between the door and the listener (e.g. the
-                // building itself, when you're behind it) occludes it via
-                // the same straight-ray transmission rules. Additionally,
-                // the bent path only carries what the straight ray does NOT:
-                // with clear line of sight through the opening the straight
-                // tap IS the direct sound and the routed copy vanishes — a
-                // residual copy at sub-millisecond offset is a comb filter
-                // (metallic), not scatter.
-                let occ = if routed.extra_dist > 0.0 {
-                    let door_occ = straight_path_transmission(
-                        rooms,
-                        doors_l,
-                        routed.virt_world,
-                        state.listener_world,
+                // Early taps: exact world-chain solves. Doorways are holes
+                // the legs thread for free; walls pay mass law; a closing
+                // leaf is an extras box. Speaker rigs solve per emitter
+                // (power-split), keys stay distinct via the source field.
+                let ew = self.early_world.as_mut().unwrap();
+                let n_em = if def.emitters.len() > 1 { def.emitters.len() } else { 1 };
+                let amp = 1.0 / (n_em as f32).sqrt();
+                // How OPEN the straight ray is, per band: the solved direct
+                // record over its free-space level. Diffraction only
+                // carries what the straight ray does not — additive bends
+                // over a clear sight line are a comb filter, not physics.
+                let mut lit = [0.0f32; NBANDS];
+                for ei in 0..n_em {
+                    let (ex, ey) = if n_em > 1 { def.emitters[ei] } else { def.pos };
+                    let e3 = Vec3::new(ex, ey, src_z);
+                    ew.solve_source(
+                        &self.dome.mesh,
+                        (si * 8 + ei) as u16,
+                        e3,
+                        eye,
+                        &self.extras_buf,
+                        &mut self.recs_buf,
                     );
-                    let los = straight_path_transmission(
-                        rooms,
-                        doors_l,
-                        def.pos,
-                        state.listener_world,
-                    );
-                    let fl = floor_of(routed.virt_world);
-                    core::array::from_fn(|b| {
-                        door_occ[b].max(fl[b]) * (1.0 - los[b])
-                    })
-                } else if rooms[state.room].outdoor {
-                    // Same outdoor "room" — but buildings may stand between
-                    // two open-air points (this is what occludes a thrown
-                    // whistling projectile behind a wall). The bend floor
-                    // keeps the whistle bending around the corner instead
-                    // of vanishing.
-                    let t = straight_path_transmission(
-                        rooms, doors_l, def.pos, state.listener_world);
-                    let fl = floor_of(def.pos);
-                    core::array::from_fn(|b| t[b].max(fl[b]))
-                } else {
-                    [1.0; NBANDS]
-                };
-                // Weight amplitudes; key-space per room so blended states coexist.
-                for tp in &mut pb.taps {
-                    tp.key += state.room as u32 * 1024;
-                    for b in 0..NBANDS {
-                        tp.gains[b] *= w * occ[b];
+                    for r in &self.recs_buf {
+                        if ei == 0 && r.order == 0 {
+                            let d = (r.delay_s * SPEED_OF_SOUND).max(0.3);
+                            let air = air_attenuation(d);
+                            for b in 0..NBANDS {
+                                lit[b] = (r.gains[b] * d / air[b]).clamp(0.0, 1.0);
+                            }
+                        }
+                        pb.taps.push(Tap {
+                            key: crate::early::PT_KEY_BASE + r.key(),
+                            delay_s: r.delay_s,
+                            dir: rot(r.dir),
+                            gains: core::array::from_fn(|b| r.gains[b] * amp),
+                        });
                     }
                 }
-                (pb, routed.route)
-            };
 
-            let (mut pb, route) = sim_in_room(st, bs.primary_weight);
-            let wp2 = bs.primary_weight * bs.primary_weight;
-            let mut reverb = pb.reverb;
-            for b in 0..NBANDS {
-                reverb.rt60[b] *= wp2;
-                reverb.level[b] *= wp2;
-            }
-            if let Some((ref ost, wo)) = bs.other {
-                let (opb, _) = sim_in_room(ost, wo);
-                let wo2 = wo * wo;
-                for b in 0..NBANDS {
-                    reverb.rt60[b] += opb.reverb.rt60[b] * wo2;
-                    reverb.level[b] += opb.reverb.level[b] * wo2;
+                // Diffraction: knife-edge paths over the SAME mesh (door
+                // jambs, building corners, roof lines are auto-extracted
+                // edges) keep shadow boundaries continuous where the
+                // specular set cuts off. Cached per source, refreshed
+                // round-robin on listener/source cell changes.
+                let src0 = Vec3::new(def.pos.0, def.pos.1, src_z);
+                let cell = [
+                    (eye.x * 2.0) as i32,
+                    (eye.y * 2.0) as i32,
+                    (eye.z * 2.0) as i32,
+                    (src0.x * 2.0) as i32,
+                    (src0.y * 2.0) as i32,
+                ];
+                if self.bend_key[si] != cell && bend_budget > 0 {
+                    bend_budget -= 1;
+                    self.bend_key[si] = cell;
+                    let budget =
+                        PathBudget { edge_candidates: 48, pair_edges: 32, max_paths: 4 };
+                    self.auto.find(&self.dome.mesh, src0, eye, budget, &mut self.paths_buf);
+                    let bt = &mut self.bend_taps[si];
+                    bt.clear();
+                    // ONE tap: the dominant edge. The diffracted field is
+                    // the best path, not the sum — four near-equal edge
+                    // copies overcount by ~10 dB (the old floor took the
+                    // max over paths for the same reason).
+                    if let Some(p) = self
+                        .paths_buf
+                        .iter()
+                        .filter(|p| p.key != 0 && p.points.len() >= 3)
+                        .max_by(|a, b| {
+                            let ga = a.gains[1] / a.length.max(0.3);
+                            let gb = b.gains[1] / b.length.max(0.3);
+                            ga.total_cmp(&gb)
+                        })
+                    {
+                        let len = p.length.max(0.3);
+                        let air = air_attenuation(len);
+                        let gains: [f32; NBANDS] =
+                            core::array::from_fn(|b| p.gains[b] * air[b] / len);
+                        if !gains.iter().all(|&g| g < 2e-5) {
+                            let toward = p.points[p.points.len() - 2] - eye;
+                            let dl = toward.length().max(1e-4);
+                            bt.push(Tap {
+                                key: crate::early::PT_KEY_BASE + 0x0800_0000 + p.key,
+                                delay_s: len / SPEED_OF_SOUND,
+                                dir: [toward.x / dl, toward.y / dl, toward.z / dl],
+                                gains,
+                            });
+                        }
+                    }
                 }
-                pb.taps.extend_from_slice(&opb.taps);
-            }
-            pb.reverb = reverb;
-
-            // Straight-ray propagation: one segment source → listener, each
-            // wall crossed attenuates by mass-law transmission × thickness,
-            // door apertures pass freely. With clear line of sight through
-            // open doors this IS the unmuffled direct sound the portal
-            // model used to fake; through walls it is the bass rumble.
-            // Grade-separated pairs have no straight path at all (earth).
-            if def.room != st.room && !self.grade_separated(def.room, st.room) {
-                let trans = straight_path_transmission(
-                    &self.rooms,
-                    &self.doors,
-                    def.pos,
-                    st.listener_world,
-                );
-                let (dxw, dyw) = (
-                    def.pos.0 - st.listener_world.0,
-                    def.pos.1 - st.listener_world.1,
-                );
-                let d = (dxw * dxw + dyw * dyw).sqrt().max(0.3);
-                let air = air_attenuation(d);
-                let gains: [f32; NBANDS] =
-                    core::array::from_fn(|b| trans[b] * air[b] / d);
-                if gains[0] > 2e-5 {
-                    let (sin, cos) = st.yaw.sin_cos();
-                    let (nx, ny) = (dxw / d, dyw / d);
+                for t in &self.bend_taps[si] {
+                    let gains: [f32; NBANDS] =
+                        core::array::from_fn(|b| t.gains[b] * (1.0 - lit[b]));
+                    if gains.iter().all(|&g| g < 2e-5) {
+                        continue;
+                    }
                     pb.taps.push(Tap {
-                        key: 9000,
-                        delay_s: d / SPEED_OF_SOUND,
-                        dir: [cos * nx + sin * ny, -sin * nx + cos * ny, 0.0],
+                        key: t.key,
+                        delay_s: t.delay_s,
+                        dir: rot(t.dir),
                         gains,
                     });
                 }
-            }
+
+                // Late field: still the room model — reverb params only,
+                // blended across the doorway; excitation scaled by the
+                // routed energy heuristic. C6d retires this too.
+                let mut route: Vec<(f32, f32)> = Vec::new();
+                let mut rstates: Vec<(&walkthrough::WalkState, f32)> =
+                    vec![(st, bs.primary_weight)];
+                if let Some((ref ost, wo)) = bs.other {
+                    rstates.push((ost, wo));
+                }
+                for (k, (state, w)) in rstates.iter().enumerate() {
+                    let routed =
+                        route_source(&def, state.room, state.listener_world, &self.doors);
+                    if k == 0 {
+                        route = routed.route.clone();
+                    }
+                    let w2 = w * w;
+                    if self.rooms[state.room].outdoor {
+                        for b in 0..NBANDS {
+                            pb.reverb.rt60[b] += 0.25 * w2;
+                        }
+                        continue;
+                    }
+                    let rp = {
+                        if self.room_rp[state.room].0 != self.tick_no {
+                            let r = &self.rooms[state.room];
+                            let center = Vec3::new(
+                                (r.max.0 - r.min.0) * 0.5,
+                                (r.max.1 - r.min.1) * 0.5,
+                                walkthrough::SRC_HEIGHT,
+                            );
+                            let rp = self.room_reverb[state.room].reverb_only(
+                                &state.shoebox,
+                                center,
+                                state.listener_local,
+                            );
+                            self.room_rp[state.room] = (self.tick_no, rp);
+                        }
+                        self.room_rp[state.room].1
+                    };
+                    for b in 0..NBANDS {
+                        let e = routed.muffle[b] * routed.muffle[b]
+                            / (1.0 + routed.extra_dist * routed.extra_dist);
+                        pb.reverb.rt60[b] += rp.rt60[b] * w2;
+                        pb.reverb.level[b] += rp.level[b] * e * w2;
+                    }
+                }
+                (pb, route)
+            } else {
+                self.ism_source_block(si, &def, &bs, src_z, &floor_of)
+            };
 
             // Coupled-room wet: the source room's reverberant field, heard
             // through the doorway. Weighted per blend state.
@@ -634,7 +754,10 @@ impl WorldSim {
                 // coherent copies at millisecond spacings from one
                 // direction: the "metal box" coloration outside a lively
                 // room. This is the image-source construction continued
-                // through the opening.
+                // through the opening. ISM-only: world chains carry these
+                // paths natively (a solve reflecting in the source room
+                // threads the hole like any other leg).
+                if !traced {
                 let sr2 = &self.rooms[def.room];
                 let sbox2 = Shoebox::new(
                     Vec3::new(sr2.max.0 - sr2.min.0, sr2.max.1 - sr2.min.1, sr2.height),
@@ -724,7 +847,7 @@ impl WorldSim {
                 // Dry direct through this aperture (the chain's version is
                 // already produced by the listener-room simulation). Scaled
                 // by the complement of the straight ray to avoid counting
-                // the on-axis path twice.
+                // the on-axis path twice. ISM-only, like the reflections.
                 if !is_chain {
                     let los = straight_path_transmission(
                         &self.rooms,
@@ -749,6 +872,7 @@ impl WorldSim {
                         });
                     }
                 }
+                } // !traced
                 }
             }
             if rem_n > 0 {
@@ -800,6 +924,172 @@ impl WorldSim {
             env: self.environment(&bs),
         };
         (blocks, info)
+    }
+
+    /// The classic per-room early machinery (`early = ism`): portal
+    /// routing, blended room states, aperture re-radiation and the
+    /// straight-ray tap — the pre-C6 pipeline, kept switchable forever.
+    fn ism_source_block(
+        &mut self,
+        si: usize,
+        def: &SourceDef,
+        bs: &BlendedState,
+        src_z: f32,
+        floor_of: &dyn Fn((f32, f32)) -> [f32; NBANDS],
+    ) -> (ParamBlock, Vec<(f32, f32)>) {
+        let st = &bs.primary;
+        let rooms = &self.rooms;
+        let doors_l = &self.doors;
+        let facades = &self.facades;
+        let sims = &mut self.sims[si];
+
+        // One (room-state, weight) simulation → weighted ParamBlock.
+        let mut sim_in_room = |state: &walkthrough::WalkState,
+                               w: f32|
+         -> (ParamBlock, Vec<(f32, f32)>) {
+            let routed = route_source(def, state.room, state.listener_world, doors_l);
+            let margin = if routed.extra_dist > 0.0 { 0.06 } else { 0.3 };
+            // Speaker rigs only at (near-)full weight: during a portal
+            // blend both room states render at once, and the doubled
+            // tap load is what makes throttled CPUs glitch at doorways.
+            let rig_ok = w > 0.72;
+            let virt = walkthrough::to_local_margin(
+                &rooms[state.room],
+                routed.virt_world.0,
+                routed.virt_world.1,
+                if routed.extra_dist > 0.0 { walkthrough::SRC_HEIGHT } else { src_z },
+                margin,
+            );
+            let sim = &mut sims[state.room];
+            let mut pb = if state.room == def.room && def.emitters.len() > 1 && rig_ok {
+                // Speaker rig in this room: per-emitter image sources.
+                let ems: Vec<Vec3> = def
+                    .emitters
+                    .iter()
+                    .map(|e| to_local(&rooms[state.room], e.0, e.1, src_z))
+                    .collect();
+                sim.update_multi(&state.shoebox, &ems, state.listener_local, state.yaw)
+            } else if rooms[state.room].outdoor {
+                sim.update_outdoor(
+                    &Material::GRASS,
+                    facades,
+                    virt,
+                    state.listener_local,
+                    state.yaw,
+                    routed.extra_dist,
+                    routed.muffle,
+                )
+            } else {
+                sim.update_routed(
+                    &state.shoebox,
+                    virt,
+                    state.listener_local,
+                    state.yaw,
+                    routed.extra_dist,
+                    routed.muffle,
+                    walkthrough::furniture(state.room),
+                )
+            };
+            // Door-routed sound radiates FROM the doorway: whatever
+            // stands between the door and the listener (e.g. the
+            // building itself, when you're behind it) occludes it via
+            // the same straight-ray transmission rules. Additionally,
+            // the bent path only carries what the straight ray does NOT:
+            // with clear line of sight through the opening the straight
+            // tap IS the direct sound and the routed copy vanishes — a
+            // residual copy at sub-millisecond offset is a comb filter
+            // (metallic), not scatter.
+            let occ = if routed.extra_dist > 0.0 {
+                let door_occ = straight_path_transmission(
+                    rooms,
+                    doors_l,
+                    routed.virt_world,
+                    state.listener_world,
+                );
+                let los = straight_path_transmission(
+                    rooms,
+                    doors_l,
+                    def.pos,
+                    state.listener_world,
+                );
+                let fl = floor_of(routed.virt_world);
+                core::array::from_fn(|b| {
+                    door_occ[b].max(fl[b]) * (1.0 - los[b])
+                })
+            } else if rooms[state.room].outdoor {
+                // Same outdoor "room" — but buildings may stand between
+                // two open-air points (this is what occludes a thrown
+                // whistling projectile behind a wall). The bend floor
+                // keeps the whistle bending around the corner instead
+                // of vanishing.
+                let t = straight_path_transmission(
+                    rooms, doors_l, def.pos, state.listener_world);
+                let fl = floor_of(def.pos);
+                core::array::from_fn(|b| t[b].max(fl[b]))
+            } else {
+                [1.0; NBANDS]
+            };
+            // Weight amplitudes; key-space per room so blended states coexist.
+            for tp in &mut pb.taps {
+                tp.key += state.room as u32 * 1024;
+                for b in 0..NBANDS {
+                    tp.gains[b] *= w * occ[b];
+                }
+            }
+            (pb, routed.route)
+        };
+
+        let (mut pb, route) = sim_in_room(st, bs.primary_weight);
+        let wp2 = bs.primary_weight * bs.primary_weight;
+        let mut reverb = pb.reverb;
+        for b in 0..NBANDS {
+            reverb.rt60[b] *= wp2;
+            reverb.level[b] *= wp2;
+        }
+        if let Some((ref ost, wo)) = bs.other {
+            let (opb, _) = sim_in_room(ost, wo);
+            let wo2 = wo * wo;
+            for b in 0..NBANDS {
+                reverb.rt60[b] += opb.reverb.rt60[b] * wo2;
+                reverb.level[b] += opb.reverb.level[b] * wo2;
+            }
+            pb.taps.extend_from_slice(&opb.taps);
+        }
+        pb.reverb = reverb;
+
+        // Straight-ray propagation: one segment source → listener, each
+        // wall crossed attenuates by mass-law transmission × thickness,
+        // door apertures pass freely. With clear line of sight through
+        // open doors this IS the unmuffled direct sound the portal
+        // model used to fake; through walls it is the bass rumble.
+        // Grade-separated pairs have no straight path at all (earth).
+        if def.room != st.room && !self.grade_separated(def.room, st.room) {
+            let trans = straight_path_transmission(
+                &self.rooms,
+                &self.doors,
+                def.pos,
+                st.listener_world,
+            );
+            let (dxw, dyw) = (
+                def.pos.0 - st.listener_world.0,
+                def.pos.1 - st.listener_world.1,
+            );
+            let d = (dxw * dxw + dyw * dyw).sqrt().max(0.3);
+            let air = air_attenuation(d);
+            let gains: [f32; NBANDS] =
+                core::array::from_fn(|b| trans[b] * air[b] / d);
+            if gains[0] > 2e-5 {
+                let (sin, cos) = st.yaw.sin_cos();
+                let (nx, ny) = (dxw / d, dyw / d);
+                pb.taps.push(Tap {
+                    key: 9000,
+                    delay_s: d / SPEED_OF_SOUND,
+                    dir: [cos * nx + sin * ny, -sin * nx + cos * ny, 0.0],
+                    gains,
+                });
+            }
+        }
+        (pb, route)
     }
 
     /// Environment routing for a pose. The directional inflow is the
