@@ -1132,7 +1132,7 @@ document.getElementById('start').onclick = async (ev) => {
       state.debug.on = !state.debug.on;
       document.getElementById('debug').hidden = !state.debug.on;
       // ray extraction in the sim runs ONLY while the panel is open
-      worker.postMessage({ type: 'debug', on: state.debug.on });
+      if (state.setDebugRays) state.setDebugRays(state.debug.on);
     };
     buildMixer();
     document.getElementById('mixerbtn').onclick = (e) => {
@@ -1453,6 +1453,7 @@ async function startAudio() {
     state.setAudioManual = (on, points, ceiling) =>
       node.port.postMessage({ type: 'manual', on, points, ceiling });
     state.setGpu = (on) => worker.postMessage({ type: 'gpu', on });
+    state.setDebugRays = (on) => worker.postMessage({ type: 'debug', on });
     state.setEarly = (mode) => {
       state.earlyMode = mode;
       try { localStorage.setItem('omg-early', mode ? 'traced' : 'ism'); } catch (_) {}
