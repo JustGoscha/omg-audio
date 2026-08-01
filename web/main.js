@@ -177,6 +177,134 @@ function buildMixer() {
   });
 }
 
+// ------------------------------------------------------------ quality panel
+// One tier selector + every budget lever as its own slider. Sim levers pin
+// through sim_set_override (0 = follow tier); touching an audio lever
+// freezes the worklet governor and holds both audio values manually.
+// Mirrors of the tier tables in crates/omg-scene/src/quality.rs.
+const QUAL_TIER_VALS = {
+  rays: [4096, 2048, 1024], gate: [8, 12, 16], domeRays: [384, 256, 160],
+  domeEvents: [6, 5, 4], ism: [3, 3, 2],
+};
+const QUAL_SLIDERS = [
+  { key: 'rays', id: 0, label: 'trace rays', min: 256, max: 8192, step: 256, section: 'simulation · 20 Hz' },
+  { key: 'ism', id: 4, label: 'ism order', min: 2, max: 3, step: 1 },
+  { key: 'gate', id: 1, label: 'refresh age', min: 4, max: 32, step: 1 },
+  { key: 'domeRays', id: 2, label: 'dome rays', min: 32, max: 384, step: 32 },
+  { key: 'domeEvents', id: 3, label: 'dome events', min: 2, max: 6, step: 1 },
+  { key: 'points', label: 'point hrtf', min: 0, max: 32, step: 1, audio: true, section: 'audio render · per sample' },
+  { key: 'ceiling', label: 'tap ceiling', min: 16, max: 160, step: 8, audio: true },
+];
+
+function buildQuality() {
+  const panel = document.getElementById('quality');
+  state.qual = { over: {}, manual: false, manualVals: {}, rows: [] };
+  panel.innerHTML = '<h2>engine quality</h2>';
+
+  const seg = document.createElement('div');
+  seg.className = 'seg';
+  const segBtns = ['auto', 'high', 'med', 'low'].map((mode) => {
+    const b = document.createElement('button');
+    b.textContent = mode;
+    b.onclick = () => { state.setQuality(mode); b.blur(); };
+    seg.append(b);
+    return { mode, b };
+  });
+  panel.append(seg);
+
+  for (const s of QUAL_SLIDERS) {
+    if (s.section) {
+      const h = document.createElement('div');
+      h.className = 'qsection';
+      h.textContent = s.section;
+      panel.append(h);
+    }
+    const row = document.createElement('div');
+    row.className = 'qrow';
+    const label = document.createElement('label');
+    label.textContent = s.label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = s.min; input.max = s.max; input.step = s.step;
+    const val = document.createElement('div');
+    val.className = 'qval';
+    row.append(label, input, val);
+    panel.append(row);
+    input.oninput = () => {
+      const v = +input.value;
+      if (s.audio) {
+        state.qual.manual = true;
+        state.qual.manualVals[s.key] = v;
+        state.setAudioManual(true,
+          state.qual.manualVals.points ?? state.meters.pts,
+          state.qual.manualVals.ceiling ?? (state.meters.ceil || 160));
+      } else {
+        state.qual.over[s.key] = v;
+        state.setOverride(s.id, v);
+      }
+    };
+    input.onpointerup = () => input.blur();
+    state.qual.rows.push({ s, input, val });
+  }
+
+  const stats = document.createElement('div');
+  stats.className = 'qstats';
+  const cells = ['sim tick', 'render load', 'gaps'].map((k) => {
+    const c = document.createElement('div');
+    c.className = 'cell';
+    c.innerHTML = `<span class="k">${k}</span><span class="v">–</span>`;
+    stats.append(c);
+    return c.querySelector('.v');
+  });
+  panel.append(stats);
+
+  const reset = document.createElement('div');
+  reset.className = 'qreset';
+  reset.innerHTML = '<a href="#">release all pins → governors</a>';
+  reset.querySelector('a').onclick = (e) => {
+    e.preventDefault();
+    for (const s of QUAL_SLIDERS) if (!s.audio) state.setOverride(s.id, 0);
+    state.qual.over = {};
+    state.qual.manual = false;
+    state.qual.manualVals = {};
+    state.setAudioManual(false);
+  };
+  panel.append(reset);
+
+  // live refresh: effective values track the tier/governor unless pinned
+  setInterval(() => {
+    if (panel.hidden) return;
+    const q = state.quality || { auto: true, tier: 0, mode: 'auto' };
+    for (const { mode, b } of segBtns) b.classList.toggle('on', q.mode === mode);
+    for (const { s, input, val } of state.qual.rows) {
+      let v; let pinned;
+      if (s.audio) {
+        pinned = state.qual.manual;
+        v = pinned ? (state.qual.manualVals[s.key]
+              ?? (s.key === 'points' ? state.meters.pts : state.meters.ceil))
+          : (s.key === 'points' ? state.meters.pts : state.meters.ceil || 160);
+      } else {
+        pinned = state.qual.over[s.key] != null;
+        v = pinned ? state.qual.over[s.key] : QUAL_TIER_VALS[s.key][q.tier];
+      }
+      if (document.activeElement !== input) input.value = v;
+      val.textContent = `${v}${pinned ? ' ⏚' : ''}`;
+      val.classList.toggle('pinned', !!pinned);
+    }
+    const tick = state.debug.tickMs || 0;
+    const load = state.debug.load || 0;
+    cells[0].textContent = `${tick.toFixed(1)} ms`;
+    cells[0].classList.toggle('hot', tick > 40);
+    cells[1].textContent = `${(load * 100).toFixed(0)} %`;
+    cells[1].classList.toggle('hot', load > 0.85);
+    cells[2].textContent = `${state.debug.gaps || 0}`;
+    cells[2].classList.toggle('hot', (state.debug.gaps || 0) > 0);
+    const btn = document.getElementById('qualbtn');
+    btn.textContent = `⚙ ${state.qual.manual || Object.keys(state.qual.over).length
+      ? 'custom' : ['high', 'med', 'low'][q.tier] + (q.auto ? ' ·auto' : '')}`;
+  }, 350);
+}
+
 // meter history: ~43 frames ≈ 1 s
 function updateMixerMeters() {
   if (!state.mixerRows || document.getElementById('mixer').hidden) return;
@@ -896,6 +1024,19 @@ document.getElementById('start').onclick = async (ev) => {
       e.target.blur();
       const p = document.getElementById('mixer');
       p.hidden = !p.hidden;
+      if (!p.hidden) document.getElementById('quality').hidden = true;
+      e.target.classList.toggle('on', !p.hidden);
+      document.getElementById('qualbtn').classList.remove('on');
+    };
+    buildQuality();
+    document.getElementById('qualbtn').hidden = false;
+    document.getElementById('qualbtn').onclick = (e) => {
+      e.currentTarget.blur();
+      const p = document.getElementById('quality');
+      p.hidden = !p.hidden;
+      if (!p.hidden) document.getElementById('mixer').hidden = true;
+      e.currentTarget.classList.toggle('on', !p.hidden);
+      document.getElementById('mixerbtn').classList.remove('on');
     };
     setupControls();
     state.running = true;
@@ -917,6 +1058,23 @@ async function startAudio() {
   // decode; the worklet passes its real sampleRate to eng_init).
   const audio = new AudioContext({ latencyHint: 'interactive' });
   state.audio = audio; // debug panel reads live output latency from it
+  // "Sound stopped and never came back": under sustained overload (or a
+  // device switch / long tab freeze) Chrome can move the context to
+  // 'suspended'/'interrupted' — and nothing resumes it by itself. Log
+  // every transition, retry on a timer, and retry on the next user
+  // gesture (resume() is gesture-gated in some states).
+  audio.onstatechange = () => {
+    console.warn(`[audio] context → ${audio.state}`);
+    if (audio.state !== 'running') audio.resume().catch(() => {});
+  };
+  setInterval(() => {
+    if (audio.state !== 'running') audio.resume().catch(() => {});
+  }, 1000);
+  const gestureResume = () => {
+    if (audio.state !== 'running') audio.resume().catch(() => {});
+  };
+  addEventListener('pointerdown', gestureResume, true);
+  addEventListener('keydown', gestureResume, true);
   const fetchBuf = async (url) => {
     const r = await fetch(url);
     if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
@@ -1034,6 +1192,7 @@ async function startAudio() {
         state.meters.r = e.data.r;
         state.meters.agc = e.data.agc;
         state.meters.pts = e.data.pts || 0;
+        state.meters.ceil = e.data.ceil || 0;
         state.meters.tts = e.data.tts || 0;
         if (e.data.chans) {
           state.chanHist.push(e.data.chans);
@@ -1061,6 +1220,7 @@ async function startAudio() {
             gaps: e.data.gaps || 0, load: +(e.data.load || 0).toFixed(2),
             raf: +((state.debug.rafGap || 0)).toFixed(0),
             lat: state.audio ? +(state.audio.outputLatency * 1000).toFixed(0) : -1,
+            ctx: state.audio ? state.audio.state[0] : '?', // r/s/i/c
           });
           state.debug.rafGap = 0;
           if (bb.ring.length > 180) bb.ring.shift(); // ~4 s at 43 Hz
@@ -1110,12 +1270,68 @@ async function startAudio() {
 
   const worker = new Worker('worker.js');
   worker.postMessage({ type: 'init', bytes: wasm2 }, [wasm2]);
+  // Sim-side quality ladder (GPU_PLAN.md Track B): ?q=high|med|low pins a
+  // tier, ?q=auto (default) walks it from the measured tick cost. The
+  // audio-side ladder (point budget + tap ceiling) lives in the worklet's
+  // own governor — this one only paces the 20 Hz sim.
+  {
+    const qp = (new URLSearchParams(location.search).get('q') || 'auto').toLowerCase();
+    const tiers = { high: 0, med: 1, medium: 1, low: 2 };
+    state.quality = {
+      auto: !(qp in tiers), tier: tiers[qp] ?? 0, calm: 0, forced: '',
+      mode: qp in tiers ? (qp === 'medium' ? 'med' : qp) : 'auto',
+    };
+    if (!state.quality.auto) worker.postMessage({ type: 'quality', tier: state.quality.tier });
+    // Manual override (Q key / console): pins the sim tier AND floors the
+    // worklet's tap-ceiling ladder to match, so a pinned "low" is low on
+    // both clocks. "auto" hands both governors back their freedom.
+    state.setQuality = (mode) => {
+      const q = state.quality;
+      q.mode = mode;
+      q.calm = 0;
+      q.forced = '';
+      if (mode === 'auto') {
+        q.auto = true;
+      } else {
+        q.auto = false;
+        q.tier = tiers[mode];
+        worker.postMessage({ type: 'quality', tier: q.tier });
+      }
+      node.port.postMessage({ type: 'ceilfloor', idx: mode === 'med' ? 1 : mode === 'low' ? 2 : 0 });
+    };
+    // quality-panel plumbing: pin one sim lever (value 0 = follow tier),
+    // or hold both audio levers manually (freezes the worklet governor)
+    state.setOverride = (id, value) => worker.postMessage({ type: 'override', id, value });
+    state.setAudioManual = (on, points, ceiling) =>
+      node.port.postMessage({ type: 'manual', on, points, ceiling });
+  }
   worker.onmessage = (e) => {
     if (e.data.type !== 'tick') return;
     node.port.postMessage({ type: 'params', blocks: e.data.blocks }, e.data.blocks);
     state.simState = new Float32Array(e.data.state);
     state.debug.tickMs = Math.max(state.debug.tickMs || 0, e.data.tickMs || 0) * 0.9
       + (e.data.tickMs || 0) * 0.1; // decaying peak-ish: spikes stay visible
+    const q = state.quality;
+    if (q.auto) {
+      // shed on a blown budget immediately (a 20 Hz tick has 50 ms; at
+      // >40 the worker starts eating the next tick's slot), recover only
+      // after ~10 s of calm so the ladder can't oscillate at a doorway
+      if (e.data.tickMs > 40 && q.tier < 2) {
+        q.tier++;
+        q.calm = 0;
+        q.forced = `tick ${e.data.tickMs.toFixed(0)}ms`;
+        worker.postMessage({ type: 'quality', tier: q.tier });
+      } else if (e.data.tickMs < 15 && q.tier > 0) {
+        if (++q.calm >= 200) { // 200 ticks ≈ 10 s
+          q.tier--;
+          q.calm = 0;
+          q.forced = '';
+          worker.postMessage({ type: 'quality', tier: q.tier });
+        }
+      } else {
+        q.calm = 0;
+      }
+    }
     // environment block — offset comes from the sim (ONE source of
     // truth for the state layout; a hardcoded 58 once parsed car
     // positions as ambience gains)
@@ -1173,8 +1389,19 @@ async function startAudio() {
 function setupControls() {
   const isTouch = matchMedia('(pointer: coarse)').matches;
 
+  // Q cycles the quality ladder: auto → high → med → low. Pinning a tier
+  // sets the sim budgets AND floors the audio-side tap ceiling (see
+  // state.setQuality); auto returns both governors to their own metering.
+  const cycleQuality = () => {
+    if (!state.setQuality) return; // audio not started yet
+    const order = ['auto', 'high', 'med', 'low'];
+    const next = order[(order.indexOf(state.quality.mode) + 1) % order.length];
+    state.setQuality(next);
+    hintEl.textContent = `quality: ${next}${next === 'auto' ? '' : ' (pinned)'}`;
+  };
+
   if (!isTouch) {
-    hintEl.textContent = 'click: capture mouse · WASD walk · Space throw · E door · R rain';
+    hintEl.textContent = 'click: capture mouse · WASD walk · Space throw · E door · R rain · Q quality';
     glCanvas.addEventListener('click', () => {
       if (document.pointerLockElement !== glCanvas) glCanvas.requestPointerLock();
       else throwBall();
@@ -1188,6 +1415,7 @@ function setupControls() {
       if (e.code === 'Space') throwBall();
       else if (e.code === 'KeyR') cycleRain();
       else if (e.code === 'KeyE') toggleNearestDoor();
+      else if (e.code === 'KeyQ') cycleQuality();
       else state.keys.add(e.code);
     });
     addEventListener('keyup', (e) => state.keys.delete(e.code));
@@ -1222,8 +1450,9 @@ function setupControls() {
     const btn = document.createElement('button');
     btn.textContent = '🎯 throw';
     btn.style.cssText =
-      'position:absolute;right:12px;bottom:270px;z-index:6;padding:10px 16px;' +
-      'background:#2a3648;color:#c8d2e1;';
+      'position:absolute;right:12px;bottom:270px;z-index:6;padding:10px 16px;'
+      + 'background:var(--panel-2);color:var(--ink);border:1px solid var(--line);'
+      + 'border-radius:8px;font-size:12px;';
     document.body.appendChild(btn);
     btn.addEventListener('click', throwBall);
 
@@ -1515,6 +1744,7 @@ function frame(t) {
     drawMinimap();
     drawMeters();
     drawSpec();
+    drawFaceWire();
     if (state.debug.on) drawDebug();
   }
 
@@ -1656,9 +1886,13 @@ function drawDebug() {
     y += h + 10;
   }
   const last = hist.length ? hist[hist.length - 1] : null;
-  graph(`render taps ${last ? last.taps : 0} · budget ${state.meters.pts}/src`,
+  graph(`render taps ${last ? last.taps : 0} · budget ${state.meters.pts}/src`
+    + ` · ceil ${state.meters.ceil || 160}/src`,
     90, (s) => s.taps / 96, { color: '#6ee0a0' });
-  graph(`sim tick ${state.debug.tickMs.toFixed(1)} ms (budget 50)`,
+  const q = state.quality || { auto: true, tier: 0 };
+  graph(`sim tick ${state.debug.tickMs.toFixed(1)} ms (budget 50)`
+    + ` · quality ${['high', 'med', 'low'][q.tier]}${q.auto ? ' (auto)' : ''}`
+    + (q.forced ? ` ← ${q.forced}` : ''),
     90, (s) => s.tickMs / 50, { color: '#ffaa3c' });
   // outputLatency is the device-side buffer: stable = healthy output
   // path; jumping around = the DEVICE is struggling (Bluetooth), not us
@@ -1667,6 +1901,72 @@ function drawDebug() {
     + ` · ${state.debug.gaps || 0} gaps (${(state.debug.gapMs || 0).toFixed(0)}ms silent)`
     + ` · out-lat ${lat}ms`,
     90, (s) => s.load, { color: '#ff6a5a' });
+}
+
+// ------------------------------------------------------------ face wireframe
+// A small wire head mirroring what the tracker believes: yaw/pitch/roll
+// rotate it, lean (dx/dy) shifts it, lean-in (dz) scales it. If sound and
+// wireframe disagree with your actual head, the tracker is the problem.
+const FACE_WIRE = (() => {
+  const ring = (fn, n = 24) =>
+    Array.from({ length: n + 1 }, (_, i) => fn((i / n) * 2 * Math.PI));
+  return [
+    ring((a) => [Math.cos(a), 0, Math.sin(a)]),                       // equator
+    ring((a) => [0.86 * Math.cos(a), 0.5, 0.86 * Math.sin(a)]),       // upper lat
+    ring((a) => [0.86 * Math.cos(a), -0.5, 0.86 * Math.sin(a)]),      // lower lat
+    ring((a) => [0, Math.cos(a), Math.sin(a)]),                       // profile ring
+    [[0, 0.05, 1.0], [0, -0.12, 1.28], [0, -0.22, 1.0]],              // nose
+    [[-0.3, -0.42, 0.88], [0, -0.5, 0.94], [0.3, -0.42, 0.88]],       // mouth
+    [[-0.5, 0.22, 0.82], [-0.2, 0.22, 0.95]],                          // left eye
+    [[0.2, 0.22, 0.95], [0.5, 0.22, 0.82]],                            // right eye
+  ];
+})();
+
+function drawFaceWire() {
+  const c = document.getElementById('facewire');
+  if (!c) return;
+  const on = !!state.faceTrack;
+  if (c.hidden !== !on) c.hidden = !on;
+  if (!on) return;
+  const g = c.getContext('2d');
+  const W = c.width;
+  const H = c.height;
+  g.clearRect(0, 0, W, H);
+  const f = state.face;
+  const tracking = state.faceTrack.stats && state.faceTrack.stats.tracking;
+  const cy = Math.cos(f.yaw); const sy = Math.sin(f.yaw);
+  const cp = Math.cos(f.pitch); const sp = Math.sin(f.pitch);
+  const cr = Math.cos(f.roll); const sr = Math.sin(f.roll);
+  // engine conventions: yaw+ = turned left, pitch+ = up, roll+ = right
+  // ear down; drawn mirror-style (your left = screen left)
+  const rot = ([x, y, z]) => {
+    let a = x * cr - y * sr; let b = x * sr + y * cr; // roll about z
+    let d = b * cp + z * sp; let e = -b * sp + z * cp; // pitch about x
+    return [a * cy + e * sy, d, -a * sy + e * cy]; // yaw about y
+  };
+  const s = (1 + (f.dz || 0) * 1.5) * W * 0.3;
+  const proj = ([x, y, z]) => [
+    W / 2 + (f.dx || 0) * W * 0.8 + x * s,
+    H * 0.54 - (f.dy || 0) * H * 0.8 - y * s,
+    z,
+  ];
+  for (const line of FACE_WIRE) {
+    const pts = line.map((p) => proj(rot(p)));
+    for (let i = 1; i < pts.length; i++) {
+      // depth cue: segments facing the camera draw brighter
+      const zm = (pts[i][2] + pts[i - 1][2]) / 2;
+      const a = Math.max(0.10, 0.30 + zm * 0.45) * (tracking ? 1 : 0.35);
+      g.strokeStyle = tracking ? `rgba(221,214,201,${a})` : `rgba(179,87,74,${a})`;
+      g.lineWidth = zm > 0.4 ? 1.6 : 1;
+      g.beginPath();
+      g.moveTo(pts[i - 1][0], pts[i - 1][1]);
+      g.lineTo(pts[i][0], pts[i][1]);
+      g.stroke();
+    }
+  }
+  g.fillStyle = '#55524a';
+  g.font = '10px IBM Plex Mono, monospace';
+  g.fillText(tracking ? 'head' : 'no face', 8, 14);
 }
 
 function drawMeters() {

@@ -4,48 +4,145 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>omg-audio · walking simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  html, body { margin: 0; height: 100%; background: #0a0d12; color: #c8d2e1;
-               font-family: -apple-system, Roboto, sans-serif; overflow: hidden;
+  :root {
+    --bg: #0a0a0c;
+    --panel: #101013f5;
+    --line: #242429;
+    --line-hi: #3a3a42;
+    --ink: #ddd6c9;          /* bone */
+    --dim: #8a8579;
+    --faint: #55524a;
+    --gold: #c2a566;         /* warnings, pinned values */
+    --bad: #b3574a;
+    --serif: 'Cormorant Garamond', Georgia, serif;
+    --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+               font-family: var(--mono); overflow: hidden;
                touch-action: none; -webkit-user-select: none; user-select: none; }
   #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   #minimap { position: absolute; right: 12px; bottom: 12px; width: 150px; height: 240px;
-             opacity: .85; z-index: 5; pointer-events: none; border-radius: 8px; }
-  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column;
-             align-items: center; justify-content: center; gap: 16px;
-             background: rgba(10,13,18,.72); backdrop-filter: blur(2px); z-index: 10; text-align: center; padding: 24px; }
-  #overlay h1 { font-size: 22px; margin: 0; }
-  #overlay p { max-width: 440px; color: #7a8496; font-size: 14px; line-height: 1.5; margin: 0; }
-  button { background: #50dcff; color: #08222b; border: 0; border-radius: 10px;
-           padding: 14px 28px; font-size: 17px; font-weight: 600; }
-  #hud { position: absolute; top: 10px; left: 12px; font-size: 13px; color: #7a8496;
-         z-index: 5; pointer-events: none; line-height: 1.6; }
-  #rain { position: absolute; top: 10px; right: 110px; z-index: 6;
-    background: #2a3648; color: #cfe3ff; }
-  #mixerbtn { position: absolute; top: 10px; right: 230px; z-index: 6;
-    background: #2a3648; color: #cfe3ff; }
-  #mixer { position: absolute; top: 52px; right: 12px; z-index: 6;
-    background: #0e1116ee; border: 1px solid #2a3648; border-radius: 12px;
-    padding: 12px 14px; width: 330px; font: 12px sans-serif; color: #cfe3ff; }
+             opacity: .85; z-index: 5; pointer-events: none; border-radius: 4px; }
+  #debug { position: absolute; right: 170px; bottom: 12px; width: 280px; height: 380px;
+           z-index: 6; pointer-events: none; border-radius: 4px;
+           background: var(--panel); border: 1px solid var(--line); }
+  #meters { position: absolute; left: 12px; bottom: 150px; width: 130px; height: 120px;
+            z-index: 5; pointer-events: none; border-radius: 4px; }
+  #facewire { position: absolute; left: 12px; bottom: 284px; width: 110px; height: 110px;
+              z-index: 5; pointer-events: none; border-radius: 4px;
+              background: #0d0d10cc; border: 1px solid var(--line); }
+  #spec { position: absolute; left: 12px; bottom: 12px; width: 180px; height: 130px;
+          z-index: 5; pointer-events: none; border-radius: 4px; background: #0d0d10cc; }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px;
+               margin: -2px; background: #ddd6c977; border-radius: 50%; z-index: 4;
+               pointer-events: none; }
+
+  /* ------------------------------------------------ HUD */
+  #hud { position: absolute; top: 12px; left: 14px; font-size: 11px; color: var(--dim);
+         z-index: 5; pointer-events: none; line-height: 1.8; }
+  #status { color: var(--ink); }
+
+  /* ------------------------------------------------ chrome: buttons & toolbar */
+  button { font-family: var(--mono); font-size: 11px; letter-spacing: .04em;
+           cursor: pointer; }
+  #toolbar { position: absolute; top: 10px; right: 12px; z-index: 6;
+             display: flex; gap: 6px; align-items: flex-start; }
+  #toolbar button {
+    background: transparent; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 4px; padding: 7px 12px;
+    transition: color .15s, border-color .15s;
+  }
+  #toolbar button:hover { color: var(--ink); border-color: var(--line-hi); }
+  #toolbar button.on { color: var(--ink); border-color: var(--ink); }
+
+  /* ------------------------------------------------ panels (mixer, quality) */
+  .panel { position: absolute; top: 52px; right: 12px; z-index: 7;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+    padding: 16px 18px 14px; width: 330px; font-size: 12px; color: var(--ink); }
+  .panel h2 { font-family: var(--serif); font-size: 17px; font-weight: 600;
+    font-style: italic; letter-spacing: .02em; color: var(--ink);
+    margin: 0 0 12px; display: flex; align-items: baseline; gap: 12px; }
+  .panel h2::after { content: ''; flex: 1; height: 1px; background: var(--line);
+    align-self: center; }
+
   #mixer .row { display: grid; grid-template-columns: 62px 1fr 58px;
     align-items: center; gap: 8px; margin: 7px 0; }
-  #mixer .fader { width: 100%; accent-color: #50dcff; }
-  #mixer .meter { position: relative; height: 4px; background: #1c2430;
-    border-radius: 2px; margin-top: 3px; overflow: hidden; }
+  #mixer .fader { width: 100%; accent-color: var(--ink); }
+  #mixer .meter { position: relative; height: 3px; background: #1c1c21;
+    margin-top: 3px; overflow: hidden; }
   #mixer .meter .rms { position: absolute; left: 0; top: 0; bottom: 0;
-    background: #50dcff; width: 0; }
+    background: var(--ink); width: 0; }
   #mixer .meter .pk { position: absolute; top: 0; bottom: 0; width: 2px;
-    background: #ffaa3c; left: 0; }
-  #mixer .lvl { text-align: right; color: #7a8496; font-variant-numeric: tabular-nums; }
-  #mixer .spl { color: #7a8496; }
+    background: var(--gold); left: 0; }
+  #mixer .lvl { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+  #mixer .spl { color: var(--dim); }
   #mixer .scale { display: flex; justify-content: space-between;
-    color: #4a5568; font-size: 10px; margin: -2px 0 6px 70px; padding-right: 66px; }
-  #recenter { position: absolute; top: 10px; right: 12px; z-index: 6;
-              padding: 8px 14px; font-size: 13px; background: #2a3648; color: #c8d2e1; }
-  #status { color: #50dcff; }
-  #crosshair { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px;
-               margin: -2px; background: #50dcff88; border-radius: 50%; z-index: 4;
-               pointer-events: none; }
+    color: var(--faint); font-size: 10px; margin: -2px 0 6px 70px; padding-right: 66px; }
+
+  /* ------------------------------------------------ quality panel */
+  #quality { width: 350px; }
+  #quality .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0;
+    margin: 2px 0 14px; border: 1px solid var(--line); border-radius: 4px;
+    overflow: hidden; }
+  #quality .seg button { background: transparent; color: var(--dim); font-size: 11px;
+    border: 0; border-right: 1px solid var(--line); padding: 7px 0;
+    transition: color .12s, background .12s; }
+  #quality .seg button:last-child { border-right: 0; }
+  #quality .seg button:hover { color: var(--ink); }
+  #quality .seg button.on { background: var(--ink); color: #111; }
+  #quality .qrow { display: grid; grid-template-columns: 92px 1fr 64px;
+    align-items: center; gap: 10px; margin: 8px 0; }
+  #quality .qrow label { color: var(--dim); font-size: 11px; }
+  #quality .qrow input[type=range] { width: 100%; accent-color: var(--ink);
+    height: 3px; }
+  #quality .qrow .qval { text-align: right; font-variant-numeric: tabular-nums;
+    color: var(--ink); font-size: 11px; }
+  #quality .qrow .qval.pinned { color: var(--gold); }
+  #quality .qsection { font-family: var(--serif); font-style: italic;
+    font-size: 14px; font-weight: 500; color: var(--dim); margin: 14px 0 2px; }
+  #quality .qstats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+    margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  #quality .qstats .cell { padding: 0; }
+  #quality .qstats .k { color: var(--faint); font-size: 9px; letter-spacing: .12em;
+    text-transform: uppercase; display: block; margin-bottom: 2px; }
+  #quality .qstats .v { font-size: 13px; font-variant-numeric: tabular-nums;
+    color: var(--ink); }
+  #quality .qstats .v.hot { color: var(--bad); }
+  #quality .qreset { margin-top: 12px; text-align: right; }
+  #quality .qreset a { color: var(--faint); font-size: 10px; letter-spacing: .06em;
+    text-decoration: none; border-bottom: 1px solid var(--line); }
+  #quality .qreset a:hover { color: var(--ink); border-color: var(--dim); }
+
+  /* ------------------------------------------------ start overlay */
+  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column;
+             align-items: center; justify-content: center; gap: 20px;
+             z-index: 10; text-align: center; padding: 24px;
+             background: radial-gradient(100% 80% at 50% 30%, #101014fa 0%, #0a0a0cfd 70%);
+             animation: fade .8s ease both; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  #overlay .kicker { font-size: 10px; letter-spacing: .42em; text-transform: uppercase;
+    color: var(--dim); margin: 0 0 -6px; }
+  #overlay h1 { font-family: var(--serif); font-size: 58px; font-weight: 500;
+    letter-spacing: .01em; margin: 0; line-height: 1; color: var(--ink); }
+  #overlay h1 .dim { color: var(--faint); font-style: italic; }
+  #overlay .rule { width: 46px; height: 1px; background: var(--dim); border: 0;
+    margin: 0; }
+  #overlay p { max-width: 440px; color: var(--dim); font-size: 12.5px;
+    line-height: 1.75; margin: 0; }
+  #overlay p b { color: var(--ink); font-weight: 500; }
+  #browsernote { border: 1px solid var(--line); border-radius: 4px;
+    padding: 10px 18px; color: var(--gold) !important;
+    font-size: 11.5px !important; }
+  #start { background: transparent; color: var(--ink); border: 1px solid var(--ink);
+    border-radius: 4px; padding: 13px 52px; font-size: 12px; letter-spacing: .28em;
+    text-transform: uppercase; margin-top: 6px;
+    transition: background .18s, color .18s; }
+  #start:hover { background: var(--ink); color: #111; }
+  #err { color: var(--bad); }
 </style>
 </head>
 <body>
@@ -57,32 +154,53 @@
   fav.href = 'data:image/svg+xml,' + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><text y="13" font-size="13">🔊</text></svg>');
   document.head.appendChild(fav);
+  // escalate the browser note when this is detectably not Chromium
+  // (Arc ships Chrome's UA, so it can't be told apart here)
+  addEventListener('DOMContentLoaded', () => {
+    const ua = navigator.userAgent;
+    const chromium = ua.includes('Chrome/') || ua.includes('Chromium/');
+    if (!chromium) {
+      const n = document.getElementById('browsernote');
+      n.style.color = 'var(--bad)';
+      n.style.borderColor = '#b3574a66';
+      n.innerHTML = '<b>⚠ This browser is not supported — use Google Chrome.</b><br>'
+        + 'The engine needs Chrome\'s AudioWorklet + wasm scheduling; '
+        + 'here it will stutter or stay silent.';
+    }
+  });
 </script>
 <canvas id="minimap" width="300" height="480"></canvas>
-<canvas id="debug" width="560" height="760" hidden
-  style="position:absolute;right:170px;bottom:12px;width:280px;height:380px;z-index:6;pointer-events:none;border-radius:8px;background:#0e1116e6;"></canvas>
-<button id="dbgbtn" hidden
-  style="position:absolute;top:94px;right:12px;z-index:6;padding:8px 14px;font-size:13px;background:#2a3648;color:#c8d2e1;">debug</button>
-<canvas id="meters" width="260" height="240" style="position:absolute;left:12px;bottom:150px;width:130px;height:120px;z-index:5;pointer-events:none;border-radius:8px;"></canvas>
-<canvas id="spec" width="360" height="260" style="position:absolute;left:12px;bottom:12px;width:180px;height:130px;z-index:5;pointer-events:none;border-radius:8px;background:#0e1116cc;"></canvas>
+<canvas id="debug" width="560" height="760" hidden></canvas>
+<canvas id="meters" width="260" height="240"></canvas>
+<canvas id="facewire" width="220" height="220" hidden></canvas>
+<canvas id="spec" width="360" height="260"></canvas>
 <div id="crosshair"></div>
 <div id="hud"><span id="status">–</span><br><span id="controls-hint"></span></div>
-<button id="recenter" hidden>recenter</button>
-<button id="face" hidden
-  style="position:absolute;top:52px;right:12px;z-index:6;padding:8px 14px;font-size:13px;background:#2a3648;color:#c8d2e1;">🎥 face</button>
-<button id="rain" hidden>☂ off</button>
-<button id="mixerbtn" hidden>mixer</button>
-<div id="mixer" hidden></div>
+<div id="toolbar">
+  <button id="qualbtn" hidden>⚙ quality</button>
+  <button id="mixerbtn" hidden>mixer</button>
+  <button id="face" hidden>🎥 face</button>
+  <button id="rain" hidden>☂ off</button>
+  <button id="dbgbtn" hidden>debug</button>
+  <button id="recenter" hidden>recenter</button>
+</div>
+<div id="mixer" class="panel" hidden></div>
+<div id="quality" class="panel" hidden></div>
 <div id="overlay">
-  <h1>omg-audio</h1>
-  <p>Real-time path-traced sound propagation, binaural over measured KEMAR
-     ears. <b>Headphones required.</b></p>
-  <p>Desktop: click to capture the mouse, look around, walk with WASD.
+  <p class="kicker">path-traced sound propagation</p>
+  <h1>omg<span class="dim">·</span>audio</h1>
+  <hr class="rule">
+  <p>Real-time acoustic simulation, binaural over measured KEMAR ears.
+     <b>Headphones required.</b><br><br>
+     Desktop: click to capture the mouse, look around, walk with WASD.
      Phone: left-thumb joystick to walk, physically turn to look
      (or drag right half). Walk through the doorways — music plays in the
      living room, a narrator in the great hall, open air past the hall.</p>
+  <p id="browsernote"><b>Best on Google Chrome.</b>
+     Other browsers (Firefox, Safari, Arc) currently stutter or fail —
+     the AudioWorklet needs Chrome's wasm scheduling.</p>
   <button id="start">start</button>
-  <p id="err" style="color:#ff8a7a"></p>
+  <p id="err"></p>
 </div>
 <script type="module" src="main.js"></script>
 </body>
