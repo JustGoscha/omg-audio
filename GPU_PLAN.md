@@ -443,12 +443,23 @@ the measured 2.5× doorway tick). C6 removes them:
   corridor listener measures living-room wet through the door at
   rt60 0.82 s with ~29% directional share, leaf close/reopen drops/
   restores it, doorway tick now 0.83×/0.60× open-square.)*
-  Remaining in C6d: the GPU side — BVH flatten + a world-trace
-  kernel (K2) claiming the same one-trace-per-tick slot behind the
-  late seam, PT discovery (`mesh_chains`) as a bitmap-free chain
-  kernel over the same buffers, and phase 4's dome kernel sharing
-  them. The per-room FDN reduces to region estimates once regions
-  replace rooms in authoring.
+  *(GPU SHIPPED, native + web: `trace_mesh.wgsl` (K2) walks the
+  flattened BVH — `Mesh::visit_bvh` → nodes/prims/mats uploaded once,
+  ~9 MB for the world — with door leaves/panes as inline-acoustics
+  panel boxes; the `WorldLateBackend` seam routes the one budgeted
+  trace per tick through it 8× denser. Native: registered under
+  OMG_GPU=1, gates prove GPU↔CPU parity on the holed-room mesh, a
+  panel seals the doorway to zero, and one 8192-ray dispatch costs
+  9.2 ms where the CPU needs 11.6 ms for 512 rays. Web: the world
+  proxy queues fixed-stride jobs whose panel region IS the kernel's
+  48-byte Panel struct, gpu.js uploads the BVH from wasm memory and
+  results ride the existing sim_gpu_inject → poll_into path; the
+  wasm-side proxy registers ONLY after JS confirms the pipeline
+  built, so a failed mesh kernel can never starve traced reverb.)*
+  Remaining in C6d: PT discovery (`mesh_chains`) as a chain kernel
+  over the same buffers, and phase 4's dome kernel sharing them.
+  The per-room FDN reduces to region estimates once regions replace
+  rooms in authoring.
 
 ### Hybrid: where the combination beats either
 

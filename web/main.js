@@ -501,6 +501,16 @@ const fitRatio = () => Math.max(
   Math.min(devicePixelRatio, 2, Math.sqrt(PIXEL_BUDGET / Math.max(1, innerWidth * innerHeight))),
 );
 renderer.setPixelRatio(fitRatio());
+// W2 (WINDOWS_PLAN.md): cap the DRAW rate — a 144 Hz display doubles
+// GPU queue pressure over 60 Hz for zero perceptual gain here, and the
+// canvas shares the GPU with the audio compute dispatches. Input, pose
+// and sim messaging still run every rAF; only rendering is skipped.
+// `?fps=0` uncaps, `?fps=N` pins.
+const FPS_CAP = (() => {
+  const q = new URLSearchParams(location.search).get('fps');
+  return q === null ? 72 : +q;
+})();
+let lastDraw = -1e9;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0d12);
 scene.fog = new THREE.Fog(0x0a0d12, 24, 100);
@@ -2039,15 +2049,18 @@ function frame(t) {
     for (const m of src.meshes) m.scale.setScalar(s);
   }
 
-  renderer.render(scene, camera);
-  if (state.running) {
-    drawMinimap();
-    drawMeters();
-    drawSpec();
-    drawFaceWire();
-    drawSoundRays();
-    drawReflectionFans();
-    if (state.debug.on) drawDebug();
+  if (!FPS_CAP || t - lastDraw >= 1000 / FPS_CAP - 1) {
+    lastDraw = t;
+    renderer.render(scene, camera);
+    if (state.running) {
+      drawMinimap();
+      drawMeters();
+      drawSpec();
+      drawFaceWire();
+      drawSoundRays();
+      drawReflectionFans();
+      if (state.debug.on) drawDebug();
+    }
   }
 
   const st = state.simState;

@@ -350,6 +350,184 @@ pub extern "C" fn sim_pt_inject(id: u32) {
     maps.push((id, words));
 }
 
+// ------------------------------------------ C6d world-late bridge (K2)
+// Same proxy pattern once more: with `early=traced` + GPU on, each
+// budgeted world trace queues a flat job; JS dispatches trace_mesh.wgsl
+// against the ONCE-uploaded world BVH and injects the echogram through
+// the SAME sim_gpu_inject staging — Sim ids are globally unique, so
+// `reverb_world`'s poll_into finds its result with zero new plumbing.
+
+/// One world job, fixed stride: [0] sim id · [1] n_rays · [2] seed ·
+/// [3..6] source · [6..9] listener · [9] n_panels · [10..] panels,
+/// 12 f32 each laid out EXACTLY like omg-gpu's GpuPanel (48 B):
+/// min xyz, scattering, max xyz, 0, absorption xyz, 0 — JS memcpies
+/// the slice straight into the panels buffer.
+pub const WLATE_MAX_PANELS: usize = 32;
+pub const WLATE_JOB_F32S: usize = 10 + WLATE_MAX_PANELS * 12;
+const WLATE_MAX_JOBS: usize = 4;
+/// Mirrors omg-gpu layout::MESH_LAYOUT_VERSION — gpu.js refuses the
+/// mesh pipeline on mismatch.
+pub const WLATE_VERSION: u32 = 1;
+
+struct WebWorldLateProxy;
+
+static WLATE_JOBS: std::sync::Mutex<Vec<f32>> = std::sync::Mutex::new(Vec::new());
+
+impl omg_scene::late::WorldLateBackend for WebWorldLateProxy {
+    fn trace_world(
+        &mut self,
+        id: u32,
+        src: omg_core::vec3::Vec3,
+        lis: omg_core::vec3::Vec3,
+        rays: u32,
+        panels: &[(omg_core::vec3::Vec3, omg_core::vec3::Vec3, omg_core::material::Material)],
+        _out: &mut omg_core::tracer::Echogram,
+    ) -> bool {
+        let mut jobs = WLATE_JOBS.lock().unwrap();
+        if jobs.len() >= WLATE_MAX_JOBS * WLATE_JOB_F32S {
+            return false; // JS stalled; the gate re-fires
+        }
+        // the GPU runs the one budgeted trace 8× denser (variance only)
+        let n = (rays * 8).min(8192);
+        static SEED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0xC6D2);
+        let seed = SEED
+            .fetch_add(0x9E37_79B9, std::sync::atomic::Ordering::Relaxed);
+        let base = jobs.len();
+        jobs.extend_from_slice(&[id as f32, n as f32, seed as f32]);
+        jobs.extend_from_slice(&[src.x, src.y, src.z]);
+        jobs.extend_from_slice(&[lis.x, lis.y, lis.z]);
+        let np = panels.len().min(WLATE_MAX_PANELS);
+        jobs.push(np as f32);
+        for (mn, mx, m) in panels.iter().take(np) {
+            jobs.extend_from_slice(&[mn.x, mn.y, mn.z, m.scattering]);
+            jobs.extend_from_slice(&[mx.x, mx.y, mx.z, 0.0]);
+            jobs.extend_from_slice(&[m.absorption[0], m.absorption[1], m.absorption[2], 0.0]);
+        }
+        jobs.resize(base + WLATE_JOB_F32S, 0.0); // fixed stride
+        false // result arrives via sim_gpu_inject → poll_into
+    }
+}
+
+static mut WLATE_JOBS_OUT: Option<&'static mut [f32]> = None;
+
+/// Drain this tick's world-trace jobs; returns the f32 count (a
+/// multiple of WLATE_JOB_F32S).
+#[no_mangle]
+pub extern "C" fn sim_wlate_jobs_len() -> u32 {
+    let out = unsafe {
+        (*(&raw mut WLATE_JOBS_OUT))
+            .get_or_insert_with(|| leak_f32(WLATE_MAX_JOBS * WLATE_JOB_F32S))
+    };
+    let mut jobs = WLATE_JOBS.lock().unwrap();
+    let n = jobs.len().min(out.len());
+    out[..n].copy_from_slice(&jobs[..n]);
+    jobs.clear();
+    n as u32
+}
+
+#[no_mangle]
+pub extern "C" fn sim_wlate_jobs_ptr() -> *const f32 {
+    let out = unsafe {
+        (*(&raw mut WLATE_JOBS_OUT))
+            .get_or_insert_with(|| leak_f32(WLATE_MAX_JOBS * WLATE_JOB_F32S))
+    };
+    out.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn sim_wlate_version() -> u32 {
+    WLATE_VERSION
+}
+
+// The world mesh, flattened for the kernel: u32 words with f32 payloads
+// stored as bits (JS reads Float32Array + Uint32Array views over the
+// same range). Node = 8 words [bmin×3, a, bmax×3, b]; prim = 12 words
+// [a×3, mat, e1×3, 0, e2×3, 0]; mat = 4 words [absorption×3,
+// scattering]. Built lazily from the same rooms/doors the sim uses.
+static mut MESH_FLAT: Option<(Vec<u32>, Vec<u32>, Vec<u32>)> = None;
+
+fn mesh_flat() -> &'static (Vec<u32>, Vec<u32>, Vec<u32>) {
+    unsafe {
+        (*(&raw mut MESH_FLAT)).get_or_insert_with(|| {
+            let rooms = omg_scene::walkthrough::rooms();
+            let doors = omg_scene::walkthrough::doors();
+            let (mesh, _) = omg_scene::dome::build_world_mesh(&rooms, &doors);
+            let mut nodes = Vec::new();
+            let mut prims = Vec::new();
+            mesh.visit_bvh(
+                &mut |bmin, bmax, a, b| {
+                    nodes.extend_from_slice(&[
+                        bmin.x.to_bits(),
+                        bmin.y.to_bits(),
+                        bmin.z.to_bits(),
+                        a,
+                        bmax.x.to_bits(),
+                        bmax.y.to_bits(),
+                        bmax.z.to_bits(),
+                        b,
+                    ]);
+                },
+                &mut |a, e1, e2, m| {
+                    prims.extend_from_slice(&[
+                        a.x.to_bits(),
+                        a.y.to_bits(),
+                        a.z.to_bits(),
+                        m as u32,
+                        e1.x.to_bits(),
+                        e1.y.to_bits(),
+                        e1.z.to_bits(),
+                        0,
+                        e2.x.to_bits(),
+                        e2.y.to_bits(),
+                        e2.z.to_bits(),
+                        0,
+                    ]);
+                },
+            );
+            let mut mats = Vec::new();
+            for m in &mesh.materials {
+                mats.extend_from_slice(&[
+                    m.absorption[0].to_bits(),
+                    m.absorption[1].to_bits(),
+                    m.absorption[2].to_bits(),
+                    m.scattering.to_bits(),
+                ]);
+            }
+            (nodes, prims, mats)
+        })
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn sim_mesh_nodes_len() -> u32 {
+    mesh_flat().0.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn sim_mesh_nodes_ptr() -> *const u32 {
+    mesh_flat().0.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn sim_mesh_prims_len() -> u32 {
+    mesh_flat().1.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn sim_mesh_prims_ptr() -> *const u32 {
+    mesh_flat().1.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn sim_mesh_mats_len() -> u32 {
+    mesh_flat().2.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn sim_mesh_mats_ptr() -> *const u32 {
+    mesh_flat().2.as_ptr()
+}
+
 /// Route traces through the JS WebGPU driver. Call once, before the
 /// first tick, and only after gpu.js initialized successfully.
 #[no_mangle]
@@ -359,17 +537,28 @@ pub extern "C" fn sim_gpu_enable() {
     omg_scene::quality::set_gpu_backend(true);
 }
 
+/// Route WORLD late traces to the JS driver — called SEPARATELY, and
+/// only after gpu.js confirmed the mesh pipeline compiled and the BVH
+/// uploaded. Registering it blind would queue jobs nobody dispatches
+/// and starve traced-mode reverb into silence.
+#[no_mangle]
+pub extern "C" fn sim_wlate_enable() {
+    omg_scene::late::set_world_late_backend(Box::new(WebWorldLateProxy));
+}
+
 /// Live A/B back to the CPU tracer (tuning-panel toggle). In-flight
 /// jobs/results are dropped; the trace gate re-fires them on CPU.
 #[no_mangle]
 pub extern "C" fn sim_gpu_disable() {
     omg_scene::late::clear_late_backend();
+    omg_scene::late::clear_world_late_backend();
     omg_scene::early::clear_early_discovery();
     omg_scene::quality::set_gpu_backend(false);
     GPU_JOBS.lock().unwrap().clear();
     GPU_RESULTS.lock().unwrap().clear();
     PT_JOBS.lock().unwrap().clear();
     PT_BITMAPS.lock().unwrap().clear();
+    WLATE_JOBS.lock().unwrap().clear();
 }
 
 static mut GPU_JOBS_OUT: Option<&'static mut [f32]> = None;

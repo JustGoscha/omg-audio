@@ -58,18 +58,15 @@ and 30 s of the stats panel while walking through the club door.**
   (floor 0.6) so the render loop can never claim 8 MP × 144 Hz.
   `?px=8` lifts it (megapixels) for A/B.
 
-## W2 — decouple the render loop from the audio path
+## W2 — decouple the render loop from the audio path *(frame limiter SHIPPED)*
 
 The remaining structural risk: at 144 Hz even a within-budget render
 loop doubles GPU queue pressure vs 60 Hz for zero perceptual gain in
 this demo.
 
-- **Frame limiter**: render at most every N rAF ticks so the effective
-  rate is ≤ ~72 fps on high-refresh displays (sim/audio unaffected —
-  they're on their own clocks; the camera interpolates anyway).
-  `?fps=144` disables. Implementation: in the rAF callback, skip
-  `renderer.render` (and only that — meters/HUD still update) when
-  `now - lastRender < 1000 / cap`.
+- **Frame limiter** *(SHIPPED)*: draws (renderer.render + HUD canvases)
+  cap at 72 fps; input, pose, physics and sim messaging still run
+  every rAF. `?fps=0` uncaps, `?fps=N` pins.
 - **Governor hook**: if `gpuMs` (dispatch round-trip) stays above ~1.5×
   its floor for seconds while render load is high, drop the frame cap
   a notch before dropping AUDIO quality — shed photons before sound.

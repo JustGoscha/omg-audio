@@ -43,6 +43,48 @@ export async function initGpu(wasm) {
     return null;
   }
 
+  // C6d kernel K2: the world-mesh tracer. The BVH uploads ONCE from wasm
+  // memory; per job only a 64-byte uniform + the panel overlays travel.
+  // Any failure = meshPipeline stays null and traced-mode reverb runs on
+  // the in-wasm CPU tracer, exactly as without GPU.
+  let mesh = null;
+  try {
+    if (wasm.sim_wlate_version && wasm.sim_wlate_version() === 1) {
+      const code = await (await fetch('../crates/omg-gpu/shaders/trace_mesh.wgsl')).text();
+      const pipe = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: device.createShaderModule({ code }), entryPoint: 'trace' },
+      });
+      const staticBuf = (lenFn, ptrFn) => {
+        const n = lenFn();
+        const buf = device.createBuffer({
+          size: n * 4,
+          usage: GPUBufferUsage.STORAGE,
+          mappedAtCreation: true,
+        });
+        new Uint32Array(buf.getMappedRange()).set(
+          new Uint32Array(wasm.memory.buffer, ptrFn(), n),
+        );
+        buf.unmap();
+        return buf;
+      };
+      mesh = {
+        pipe,
+        busy: false,
+        nodes: staticBuf(wasm.sim_mesh_nodes_len, wasm.sim_mesh_nodes_ptr),
+        prims: staticBuf(wasm.sim_mesh_prims_len, wasm.sim_mesh_prims_ptr),
+        mats: staticBuf(wasm.sim_mesh_mats_len, wasm.sim_mesh_mats_ptr),
+        job: device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+        panels: device.createBuffer({ size: 32 * 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+      };
+      console.info('[gpu] world mesh uploaded:',
+        wasm.sim_mesh_prims_len() / 12, 'prims,', wasm.sim_mesh_nodes_len() / 8, 'bvh nodes');
+    }
+  } catch (e) {
+    console.warn('[gpu] mesh kernel unavailable — world late stays on CPU:', e);
+    mesh = null;
+  }
+
   const mkOut = (words) => device.createBuffer({
     size: words * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
@@ -170,6 +212,64 @@ export async function initGpu(wasm) {
     ],
   });
 
+  // one world-late slot: the sim budgets ONE world trace per tick, so a
+  // single in-flight dispatch matches the producer exactly
+  if (mesh) {
+    mesh.bins = mkOut(BINS_WORDS);
+    mesh.dirs = mkOut(DIRS_WORDS);
+    mesh.readBins = mkRead(BINS_WORDS);
+    mesh.readDirs = mkRead(DIRS_WORDS);
+    mesh.bind = device.createBindGroup({
+      layout: mesh.pipe.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: mesh.job } },
+        { binding: 1, resource: { buffer: mesh.nodes } },
+        { binding: 2, resource: { buffer: mesh.prims } },
+        { binding: 3, resource: { buffer: mesh.mats } },
+        { binding: 4, resource: { buffer: mesh.panels } },
+        { binding: 5, resource: { buffer: mesh.bins } },
+        { binding: 6, resource: { buffer: mesh.dirs } },
+      ],
+    });
+  }
+
+  const meshDispatch = async (id, nRays, jobBytes, panelF32, inject) => {
+    mesh.busy = true;
+    const t0 = performance.now();
+    try {
+      device.queue.writeBuffer(mesh.job, 0, jobBytes);
+      if (panelF32.length) device.queue.writeBuffer(mesh.panels, 0, panelF32);
+      const enc = device.createCommandEncoder();
+      enc.clearBuffer(mesh.bins);
+      enc.clearBuffer(mesh.dirs);
+      const pass = enc.beginComputePass();
+      pass.setPipeline(mesh.pipe);
+      pass.setBindGroup(0, mesh.bind);
+      pass.dispatchWorkgroups(Math.ceil(nRays / 64));
+      pass.end();
+      enc.copyBufferToBuffer(mesh.bins, 0, mesh.readBins, 0, BINS_WORDS * 4);
+      enc.copyBufferToBuffer(mesh.dirs, 0, mesh.readDirs, 0, DIRS_WORDS * 4);
+      device.queue.submit([enc.finish()]);
+      await Promise.all([
+        mesh.readBins.mapAsync(GPUMapMode.READ),
+        mesh.readDirs.mapAsync(GPUMapMode.READ),
+      ]);
+      const bins = new Uint32Array(mesh.readBins.getMappedRange());
+      const dirs = new Int32Array(mesh.readDirs.getMappedRange());
+      const echo = new Float32Array(BINS_WORDS + DIRS_WORDS);
+      for (let i = 0; i < BINS_WORDS; i++) echo[i] = bins[i] / ENERGY_SCALE;
+      for (let i = 0; i < DIRS_WORDS; i++) echo[BINS_WORDS + i] = dirs[i] / DIR_SCALE;
+      mesh.readBins.unmap();
+      mesh.readDirs.unmap();
+      inject(id, echo);
+      noteBusy(performance.now() - t0);
+    } catch (e) {
+      console.warn('[gpu] world dispatch failed:', e);
+    } finally {
+      mesh.busy = false;
+    }
+  };
+
   const ptDispatch = async (id, jobF32, injectPt) => {
     pt.busy = true;
     const t0 = performance.now();
@@ -227,6 +327,31 @@ export async function initGpu(wasm) {
       const jobs = new Float32Array(wasmExports.memory.buffer, wasmExports.sim_pt_jobs_ptr(), n);
       ptDispatch(jobs[0], jobs.slice(0, 8), injectPt);
     },
+    /// World-late jobs (K2): fixed 394-f32 stride — id, n_rays, seed,
+    /// source, listener, n_panels, then panels laid out exactly like the
+    /// kernel's 48-byte Panel struct (copied verbatim). One in flight;
+    /// results ride the SAME inject path as the box traces.
+    pumpWorldLate(wasmExports, inject) {
+      if (!mesh || mesh.busy || !wasmExports.sim_wlate_jobs_len) return;
+      const n = wasmExports.sim_wlate_jobs_len();
+      if (!n) return;
+      const jobs = new Float32Array(wasmExports.memory.buffer, wasmExports.sim_wlate_jobs_ptr(), n);
+      // one slot: take the FIRST job; the others' gates re-fire
+      const nPanels = Math.min(jobs[9], 32);
+      const buf = new ArrayBuffer(64);
+      const f32 = new Float32Array(buf);
+      const u32 = new Uint32Array(buf);
+      u32[0] = jobs[1]; // n_rays
+      u32[1] = jobs[2]; // seed
+      u32[2] = nPanels;
+      f32[4] = jobs[3]; f32[5] = jobs[4]; f32[6] = jobs[5]; // source
+      f32[8] = jobs[6]; f32[9] = jobs[7]; f32[10] = jobs[8]; // listener
+      f32[12] = 1.0; f32[13] = 1.0; f32[14] = 1.0; // unit energy
+      meshDispatch(jobs[0], jobs[1], buf, jobs.slice(10, 10 + nPanels * 12), inject);
+    },
+    /// True when the world-mesh kernel compiled and the BVH uploaded —
+    /// the worker registers the wasm-side world proxy only then.
+    meshOk: !!mesh,
     stats: () => ({ ms: lastMs, duty, ptMs, ptN }),
   };
 }

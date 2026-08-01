@@ -20,6 +20,8 @@ onmessage = async (e) => {
       gpu = await initGpu(w);
       if (gpu) {
         w.sim_gpu_enable();
+        // world-late kernel (K2) only when its pipeline actually built
+        if (gpu.meshOk && w.sim_wlate_enable) w.sim_wlate_enable();
         gpuOn = true;
       }
       console.log(`[gpu] late field: ${gpu ? 'WebGPU' : 'CPU'}`);
@@ -45,8 +47,10 @@ onmessage = async (e) => {
     // live A/B toggle; only meaningful when the driver initialized
     if (w && gpu) {
       gpuOn = !!m.on;
-      if (gpuOn) w.sim_gpu_enable();
-      else w.sim_gpu_disable();
+      if (gpuOn) {
+        w.sim_gpu_enable();
+        if (gpu.meshOk && w.sim_wlate_enable) w.sim_wlate_enable();
+      } else w.sim_gpu_disable();
     }
   }
 };
@@ -77,6 +81,7 @@ function tick() {
   if (gpu && gpuOn) {
     gpu.pump(w, inject);
     gpu.pumpPt(w, injectPt);
+    gpu.pumpWorldLate(w, inject);
   }
   const blocks = [];
   for (let i = 0; i < 11; i++) {
