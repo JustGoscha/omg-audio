@@ -14,7 +14,7 @@
 //! renderer's normal slot release.
 
 use omg_core::params::Tap;
-use omg_core::pt::{pt_chains, record_for, seed_chains, Chain, PT_MAX_ORDER};
+use omg_core::pt::{pt_chains, record_for_occ, seed_chains, Aabb, Chain, PT_MAX_ORDER};
 use omg_core::scene::Shoebox;
 use omg_core::vec3::Vec3;
 use std::sync::Mutex;
@@ -93,6 +93,7 @@ impl PathCache {
         room: &Shoebox,
         src: Vec3,
         listener: Vec3,
+        occluders: &[Aabb],
         out: &mut Vec<Tap>,
     ) -> usize {
         self.scratch.clear();
@@ -129,7 +130,7 @@ impl PathCache {
             }
             let chain = &c.chain[..c.order as usize];
             // exact solve, fresh every tick: geometry glides, key holds
-            match record_for(room, chain, 0, src, listener) {
+            match record_for_occ(room, chain, 0, src, listener, occluders) {
                 Some(r) => {
                     out.push(Tap {
                         key: PT_KEY_BASE + r.key(),

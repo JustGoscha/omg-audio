@@ -13,11 +13,175 @@
 //! the unit vector from listener toward the (image) source — where the
 //! sound arrives from — and delay is `dist / c`.
 
+use crate::diffraction::knife_edge_bands;
 use crate::material::air_attenuation;
 use crate::rng::Rng;
 use crate::scene::Shoebox;
 use crate::vec3::Vec3;
 use crate::{NBANDS, SPEED_OF_SOUND};
+
+/// An axis-aligned occluder inside a room (C5: furniture, pillars,
+/// bar counters). Solid: paths through it are blocked; the direct
+/// path additionally gets a knife-edge bend over its top.
+#[derive(Clone, Copy, Debug)]
+pub struct Aabb {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl Aabb {
+    /// Clip the segment a→b against the box: Some((t0, t1)) of the
+    /// interior crossing, None when it misses.
+    pub fn clip(&self, a: Vec3, b: Vec3) -> Option<(f32, f32)> {
+        let d = b - a;
+        let mut t0 = 0.0f32;
+        let mut t1 = 1.0f32;
+        for axis in 0..3 {
+            let (da, aa, mn, mx) =
+                (d.get(axis), a.get(axis), self.min.get(axis), self.max.get(axis));
+            if da.abs() < 1e-9 {
+                if aa < mn || aa > mx {
+                    return None;
+                }
+            } else {
+                let (mut ta, mut tb) = ((mn - aa) / da, (mx - aa) / da);
+                if ta > tb {
+                    core::mem::swap(&mut ta, &mut tb);
+                }
+                t0 = t0.max(ta);
+                t1 = t1.min(tb);
+                if t0 > t1 {
+                    return None;
+                }
+            }
+        }
+        if t1 > 1e-4 && t0 < 1.0 - 1e-4 {
+            Some((t0, t1))
+        } else {
+            None
+        }
+    }
+
+    /// Does the open segment a→b pass through this box?
+    pub fn blocks(&self, a: Vec3, b: Vec3) -> bool {
+        let d = b - a;
+        let mut t0 = 0.0f32;
+        let mut t1 = 1.0f32;
+        for axis in 0..3 {
+            let (da, aa, mn, mx) =
+                (d.get(axis), a.get(axis), self.min.get(axis), self.max.get(axis));
+            if da.abs() < 1e-9 {
+                if aa < mn || aa > mx {
+                    return false;
+                }
+            } else {
+                let (mut ta, mut tb) = ((mn - aa) / da, (mx - aa) / da);
+                if ta > tb {
+                    core::mem::swap(&mut ta, &mut tb);
+                }
+                t0 = t0.max(ta);
+                t1 = t1.min(tb);
+                if t0 > t1 {
+                    return false;
+                }
+            }
+        }
+        // interior crossing only (touching a face at the very ends of
+        // the segment is not occlusion)
+        t1 > 1e-4 && t0 < 1.0 - 1e-4
+    }
+}
+
+fn segment_blocked(occluders: &[Aabb], a: Vec3, b: Vec3) -> Option<usize> {
+    occluders.iter().position(|o| o.blocks(a, b))
+}
+
+/// Cheapest bend around a box between two points: every one of the 12
+/// box edges is a knife-edge candidate — apex = the point of the edge
+/// nearest the straight segment, nudged just off the box — and a
+/// candidate only counts if both bent legs actually clear the box.
+/// Minimum valid detour wins: sound wraps around the nearest
+/// silhouette, whichever edge that is. None = the box seals the path
+/// (wall-to-wall furniture): only the late field remains.
+fn best_bend(o: &Aabb, a: Vec3, b: Vec3, room_size: Vec3) -> Option<(Vec3, f32)> {
+    let straight = (b - a).length();
+    let (mn, mx) = (o.min, o.max);
+    let corner = |i: u32| {
+        Vec3::new(
+            if i & 1 == 0 { mn.x } else { mx.x },
+            if i & 2 == 0 { mn.y } else { mx.y },
+            if i & 4 == 0 { mn.z } else { mx.z },
+        )
+    };
+    // the 12 edges as corner-index pairs
+    const EDGES: [(u32, u32); 12] = [
+        (0, 1), (2, 3), (4, 5), (6, 7), // x-aligned
+        (0, 2), (1, 3), (4, 6), (5, 7), // y-aligned
+        (0, 4), (1, 5), (2, 6), (3, 7), // z-aligned
+    ];
+    let center = (mn + mx) * 0.5;
+    let ab = b - a;
+    let mut best: Option<(Vec3, f32)> = None;
+    for (i0, i1) in EDGES {
+        let (e0, e1) = (corner(i0), corner(i1));
+        let ev = e1 - e0;
+        // closest point of the edge line to the straight line a→b
+        // (standard line-line closest point, clamped to the edge)
+        let w0 = e0 - a;
+        let (aa, bb, cc) = (ab.dot(ab), ab.dot(ev), ev.dot(ev));
+        let (dd, ee) = (ab.dot(w0), ev.dot(w0));
+        let denom = aa * cc - bb * bb;
+        let s = if denom.abs() < 1e-9 { 0.5 } else { ((bb * dd - aa * ee) / denom).clamp(0.0, 1.0) };
+        let on_edge = e0 + ev * s;
+        // nudge off the box so the legs don't graze its faces
+        let out = (on_edge - center).normalize();
+        let apex = on_edge + out * 1e-3;
+        if o.blocks(a, apex) || o.blocks(apex, b) {
+            continue;
+        }
+        let detour = ((apex - a).length() + (b - apex).length() - straight).max(0.0);
+        if best.map_or(true, |(_, d)| detour < d) {
+            best = Some((apex, detour));
+        }
+    }
+    // Double bends hugging each face: a box wider than the path's
+    // clearance needs TWO edges (up over the far rim, down at the near
+    // rim — same for side wraps); a single apex always leaves one leg
+    // inside the box. Apexes = the entry/exit points of the straight
+    // segment lifted onto the face plane (just outside), which is the
+    // taut-string path over that face. Total detour through one knife
+    // edge is a mild over-estimate of the two-edge loss — conservative.
+    if let Some((t0, t1)) = o.clip(a, b) {
+        let d = b - a;
+        let p_entry = a + d * t0;
+        let p_exit = a + d * t1;
+        for axis in 0..3usize {
+            for (v, sign) in [(mn.get(axis), -1.0f32), (mx.get(axis), 1.0)] {
+                let lift = |p: Vec3| {
+                    let mut q = p;
+                    q.set(axis, v + sign * 1e-3);
+                    q
+                };
+                let (a1, a2) = (lift(p_entry), lift(p_exit));
+                // stay inside the room (no bending under the floor or
+                // through a wall the box touches)
+                if a1.get(axis) < 1e-4 || a1.get(axis) > room_size.get(axis) - 1e-4 {
+                    continue;
+                }
+                if o.blocks(a, a1) || o.blocks(a2, b) {
+                    continue;
+                }
+                let detour = ((a1 - a).length() + (a2 - a1).length() + (b - a2).length()
+                    - straight)
+                    .max(0.0);
+                if best.map_or(true, |(_, dd)| detour < dd) {
+                    best = Some((a1, detour));
+                }
+            }
+        }
+    }
+    best
+}
 
 /// Chain length cap. 3 matches the ISM order the engine ships with.
 pub const PT_MAX_ORDER: usize = 3;
@@ -75,6 +239,19 @@ pub fn solve_chain(
     source: Vec3,
     listener: Vec3,
 ) -> Option<(f32, Vec3, f32)> {
+    solve_chain_occ(room, chain, source, listener, &[])
+}
+
+/// `solve_chain` with in-room occluders: every unfolded segment must
+/// clear every box, or the chain doesn't exist right now (C5 — the
+/// cache drops it and the tap fades).
+pub fn solve_chain_occ(
+    room: &Shoebox,
+    chain: &[u8],
+    source: Vec3,
+    listener: Vec3,
+    occluders: &[Aabb],
+) -> Option<(f32, Vec3, f32)> {
     // image = M_{c0}(M_{c1}(... M_{ck-1}(source)))  — c0 is the wall
     // nearest the listener, so it is applied LAST walking from source.
     let mut img = source;
@@ -118,13 +295,20 @@ pub fn solve_chain(
         if t_first < t - 1e-3 {
             return None;
         }
-        pos = pos + d * t;
-        pos.set(axis, plane); // exact, and keeps fp drift off the walls
+        let next = {
+            let mut p = pos + d * t;
+            p.set(axis, plane); // exact, and keeps fp drift off the walls
+            p
+        };
+        if segment_blocked(occluders, pos, next).is_some() {
+            return None;
+        }
+        pos = next;
         let mut n = Vec3::new(0.0, 0.0, 0.0);
         n.set(axis, if w % 2 == 0 { 1.0 } else { -1.0 });
         d = d - n * (2.0 * d.dot(n));
     }
-    // final leg must reach the source before any wall
+    // final leg must reach the source before any wall or occluder
     let to_src = source - pos;
     let leg = to_src.length();
     if leg > 1e-4 {
@@ -138,6 +322,9 @@ pub fn solve_chain(
             return None;
         }
     }
+    if segment_blocked(occluders, pos, source).is_some() {
+        return None;
+    }
     Some((dist, dir, leg))
 }
 
@@ -149,17 +336,80 @@ pub fn record_for(
     src_pos: Vec3,
     listener: Vec3,
 ) -> Option<PathRecord> {
-    let (dist, dir, _) = solve_chain(room, chain, src_pos, listener)?;
-    let d = dist.max(MIN_DIST);
-    let air = air_attenuation(d);
-    let mut gains = [0.0f32; NBANDS];
-    for b in 0..NBANDS {
-        let mut g = air[b] / d;
-        for &w in chain {
-            g *= room.walls[w as usize].reflection_amplitude()[b];
+    record_for_occ(room, chain, source, src_pos, listener, &[])
+}
+
+/// `record_for` with occluders. Blocked reflections simply cease to
+/// exist (the late field covers their energy); the blocked DIRECT path
+/// instead hands off to a knife-edge bend over the blocking box's top
+/// — same tap key, longer delay, Kurze–Anderson per-band loss — so
+/// walking into a shadow sweeps the sound instead of cutting it.
+pub fn record_for_occ(
+    room: &Shoebox,
+    chain: &[u8],
+    source: u16,
+    src_pos: Vec3,
+    listener: Vec3,
+    occluders: &[Aabb],
+) -> Option<PathRecord> {
+    let solved = solve_chain_occ(room, chain, src_pos, listener, occluders);
+    let (dist, dir, gains) = match solved {
+        Some((dist, dir, _)) => {
+            let d = dist.max(MIN_DIST);
+            let air = air_attenuation(d);
+            let mut gains = [0.0f32; NBANDS];
+            for b in 0..NBANDS {
+                let mut g = air[b] / d;
+                for &w in chain {
+                    g *= room.walls[w as usize].reflection_amplitude()[b];
+                }
+                gains[b] = g;
+            }
+            // Lit-side edge proximity for the CLEAR direct path: the
+            // Kurze–Anderson negative branch takes the field to −5 dB
+            // at the shadow boundary, so crossing into the bent branch
+            // below is continuous instead of a 5 dB step. Distant
+            // boxes contribute factor 1 (N ≤ −0.19).
+            if chain.is_empty() {
+                for o in occluders {
+                    if let Some((_, detour)) = best_bend(o, listener, src_pos, room.size) {
+                        let ke = knife_edge_bands(-detour);
+                        for b in 0..NBANDS {
+                            gains[b] *= ke[b];
+                        }
+                    }
+                }
+            }
+            (dist, dir, gains)
         }
-        gains[b] = g;
-    }
+        None if chain.is_empty() => {
+            // direct path blocked: bend over the top of the first
+            // blocking box. Apex = the box's top plane above the point
+            // where the straight line crosses its footprint.
+            let bi = segment_blocked(occluders, listener, src_pos)?;
+            let o = &occluders[bi];
+            let (apex, detour) = best_bend(o, listener, src_pos, room.size)?;
+            // a bend must itself be clear (a box spanning wall to wall
+            // and floor to ceiling ⇒ silent here; the room's late
+            // field is what remains)
+            for (i, ob) in occluders.iter().enumerate() {
+                if i != bi && (ob.blocks(listener, apex) || ob.blocks(apex, src_pos)) {
+                    return None;
+                }
+            }
+            let straight = (src_pos - listener).length().max(MIN_DIST);
+            let bent = straight + detour;
+            let ke = knife_edge_bands(detour);
+            let air = air_attenuation(bent);
+            let mut gains = [0.0f32; NBANDS];
+            for b in 0..NBANDS {
+                gains[b] = air[b] / bent.max(MIN_DIST) * ke[b];
+            }
+            let dir = (apex - listener).normalize();
+            (bent, dir, gains)
+        }
+        None => return None,
+    };
     let mut c = [NO_WALL; PT_MAX_ORDER];
     c[..chain.len()].copy_from_slice(chain);
     Some(PathRecord {

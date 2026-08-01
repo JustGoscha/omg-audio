@@ -131,7 +131,7 @@ impl Sim {
             // (yaw rotation, portal folding, renderer) is unchanged.
             let id = self.id;
             let cache = self.pt.get_or_insert_with(|| crate::early::PathCache::new(id));
-            cache.update(room, src, listener, &mut self.taps_buf);
+            cache.update(room, src, listener, &[], &mut self.taps_buf);
         } else {
             image_source_taps(room, src, listener, crate::quality::tier().ism_order(), &mut self.taps_buf);
         }

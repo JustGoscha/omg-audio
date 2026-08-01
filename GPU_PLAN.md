@@ -478,7 +478,14 @@ kernels per tick. CPU fallback = C1 at reduced budget inside the wasm.
 Gate: node harnesses green on the CPU path; browser A/B ism↔traced at
 the club doorway with the churn counter visible.
 
-**C5 — hybrid + clutter (the payoff).** `hybrid` mode: analytic
+**C5 — hybrid + clutter (the payoff).** *(Engine layer shipped:
+Aabb occluders validate every unfolded segment, the blocked direct
+path hands off to a knife-edge bend over the nearest silhouette —
+single-edge and face-hugging double bends, lit-side proximity keeps
+the boundary continuous — gated by the shadow-walk test. Demo-scene
+furniture authoring (visuals + colliders + per-room occluder lists
+into Sim) and occluder-face reflection chains are the remaining
+content/extension work.)* `hybrid` mode: analytic
 order-1 (per major planar surface: one mirror solve + occlusion
 shadow ray) + traced order-2+, deduped by chain key, analytic wins.
 Then put THINGS in rooms — furniture boxes into the world mesh with
