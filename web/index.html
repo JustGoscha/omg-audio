@@ -96,7 +96,14 @@
   #quality .seg button.on { background: var(--ink); color: #111; }
   #quality .qrow { display: grid; grid-template-columns: 92px 1fr 64px;
     align-items: center; gap: 10px; margin: 8px 0; }
-  #quality .qrow label { color: var(--dim); font-size: 11px; }
+  #quality .qrow label { color: var(--dim); font-size: 11px; position: relative;
+    cursor: help; align-self: center; }
+  #quality .qrow label span { border-bottom: 1px dotted var(--faint); }
+  #quality .qrow label:hover::after { content: attr(data-tip); position: absolute;
+    left: 0; bottom: calc(100% + 8px); width: 252px; background: #0c0c0f;
+    border: 1px solid var(--line-hi); color: var(--ink); padding: 9px 11px;
+    font-size: 10.5px; line-height: 1.6; border-radius: 4px; z-index: 12;
+    white-space: normal; pointer-events: none; }
   #quality .qrow input[type=range] { width: 100%; accent-color: var(--ink);
     height: 3px; }
   #quality .qrow .qval { text-align: right; font-variant-numeric: tabular-nums;

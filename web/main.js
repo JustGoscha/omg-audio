@@ -187,14 +187,32 @@ const QUAL_TIER_VALS = {
   domeEvents: [6, 5, 4], ism: [3, 3, 2],
 };
 const QUAL_SLIDERS = [
-  { key: 'rays', id: 0, label: 'trace rays', min: 256, max: 8192, step: 256, section: 'simulation · 20 Hz' },
-  { key: 'ism', id: 4, label: 'ism order', min: 2, max: 3, step: 1 },
-  { key: 'gate', id: 1, label: 'refresh age', min: 4, max: 32, step: 1 },
-  { key: 'domeRays', id: 2, label: 'dome rays', min: 32, max: 384, step: 32 },
-  { key: 'domeEvents', id: 3, label: 'dome events', min: 2, max: 6, step: 1 },
-  { key: 'points', label: 'point hrtf', min: 0, max: 32, step: 1, audio: true, section: 'audio render · per sample' },
-  { key: 'ceiling', label: 'tap ceiling', min: 16, max: 160, step: 8, audio: true },
+  { key: 'rays', id: 0, label: 'trace rays', min: 256, max: 8192, step: 256, section: 'simulation · 20 Hz',
+    tip: 'Stochastic rays per reverb trace, per source. Fewer rays = a noisier RT60/level estimate that the running average smooths out — more flutter, never a different sound. The single biggest sim-CPU lever.' },
+  { key: 'ism', id: 4, label: 'ism order', min: 2, max: 3, step: 1,
+    tip: 'Image-source reflection order: how many wall bounces the early echoes are traced through. 3 ≈ 63 discrete reflections per source, 2 ≈ 15 — roughly halving the tap count the audio thread must render. 2 keeps the audible early pattern; the late reverb covers the rest.' },
+  { key: 'gate', id: 1, label: 'refresh age', min: 4, max: 32, step: 1,
+    tip: 'How many 20 Hz ticks a settled scene may keep its last reverb estimate before re-tracing. Motion, door swings and level changes always re-trace immediately — this only slows the idle refresh.' },
+  { key: 'domeRays', id: 2, label: 'dome rays', min: 32, max: 384, step: 32,
+    tip: 'Rays sampling the outdoor-ambience dome against the real geometry every tick (how rain and city noise find windows and doorways). Fewer rays = noisier direction bins under the dome’s own smoothing.' },
+  { key: 'domeEvents', id: 3, label: 'dome events', min: 2, max: 6, step: 1,
+    tip: 'Bounces and glass panes a dome ray may cross before giving up. Deep events carry little energy (every surface multiplies the loss), so trimming them mostly cuts cost, not sound.' },
+  { key: 'points', label: 'point hrtf', min: 0, max: 32, step: 1, audio: true, section: 'audio render · per sample',
+    tip: 'The strongest N paths per source get their own nearest-HRIR convolution — the sharpest localization tier. Everything else stays fully spatialized on the ambisonic bus, so this trades focus, not audibility.' },
+  { key: 'ceiling', label: 'tap ceiling', min: 16, max: 160, step: 8, audio: true,
+    tip: 'Maximum early-reflection taps rendered per source. A doorway can carry ~145/source and the weakest half sit below the masking threshold of the strongest. Evicted taps fade out — lowering this mid-play is click-free.' },
 ];
+const QUAL_TIER_TIPS = {
+  auto: 'Walks the tier from measured load: sheds when a sim tick blows 40 ms or the audio thread gaps, recovers after ~10 s of calm.',
+  high: 'Full budgets — 4096 trace rays, reflection order 3, 384 dome rays. The reference sound.',
+  med: 'Half the trace rays, slower idle refresh, leaner dome. Statistically the same field with slightly more reverb flutter.',
+  low: 'Quarter rays, reflection order 2, lean dome. For throttled machines — everything stays spatialized, the estimate just gets coarser.',
+};
+const QUAL_STAT_TIPS = {
+  'sim tick': 'Worker-side cost of one 20 Hz simulation tick. The budget is 50 ms; above ~40 the auto governor sheds a tier.',
+  'render load': 'Audio-thread render time as a share of realtime. Above 85% the worklet governor sheds to its floor.',
+  gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
+};
 
 function buildQuality() {
   const panel = document.getElementById('quality');
@@ -206,6 +224,7 @@ function buildQuality() {
   const segBtns = ['auto', 'high', 'med', 'low'].map((mode) => {
     const b = document.createElement('button');
     b.textContent = mode;
+    b.title = QUAL_TIER_TIPS[mode];
     b.onclick = () => { state.setQuality(mode); b.blur(); };
     seg.append(b);
     return { mode, b };
@@ -222,7 +241,8 @@ function buildQuality() {
     const row = document.createElement('div');
     row.className = 'qrow';
     const label = document.createElement('label');
-    label.textContent = s.label;
+    label.innerHTML = `<span>${s.label}</span>`;
+    label.dataset.tip = s.tip;
     const input = document.createElement('input');
     input.type = 'range';
     input.min = s.min; input.max = s.max; input.step = s.step;
@@ -252,6 +272,7 @@ function buildQuality() {
   const cells = ['sim tick', 'render load', 'gaps'].map((k) => {
     const c = document.createElement('div');
     c.className = 'cell';
+    c.title = QUAL_STAT_TIPS[k];
     c.innerHTML = `<span class="k">${k}</span><span class="v">–</span>`;
     stats.append(c);
     return c.querySelector('.v');
@@ -260,7 +281,7 @@ function buildQuality() {
 
   const reset = document.createElement('div');
   reset.className = 'qreset';
-  reset.innerHTML = '<a href="#">release all pins → governors</a>';
+  reset.innerHTML = '<a href="#" title="Clear every pinned slider; the tier and the load governors take back control of all levers.">release all pins → governors</a>';
   reset.querySelector('a').onclick = (e) => {
     e.preventDefault();
     for (const s of QUAL_SLIDERS) if (!s.audio) state.setOverride(s.id, 0);
