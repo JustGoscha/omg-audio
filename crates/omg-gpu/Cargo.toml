@@ -1,0 +1,12 @@
+[package]
+name = "omg-gpu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+omg-core = { path = "../omg-core" }
+wgpu = "30.0.0"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+
+[dev-dependencies]
