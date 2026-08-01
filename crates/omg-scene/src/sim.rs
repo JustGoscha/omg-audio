@@ -11,6 +11,7 @@ use omg_core::tracer::{estimate_reverb, trace, Echogram};
 use omg_core::vec3::Vec3;
 use omg_core::{NBANDS, SPEED_OF_SOUND};
 
+/// Historical defaults — the live values scale with `crate::quality`.
 pub const ISM_ORDER: u32 = 3;
 pub const N_RAYS: u32 = 4096;
 /// Near-field radius of a doorway acting as a secondary source,
@@ -58,7 +59,7 @@ impl TraceGate {
             let (e0, e1) = (self.last_energy[b], energy[b]);
             (e1 - e0).abs() > 0.1 * e0.max(e1).max(1e-6)
         });
-        if self.age >= 8
+        if self.age >= crate::quality::tier().gate_max_age()
             || d(src, self.last_src) > 0.25
             || d(lis, self.last_lis) > 0.25
             || energy_moved
@@ -117,7 +118,7 @@ impl Sim {
         extra_dist: f32,
         muffle: [f32; NBANDS],
     ) -> ParamBlock {
-        image_source_taps(room, src, listener, ISM_ORDER, &mut self.taps_buf);
+        image_source_taps(room, src, listener, crate::quality::tier().ism_order(), &mut self.taps_buf);
 
         // World → listener frame (listener faces +x at yaw = 0), then fold
         // the pre-door path into each tap. The aperture is a Huygens
@@ -169,7 +170,8 @@ impl Sim {
             core::array::from_fn(|b| muffle[b] * muffle[b] / (1.0 + extra_dist * extra_dist));
         let traced = self.gate.should_trace(src, listener, src_energy);
         if traced {
-            trace(room, src, listener, N_RAYS, src_energy, &mut self.rng, &mut self.echo_cur);
+            let rays = crate::quality::tier().trace_rays();
+            trace(room, src, listener, rays, src_energy, &mut self.rng, &mut self.echo_cur);
         }
         self.finish_update(traced)
     }
@@ -206,7 +208,8 @@ impl Sim {
         // in-room late statistics barely depend on the exact position.
         let traced = self.gate.should_trace(emitters[0], listener, [1.0; NBANDS]);
         if traced {
-            trace(room, emitters[0], listener, N_RAYS, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur);
+            let rays = crate::quality::tier().trace_rays();
+            trace(room, emitters[0], listener, rays, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur);
         }
         self.finish_update(traced)
     }
@@ -315,7 +318,8 @@ impl Sim {
         receiver: Vec3,
     ) -> omg_core::params::ReverbParams {
         if self.gate.should_trace(src, receiver, [1.0; NBANDS]) {
-            trace(room, src, receiver, N_RAYS, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur);
+            let rays = crate::quality::tier().trace_rays();
+            trace(room, src, receiver, rays, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur);
             let alpha = if self.version == 0 { 1.0 } else { 0.3 };
             self.echo_avg.ema(&self.echo_cur, alpha);
         }

@@ -32,6 +32,12 @@ const POINT_GAIN: f32 = 0.8;
 /// the worst-case scene position on an M1 (tools/bench_web.mjs). The web
 /// worklet overrides this adaptively from its own measured load.
 const DEFAULT_POINT_TAPS: usize = 24;
+/// Default per-source cap on incoming taps kept from a ParamBlock. The
+/// weakest image sources are inaudible under the ones we keep; this
+/// bounds worst-case render cost on throttled devices. Measured: a club
+/// doorway carries ~145 taps/source vs ~20 in the open square, and the
+/// bottom half sits far below the masking threshold of the top.
+const DEFAULT_TAP_CEILING: usize = 160;
 /// Samples of joint input+tail silence before an FDN goes to sleep
 /// (~21 ms at 48 kHz: long enough to never clip a real tail — the energy
 /// check keeps it awake while anything rings — short enough that silent
@@ -146,6 +152,11 @@ pub struct Renderer {
     retarget_thresh: f32,
     /// Per-source point-render budget (see `DEFAULT_POINT_TAPS`).
     point_budget: usize,
+    /// Per-source cap on incoming taps kept per ParamBlock (see
+    /// `DEFAULT_TAP_CEILING`). The load governor lowers it on weak
+    /// devices: the weakest image sources are inaudible under the ones
+    /// kept, and evicted taps release with the normal slot fade.
+    tap_ceiling: usize,
     /// Fast head rotation [yaw, pitch, roll] (device orientation, mouse
     /// look, face tracking), applied to point-tap HRIR selection here and
     /// to the bus at the decode stage.
@@ -217,6 +228,7 @@ impl Renderer {
             sample_rate,
             retarget_thresh: RETARGET_MS * 1e-3 * sample_rate,
             point_budget: DEFAULT_POINT_TAPS,
+            tap_ceiling: DEFAULT_TAP_CEILING,
             head: core::array::from_fn(|_| Smoothed::new(0.0, 0.03, sample_rate)),
             fdn_idle: FDN_IDLE_AFTER,
             remote_idle: FDN_IDLE_AFTER,
@@ -268,6 +280,13 @@ impl Renderer {
         self.point_budget = n;
     }
 
+    /// Set the per-source cap on incoming taps. Takes effect on the next
+    /// ParamBlock; taps that fall out release with the normal slot fade,
+    /// so lowering it mid-play is click-free.
+    pub fn set_tap_ceiling(&mut self, n: usize) {
+        self.tap_ceiling = n.max(1);
+    }
+
     /// Called from the audio thread whenever a new ParamBlock is available.
     pub fn set_params(&mut self, pb: &ParamBlock) {
         if pb.version == self.version_seen {
@@ -275,14 +294,12 @@ impl Renderer {
         }
         self.version_seen = pb.version;
 
-        // CPU ceiling: keep only the strongest incoming taps. The weakest
-        // image sources are inaudible under the ones we keep; this bounds
-        // worst-case render cost on throttled devices.
-        const MAX_INCOMING: usize = 160;
+        // CPU ceiling: keep only the strongest incoming taps (see
+        // `DEFAULT_TAP_CEILING`; the load governor lowers it live).
         let mut incoming: Vec<&omg_core::params::Tap> = pb.taps.iter().collect();
-        if incoming.len() > MAX_INCOMING {
+        if incoming.len() > self.tap_ceiling {
             incoming.sort_by(|a, b| b.gains[1].total_cmp(&a.gains[1]));
-            incoming.truncate(MAX_INCOMING);
+            incoming.truncate(self.tap_ceiling);
         }
 
         // Fade out slots whose path no longer exists.

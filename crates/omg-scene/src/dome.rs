@@ -302,7 +302,8 @@ impl DomeProbe {
     /// it delivers from the dome, or None if it dies inside.
     fn trace_escape(&self, mut pos: Vec3, mut dir: Vec3, leaves: &[Panel]) -> Option<[f32; NBANDS]> {
         let mut tp = [1.0f32; NBANDS];
-        for _ in 0..MAX_EVENTS {
+        let max_events = crate::quality::tier().dome_events().min(MAX_EVENTS);
+        for _ in 0..max_events {
             let mesh_hit = self.mesh.raycast(pos, dir);
             let t_mesh = mesh_hit.map_or(f32::MAX, |(t, _)| t);
             let mut t_pan = t_mesh;
@@ -391,7 +392,12 @@ impl DomeProbe {
         let mut e = [[0.0f32; NBANDS]; DOME_BINS];
         let mut dsum = [Vec3::new(0.0, 0.0, 0.0); DOME_BINS];
         let mut buf: Vec<SegHit> = Vec::new();
-        for i in 0..N_RAYS {
+        // Quality tiers subsample the fan with an even stride: z is
+        // linear in the spiral index, so every k-th ray keeps the dome
+        // coverage uniform — only bin noise rises, under the bin EMA.
+        let n_rays = crate::quality::tier().dome_rays().min(N_RAYS);
+        for j in 0..n_rays {
+            let i = j * N_RAYS / n_rays;
             let d0 = self.dirs[i];
             // bounce first; a near-full escape can't be beaten by a
             // through-wall path, so skip the (pricier) straight trace
@@ -412,7 +418,7 @@ impl DomeProbe {
             if tp[0] > 1e-9 {
                 let bi = bin_of(d0);
                 for b in 0..NBANDS {
-                    e[bi][b] += tp[b] / N_RAYS as f32;
+                    e[bi][b] += tp[b] / n_rays as f32;
                 }
                 dsum[bi] = dsum[bi] + d0 * tp[1].max(tp[0] * 0.2);
             }

@@ -110,6 +110,22 @@ pub extern "C" fn sim_env_off() -> u32 {
     ENV_OFF as u32
 }
 
+/// Quality ladder for the sim-side ray budgets (GPU_PLAN.md Track B):
+/// 0 = High, 1 = Med, 2 = Low. Scales trace rays, gate refresh, dome
+/// rays/events and ISM order — variance/staleness, never bias.
+#[no_mangle]
+pub extern "C" fn sim_set_quality(t: u32) {
+    omg_scene::quality::set_tier(t);
+}
+
+/// Pin one quality lever independently of the tier (a tuning panel's
+/// sliders). Ids: 0 trace rays, 1 gate age, 2 dome rays, 3 dome events,
+/// 4 ISM order. `value` 0 hands the lever back to the tier.
+#[no_mangle]
+pub extern "C" fn sim_set_override(id: u32, value: u32) {
+    omg_scene::quality::set_override(id, value);
+}
+
 #[no_mangle]
 pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
     let ctx = sim();
@@ -195,6 +211,7 @@ struct EngCtx {
     out: Option<OutputStage>,
     sample_rate: f32,
     point_budget: usize,
+    tap_ceiling: usize,
     grid: Option<Arc<HrirGrid>>,
     // staging buffers JS writes into
     hrir_grid_buf: Option<&'static mut [u8]>,
@@ -231,6 +248,7 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         out: None,
         sample_rate,
         point_budget: 8,
+        tap_ceiling: 160,
         grid: None,
         hrir_grid_buf: None,
         hrir_spk_buf: None,
@@ -303,6 +321,7 @@ pub extern "C" fn eng_source_alloc(i: u32, nsamples: u32) -> *mut f32 {
     ctx.sources.push(SourceState { data: vec![0.0; nsamples as usize], pos: 0 });
     let mut r = Renderer::with_grid(ctx.sample_rate, ctx.grid.clone());
     r.set_point_budget(ctx.point_budget);
+    r.set_tap_ceiling(ctx.tap_ceiling);
     ctx.renderers.push(r);
     ctx.sources.last_mut().unwrap().data.as_mut_ptr()
 }
@@ -315,6 +334,17 @@ pub extern "C" fn eng_set_point_budget(n: u32) {
     ctx.point_budget = n as usize;
     for r in &mut ctx.renderers {
         r.set_point_budget(n as usize);
+    }
+}
+
+/// Per-source cap on incoming taps kept per ParamBlock. The load governor
+/// lowers it when the render misses deadlines; evicted taps fade out.
+#[no_mangle]
+pub extern "C" fn eng_set_tap_ceiling(n: u32) {
+    let ctx = eng();
+    ctx.tap_ceiling = n as usize;
+    for r in &mut ctx.renderers {
+        r.set_tap_ceiling(n as usize);
     }
 }
 

@@ -42,6 +42,12 @@ for (let i = 0; i < 6; i++) eng.eng_source_alloc(i, 256);
 eng.eng_set_rain(1.0);
 
 sim.sim_setup();
+// OMG_QUALITY=0|1|2 probes the quality ladder — continuity through doors
+// must hold at every tier (GPU_PLAN.md Track B acceptance).
+if (process.env.OMG_QUALITY != null) {
+  sim.sim_set_quality(Number(process.env.OMG_QUALITY));
+  console.log(`quality tier: ${process.env.OMG_QUALITY}`);
+}
 const ENV_OFF = sim.sim_env_off();
 const stateLen = sim.sim_state_len();
 // NB: create views fresh at every use — wasm memory growth detaches them

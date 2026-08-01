@@ -165,6 +165,22 @@ fn load_wav_mono(path: &str, target_fs: f32) -> Vec<f32> {
 // --------------------------------------------------------------------- main
 
 fn main() {
+    // Quality ladder (GPU_PLAN.md Track B): OMG_QUALITY=high|med|low
+    // scales the sim-side ray budgets; OMG_TAP_CEILING=n caps taps.
+    if let Ok(q) = std::env::var("OMG_QUALITY") {
+        let tier = match q.as_str() {
+            "high" => 0,
+            "med" | "medium" => 1,
+            "low" => 2,
+            other => {
+                eprintln!("OMG_QUALITY: unknown tier '{other}' (high|med|low), using high");
+                0
+            }
+        };
+        omg_scene::quality::set_tier(tier);
+        println!("quality tier: {q}");
+    }
+
     let args: Vec<String> = std::env::args().collect();
     let render_path = arg_value(&args, "--render");
     let secs_opt: Option<f32> = arg_value(&args, "--secs").and_then(|s| s.parse().ok());
@@ -232,6 +248,9 @@ fn make_renderer(fs: f32, grid: Option<Arc<omg_dsp::hrtf::HrirGrid>>) -> omg_dsp
     let mut r = omg_dsp::Renderer::with_grid(fs, grid);
     if let Some(n) = std::env::var("OMG_POINT_TAPS").ok().and_then(|v| v.parse().ok()) {
         r.set_point_budget(n);
+    }
+    if let Some(n) = std::env::var("OMG_TAP_CEILING").ok().and_then(|v| v.parse().ok()) {
+        r.set_tap_ceiling(n);
     }
     r.mute_taps = std::env::var("OMG_MUTE_TAPS").is_ok();
     r.mute_own_fdn = std::env::var("OMG_MUTE_OWN").is_ok();
