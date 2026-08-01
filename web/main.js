@@ -1395,9 +1395,21 @@ async function startAudio() {
     state.setGpu = (on) => worker.postMessage({ type: 'gpu', on });
     state.setEarly = (mode) => {
       state.earlyMode = mode;
+      try { localStorage.setItem('omg-early', mode ? 'traced' : 'ism'); } catch (_) {}
       worker.postMessage({ type: 'early', mode });
     };
-    state.earlyMode = 0; // ism default
+    // a real setting: ?early=traced|ism wins, else the remembered
+    // choice, else ism (the classic engine)
+    {
+      const p = (new URLSearchParams(location.search).get('early') || '').toLowerCase();
+      let stored = null;
+      try { stored = localStorage.getItem('omg-early'); } catch (_) {}
+      const pick = p === 'traced' || p === 'pt' ? 1
+        : p === 'ism' ? 0
+          : stored === 'traced' ? 1 : 0;
+      state.earlyMode = pick;
+      if (pick) worker.postMessage({ type: 'early', mode: pick });
+    }
   }
   worker.onmessage = (e) => {
     if (e.data.type !== 'tick') return;
