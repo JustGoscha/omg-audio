@@ -228,8 +228,8 @@ const QUAL_STAT_TIPS = {
   'sim tick': 'Worker-side cost of one 20 Hz simulation tick. The budget is 50 ms; above ~40 the auto governor sheds a tier.',
   'render load': 'Audio-thread render time as a share of realtime. Above 85% the worklet governor sheds to its floor.',
   gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
-  'late field': 'Where the reverb ray traces run: WebGPU (with per-dispatch ms, 8× the ray budget) or the in-wasm CPU tracer. Click to A/B live — statistically identical sound, the GPU buys the sim thread headroom and a steadier estimate.',
-  early: 'The ACTIVE early-reflections engine as the sim reports it. traced shows where chain discovery runs (gpu with dispatch count, cpu otherwise). In empty rooms ism and traced are gate-proven identical — the audible difference arrives with furniture.',
+  'late field': 'Where the reverb ray traces run, with the wall-clock cost of the last trace dispatch (incl. readback). GPU runs 8× the ray budget for a fraction of the CPU cost. Click to A/B live — statistically identical sound.',
+  early: 'The ACTIVE early-reflections engine as the sim reports it. traced shows where chain discovery runs and the last dispatch cost. ism and traced sound identical in open space; behind furniture (cathedral pillars, the club bar) only traced shadows.',
 };
 
 function buildQuality() {
@@ -368,11 +368,11 @@ function buildQuality() {
     cells[2].textContent = `${state.debug.gaps || 0}`;
     cells[2].classList.toggle('hot', (state.debug.gaps || 0) > 0);
     cells[3].textContent = state.debug.gpu
-      ? `gpu ${((state.debug.gpuDuty || 0) * 100).toFixed(0)}% · ${(state.debug.gpuMs || 0).toFixed(1)}ms ⇄`
+      ? `gpu · ${(state.debug.gpuMs || 0).toFixed(1)}ms ⇄`
       : (state.debug.gpuAvail ? 'cpu ⇄' : 'cpu');
     cells[4].textContent = !state.debug.early ? 'ism'
       : state.debug.gpu && state.debug.ptN
-        ? `traced · gpu ×${state.debug.ptN}` : 'traced · cpu';
+        ? `traced · gpu ${(state.debug.ptMs || 0).toFixed(1)}ms` : 'traced · cpu';
     const btn = document.getElementById('qualbtn');
     btn.textContent = `⚙ ${state.qual.manual || Object.keys(state.qual.over).length
       ? 'custom' : ['high', 'med', 'low'][q.tier] + (q.auto ? ' ·auto' : '')}`;
