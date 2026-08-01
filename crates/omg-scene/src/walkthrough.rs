@@ -467,30 +467,88 @@ pub const DYN_SLOTS: usize = 6;
 pub fn furniture(room: usize) -> &'static [omg_core::pt::Aabb] {
     use omg_core::pt::Aabb;
     use omg_core::vec3::Vec3;
-    const fn boxy(x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32) -> Aabb {
-        Aabb { min: Vec3 { x: x0, y: y0, z: z0 }, max: Vec3 { x: x1, y: y1, z: z1 } }
+    const fn boxy(
+        x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32, t: [f32; 3],
+    ) -> Aabb {
+        Aabb { min: Vec3 { x: x0, y: y0, z: z0 }, max: Vec3 { x: x1, y: y1, z: z1 }, transmission: t }
     }
+    // per-band amplitude THROUGH a piece: soft things pass muffled
+    // bass, stone passes nothing
+    const STONE: [f32; 3] = [0.02, 0.002, 0.0];
+    const SOFT: [f32; 3] = [0.5, 0.25, 0.1];   // sofa, bed, pillows
+    const WOOD: [f32; 3] = [0.5, 0.3, 0.15];   // thin tables, chairs
+    const CABINET: [f32; 3] = [0.3, 0.1, 0.03]; // solid casework, bar
+    const BOOKS: [f32; 3] = [0.15, 0.04, 0.01]; // packed bookshelf
+    const PANEL: [f32; 3] = [0.4, 0.2, 0.08];  // whiteboard, TV
     // Cathedral nave (16 x 22 x 15 local): two colonnades of three
     // stone pillars; the flute stands mid-nave at local (8, 14).
     static CATHEDRAL_F: [omg_core::pt::Aabb; 6] = [
-        boxy(4.0, 5.0, 0.0, 5.0, 6.0, 9.0),
-        boxy(4.0, 10.5, 0.0, 5.0, 11.5, 9.0),
-        boxy(4.0, 16.0, 0.0, 5.0, 17.0, 9.0),
-        boxy(11.0, 5.0, 0.0, 12.0, 6.0, 9.0),
-        boxy(11.0, 10.5, 0.0, 12.0, 11.5, 9.0),
-        boxy(11.0, 16.0, 0.0, 12.0, 17.0, 9.0),
+        boxy(3.75, 4.75, 0.0, 5.25, 6.25, 9.0, STONE),
+        boxy(3.75, 10.25, 0.0, 5.25, 11.75, 9.0, STONE),
+        boxy(3.75, 15.75, 0.0, 5.25, 17.25, 9.0, STONE),
+        boxy(10.75, 4.75, 0.0, 12.25, 6.25, 9.0, STONE),
+        boxy(10.75, 10.25, 0.0, 12.25, 11.75, 9.0, STONE),
+        boxy(10.75, 15.75, 0.0, 12.25, 17.25, 9.0, STONE),
     ];
     // Club (10 x 12 local): the bar counter along the west wall.
-    static CLUB_F: [omg_core::pt::Aabb; 1] = [boxy(1.0, 3.0, 0.0, 2.0, 7.5, 1.1)];
-    // Living room (8 x 6 local): sofa mid-room + a tall cabinet.
-    static LIVING_F: [omg_core::pt::Aabb; 2] = [
-        boxy(2.0, 4.4, 0.0, 4.2, 5.3, 0.75),
-        boxy(6.8, 0.3, 0.0, 7.7, 2.3, 1.9),
+    static CLUB_F: [omg_core::pt::Aabb; 1] = [boxy(1.0, 3.0, 0.0, 2.0, 7.5, 1.1, CABINET)];
+    // Living room (8 x 6 x 2.7 local), piano at (2, 3): a real living
+    // room — sofa + coffee table + armchair around the piano, sideboard
+    // on the south wall, and a ceiling-high bookshelf dividing the east
+    // end: stand behind it and the piano goes into shadow.
+    static LIVING_F: [omg_core::pt::Aabb; 5] = [
+        boxy(2.0, 4.4, 0.0, 4.2, 5.3, 0.75, SOFT),    // sofa
+        boxy(2.5, 3.3, 0.0, 3.7, 3.9, 0.45, WOOD),    // coffee table
+        boxy(4.9, 4.3, 0.0, 5.7, 5.1, 0.75, SOFT),    // armchair
+        boxy(0.3, 0.2, 0.0, 2.3, 0.7, 0.9, CABINET),  // sideboard
+        boxy(5.4, 0.4, 0.0, 5.8, 3.4, 2.2, BOOKS),    // bookshelf divider
+    ];
+    // Great Hall (14 x 10 x 7 local) as a seminar room. The narrator
+    // stands at local (10.5, 6.5) behind a lectern; two columns of
+    // three tables with a chair each face her, and a tall whiteboard
+    // stands by the east wall — step behind it and she shadows.
+    static HALL_F: [omg_core::pt::Aabb; 14] = [
+        boxy(1.8, 1.6, 0.0, 3.6, 2.3, 0.74, WOOD),
+        boxy(1.8, 4.4, 0.0, 3.6, 5.1, 0.74, WOOD),
+        boxy(1.8, 7.2, 0.0, 3.6, 7.9, 0.74, WOOD),
+        boxy(4.6, 1.6, 0.0, 6.4, 2.3, 0.74, WOOD),
+        boxy(4.6, 4.4, 0.0, 6.4, 5.1, 0.74, WOOD),
+        boxy(4.6, 7.2, 0.0, 6.4, 7.9, 0.74, WOOD),
+        boxy(1.2, 1.7, 0.0, 1.65, 2.15, 0.45, WOOD), // chairs
+        boxy(1.2, 4.5, 0.0, 1.65, 4.95, 0.45, WOOD),
+        boxy(1.2, 7.3, 0.0, 1.65, 7.75, 0.45, WOOD),
+        boxy(4.0, 1.7, 0.0, 4.45, 2.15, 0.45, WOOD),
+        boxy(4.0, 4.5, 0.0, 4.45, 4.95, 0.45, WOOD),
+        boxy(4.0, 7.3, 0.0, 4.45, 7.75, 0.45, WOOD),
+        boxy(10.2, 5.9, 0.0, 10.8, 6.3, 1.2, CABINET),  // lectern
+        boxy(12.0, 2.5, 0.0, 12.3, 5.5, 2.2, PANEL),  // whiteboard
+    ];
+    // Old House ground floor (7 x 7 local): couch + TV, an open
+    // kitchen along the east wall, pillows on the floor.
+    static HOUSE_F: [omg_core::pt::Aabb; 7] = [
+        boxy(1.0, 2.0, 0.0, 3.2, 2.9, 0.75, SOFT),    // couch
+        boxy(1.6, 3.4, 0.0, 2.6, 4.0, 0.4, WOOD),     // coffee table
+        boxy(0.3, 4.4, 0.4, 0.55, 5.9, 1.4, PANEL),   // TV on the west wall
+        boxy(4.4, 0.3, 0.0, 6.7, 0.95, 0.95, CABINET), // kitchen counter
+        boxy(6.0, 1.3, 0.0, 6.7, 2.0, 1.9, CABINET),  // fridge
+        boxy(2.2, 4.8, 0.0, 2.8, 5.4, 0.25, SOFT),    // floor pillow
+        boxy(3.4, 5.2, 0.0, 4.0, 5.8, 0.25, SOFT),    // floor pillow
+    ];
+    // Old House upper floor (local z above its own floor): bed + a
+    // big wall TV + dresser + a pillow nest.
+    static HOUSE_UP_F: [omg_core::pt::Aabb; 4] = [
+        boxy(0.8, 0.8, 0.0, 2.6, 2.8, 0.6, SOFT),     // bed
+        boxy(0.25, 3.6, 0.8, 0.45, 5.6, 2.0, PANEL),  // big TV, west wall
+        boxy(5.8, 0.4, 0.0, 6.6, 2.0, 1.0, CABINET),  // dresser
+        boxy(4.6, 4.6, 0.0, 5.2, 5.2, 0.25, SOFT),    // pillow nest
     ];
     match room {
         CATHEDRAL => &CATHEDRAL_F,
         CLUB => &CLUB_F,
         LIVING => &LIVING_F,
+        HALL => &HALL_F,
+        HOUSE => &HOUSE_F,
+        HOUSE_UP => &HOUSE_UP_F,
         _ => &[],
     }
 }

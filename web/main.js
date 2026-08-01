@@ -38,16 +38,41 @@ const DOORS = [
 // furniture() — solid boxes the traced early engine shadows sources
 // behind. [min x,y,z, max x,y,z, color]
 const FURNITURE = [
-  // cathedral colonnades (local +0,+52), 9 m stone pillars
-  [4, 57, 0, 5, 58, 9, 0x3d3d49], [4, 62.5, 0, 5, 63.5, 9, 0x3d3d49],
-  [4, 68, 0, 5, 69, 9, 0x3d3d49],
-  [11, 57, 0, 12, 58, 9, 0x3d3d49], [11, 62.5, 0, 12, 63.5, 9, 0x3d3d49],
-  [11, 68, 0, 12, 69, 9, 0x3d3d49],
-  // club bar counter (local +22,+26)
+  // cathedral colonnades (+0,+52), 9 m stone pillars
+  [3.75, 56.75, 0, 5.25, 58.25, 9, 0x3d3d49], [3.75, 62.25, 0, 5.25, 63.75, 9, 0x3d3d49],
+  [3.75, 67.75, 0, 5.25, 69.25, 9, 0x3d3d49],
+  [10.75, 56.75, 0, 12.25, 58.25, 9, 0x3d3d49], [10.75, 62.25, 0, 12.25, 63.75, 9, 0x3d3d49],
+  [10.75, 67.75, 0, 12.25, 69.25, 9, 0x3d3d49],
+  // club bar counter (+22,+26)
   [23, 29, 0, 24, 33.5, 1.1, 0x3a2a1e],
-  // living room: sofa + tall cabinet
+  // living room: sofa, coffee table, armchair, sideboard, bookshelf
   [2, 4.4, 0, 4.2, 5.3, 0.75, 0x584032],
-  [6.8, 0.3, 0, 7.7, 2.3, 1.9, 0x4a3626],
+  [2.5, 3.3, 0, 3.7, 3.9, 0.45, 0x4a3626],
+  [4.9, 4.3, 0, 5.7, 5.1, 0.75, 0x584032],
+  [0.3, 0.2, 0, 2.3, 0.7, 0.9, 0x4a3626],
+  [5.4, 0.4, 0, 5.8, 3.4, 2.2, 0x5a4530],
+  // great hall seminar (+0,+14): tables, chairs, lectern, whiteboard
+  [1.8, 15.6, 0, 3.6, 16.3, 0.74, 0x4a3b2e], [1.8, 18.4, 0, 3.6, 19.1, 0.74, 0x4a3b2e],
+  [1.8, 21.2, 0, 3.6, 21.9, 0.74, 0x4a3b2e], [4.6, 15.6, 0, 6.4, 16.3, 0.74, 0x4a3b2e],
+  [4.6, 18.4, 0, 6.4, 19.1, 0.74, 0x4a3b2e], [4.6, 21.2, 0, 6.4, 21.9, 0.74, 0x4a3b2e],
+  [1.2, 15.7, 0, 1.65, 16.15, 0.45, 0x35404f], [1.2, 18.5, 0, 1.65, 18.95, 0.45, 0x35404f],
+  [1.2, 21.3, 0, 1.65, 21.75, 0.45, 0x35404f], [4.0, 15.7, 0, 4.45, 16.15, 0.45, 0x35404f],
+  [4.0, 18.5, 0, 4.45, 18.95, 0.45, 0x35404f], [4.0, 21.3, 0, 4.45, 21.75, 0.45, 0x35404f],
+  [10.2, 19.9, 0, 10.8, 20.3, 1.2, 0x5a4530],
+  [12.0, 16.5, 0, 12.3, 19.5, 2.2, 0xd8d8d0],
+  // old house ground (+24,+16): couch, table, TV, kitchen, fridge, pillows
+  [25.0, 18.0, 0, 27.2, 18.9, 0.75, 0x584032],
+  [25.6, 19.4, 0, 26.6, 20.0, 0.4, 0x4a3626],
+  [24.3, 20.4, 0.4, 24.55, 21.9, 1.4, 0x14161c],
+  [28.4, 16.3, 0, 30.7, 16.95, 0.95, 0x4a4038],
+  [30.0, 17.3, 0, 30.7, 18.0, 1.9, 0xb8bcc0],
+  [26.2, 20.8, 0, 26.8, 21.4, 0.25, 0x6a4a5a],
+  [27.4, 21.2, 0, 28.0, 21.8, 0.25, 0x4a5a6a],
+  // old house upper (+24,+16, floor at z=3): bed, big TV, dresser, pillows
+  [24.8, 16.8, 3.0, 26.6, 18.8, 3.6, 0x707a8a],
+  [24.25, 19.6, 3.8, 24.45, 21.6, 5.0, 0x14161c],
+  [29.8, 16.4, 3.0, 30.6, 18.0, 4.0, 0x4a3626],
+  [28.6, 20.6, 3.0, 29.2, 21.2, 3.25, 0x6a5a4a],
 ];
 const DOOR_HALF = 0.55;
 const DOOR_H = 2.1;
@@ -452,7 +477,7 @@ function walkableMove(x0, y0, x1, y1) {
   const z = state.pose.z || 0;
   for (const f of FURNITURE) {
     if (x1 > f[0] - 0.25 && x1 < f[3] + 0.25 && y1 > f[1] - 0.25 && y1 < f[4] + 0.25
-        && z < f[5] - 0.2) return false;
+        && z < f[5] - 0.2 && z > f[2] - 1.2) return false;
   }
   return !crossesWall(x0, y0, x1, y1, z + 1.0);
 }
@@ -1523,7 +1548,7 @@ async function startAudio() {
       type: 'pose',
       x: px,
       y: py,
-      z: EYE + (state.pose.z || 0) + f.dy - 0.7 * (state.crouch || 0),
+      z: EYE + (state.pose.z || 0) + (state.airZ || 0) + f.dy - 0.7 * (state.crouch || 0),
       yaw: 0,
       // animated leaf positions: the sim prices the swing continuously
       doors: state.doorMeshes.map((dm) => dm.openness),
@@ -1565,7 +1590,7 @@ function setupControls() {
   };
 
   if (!isTouch) {
-    hintEl.textContent = 'click: capture mouse · WASD walk · C crouch · Space throw · E door · R rain · Q quality';
+    hintEl.textContent = 'click: capture mouse · WASD walk · Shift run · Space jump · C crouch · click throw · E door · R rain';
     glCanvas.addEventListener('click', () => {
       if (document.pointerLockElement !== glCanvas) glCanvas.requestPointerLock();
       else throwBall();
@@ -1576,7 +1601,7 @@ function setupControls() {
       state.pitch = Math.max(-1.4, Math.min(1.4, state.pitch - e.movementY * 0.0025));
     });
     addEventListener('keydown', (e) => {
-      if (e.code === 'Space') throwBall();
+      if (e.code === 'Space') { e.preventDefault(); state.wantJump = true; }
       else if (e.code === 'KeyR') cycleRain();
       else if (e.code === 'KeyE') toggleNearestDoor();
       else if (e.code === 'KeyQ') cycleQuality();
@@ -1705,7 +1730,7 @@ function throwBall() {
   scene.add(light);
   state.projs.push({
     slot,
-    x: state.pose.x + ch * 0.4, y: state.pose.y + sh * 0.4, z: EYE + (state.pose.z || 0) - 0.7 * (state.crouch || 0),
+    x: state.pose.x + ch * 0.4, y: state.pose.y + sh * 0.4, z: EYE + (state.pose.z || 0) + (state.airZ || 0) - 0.7 * (state.crouch || 0),
     vx: ch * cp * speed, vy: sh * cp * speed, vz: sp * speed + 2.5,
     landedAt: 0, boomAt: 0, mesh, light,
   });
@@ -1823,6 +1848,20 @@ function movePose(t) {
   // the sofa that puts your head in the traced engine's shadow
   const wantCrouch = state.keys.has('KeyC') || state.keys.has('ControlLeft') ? 1 : 0;
   state.crouch = (state.crouch || 0) + (wantCrouch - (state.crouch || 0)) * Math.min(1, dt * 8);
+  // jump (Space): simple ballistic hop above the floor-follow height
+  if (state.wantJump) {
+    state.wantJump = false;
+    if (!(state.airZ > 0) && (state.crouch || 0) < 0.4) state.vz = 4.2;
+  }
+  if (state.vz || state.airZ) {
+    state.airZ = (state.airZ || 0) + (state.vz || 0) * dt;
+    state.vz = (state.vz || 0) - 9.8 * dt;
+    if (state.airZ <= 0) {
+      state.airZ = 0;
+      state.vz = 0;
+      strideAcc = strideNext; // landing thud via the next stride check
+    }
+  }
   // follow the floor (stairs are a ramp; snap gently)
   const target = floorHeightAt(state.pose.x, state.pose.y, state.pose.z || 0);
   state.pose.z = (state.pose.z || 0) + (target - (state.pose.z || 0)) * Math.min(1, dt * 10);
@@ -1851,7 +1890,8 @@ function movePose(t) {
   const r = (strafe / mag) * len;
   const ch = Math.cos(state.heading);
   const sh = Math.sin(state.heading);
-  const step = WALK_SPEED * dt * (1 - 0.45 * (state.crouch || 0));
+  const sprint = state.keys.has('ShiftLeft') || state.keys.has('ShiftRight') ? 1.8 : 1;
+  const step = WALK_SPEED * dt * sprint * (1 - 0.45 * (state.crouch || 0));
   const nx = state.pose.x + (ch * f + sh * r) * step;
   const ny = state.pose.y + (sh * f - ch * r) * step;
   const { x, y } = state.pose;
@@ -1883,6 +1923,7 @@ let strideNext = 1.5;
 let lastStepT = 0;
 let lastVariant = -1;
 function strideStep(d) {
+  if (state.airZ > 0) return; // feet are off the ground
   strideAcc += d;
   if (strideAcc < strideNext || !state.fx) return;
   // human cadence gate: even sprinting, feet don't land more than
@@ -1931,7 +1972,7 @@ function frame(t) {
         f[key] += (g[key] - f[key]) * k;
       }
     }
-    camera.position.copy(v3(state.pose.x, state.pose.y, EYE + (state.pose.z || 0) - 0.7 * (state.crouch || 0)));
+    camera.position.copy(v3(state.pose.x, state.pose.y, EYE + (state.pose.z || 0) + (state.airZ || 0) - 0.7 * (state.crouch || 0)));
     camera.rotation.y = state.heading - Math.PI / 2;
     camera.rotation.x = state.pitch;
   }
@@ -1948,6 +1989,7 @@ function frame(t) {
     drawMeters();
     drawSpec();
     drawFaceWire();
+    drawSoundRays();
     if (state.debug.on) drawDebug();
   }
 
@@ -2308,6 +2350,46 @@ function drawSpec() {
   for (const f of [100, 1000, 10000]) {
     const y = H * (1 - Math.log(f / 40) / Math.log(16000 / 40));
     g.fillRect(0, y, W, 1);
+  }
+}
+
+// ------------------------------------------------------------ sound rays
+// Debug-mode 3D view of the sim's active propagation routes: the state
+// buffer carries ≤4 route points per source (portal hops, bends); a
+// glowing line runs source → hops → ears, colored per source.
+const rayLines = [];
+function drawSoundRays() {
+  if (!state.simState) return;
+  const show = !!state.debug.on;
+  for (let i = 0; i < 11; i++) {
+    if (!rayLines[i]) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6 * 3), 3));
+      const color = parseInt((DBG_COLORS[i] || '#ffffff').slice(1), 16);
+      rayLines[i] = new THREE.Line(geo, new THREE.LineBasicMaterial({
+        color, transparent: true, opacity: 0.65, depthTest: false,
+      }));
+      rayLines[i].renderOrder = 9;
+      scene.add(rayLines[i]);
+    }
+    const line = rayLines[i];
+    const off = 4 + i * 9;
+    const n = Math.min(4, state.simState[off] | 0);
+    line.visible = show && n > 0;
+    if (!line.visible) continue;
+    const pos = line.geometry.attributes.position;
+    const ez = EYE + (state.pose.z || 0) + (state.airZ || 0) - 0.7 * (state.crouch || 0);
+    let k = 0;
+    for (let p = 0; p < n; p++) {
+      const x = state.simState[off + 1 + p * 2];
+      const y = state.simState[off + 2 + p * 2];
+      const z = 1.5 + (ez - 1.5) * (p / Math.max(1, n));
+      pos.setXYZ(k++, x, z, -y);
+    }
+    pos.setXYZ(k++, state.pose.x, ez, -state.pose.y);
+    line.geometry.setDrawRange(0, k);
+    pos.needsUpdate = true;
+    line.geometry.computeBoundingSphere();
   }
 }
 
