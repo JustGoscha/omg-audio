@@ -387,6 +387,34 @@ architecture:
   also over the world mesh instead of per-room shoeboxes; the per-room
   Sabine/FDN machinery then simplifies to per-region decay estimates.
 
+### C6 — the endgame build: world-mesh PT, portals dissolve
+
+What C1–C5 did NOT touch: portal routing, doorway virtual sources and
+the crossing blend (both rooms fully simulated while you walk a door —
+the measured 2.5× doorway tick). C6 removes them:
+
+- **C6a — surface ids on the world mesh** (the deferred C0): every
+  authored face one stable u16; patches inherit via the existing
+  tri back-ref. Gate: id uniqueness/coverage test.
+- **C6b — mesh chains.** pt discovery over the dome's world-mesh BVH
+  (surface-id chains instead of wall indices); exact solve becomes
+  mirror-across-plane per hit surface + segment revalidation, plus
+  TRANSMISSION segments (a chain may cross glass/walls with mass-law
+  loss — trace_through semantics inside path records). Gate: in a
+  mesh-built empty box, identical output to the analytic solver.
+- **C6c — one listener context.** Sources and listener in world
+  coordinates, one PathCache for the world (not per room): doorways
+  and windows are just holes the chains thread. Portal routing,
+  virtual sources, aperture re-radiation and the crossing blend are
+  DELETED behind `early=traced`; ism keeps the old machinery. Jamb
+  diffraction: blocked directs already hand off to knife-edge bends
+  (C5) — jamb edges come from the same mesh edges AutoPaths extracts.
+  Gate: env_probe-style walkthrough — level continuity through every
+  doorway with the portal code off; doorway tick ≤ 1.2× open-square.
+- **C6d — late field + dome follow.** K1 traces the world mesh per
+  source (already GPU); the per-room FDN reduces to region estimates;
+  phase 4's dome kernel shares the same BVH buffers.
+
 ### Hybrid: where the combination beats either
 
 Each method is strongest at a different order:
