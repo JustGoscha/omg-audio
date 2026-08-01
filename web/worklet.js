@@ -26,7 +26,10 @@ class OmgProcessor extends AudioWorkletProcessor {
     // *density* tier — the real lever when a doorway carries ~145
     // taps/source and the device can't render them all. Evicted taps
     // release with the slot fade, so stepping down is click-free.
-    this.CEILINGS = [160, 112, 64];
+    // deepest rung 32: at a doorway (5 live sources) that is ~160 total
+    // taps — the strongest direct paths and first reflections survive,
+    // which is all a strained device can honestly render anyway
+    this.CEILINGS = [160, 112, 64, 32];
     this.ceilIdx = this.CEILINGS.length - 1; // start dense-shedded too
     this.loadMs = 0;
     this.loadFrames = 0;
