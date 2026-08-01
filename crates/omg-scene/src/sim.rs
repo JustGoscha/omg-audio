@@ -333,6 +333,42 @@ impl Sim {
         ParamBlock { taps: self.taps_buf.clone(), reverb, remote: None, version: self.version }
     }
 
+    /// C6d: the late field measured on the WORLD geometry — actual source
+    /// position, actual listener position, door leaves as panel overlays.
+    /// Coupled rooms, doorway wet and its DIRECTION all come out of the
+    /// echogram; nothing is routed. `budget` is the caller's per-tick
+    /// trace allowance (reverb is a slow statistic — round-robin
+    /// staleness is exactly what the EMA absorbs); a fired trace
+    /// consumes one unit. Returns (params, late direction, anisotropy):
+    /// anisotropy ≈ 1 means the tail arrives from one place (a doorway)
+    /// and belongs on the directional wet bus, ≈ 0 means diffuse.
+    pub fn reverb_world(
+        &mut self,
+        world: &impl omg_core::scene::AcousticGeometry,
+        src: Vec3,
+        receiver: Vec3,
+        budget: &mut i32,
+    ) -> (omg_core::params::ReverbParams, [f32; 3], f32) {
+        if *budget > 0 && self.gate.should_trace(src, receiver, [1.0; NBANDS]) {
+            *budget -= 1;
+            let rays = crate::quality::tier().world_rays();
+            omg_core::tracer::trace(
+                world,
+                src,
+                receiver,
+                rays,
+                [1.0; NBANDS],
+                &mut self.rng,
+                &mut self.echo_cur,
+            );
+            let alpha = if self.version == 0 { 1.0 } else { 0.3 };
+            self.echo_avg.ema(&self.echo_cur, alpha);
+        }
+        self.version += 1;
+        let (dir, aniso) = self.echo_avg.late_direction(0.08);
+        (estimate_reverb(&self.echo_avg), dir, aniso)
+    }
+
     /// Reverb estimate only (no taps): used for the coupled-room wet field —
     /// how reverberant the source's room is at its exit doorway.
     pub fn reverb_only(

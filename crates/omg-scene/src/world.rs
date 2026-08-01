@@ -69,13 +69,13 @@ pub struct WorldSim {
     /// and the (listener, source) cell they were computed for.
     bend_taps: Vec<Vec<Tap>>,
     bend_key: Vec<[i32; 5]>,
-    /// C6c late field: the diffuse level is a ROOM statistic (measured
-    /// distance-independent), so one probe per room per tick serves every
-    /// source — per-source excitation is a scalar on top. This is what
-    /// keeps the doorway tick at open-square cost: a blend probes two
-    /// rooms, not two rooms × eleven sources.
-    room_reverb: Vec<Sim>,
-    room_rp: Vec<(u64, omg_core::params::ReverbParams)>,
+    /// C6d late field: one echogram per source, measured by stochastic
+    /// rays over the WORLD mesh (door leaves overlaid as panels). One
+    /// trace per tick round-robins across sources — the doorway tick
+    /// stays at open-square cost, and coupled-room decay, doorway wet
+    /// and its direction are MEASURED, not routed.
+    world_late: Vec<Sim>,
+    late_panels: Vec<(Vec3, Vec3, Material)>,
     /// Occlusion-floor cache: floors vary smoothly in space, so per
     /// (exit, listener-cell) results are reused and refreshed round-robin
     /// — same philosophy as the trace gate (staleness bounded, no bias).
@@ -201,10 +201,8 @@ impl WorldSim {
             recs_buf: Vec::new(),
             bend_taps: defs.iter().map(|_| Vec::new()).collect(),
             bend_key: defs.iter().map(|_| [i32::MAX; 5]).collect(),
-            room_reverb: (0..rooms.len()).map(|_| Sim::new()).collect(),
-            room_rp: (0..rooms.len())
-                .map(|_| (u64::MAX, omg_core::params::ReverbParams::default()))
-                .collect(),
+            world_late: defs.iter().map(|_| Sim::new()).collect(),
+            late_panels: Vec::new(),
             rooms,
             doors,
             bend_cache: std::collections::HashMap::new(),
@@ -339,8 +337,13 @@ impl WorldSim {
             ew.begin_tick(&self.dome.mesh, eye);
             self.extras_buf.clear();
             self.extras_buf.extend_from_slice(&self.furniture_world);
+            self.late_panels.clear();
             for d in &self.doors {
                 if let Some(b) = aperture_box(d) {
+                    // acoustically: a pane is hard and reflective, a leaf
+                    // is a wood panel — the late tracer bounces off them
+                    let m = if d.glass { Material::CONCRETE } else { Material::WOOD_PANEL };
+                    self.late_panels.push((b.min, b.max, m));
                     self.extras_buf.push(b);
                 }
             }
@@ -353,6 +356,10 @@ impl WorldSim {
         // per-tick budget of fresh occlusion-floor evaluations; everything
         // beyond it reuses its last (spatially nearby) value one tick longer
         let mut bend_budget: i32 = 5;
+        // C6d: one world-mesh late trace per tick, round-robin via the
+        // per-source gates — reverb is a slow statistic, the EMA absorbs
+        // the staleness, and the tick cost stays flat everywhere.
+        let mut late_budget: i32 = 1;
         let n_static = self.defs.len() - walkthrough::DYN_SLOTS;
         for si in 0..self.defs.len() {
             let def = self.defs[si]; // Copy — frees `self` for &mut queries
@@ -580,51 +587,34 @@ impl WorldSim {
                     });
                 }
 
-                // Late field: still the room model — reverb params only,
-                // blended across the doorway; excitation scaled by the
-                // routed energy heuristic. C6d retires this too.
-                let mut route: Vec<(f32, f32)> = Vec::new();
-                let mut rstates: Vec<(&walkthrough::WalkState, f32)> =
-                    vec![(st, bs.primary_weight)];
-                if let Some((ref ost, wo)) = bs.other {
-                    rstates.push((ost, wo));
-                }
-                for (k, (state, w)) in rstates.iter().enumerate() {
-                    let routed =
-                        route_source(&def, state.room, state.listener_world, &self.doors);
-                    if k == 0 {
-                        route = routed.route.clone();
-                    }
-                    let w2 = w * w;
-                    if self.rooms[state.room].outdoor {
-                        for b in 0..NBANDS {
-                            pb.reverb.rt60[b] += 0.25 * w2;
-                        }
-                        continue;
-                    }
-                    let rp = {
-                        if self.room_rp[state.room].0 != self.tick_no {
-                            let r = &self.rooms[state.room];
-                            let center = Vec3::new(
-                                (r.max.0 - r.min.0) * 0.5,
-                                (r.max.1 - r.min.1) * 0.5,
-                                walkthrough::SRC_HEIGHT,
-                            );
-                            let rp = self.room_reverb[state.room].reverb_only(
-                                &state.shoebox,
-                                center,
-                                state.listener_local,
-                            );
-                            self.room_rp[state.room] = (self.tick_no, rp);
-                        }
-                        self.room_rp[state.room].1
-                    };
-                    for b in 0..NBANDS {
-                        let e = routed.muffle[b] * routed.muffle[b]
-                            / (1.0 + routed.extra_dist * routed.extra_dist);
-                        pb.reverb.rt60[b] += rp.rt60[b] * w2;
-                        pb.reverb.level[b] += rp.level[b] * e * w2;
-                    }
+                // Late field (C6d): ONE echogram per source, measured by
+                // stochastic rays over the world mesh with the door
+                // leaves overlaid. Coupled-room decay, the wet level
+                // through a doorway and its DIRECTION all come out of
+                // the measurement — no room model, no routed radiators,
+                // no blend. The anisotropic share of the tail plays on
+                // the directional wet bus (it audibly "comes from the
+                // doorway"); the diffuse remainder feeds the FDN.
+                let route =
+                    route_source(&def, st.room, st.listener_world, &self.doors).route;
+                let world = omg_core::scene::WithPanels {
+                    base: &self.dome.mesh,
+                    panels: &self.late_panels,
+                };
+                let (rp, ldir, aniso) =
+                    self.world_late[si].reverb_world(&world, src0, eye, &mut late_budget);
+                pb.reverb.rt60 = rp.rt60;
+                let a = aniso.clamp(0.0, 0.9);
+                pb.reverb.level =
+                    core::array::from_fn(|b| rp.level[b] * (1.0 - a).sqrt());
+                if a > 0.05 && rp.level[1] > 1e-5 {
+                    let send: [f32; NBANDS] =
+                        core::array::from_fn(|b| rp.level[b] * a.sqrt());
+                    pb.remote = Some(RemoteReverb {
+                        rt60: rp.rt60,
+                        send,
+                        sh: omg_dsp::ambi::encode_gains(rot(ldir)),
+                    });
                 }
                 (pb, route)
             } else {
@@ -632,7 +622,10 @@ impl WorldSim {
             };
 
             // Coupled-room wet: the source room's reverberant field, heard
-            // through the doorway. Weighted per blend state.
+            // through the doorway. Weighted per blend state. ISM-only —
+            // in traced mode the world echogram measures the coupled wet
+            // and its direction directly (see the traced branch above).
+            if !traced {
             let mut states: Vec<(&walkthrough::WalkState, f32)> = vec![(st, bs.primary_weight)];
             if let Some((ref ost, wo)) = bs.other {
                 states.push((ost, wo));
@@ -881,6 +874,7 @@ impl WorldSim {
                 }
                 pb.remote = Some(RemoteReverb { rt60: rem_rt60, send: rem_send, sh: rem_sh });
             }
+            } // !traced
 
             // Per-source gain: scales dry, reflections and both wet paths.
             let g = def.gain;

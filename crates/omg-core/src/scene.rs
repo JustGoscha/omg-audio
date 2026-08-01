@@ -73,3 +73,59 @@ impl AcousticGeometry for Shoebox {
         Some(GeomHit { t, normal, material: self.walls[wall] })
     }
 }
+
+/// A base geometry plus transient axis-aligned box blockers with their
+/// own materials — door leaves and glass panes. What fills a doorway is
+/// world STATE, not authored mesh, so the tracer sees it as an overlay:
+/// rays hit the nearest of base or box, boxes reflect/absorb like any
+/// surface. (C6d: this is how closing a door reshapes the late field
+/// with zero portal code.)
+pub struct WithPanels<'a, G> {
+    pub base: &'a G,
+    /// (min, max, material) per box.
+    pub panels: &'a [(Vec3, Vec3, Material)],
+}
+
+impl<G: AcousticGeometry> AcousticGeometry for WithPanels<'_, G> {
+    fn raycast_hit(&self, p: Vec3, d: Vec3) -> Option<GeomHit> {
+        let mut best = self.base.raycast_hit(p, d);
+        for (mn, mx, m) in self.panels {
+            // slab entry test; track the axis we enter through
+            let (mut t0, mut t1) = (0.0f32, f32::MAX);
+            let mut axis = 3usize;
+            for a in 0..3 {
+                let (da, pa, lo, hi) = (d.get(a), p.get(a), mn.get(a), mx.get(a));
+                if da.abs() < 1e-9 {
+                    if pa < lo || pa > hi {
+                        t0 = f32::MAX;
+                        break;
+                    }
+                } else {
+                    let (mut ta, mut tb) = ((lo - pa) / da, (hi - pa) / da);
+                    if ta > tb {
+                        core::mem::swap(&mut ta, &mut tb);
+                    }
+                    if ta > t0 {
+                        t0 = ta;
+                        axis = a;
+                    }
+                    t1 = t1.min(tb);
+                    if t0 > t1 {
+                        t0 = f32::MAX;
+                        break;
+                    }
+                }
+            }
+            if t0 > 1e-4
+                && t0 < f32::MAX
+                && axis < 3
+                && best.as_ref().map_or(true, |h| t0 < h.t)
+            {
+                let mut normal = Vec3::new(0.0, 0.0, 0.0);
+                normal.set(axis, if d.get(axis) > 0.0 { -1.0 } else { 1.0 });
+                best = Some(GeomHit { t: t0, normal, material: *m });
+            }
+        }
+        best
+    }
+}

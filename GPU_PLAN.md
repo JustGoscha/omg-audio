@@ -428,9 +428,27 @@ the measured 2.5× doorway tick). C6 removes them:
   kernel that replaces it is the same work item as the dome/late
   port), and the coupled-room wet send still uses the door-chain
   route for its excitation heuristic.
-- **C6d — late field + dome follow.** K1 traces the world mesh per
-  source (already GPU); the per-room FDN reduces to region estimates;
-  phase 4's dome kernel shares the same BVH buffers.
+- **C6d — late field + dome follow.** *(LATE FIELD SHIPPED: the
+  stochastic tracer was already geometry-generic, so `early=traced`
+  now measures ONE echogram per source over the world mesh — actual
+  source, actual listener, door leaves overlaid as panel boxes
+  (`WithPanels`). Coupled-room decay, doorway wet and its DIRECTION
+  come out of the measurement: the anisotropic share of the tail
+  plays on the directional wet bus via `Echogram::late_direction`,
+  the diffuse remainder feeds the FDN — the routed radiator/remote
+  machinery is gone from the traced path entirely. Budget: one world
+  trace per tick, round-robin across source gates (reverb is a slow
+  statistic; the EMA absorbs staleness) at 512/384/256 rays by tier.
+  Gates: mesh↔shoebox tracer parity (level parity to 4 decimals),
+  corridor listener measures living-room wet through the door at
+  rt60 0.82 s with ~29% directional share, leaf close/reopen drops/
+  restores it, doorway tick now 0.83×/0.60× open-square.)*
+  Remaining in C6d: the GPU side — BVH flatten + a world-trace
+  kernel (K2) claiming the same one-trace-per-tick slot behind the
+  late seam, PT discovery (`mesh_chains`) as a bitmap-free chain
+  kernel over the same buffers, and phase 4's dome kernel sharing
+  them. The per-room FDN reduces to region estimates once regions
+  replace rooms in authoring.
 
 ### Hybrid: where the combination beats either
 

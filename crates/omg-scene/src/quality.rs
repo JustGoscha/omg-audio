@@ -157,6 +157,18 @@ impl Tier {
         over(1, self.gate_max_age_tier()).clamp(1, 64)
     }
 
+    /// World-mesh late-trace rays (C6d). BVH queries cost ~10× the
+    /// analytic box, and the world.rs budget is ONE trace per tick, so
+    /// the ray count is small and the EMA carries the variance. CPU
+    /// only for now — the GPU multiplier deliberately does not apply.
+    pub fn world_rays(self) -> u32 {
+        match self {
+            Tier::High => 512,
+            Tier::Med => 384,
+            Tier::Low => 256,
+        }
+    }
+
     /// Ambient-dome rays per tick (High is the historical 384).
     pub fn dome_rays(self) -> usize {
         over(2, self.dome_rays_tier() as u32).clamp(16, 384) as usize
