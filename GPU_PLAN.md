@@ -393,10 +393,10 @@ What C1–C5 did NOT touch: portal routing, doorway virtual sources and
 the crossing blend (both rooms fully simulated while you walk a door —
 the measured 2.5× doorway tick). C6 removes them:
 
-- **C6a — surface ids on the world mesh** (the deferred C0): every
+- **C6a — surface ids on the world mesh** *(SHIPPED)* (the deferred C0): every
   authored face one stable u16; patches inherit via the existing
   tri back-ref. Gate: id uniqueness/coverage test.
-- **C6b — mesh chains.** pt discovery over the dome's world-mesh BVH
+- **C6b — mesh chains.** *(SHIPPED: pt_mesh.rs — box equivalence 25/25, doorway threads at free-space level and masonry costs 45 dB with zero portal code)* pt discovery over the dome's world-mesh BVH
   (surface-id chains instead of wall indices); exact solve becomes
   mirror-across-plane per hit surface + segment revalidation, plus
   TRANSMISSION segments (a chain may cross glass/walls with mass-law
