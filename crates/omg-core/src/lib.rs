@@ -8,6 +8,7 @@ pub mod material;
 pub mod mesh;
 pub mod params;
 pub mod paths;
+pub mod pt;
 pub mod rng;
 pub mod scene;
 pub mod tracer;
