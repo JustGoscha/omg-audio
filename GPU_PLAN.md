@@ -411,6 +411,86 @@ beats sampled). This is likely the shipping default; `ism` and
   reproduce the ISM ≤3-order path set (delay ±0.5 ms, level ±1 dB,
   per path) after cache convergence. ISM stays as the oracle and as
   a selectable backend (see above) — it never retires.
+
+### Implementation phases (C0–C5)
+
+Same discipline as Track A: each phase lands behind the previous one
+as oracle, nothing ships without its gate, `bench_web.mjs` (the audio
+clock) must read unchanged after every phase.
+
+**C0 — surface identity on the world mesh.** Path keys hash chains of
+SURFACE ids, so surfaces need stable identities. `MeshBuilder` gains a
+`surface_id: u16` per original triangle (coplanar authored face =
+one id: each wall, slab, roof plane, door leaf, facade). The dome's
+`build_world_mesh` (dome.rs:124) assigns them during construction;
+tessellated patches inherit their original's id (the `tri` back-ref
+already exists, mesh.rs). Gate: a unit test walks every triangle and
+asserts patches of one authored face share one id, distinct faces
+never collide.
+
+**C1 — CPU reference tracer (`omg-core/src/pt.rs`).** Pure function:
+`pt_trace(mesh, sources, listener, budget, rng) -> Vec<PathRecord>`
+with `PathRecord { source: u16, chain: [u16; 4], order: u8,
+length_m: f32, gains: [f32; 3], dir: [f32; 3] }`. Listener-launched
+golden-spiral fan + per-call rotation; specular bounces over the BVH;
+NEE shadow ray to every source at every vertex (and order-0 from the
+listener itself = the direct path); transmission continuation through
+surfaces with mass-law loss; exact-segment revalidation before a
+record is emitted. No cache here — pure, testable.
+Gate (`tests/pt_golden.rs`): in the Phase 0 golden shoeboxes (walls
+get 6 surface ids), the union of records over 8 rotated calls
+contains every ISM path of order ≤ 2 with delay error ≤ 0.5 ms and
+level error ≤ 1 dB, and no path that ISM proves impossible (chain
+replay must mirror-reconstruct within epsilon).
+
+**C2 — path cache + tap emission + the setting (`omg-scene`).**
+`PathTable`: `HashMap<u64 /*src<<48 | chain hash*/, CachedPath>` with
+TTL (~10 ticks), energy-weighted representative, glide (length/dir
+update on re-sighting), fade-out on expiry (emit a last ParamBlock
+without the key; the renderer's slot release does the rest). Tap key
+= low 32 bits of the path hash namespaced above the ISM key range.
+`early = ism | traced` setting: `quality::set_early(u32)` + native
+`OMG_EARLY=ism|traced` + a quality-panel selector next to the
+late-field toggle (worker message, same pattern). In `traced`, Sim
+skips `image_source_taps` for in-room sources and splices the cache's
+taps for that (source, room) instead; everything else (straight taps,
+portals, diffraction floors, late field) is untouched at this phase.
+Gate: walkthrough regression under `traced` — level trajectory within
+1 dB of `ism` everywhere in the empty-scene demo; stationary listener
+shows zero tap churn per tick (add a churn counter to eng_debug).
+
+**C3 — GPU kernel (`omg-gpu/shaders/pt_early.wgsl`).** Thread-per-ray
+mega-kernel: bounce loop + NEE, records appended via an atomic cursor
+into a fixed buffer (`PathRecord` = 32 B packed; cap 4096
+records/dispatch, cursor overflow drops and logs — the cache absorbs
+misses). Inputs: flattened BVH + surface ids (one static buffer,
+rebuilt only on geometry change), per-dispatch uniform (listener,
+rotation seed, source array ≤ 16). Host dedupes into the same
+PathTable. Layout tests + LAYOUT_VERSION bump as in phase 1.
+Gate: same C1 golden gate, run through the kernel (self-skips without
+adapter); plus the speed probe — target ≥ 8k rays × 4 bounces × NEE
+under 3 ms.
+
+**C4 — web host.** Extend the phase 3 bridge: `sim_pt_jobs` /
+`sim_pt_inject` flat buffers (records in, versioned), gpu.js gains the
+second pipeline (same fetch/init/fallback pattern), worker pumps both
+kernels per tick. CPU fallback = C1 at reduced budget inside the wasm.
+Gate: node harnesses green on the CPU path; browser A/B ism↔traced at
+the club doorway with the churn counter visible.
+
+**C5 — hybrid + clutter (the payoff).** `hybrid` mode: analytic
+order-1 (per major planar surface: one mirror solve + occlusion
+shadow ray) + traced order-2+, deduped by chain key, analytic wins.
+Then put THINGS in rooms — furniture boxes into the world mesh with
+surface ids — and add the occluder regression: a pillar between
+source and listener, walk through its shadow, assert no level step
+(the PT direct path hands off to the diffraction floor). This is the
+phase where ISM stops being reachable and `traced/hybrid` becomes the
+default; `ism` remains selectable for empty-shoebox A/B forever.
+
+Budgets (from the measured kernel numbers): 8k rays × 4 events ≈ the
+late tracer's 32k×64 work — ~1.5 ms native; CPU fallback 1–2k rays.
+Cache TTL turns the 20 Hz fan into effective 160k rays/s of coverage.
 - **Occluder test**: a pillar between source and listener — direct
   tap hands off to the diffraction floor with no level step (extend
   the existing shadow-walk regression).
