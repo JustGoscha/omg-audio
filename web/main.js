@@ -1523,7 +1523,7 @@ async function startAudio() {
       type: 'pose',
       x: px,
       y: py,
-      z: EYE + (state.pose.z || 0) + f.dy,
+      z: EYE + (state.pose.z || 0) + f.dy - 0.7 * (state.crouch || 0),
       yaw: 0,
       // animated leaf positions: the sim prices the swing continuously
       doors: state.doorMeshes.map((dm) => dm.openness),
@@ -1565,7 +1565,7 @@ function setupControls() {
   };
 
   if (!isTouch) {
-    hintEl.textContent = 'click: capture mouse · WASD walk · Space throw · E door · R rain · Q quality';
+    hintEl.textContent = 'click: capture mouse · WASD walk · C crouch · Space throw · E door · R rain · Q quality';
     glCanvas.addEventListener('click', () => {
       if (document.pointerLockElement !== glCanvas) glCanvas.requestPointerLock();
       else throwBall();
@@ -1705,7 +1705,7 @@ function throwBall() {
   scene.add(light);
   state.projs.push({
     slot,
-    x: state.pose.x + ch * 0.4, y: state.pose.y + sh * 0.4, z: EYE + (state.pose.z || 0),
+    x: state.pose.x + ch * 0.4, y: state.pose.y + sh * 0.4, z: EYE + (state.pose.z || 0) - 0.7 * (state.crouch || 0),
     vx: ch * cp * speed, vy: sh * cp * speed, vz: sp * speed + 2.5,
     landedAt: 0, boomAt: 0, mesh, light,
   });
@@ -1819,6 +1819,10 @@ function floorHeightAt(x, y, curZ) {
 function movePose(t) {
   const dt = Math.min((t - lastT) / 1000, 0.05);
   lastT = t;
+  // crouch (hold C / Ctrl): ears sink ~0.7 m — behind the club bar or
+  // the sofa that puts your head in the traced engine's shadow
+  const wantCrouch = state.keys.has('KeyC') || state.keys.has('ControlLeft') ? 1 : 0;
+  state.crouch = (state.crouch || 0) + (wantCrouch - (state.crouch || 0)) * Math.min(1, dt * 8);
   // follow the floor (stairs are a ramp; snap gently)
   const target = floorHeightAt(state.pose.x, state.pose.y, state.pose.z || 0);
   state.pose.z = (state.pose.z || 0) + (target - (state.pose.z || 0)) * Math.min(1, dt * 10);
@@ -1847,7 +1851,7 @@ function movePose(t) {
   const r = (strafe / mag) * len;
   const ch = Math.cos(state.heading);
   const sh = Math.sin(state.heading);
-  const step = WALK_SPEED * dt;
+  const step = WALK_SPEED * dt * (1 - 0.45 * (state.crouch || 0));
   const nx = state.pose.x + (ch * f + sh * r) * step;
   const ny = state.pose.y + (sh * f - ch * r) * step;
   const { x, y } = state.pose;
@@ -1927,7 +1931,7 @@ function frame(t) {
         f[key] += (g[key] - f[key]) * k;
       }
     }
-    camera.position.copy(v3(state.pose.x, state.pose.y, EYE + (state.pose.z || 0)));
+    camera.position.copy(v3(state.pose.x, state.pose.y, EYE + (state.pose.z || 0) - 0.7 * (state.crouch || 0)));
     camera.rotation.y = state.heading - Math.PI / 2;
     camera.rotation.x = state.pitch;
   }
