@@ -21,13 +21,21 @@ use crate::vec3::Vec3;
 use crate::{NBANDS, SPEED_OF_SOUND};
 
 /// An axis-aligned occluder inside a room (C5: furniture, pillars,
-/// bar counters). Solid: paths through it are blocked; the direct
-/// path additionally gets a knife-edge bend over its top.
+/// bar counters). `transmission` is the per-band AMPLITUDE that
+/// survives passing through the piece (mass-law flavored: a sofa lets
+/// muffled bass through, a stone pillar next to nothing); blocked
+/// paths carry it instead of vanishing, and the blocked direct path
+/// takes whichever is louder per band — the through-body seep or the
+/// knife-edge bend around the silhouette.
 #[derive(Clone, Copy, Debug)]
 pub struct Aabb {
     pub min: Vec3,
     pub max: Vec3,
+    pub transmission: [f32; NBANDS],
 }
+
+/// Solid stone default for tests / plain blockers.
+pub const OPAQUE: [f32; NBANDS] = [0.02, 0.002, 0.0];
 
 impl Aabb {
     /// Clip the segment a→b against the box: Some((t0, t1)) of the
@@ -252,6 +260,21 @@ pub fn solve_chain_occ(
     listener: Vec3,
     occluders: &[Aabb],
 ) -> Option<(f32, Vec3, f32)> {
+    solve_chain_trans(room, chain, source, listener, occluders)
+        .and_then(|(d, dir, leg, t)| (t[0] >= 0.999).then_some((d, dir, leg)))
+}
+
+/// Like `solve_chain_occ` but blocked segments accumulate the pieces'
+/// through-transmission instead of invalidating the chain. Returns the
+/// per-band amplitude product (1.0 = unobstructed); geometric
+/// invalidity is still None.
+pub fn solve_chain_trans(
+    room: &Shoebox,
+    chain: &[u8],
+    source: Vec3,
+    listener: Vec3,
+    occluders: &[Aabb],
+) -> Option<(f32, Vec3, f32, [f32; NBANDS])> {
     // image = M_{c0}(M_{c1}(... M_{ck-1}(source)))  — c0 is the wall
     // nearest the listener, so it is applied LAST walking from source.
     let mut img = source;
@@ -265,6 +288,7 @@ pub fn solve_chain_occ(
     }
     let dir = to_img * (1.0 / dist);
 
+    let mut trans = [1.0f32; NBANDS];
     // Unfold walk: trace the actual reflected path listener→…→source and
     // require it to hit exactly this chain, in order. Solved per plane
     // (not via first-hit raycast) so CORNER-COINCIDENT reflections pass:
@@ -300,8 +324,12 @@ pub fn solve_chain_occ(
             p.set(axis, plane); // exact, and keeps fp drift off the walls
             p
         };
-        if segment_blocked(occluders, pos, next).is_some() {
-            return None;
+        for o in occluders {
+            if o.blocks(pos, next) {
+                for b in 0..NBANDS {
+                    trans[b] *= o.transmission[b];
+                }
+            }
         }
         pos = next;
         let mut n = Vec3::new(0.0, 0.0, 0.0);
@@ -322,10 +350,14 @@ pub fn solve_chain_occ(
             return None;
         }
     }
-    if segment_blocked(occluders, pos, source).is_some() {
-        return None;
+    for o in occluders {
+        if o.blocks(pos, source) {
+            for b in 0..NBANDS {
+                trans[b] *= o.transmission[b];
+            }
+        }
     }
-    Some((dist, dir, leg))
+    Some((dist, dir, leg, trans))
 }
 
 /// Build the full record for a validated chain (gains per ism.rs).
@@ -352,61 +384,61 @@ pub fn record_for_occ(
     listener: Vec3,
     occluders: &[Aabb],
 ) -> Option<PathRecord> {
-    let solved = solve_chain_occ(room, chain, src_pos, listener, occluders);
+    let solved = solve_chain_trans(room, chain, src_pos, listener, occluders);
     let (dist, dir, gains) = match solved {
-        Some((dist, dir, _)) => {
+        Some((dist, dir, _, trans)) => {
             let d = dist.max(MIN_DIST);
             let air = air_attenuation(d);
             let mut gains = [0.0f32; NBANDS];
             for b in 0..NBANDS {
-                let mut g = air[b] / d;
+                let mut g = air[b] / d * trans[b];
                 for &w in chain {
                     g *= room.walls[w as usize].reflection_amplitude()[b];
                 }
                 gains[b] = g;
             }
-            // Lit-side edge proximity for the CLEAR direct path: the
-            // Kurze–Anderson negative branch takes the field to −5 dB
-            // at the shadow boundary, so crossing into the bent branch
-            // below is continuous instead of a 5 dB step. Distant
-            // boxes contribute factor 1 (N ≤ −0.19).
+            let mut out_dist = dist;
             if chain.is_empty() {
-                for o in occluders {
-                    if let Some((_, detour)) = best_bend(o, listener, src_pos, room.size) {
-                        let ke = knife_edge_bands(-detour);
+                if trans[0] >= 0.999 {
+                    // CLEAR direct path: Kurze–Anderson lit-side edge
+                    // proximity takes the field to −5 dB at each shadow
+                    // boundary so crossing into the bent branch below
+                    // is continuous. Distant boxes contribute factor 1.
+                    for o in occluders {
+                        if let Some((_, detour)) = best_bend(o, listener, src_pos, room.size) {
+                            let ke = knife_edge_bands(-detour);
+                            for b in 0..NBANDS {
+                                gains[b] *= ke[b];
+                            }
+                        }
+                    }
+                } else if let Some(bi) = segment_blocked(occluders, listener, src_pos) {
+                    // BLOCKED direct: the through-body seep above vs
+                    // the knife-edge bend around the silhouette — per
+                    // band, whichever carries more survives (bass
+                    // seeps through a sofa, treble bends past stone).
+                    // The tap's single delay follows the low band's
+                    // winning mechanism: straight for seep, bent for
+                    // the wrap.
+                    if let Some((_, detour)) =
+                        best_bend(&occluders[bi], listener, src_pos, room.size)
+                    {
+                        let ke = knife_edge_bands(detour);
+                        let bent = dist + detour;
+                        let bair = air_attenuation(bent);
+                        if bair[0] / bent.max(MIN_DIST) * ke[0] > gains[0] {
+                            out_dist = bent;
+                        }
                         for b in 0..NBANDS {
-                            gains[b] *= ke[b];
+                            gains[b] = gains[b].max(bair[b] / bent.max(MIN_DIST) * ke[b]);
                         }
                     }
                 }
             }
-            (dist, dir, gains)
-        }
-        None if chain.is_empty() => {
-            // direct path blocked: bend over the top of the first
-            // blocking box. Apex = the box's top plane above the point
-            // where the straight line crosses its footprint.
-            let bi = segment_blocked(occluders, listener, src_pos)?;
-            let o = &occluders[bi];
-            let (apex, detour) = best_bend(o, listener, src_pos, room.size)?;
-            // a bend must itself be clear (a box spanning wall to wall
-            // and floor to ceiling ⇒ silent here; the room's late
-            // field is what remains)
-            for (i, ob) in occluders.iter().enumerate() {
-                if i != bi && (ob.blocks(listener, apex) || ob.blocks(apex, src_pos)) {
-                    return None;
-                }
+            if gains.iter().all(|&g| g < 1e-6) {
+                return None; // fully swallowed: cease to exist
             }
-            let straight = (src_pos - listener).length().max(MIN_DIST);
-            let bent = straight + detour;
-            let ke = knife_edge_bands(detour);
-            let air = air_attenuation(bent);
-            let mut gains = [0.0f32; NBANDS];
-            for b in 0..NBANDS {
-                gains[b] = air[b] / bent.max(MIN_DIST) * ke[b];
-            }
-            let dir = (apex - listener).normalize();
-            (bent, dir, gains)
+            (out_dist, dir, gains)
         }
         None => return None,
     };

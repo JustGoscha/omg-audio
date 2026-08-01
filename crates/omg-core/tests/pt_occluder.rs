@@ -6,7 +6,7 @@
 //! side. Blocked reflections must simply cease to exist.
 
 use omg_core::material::Material;
-use omg_core::pt::{record_for_occ, solve_chain_occ, Aabb};
+use omg_core::pt::{record_for_occ, solve_chain_occ, Aabb, OPAQUE};
 use omg_core::scene::Shoebox;
 use omg_core::vec3::Vec3;
 
@@ -24,6 +24,7 @@ fn setup() -> (Shoebox, Vec3, Aabb) {
     let pillar = Aabb {
         min: Vec3::new(3.6, 2.2, 0.0),
         max: Vec3::new(4.4, 3.8, 2.2),
+        transmission: OPAQUE,
     };
     (room, src, pillar)
 }
@@ -90,12 +91,18 @@ fn blocked_reflections_cease_and_clear_ones_survive() {
     );
 
     // the ceiling bounce clears the pillar and must survive untouched
-    let ceil = record_for_occ(&room, &[5], 0, src, lis, &occ);
-    assert!(ceil.is_some(), "ceiling reflection wrongly blocked");
-    // a floor bounce midway is swallowed by the pillar: gone, no fallback
-    assert!(
-        solve_chain_occ(&room, &[4], src, lis, &occ).is_none()
-            && record_for_occ(&room, &[4], 0, src, lis, &occ).is_none(),
-        "floor reflection should be blocked by the pillar"
-    );
+    let ceil = record_for_occ(&room, &[5], 0, src, lis, &occ).expect("ceiling blocked");
+    let ceil_free = record_for_occ(&room, &[5], 0, src, lis, &[]).unwrap();
+    assert!((db(ceil.gains[1]) - db(ceil_free.gains[1])).abs() < 0.5);
+    // a floor bounce midway hits the pillar: only the stone's through-
+    // transmission seeps (−54 dB mid for OPAQUE) — audibly gone
+    assert!(solve_chain_occ(&room, &[4], src, lis, &occ).is_none());
+    let floor = record_for_occ(&room, &[4], 0, src, lis, &occ);
+    let floor_free = record_for_occ(&room, &[4], 0, src, lis, &[]).unwrap();
+    if let Some(f) = floor {
+        assert!(
+            db(f.gains[1]) < db(floor_free.gains[1]) - 30.0,
+            "blocked floor bounce barely attenuated"
+        );
+    }
 }
