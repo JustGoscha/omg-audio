@@ -4,6 +4,7 @@
 
 pub mod dome;
 pub mod environment;
+pub mod late;
 pub mod quality;
 pub mod sim;
 pub mod walkthrough;

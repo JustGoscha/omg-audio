@@ -76,6 +76,8 @@ impl TraceGate {
 }
 
 pub struct Sim {
+    /// Stable instance id — the late-backend's slot key.
+    id: u32,
     rng: Rng,
     gate: TraceGate,
     echo_avg: Echogram,
@@ -90,8 +92,10 @@ impl Sim {
     pub fn new() -> Self {
         // stagger refresh phases across instances so idle re-traces don't
         // all land on the same tick
-        let phase = SIM_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed) % 8;
+        let id = SIM_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let phase = id % 8;
         Self {
+            id,
             rng: Rng::new(0xC0FFEE),
             gate: TraceGate::new(phase),
             echo_avg: Echogram::new(),
@@ -168,11 +172,10 @@ impl Sim {
         // spreading loss over the pre-door path).
         let src_energy: [f32; NBANDS] =
             core::array::from_fn(|b| muffle[b] * muffle[b] / (1.0 + extra_dist * extra_dist));
-        let traced = self.gate.should_trace(src, listener, src_energy);
-        if traced {
+        let traced = self.gate.should_trace(src, listener, src_energy) && {
             let rays = crate::quality::tier().trace_rays();
-            trace(room, src, listener, rays, src_energy, &mut self.rng, &mut self.echo_cur);
-        }
+            crate::late::run_trace(self.id, room, src, listener, rays, src_energy, &mut self.rng, &mut self.echo_cur)
+        };
         self.finish_update(traced)
     }
 
@@ -206,11 +209,10 @@ impl Sim {
         }
         // Reverb: one trace from the rig centroid-ish (first emitter);
         // in-room late statistics barely depend on the exact position.
-        let traced = self.gate.should_trace(emitters[0], listener, [1.0; NBANDS]);
-        if traced {
+        let traced = self.gate.should_trace(emitters[0], listener, [1.0; NBANDS]) && {
             let rays = crate::quality::tier().trace_rays();
-            trace(room, emitters[0], listener, rays, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur);
-        }
+            crate::late::run_trace(self.id, room, emitters[0], listener, rays, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur)
+        };
         self.finish_update(traced)
     }
 
@@ -319,9 +321,10 @@ impl Sim {
     ) -> omg_core::params::ReverbParams {
         if self.gate.should_trace(src, receiver, [1.0; NBANDS]) {
             let rays = crate::quality::tier().trace_rays();
-            trace(room, src, receiver, rays, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur);
-            let alpha = if self.version == 0 { 1.0 } else { 0.3 };
-            self.echo_avg.ema(&self.echo_cur, alpha);
+            if crate::late::run_trace(self.id, room, src, receiver, rays, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur) {
+                let alpha = if self.version == 0 { 1.0 } else { 0.3 };
+                self.echo_avg.ema(&self.echo_cur, alpha);
+            }
         }
         self.version += 1;
         estimate_reverb(&self.echo_avg)

@@ -983,6 +983,7 @@ dependencies = [
  "hound",
  "omg-core",
  "omg-dsp",
+ "omg-gpu",
  "omg-scene",
 ]
 
@@ -1013,6 +1014,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "omg-core",
+ "omg-scene",
  "pollster",
  "wgpu",
 ]

@@ -180,6 +180,17 @@ fn main() {
         omg_scene::quality::set_tier(tier);
         println!("quality tier: {q}");
     }
+    // OMG_GPU=1: run the stochastic traces on the wgpu kernel; anything
+    // else (or no usable adapter) stays on the inline CPU tracer.
+    if std::env::var("OMG_GPU").map(|v| v == "1").unwrap_or(false) {
+        match omg_gpu::GpuLateBackend::new() {
+            Some(b) => {
+                omg_scene::late::set_late_backend(Box::new(b));
+                println!("late field: GPU (wgpu)");
+            }
+            None => println!("late field: CPU (OMG_GPU=1 but no adapter)"),
+        }
+    }
 
     let args: Vec<String> = std::env::args().collect();
     let render_path = arg_value(&args, "--render");

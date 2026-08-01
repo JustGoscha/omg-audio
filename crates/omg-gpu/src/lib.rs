@@ -165,3 +165,38 @@ impl GpuTracer {
         decode_echogram(&bins, &dirs, out);
     }
 }
+
+/// The `LateBackend` the app registers under `OMG_GPU=1`. Synchronous
+/// by measurement, not oversight: one dispatch incl. readback is ~1 ms
+/// on Apple Metal — 7× cheaper than the CPU trace it replaces — so a
+/// pipelined ring would buy a millisecond and cost a tick of staleness.
+/// Revisit in phase 5 when one submission batches every source.
+pub struct GpuLateBackend {
+    tracer: GpuTracer,
+    seed: u32,
+}
+
+impl GpuLateBackend {
+    pub fn new() -> Option<Self> {
+        Some(Self { tracer: GpuTracer::new()?, seed: 0xD15E_A5E })
+    }
+}
+
+impl omg_scene::late::LateBackend for GpuLateBackend {
+    fn trace(
+        &mut self,
+        _id: u32,
+        room: &Shoebox,
+        src: Vec3,
+        lis: Vec3,
+        n_rays: u32,
+        energy: [f32; NBANDS],
+        _rng: &mut omg_core::rng::Rng,
+        out: &mut Echogram,
+    ) -> bool {
+        // fresh stream per trace; the Sim's EMA does the averaging
+        self.seed = self.seed.wrapping_mul(747796405).wrapping_add(2891336453);
+        self.tracer.trace(room, src, lis, n_rays, energy, self.seed, out);
+        true
+    }
+}
