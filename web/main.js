@@ -239,7 +239,7 @@ const QUAL_SLIDERS = [
   { key: 'domeEvents', id: 3, label: 'dome events', min: 2, max: 6, step: 1,
     tip: 'Bounces and glass panes a dome ray may cross before giving up. Deep events carry little energy (every surface multiplies the loss), so trimming them mostly cuts cost, not sound.' },
   { key: 'points', label: 'point hrtf', min: 0, max: 32, step: 1, audio: true, section: 'audio render · per sample',
-    tip: 'The strongest N paths per source get their own nearest-HRIR convolution — the sharpest localization tier. Everything else stays fully spatialized on the ambisonic bus, so this trades focus, not audibility.' },
+    tip: 'EVERY path is binaural: bus taps encode at their arrival direction into order-2 ambisonics decoded through 20 virtual speakers, each with its measured KEMAR HRIR — full ILD/ITD, slightly blurred (±20–30°). The strongest N paths additionally get a dedicated nearest-HRIR convolution (710-direction grid): pin-sharp. The precedence effect means the loudest early paths carry localization, so sharpness goes where hearing can use it; the weak tail reads as envelopment either way. Each point tap is a per-sample convolution on the AUDIO thread — the one place the GPU cannot help — hence the budget.' },
   { key: 'ceiling', label: 'tap ceiling', min: 16, max: 160, step: 8, audio: true,
     tip: 'Maximum early-reflection taps rendered per source. A doorway can carry ~145/source and the weakest half sit below the masking threshold of the strongest. Evicted taps fade out — lowering this mid-play is click-free.' },
 ];
