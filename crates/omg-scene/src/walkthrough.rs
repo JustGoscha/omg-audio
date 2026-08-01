@@ -459,6 +459,42 @@ pub fn sources() -> [SourceDef; 11] {
 
 pub const DYN_SLOTS: usize = 6;
 
+/// Furniture (PT-early C5): solid boxes inside rooms, ROOM-LOCAL
+/// coordinates. The traced early engine shadows sources behind them
+/// (segment-validated chains + knife-edge bends); the ISM backend
+/// cannot see them — that difference IS the demo. Keep the demo-side
+/// mirror (web/main.js FURNITURE) in sync.
+pub fn furniture(room: usize) -> &'static [omg_core::pt::Aabb] {
+    use omg_core::pt::Aabb;
+    use omg_core::vec3::Vec3;
+    const fn boxy(x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32) -> Aabb {
+        Aabb { min: Vec3 { x: x0, y: y0, z: z0 }, max: Vec3 { x: x1, y: y1, z: z1 } }
+    }
+    // Cathedral nave (16 x 22 x 15 local): two colonnades of three
+    // stone pillars; the flute stands mid-nave at local (8, 14).
+    static CATHEDRAL_F: [omg_core::pt::Aabb; 6] = [
+        boxy(4.0, 5.0, 0.0, 5.0, 6.0, 9.0),
+        boxy(4.0, 10.5, 0.0, 5.0, 11.5, 9.0),
+        boxy(4.0, 16.0, 0.0, 5.0, 17.0, 9.0),
+        boxy(11.0, 5.0, 0.0, 12.0, 6.0, 9.0),
+        boxy(11.0, 10.5, 0.0, 12.0, 11.5, 9.0),
+        boxy(11.0, 16.0, 0.0, 12.0, 17.0, 9.0),
+    ];
+    // Club (10 x 12 local): the bar counter along the west wall.
+    static CLUB_F: [omg_core::pt::Aabb; 1] = [boxy(1.0, 3.0, 0.0, 2.0, 7.5, 1.1)];
+    // Living room (8 x 6 local): sofa mid-room + a tall cabinet.
+    static LIVING_F: [omg_core::pt::Aabb; 2] = [
+        boxy(2.0, 4.4, 0.0, 4.2, 5.3, 0.75),
+        boxy(6.8, 0.3, 0.0, 7.7, 2.3, 1.9),
+    ];
+    match room {
+        CATHEDRAL => &CATHEDRAL_F,
+        CLUB => &CLUB_F,
+        LIVING => &LIVING_F,
+        _ => &[],
+    }
+}
+
 /// (time s, x, y) — piecewise-linear listener path.
 /// Lingers near the music, walks the corridor, pauses at the narrator,
 /// then leaves through the exterior door into open air.

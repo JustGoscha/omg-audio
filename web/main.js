@@ -34,6 +34,21 @@ const DOORS = [
   { pos: [8, 52], axis: 1, hw: 1.2, h: 3.5 }, // cathedral portal (grand)
   { pos: [31.4, 7], axis: 0, hw: 0.7, h: 2.0, steel: true }, // bunker blast door
 ];
+// Furniture (PT-early C5): world-coord mirror of walkthrough.rs
+// furniture() — solid boxes the traced early engine shadows sources
+// behind. [min x,y,z, max x,y,z, color]
+const FURNITURE = [
+  // cathedral colonnades (local +0,+52), 9 m stone pillars
+  [4, 57, 0, 5, 58, 9, 0x3d3d49], [4, 62.5, 0, 5, 63.5, 9, 0x3d3d49],
+  [4, 68, 0, 5, 69, 9, 0x3d3d49],
+  [11, 57, 0, 12, 58, 9, 0x3d3d49], [11, 62.5, 0, 12, 63.5, 9, 0x3d3d49],
+  [11, 68, 0, 12, 69, 9, 0x3d3d49],
+  // club bar counter (local +22,+26)
+  [23, 29, 0, 24, 33.5, 1.1, 0x3a2a1e],
+  // living room: sofa + tall cabinet
+  [2, 4.4, 0, 4.2, 5.3, 0.75, 0x584032],
+  [6.8, 0.3, 0, 7.7, 2.3, 1.9, 0x4a3626],
+];
 const DOOR_HALF = 0.55;
 const DOOR_H = 2.1;
 // windows: glass — visible, not walkable; direct sound passes lightly damped
@@ -434,7 +449,12 @@ function crossesWall(x0, y0, x1, y1, z = 1.6) {
 
 function walkableMove(x0, y0, x1, y1) {
   if (x1 < WORLD.min[0] || x1 > WORLD.max[0] || y1 < WORLD.min[1] || y1 > WORLD.max[1]) return false;
-  return !crossesWall(x0, y0, x1, y1, (state.pose.z || 0) + 1.0);
+  const z = state.pose.z || 0;
+  for (const f of FURNITURE) {
+    if (x1 > f[0] - 0.25 && x1 < f[3] + 0.25 && y1 > f[1] - 0.25 && y1 < f[4] + 0.25
+        && z < f[5] - 0.2) return false;
+  }
+  return !crossesWall(x0, y0, x1, y1, z + 1.0);
 }
 
 // ------------------------------------------------------------ three scene
@@ -914,6 +934,15 @@ function buildWorld() {
   pit.rotation.x = -Math.PI / 2;
   pit.position.copy(v3(33.25, 7, 0.015));
   scene.add(pit);
+  // furniture: the traced early engine's occluders, made visible
+  for (const f of FURNITURE) {
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(f[3] - f[0], f[5] - f[2], f[4] - f[1]),
+      new THREE.MeshLambertMaterial({ color: f[6] }),
+    );
+    box.position.copy(v3((f[0] + f[3]) / 2, (f[1] + f[4]) / 2, (f[2] + f[5]) / 2));
+    scene.add(box);
+  }
   // stairs down the shaft (walkable height stays the smooth ramp)
   const stepMat = new THREE.MeshLambertMaterial({ color: 0x40453f });
   for (let i = 0; i < 10; i++) {

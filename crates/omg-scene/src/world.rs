@@ -378,6 +378,7 @@ impl WorldSim {
                         state.yaw,
                         routed.extra_dist,
                         routed.muffle,
+                        walkthrough::furniture(state.room),
                     )
                 };
                 // Door-routed sound radiates FROM the doorway: whatever

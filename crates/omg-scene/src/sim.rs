@@ -109,7 +109,7 @@ impl Sim {
     }
 
     pub fn update(&mut self, room: &Shoebox, src: Vec3, listener: Vec3, yaw: f32) -> ParamBlock {
-        self.update_routed(room, src, listener, yaw, 0.0, [1.0; NBANDS])
+        self.update_routed(room, src, listener, yaw, 0.0, [1.0; NBANDS], &[])
     }
 
     /// One tick: room-local source/listener positions + listener yaw
@@ -124,6 +124,7 @@ impl Sim {
         yaw: f32,
         extra_dist: f32,
         muffle: [f32; NBANDS],
+        occluders: &[omg_core::pt::Aabb],
     ) -> ParamBlock {
         if crate::quality::early_traced() {
             // PT-early (Track C): discovered chains, exact solves. Same
@@ -131,7 +132,7 @@ impl Sim {
             // (yaw rotation, portal folding, renderer) is unchanged.
             let id = self.id;
             let cache = self.pt.get_or_insert_with(|| crate::early::PathCache::new(id));
-            cache.update(room, src, listener, &[], &mut self.taps_buf);
+            cache.update(room, src, listener, occluders, &mut self.taps_buf);
         } else {
             image_source_taps(room, src, listener, crate::quality::tier().ism_order(), &mut self.taps_buf);
         }
