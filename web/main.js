@@ -1345,7 +1345,7 @@ async function startAudio() {
     // high is audible (breakup until the first shed), the cost of
     // starting too low is a few seconds of soft focus nobody notices.
     state.quality = {
-      auto: !(qp in tiers), tier: tiers[qp] ?? 2, calm: 0, forced: '',
+      auto: !(qp in tiers), tier: tiers[qp] ?? 2, calm: 0, hot: 0, forced: '',
       mode: qp in tiers ? (qp === 'medium' ? 'med' : qp) : 'auto',
     };
     worker.postMessage({ type: 'quality', tier: state.quality.tier });
@@ -1393,10 +1393,21 @@ async function startAudio() {
         q.calm = 0;
         q.forced = `tick ${e.data.tickMs.toFixed(0)}ms`;
         worker.postMessage({ type: 'quality', tier: q.tier });
+      } else if (state.debug.load > 0.8 && q.tier < 2) {
+        // sustained audio pressure sheds the sim tier too — a lower
+        // tier means fewer taps at the source of the pipeline
+        if (++q.hot >= 20) { // ~1 s of ticks over 80%
+          q.hot = 0;
+          q.tier++;
+          q.calm = 0;
+          q.forced = `load ${(state.debug.load * 100).toFixed(0)}%`;
+          worker.postMessage({ type: 'quality', tier: q.tier });
+        }
       } else if (e.data.tickMs < 15 && q.tier > 0) {
         // climb only with AUDIO headroom too: a higher tier raises tap
         // counts, and the render load must never be pushed past 90%
-        if (state.debug.load >= 0.9) {
+        q.hot = 0;
+        if (state.debug.load >= 0.8) {
           q.calm = 0;
         } else if (++q.calm >= 200) { // 200 ticks ≈ 10 s
           q.tier--;

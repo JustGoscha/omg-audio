@@ -85,12 +85,27 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.ready = true;
       this.port.postMessage({ type: 'ready' });
     } else if (m.type === 'params' && this.ready) {
+      let incoming = 0;
       m.blocks.forEach((buf, i) => {
         const f = new Float32Array(buf);
+        incoming += Math.max(0, (f.length - 24) / 9); // taps in this block
         const ptr = this.w.eng_param_buf_ptr();
         new Float32Array(this.w.memory.buffer, ptr, f.length).set(f);
         this.w.eng_set_params(i, f.length);
       });
+      // FEED-FORWARD shed: a doorway surge (club vestibule: ~700 taps
+      // vs ~100 in the open) is visible HERE, before a single sample
+      // renders at the new density — don't wait for the load window to
+      // measure the damage. The ceiling governor recovers afterwards.
+      if (!this.manual && incoming > 420 && (this.budget > this.BUDGET_MIN
+          || this.ceilIdx < this.CEILINGS.length - 1)) {
+        this.budget = this.BUDGET_MIN;
+        this.ceilIdx = this.CEILINGS.length - 1;
+        this.w.eng_set_point_budget(this.budget);
+        this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+        this.loadMs = 0;
+        this.loadFrames = 0;
+      }
     } else if (m.type === 'head' && this.ready) {
       this.w.eng_set_head(m.yaw, m.pitch || 0, m.roll || 0);
     } else if (m.type === 'rain' && this.ready) {
@@ -177,23 +192,23 @@ class OmgProcessor extends AudioWorkletProcessor {
     this.w.eng_process(n);
     this.loadMs += Date.now() - t0; // 1 ms quantization averages out over the window
     this.loadFrames += n;
-    // 1 s adaptation window: a sudden squeeze (camera turns on, thermal
-    // throttle) must shed point-render load before it audibly starves
-    // the output, not 4 s later.
-    if (this.loadFrames >= sampleRate) {
+    // 0.25 s adaptation window: a sudden squeeze (doorway tap surge,
+    // camera turns on, thermal throttle) must shed before it audibly
+    // starves the output — a 1 s window measured the damage instead of
+    // preventing it (field report: club doors, load pinned over 90).
+    if (this.loadFrames >= sampleRate / 4) {
       const ratio = this.loadMs / (this.loadFrames / sampleRate * 1000);
       this.loadRatio = ratio; // exposed via the meters message
       if (this.manual) {
         // tuning panel holds the levers: keep metering, don't govern
-      } else if (ratio > 0.85) {
-        // emergency: the render is close to (or past) realtime — shed to
-        // the floor NOW; audible breakup costs more than soft focus
-        if (this.budget > this.BUDGET_MIN) {
+      } else if (ratio > 0.80) {
+        // emergency: shed BOTH levers to the floor NOW — audible
+        // breakup costs more than soft focus, and a doorway surge
+        // outruns one-rung-per-window politeness
+        if (this.budget > this.BUDGET_MIN || this.ceilIdx < this.CEILINGS.length - 1) {
           this.budget = this.BUDGET_MIN;
+          this.ceilIdx = this.CEILINGS.length - 1;
           this.w.eng_set_point_budget(this.budget);
-        } else if (this.ceilIdx < this.CEILINGS.length - 1) {
-          // sharpness floor wasn't enough: shed tap density a tier
-          this.ceilIdx++;
           this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
         }
       } else if (ratio > 0.55 && this.budget > this.BUDGET_MIN) {
@@ -201,14 +216,22 @@ class OmgProcessor extends AudioWorkletProcessor {
         this.w.eng_set_point_budget(this.budget);
       } else if (ratio < 0.30) {
         // recover density before sharpness: full tap coverage at soft
-        // focus beats razor focus on a thinned field
-        if (this.ceilIdx > (this.ceilFloor || 0)) {
-          this.ceilIdx--;
-          this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
-        } else if (this.budget < this.BUDGET_MAX) {
-          this.budget = Math.min(this.BUDGET_MAX, this.budget + 4);
-          this.w.eng_set_point_budget(this.budget);
+        // focus beats razor focus on a thinned field. Climb at the old
+        // ~1 s cadence (4 consecutive calm windows) — shedding got 4×
+        // faster, recovery must not oscillate against it.
+        this.calmWins = (this.calmWins || 0) + 1;
+        if (this.calmWins >= 4) {
+          this.calmWins = 0;
+          if (this.ceilIdx > (this.ceilFloor || 0)) {
+            this.ceilIdx--;
+            this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+          } else if (this.budget < this.BUDGET_MAX) {
+            this.budget = Math.min(this.BUDGET_MAX, this.budget + 4);
+            this.w.eng_set_point_budget(this.budget);
+          }
         }
+      } else {
+        this.calmWins = 0;
       }
       this.loadMs = 0;
       this.loadFrames = 0;
