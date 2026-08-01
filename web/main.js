@@ -121,8 +121,9 @@ const MIXER = [
   { name: 'radio', srcs: [4], base: 80, def: 64, meters: [4], spl: true },
   { name: 'balls', srcs: [5, 6, 7], base: 89, def: 89, meters: [5, 6, 7], spl: true },
   { name: 'cars', srcs: [8, 9], base: 92, def: 86, meters: [8, 9], spl: true },
-  { name: 'ambience', target: 'ambient', def: -16, meters: [10] },
-  { name: 'rain', target: 'rainGain', def: 0, meters: [11] },
+  { name: 'steps', srcs: [10], base: 78, def: 70, meters: [10], spl: true },
+  { name: 'ambience', target: 'ambient', def: -16, meters: [11] },
+  { name: 'rain', target: 'rainGain', def: 0, meters: [12] },
   { name: 'master', target: 'master', def: 0, meters: 'lr' },
 ];
 const SPL_MIN = 20, SPL_MAX = 130, TRIM_MIN = -30, TRIM_MAX = 12;
@@ -1176,8 +1177,16 @@ async function startAudio() {
     })(),
   ]);
   state.motors = [m0, m1, m2, m3]; // CC0 motor loops, swapped per spawn
-  // projectile slots: fx voices only (one buffer each — transferables)
-  const silents = [new Float32Array(480), new Float32Array(480), new Float32Array(480)];
+  // Footsteps (CC0, Kenney "Impact Sounds"): 4 surfaces × 5 variants,
+  // played as fx one-shots on the dedicated feet source, so each step
+  // picks up the room's real acoustics (parquet knock + hall reverb).
+  const steps = await Promise.all(
+    STEP_SURFACES.flatMap((surf) => [0, 1, 2, 3, 4].map((v) =>
+      fetchBuf(`../assets/steps/${surf}_${v}.ogg`).then((b) => decodeMono(b, 0.5)))),
+  );
+  // projectile slots + feet: fx voices only (one buffer each — transferables)
+  const silents = [new Float32Array(480), new Float32Array(480), new Float32Array(480),
+                   new Float32Array(480)];
 
   await audio.audioWorklet.addModule('worklet.js');
   const node = new AudioWorkletNode(audio, 'omg-engine', {
@@ -1197,12 +1206,13 @@ async function startAudio() {
     { type: 'wasm', bytes: wasm1, grid, speakers,
       sources: [aria.buffer, alice.buffer, club.buffer, flute.buffer, radio.buffer,
                 silents[0].buffer, silents[1].buffer, silents[2].buffer,
-                m0.buffer, m1.buffer],
-      fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer],
+                m0.buffer, m1.buffer, silents[3].buffer],
+      fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer)],
       ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,
-     radio.buffer, silents[0].buffer, silents[1].buffer, silents[2].buffer,
-     whistle.buffer, thumpFx.buffer, boomFx.buffer, ambience.buffer, drops.buffer],
+     radio.buffer, silents[0].buffer, silents[1].buffer, silents[2].buffer, silents[3].buffer,
+     whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
+     ambience.buffer, drops.buffer],
   );
   await new Promise((res, rej) => {
     const watchdog = setTimeout(
@@ -1234,7 +1244,7 @@ async function startAudio() {
           const now = performance.now() / 1000;
           const peak = Math.max(e.data.l, e.data.r);
           let srcRms = 0;
-          for (let i = 0; i < 20; i += 2) srcRms = Math.max(srcRms, e.data.chans[i + 1]);
+          for (let i = 0; i < 22; i += 2) srcRms = Math.max(srcRms, e.data.chans[i + 1]);
           bb.ring.push({
             t: +now.toFixed(2), peak: +peak.toFixed(5), agc: +e.data.agc.toFixed(3),
             tts: +(e.data.tts || 0).toFixed(2), src: +srcRms.toFixed(5),
@@ -1274,7 +1284,7 @@ async function startAudio() {
           const d = e.data.dbg || [];
           let taps = 0;
           let gain = 0;
-          for (let i = 0; i < 10; i++) {
+          for (let i = 0; i < 11; i++) {
             taps += d[i * 5] || 0;
             gain += d[i * 5 + 2] || 0;
           }
@@ -1395,6 +1405,9 @@ async function startAudio() {
       projs: [
         ...state.projs.map((p) => [p.slot, p.x, p.y, p.z]),
         ...state.cars.map((c) => [c.slot, c.x, c.y, 0.7, c.vol]),
+        // feet: always-active silent source at ground level under the
+        // body (step one-shots mix into it as fx voices)
+        [5, state.pose.x, state.pose.y, Math.max(0.2, (state.pose.z || 0) + 0.2), 1],
       ],
     });
   }, 50);
@@ -1721,6 +1734,35 @@ function movePose(t) {
   } else if (walkableMove(x, y, x, ny)) {
     state.pose.y = ny;
   }
+  strideStep(Math.hypot(state.pose.x - x, state.pose.y - y));
+}
+
+// ------------------------------------------------------------ footsteps
+// Distance-driven, not time-driven: every ~stride of actual horizontal
+// travel lands one step at the feet source (dyn slot 5, source 10),
+// which sits at ground level under the body — the engine gives each
+// step the room's own acoustics for free. Surface from the room map.
+const STEP_SURFACES = ['wood', 'carpet', 'concrete', 'grass'];
+const ROOM_SURFACE = {
+  'Living Room': 'wood', Corridor: 'wood', 'Great Hall': 'concrete',
+  Entrance: 'concrete', Club: 'concrete', 'Old House': 'wood',
+  'Old House Upper': 'carpet', Cathedral: 'concrete', Bunker: 'concrete',
+  Outside: 'grass',
+};
+let strideAcc = 0;
+let strideNext = 0.72;
+let lastVariant = -1;
+function strideStep(d) {
+  strideAcc += d;
+  if (strideAcc < strideNext || !state.fx) return;
+  strideAcc = 0;
+  strideNext = 0.65 + Math.random() * 0.15; // no metronome feet
+  const room = state.simState ? ROOMS[state.simState[2] | 0] : null;
+  const surf = ROOM_SURFACE[room ? room.name : 'Outside'] || 'concrete';
+  let v = (Math.random() * 5) | 0;
+  if (v === lastVariant) v = (v + 1) % 5; // never the same step twice
+  lastVariant = v;
+  state.fx(10, 3 + STEP_SURFACES.indexOf(surf) * 5 + v);
 }
 
 // ------------------------------------------------------------ render loop
@@ -1797,9 +1839,9 @@ function frame(t) {
 // visible at a glance instead of reconstructed from ear-memory.
 
 const DBG_NAMES = ['music', 'voice', 'club', 'flute', 'radio',
-  'ball0', 'ball1', 'ball2', 'car0', 'car1', 'amb', 'rain'];
+  'ball0', 'ball1', 'ball2', 'car0', 'car1', 'feet', 'amb', 'rain'];
 const DBG_COLORS = ['#ffaa3c', '#6ee0a0', '#ff5a9e', '#9ad2ff', '#d2b06e',
-  '#fff1a8', '#fff1a8', '#fff1a8', '#7ad7ff', '#7ad7ff', '#8a95ff', '#59c9e8'];
+  '#fff1a8', '#fff1a8', '#fff1a8', '#7ad7ff', '#7ad7ff', '#ddd6c9', '#8a95ff', '#59c9e8'];
 
 function dbgSourceDist(i) {
   if (i < 5) {
@@ -1831,13 +1873,13 @@ function drawDebug() {
   g.fillStyle = '#7a8496';
   g.fillText('source    dB  taps  fdn  rem    d', 14, 30);
   let y = 54;
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 13; i++) {
     const rms = chans[i * 2 + 1] || 0;
     const audible = rms > 1e-5;
     g.fillStyle = audible ? DBG_COLORS[i] : '#3a4456';
     let line = DBG_NAMES[i].padEnd(7)
       + db(rms).toFixed(0).padStart(5);
-    if (i < 10) {
+    if (i < 11) {
       const live = dbg[i * 5] || 0;
       const pts = dbg[i * 5 + 1] || 0;
       const fdn = dbg[i * 5 + 3] || 0;

@@ -403,7 +403,7 @@ pub struct SourceDef {
 pub const CLUB_SPEAKERS: [(f32, f32); 4] =
     [(23.5, 27.5), (30.5, 27.5), (23.5, 36.5), (30.5, 36.5)];
 
-pub fn sources() -> [SourceDef; 10] {
+pub fn sources() -> [SourceDef; 11] {
     [
         SourceDef {
             name: "music",
@@ -450,10 +450,14 @@ pub fn sources() -> [SourceDef; 10] {
         SourceDef { name: "ball2", pos: (0.0, 0.0), room: OUTSIDE, gain: 0.9, emitters: &[(0.0, 0.0)] },
         SourceDef { name: "car0", pos: (-18.0, 0.0), room: OUTSIDE, gain: 2.2, emitters: &[(-18.0, 0.0)] },
         SourceDef { name: "car1", pos: (-18.0, 0.0), room: OUTSIDE, gain: 2.2, emitters: &[(-18.0, 0.0)] },
+        // The listener's own feet: footstep one-shots placed at ground
+        // level under the walker, so steps pick up each room's acoustics
+        // (parquet knock + hall reverb) with zero special-casing.
+        SourceDef { name: "feet", pos: (0.0, 0.0), room: OUTSIDE, gain: 1.0, emitters: &[(0.0, 0.0)] },
     ]
 }
 
-pub const DYN_SLOTS: usize = 5;
+pub const DYN_SLOTS: usize = 6;
 
 /// (time s, x, y) — piecewise-linear listener path.
 /// Lingers near the music, walks the corridor, pauses at the narrator,
