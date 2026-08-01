@@ -345,22 +345,30 @@ impl Sim {
     pub fn reverb_world(
         &mut self,
         world: &impl omg_core::scene::AcousticGeometry,
+        panels: &[(Vec3, Vec3, Material)],
         src: Vec3,
         receiver: Vec3,
         budget: &mut i32,
     ) -> (omg_core::params::ReverbParams, [f32; 3], f32) {
-        if *budget > 0 && self.gate.should_trace(src, receiver, [1.0; NBANDS]) {
+        // An async backend's earlier job may land now (web driver);
+        // otherwise trace within budget via the world seam (GPU kernel
+        // K2 when registered, inline CPU tracer when not).
+        let mut traced = crate::late::poll_into(self.id, &mut self.echo_cur);
+        if !traced && *budget > 0 && self.gate.should_trace(src, receiver, [1.0; NBANDS]) {
             *budget -= 1;
             let rays = crate::quality::tier().world_rays();
-            omg_core::tracer::trace(
+            traced = crate::late::run_trace_world(
+                self.id,
                 world,
                 src,
                 receiver,
                 rays,
-                [1.0; NBANDS],
+                panels,
                 &mut self.rng,
                 &mut self.echo_cur,
             );
+        }
+        if traced {
             let alpha = if self.version == 0 { 1.0 } else { 0.3 };
             self.echo_avg.ema(&self.echo_cur, alpha);
         }

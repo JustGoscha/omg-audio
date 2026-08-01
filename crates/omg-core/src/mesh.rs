@@ -417,6 +417,26 @@ impl Mesh {
         (b - a).cross(c - a).normalize()
     }
 
+    /// GPU flatten (C6d): the BVH exactly as traversal sees it — nodes in
+    /// storage order (leaf when `a & GPU_LEAF_BIT`; prims start at
+    /// `a & !GPU_LEAF_BIT`, count `b`; internal: `a`/`b` are child
+    /// indices), then packed prims as (vertex a, edges e1/e2, material
+    /// index). A GPU kernel walking this layout replays `raycast`.
+    pub const GPU_LEAF_BIT: u32 = LEAF_BIT;
+
+    pub fn visit_bvh(
+        &self,
+        node: &mut dyn FnMut(Vec3, Vec3, u32, u32),
+        prim: &mut dyn FnMut(Vec3, Vec3, Vec3, u16),
+    ) {
+        for n in &self.nodes {
+            node(n.bmin, n.bmax, n.a, n.b);
+        }
+        for p in &self.packed {
+            prim(p.a, p.e1, p.e2, p.material);
+        }
+    }
+
     /// Nearest hit along a normalized ray. Also see `AcousticGeometry`.
     pub fn raycast(&self, o: Vec3, d: Vec3) -> Option<(f32, u32)> {
         if self.nodes.is_empty() {

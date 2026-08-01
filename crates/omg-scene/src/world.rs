@@ -601,8 +601,13 @@ impl WorldSim {
                     base: &self.dome.mesh,
                     panels: &self.late_panels,
                 };
-                let (rp, ldir, aniso) =
-                    self.world_late[si].reverb_world(&world, src0, eye, &mut late_budget);
+                let (rp, ldir, aniso) = self.world_late[si].reverb_world(
+                    &world,
+                    &self.late_panels,
+                    src0,
+                    eye,
+                    &mut late_budget,
+                );
                 pb.reverb.rt60 = rp.rt60;
                 let a = aniso.clamp(0.0, 0.9);
                 pb.reverb.level =

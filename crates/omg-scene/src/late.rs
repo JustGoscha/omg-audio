@@ -14,8 +14,9 @@
 //! the door open: batching + async collection become worthwhile in
 //! phase 5 when one submission carries every source's trace.
 
+use omg_core::material::Material;
 use omg_core::rng::Rng;
-use omg_core::scene::Shoebox;
+use omg_core::scene::{AcousticGeometry, Shoebox};
 use omg_core::tracer::{trace, Echogram};
 use omg_core::vec3::Vec3;
 use omg_core::NBANDS;
@@ -68,6 +69,58 @@ pub(crate) fn poll_into(id: u32, out: &mut Echogram) -> bool {
     match guard.as_mut() {
         Some(b) => b.poll_into(id, out),
         None => false,
+    }
+}
+
+/// C6d: the WORLD late-field executor — the same seam contract as
+/// `LateBackend`, over the world mesh instead of a shoebox. The mesh
+/// itself lives with the backend (uploaded once at registration); per
+/// call only the pose and the panel overlays (door leaves, panes)
+/// travel. `rays` is the CPU budget — a GPU implementation is free to
+/// multiply it (variance, never bias).
+pub trait WorldLateBackend: Send {
+    fn trace_world(
+        &mut self,
+        id: u32,
+        src: Vec3,
+        lis: Vec3,
+        rays: u32,
+        panels: &[(Vec3, Vec3, Material)],
+        out: &mut Echogram,
+    ) -> bool;
+}
+
+static WORLD_BACKEND: Mutex<Option<Box<dyn WorldLateBackend>>> = Mutex::new(None);
+
+pub fn set_world_late_backend(b: Box<dyn WorldLateBackend>) {
+    *WORLD_BACKEND.lock().unwrap() = Some(b);
+}
+
+pub fn clear_world_late_backend() {
+    *WORLD_BACKEND.lock().unwrap() = None;
+}
+
+/// Route one WORLD trace: the registered backend if any, else the
+/// inline CPU tracer over `world` (which already carries the panel
+/// overlays via `WithPanels`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_trace_world(
+    id: u32,
+    world: &impl AcousticGeometry,
+    src: Vec3,
+    lis: Vec3,
+    rays: u32,
+    panels: &[(Vec3, Vec3, Material)],
+    rng: &mut Rng,
+    out: &mut Echogram,
+) -> bool {
+    let mut guard = WORLD_BACKEND.lock().unwrap();
+    match guard.as_mut() {
+        Some(b) => b.trace_world(id, src, lis, rays, panels, out),
+        None => {
+            trace(world, src, lis, rays, [1.0; NBANDS], rng, out);
+            true
+        }
     }
 }
 

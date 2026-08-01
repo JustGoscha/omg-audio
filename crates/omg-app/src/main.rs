@@ -205,6 +205,15 @@ fn main() {
                     omg_scene::early::set_early_discovery(Box::new(d));
                     println!("early discovery: GPU (wgpu)");
                 }
+                // C6d: the world-mesh late kernel (K2) — traced mode's
+                // one-trace-per-tick slot runs 8× denser on the GPU.
+                let rooms = omg_scene::walkthrough::rooms();
+                let doors = omg_scene::walkthrough::doors();
+                let (mesh, _) = omg_scene::dome::build_world_mesh(&rooms, &doors);
+                if let Some(w) = omg_gpu::GpuWorldLateBackend::new(&mesh) {
+                    omg_scene::late::set_world_late_backend(Box::new(w));
+                    println!("world late field: GPU (wgpu K2, 8x ray budget)");
+                }
             }
             None => println!("late field: CPU (OMG_GPU=1 but no adapter)"),
         }

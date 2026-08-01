@@ -78,6 +78,106 @@ impl GpuTraceJob {
     }
 }
 
+// ------------------------------------------------ C6d: world-mesh trace
+
+/// Bump on ANY change to the mesh-kernel structs here or in
+/// trace_mesh.wgsl — the web driver checks it like LAYOUT_VERSION.
+pub const MESH_LAYOUT_VERSION: u32 = 1;
+/// Panel slots in the panels buffer (door leaves + panes; the demo
+/// world has ~17 apertures).
+pub const MAX_PANELS: usize = 32;
+
+/// One BVH node, exactly as `Mesh` traverses it. WGSL: bmin @0, a @12,
+/// bmax @16, b @28 — 32 B.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuBvhNode {
+    pub bmin: [f32; 3],
+    /// Leaf: `GPU_LEAF_BIT | prim_start`; internal: left child index.
+    pub a: u32,
+    pub bmax: [f32; 3],
+    /// Leaf: prim count; internal: right child index.
+    pub b: u32,
+}
+
+/// One packed primitive (vertex + two edges, Möller–Trumbore form).
+/// WGSL: a @0, mat @12, e1 @16, e2 @32 — 48 B.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuPrim {
+    pub a: [f32; 3],
+    pub mat: u32,
+    pub e1: [f32; 3],
+    pub _p0: u32,
+    pub e2: [f32; 3],
+    pub _p1: u32,
+}
+
+/// A transient overlay box (door leaf, glass pane) with INLINE
+/// acoustics — panel materials need not exist in the mesh's material
+/// table. WGSL: pmin @0, scattering @12, pmax @16, absorption @32 — 48 B.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuPanel {
+    pub pmin: [f32; 3],
+    pub scattering: f32,
+    pub pmax: [f32; 3],
+    pub _p0: u32,
+    pub absorption: [f32; 3],
+    pub _p1: u32,
+}
+
+/// The world-trace job uniform. WGSL: n_rays @0, seed @4, n_panels @8,
+/// source @16, listener @32, energy @48 — 64 B.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuMeshJob {
+    pub n_rays: u32,
+    pub seed: u32,
+    pub n_panels: u32,
+    pub _p0: u32,
+    pub source: [f32; 3],
+    pub _p1: u32,
+    pub listener: [f32; 3],
+    pub _p2: u32,
+    pub energy: [f32; 3],
+    pub _p3: u32,
+}
+
+/// Flatten a mesh's BVH + materials into the kernel's buffers.
+pub fn flatten_mesh(
+    mesh: &omg_core::mesh::Mesh,
+) -> (Vec<GpuBvhNode>, Vec<GpuPrim>, Vec<GpuFace>) {
+    let mut nodes = Vec::new();
+    let mut prims = Vec::new();
+    mesh.visit_bvh(
+        &mut |bmin, bmax, a, b| {
+            nodes.push(GpuBvhNode {
+                bmin: [bmin.x, bmin.y, bmin.z],
+                a,
+                bmax: [bmax.x, bmax.y, bmax.z],
+                b,
+            });
+        },
+        &mut |a, e1, e2, m| {
+            prims.push(GpuPrim {
+                a: [a.x, a.y, a.z],
+                mat: m as u32,
+                e1: [e1.x, e1.y, e1.z],
+                _p0: 0,
+                e2: [e2.x, e2.y, e2.z],
+                _p1: 0,
+            });
+        },
+    );
+    let mats = mesh
+        .materials
+        .iter()
+        .map(|m| GpuFace { absorption: m.absorption, scattering: m.scattering })
+        .collect();
+    (nodes, prims, mats)
+}
+
 /// Decode the kernel's fixed-point output buffers into an Echogram.
 pub fn decode_echogram(bins: &[u32], dirs: &[i32], out: &mut omg_core::tracer::Echogram) {
     out.clear();
@@ -106,5 +206,21 @@ mod tests {
         assert_eq!(core::mem::offset_of!(GpuTraceJob, energy), 48);
         assert_eq!(core::mem::offset_of!(GpuTraceJob, faces), 64);
         assert_eq!(NBINS, 300);
+    }
+
+    #[test]
+    fn mesh_layout_sizes() {
+        assert_eq!(core::mem::size_of::<GpuBvhNode>(), 32);
+        assert_eq!(core::mem::offset_of!(GpuBvhNode, a), 12);
+        assert_eq!(core::mem::offset_of!(GpuBvhNode, bmax), 16);
+        assert_eq!(core::mem::size_of::<GpuPrim>(), 48);
+        assert_eq!(core::mem::offset_of!(GpuPrim, e1), 16);
+        assert_eq!(core::mem::offset_of!(GpuPrim, e2), 32);
+        assert_eq!(core::mem::size_of::<GpuPanel>(), 48);
+        assert_eq!(core::mem::offset_of!(GpuPanel, absorption), 32);
+        assert_eq!(core::mem::size_of::<GpuMeshJob>(), 64);
+        assert_eq!(core::mem::offset_of!(GpuMeshJob, source), 16);
+        assert_eq!(core::mem::offset_of!(GpuMeshJob, listener), 32);
+        assert_eq!(core::mem::offset_of!(GpuMeshJob, energy), 48);
     }
 }

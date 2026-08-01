@@ -4,11 +4,17 @@
 
 pub mod layout;
 
-use layout::{decode_echogram, GpuTraceJob, BINS_LEN, DIRS_LEN};
+use layout::{
+    decode_echogram, flatten_mesh, GpuMeshJob, GpuPanel, GpuTraceJob, BINS_LEN, DIRS_LEN,
+    MAX_PANELS,
+};
+use omg_core::material::Material;
+use omg_core::mesh::Mesh;
 use omg_core::scene::Shoebox;
 use omg_core::tracer::Echogram;
 use omg_core::vec3::Vec3;
 use omg_core::NBANDS;
+use wgpu::util::DeviceExt;
 
 pub struct GpuTracer {
     device: wgpu::Device,
@@ -163,6 +169,249 @@ impl GpuTracer {
         self.read_bins.unmap();
         self.read_dirs.unmap();
         decode_echogram(&bins, &dirs, out);
+    }
+}
+
+/// C6d kernel K2: the world-mesh tracer. The BVH, prims and material
+/// table upload ONCE (the world is static); per job only the 64-byte
+/// uniform and the panel overlay buffer (door leaves swing) change.
+pub struct GpuMeshTracer {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipeline: wgpu::ComputePipeline,
+    job_buf: wgpu::Buffer,
+    panels_buf: wgpu::Buffer,
+    bins_buf: wgpu::Buffer,
+    dirs_buf: wgpu::Buffer,
+    read_bins: wgpu::Buffer,
+    read_dirs: wgpu::Buffer,
+    bind: wgpu::BindGroup,
+}
+
+impl GpuMeshTracer {
+    pub fn new(mesh: &Mesh) -> Option<Self> {
+        pollster::block_on(Self::new_async(mesh))
+    }
+
+    async fn new_async(mesh: &Mesh) -> Option<Self> {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            })
+            .await
+            .ok()?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("omg-gpu-mesh"),
+                ..Default::default()
+            })
+            .await
+            .ok()?;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("trace_mesh"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/trace_mesh.wgsl").into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("trace_mesh"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("trace"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let (nodes, prims, mats) = flatten_mesh(mesh);
+        if nodes.is_empty() || prims.is_empty() {
+            return None;
+        }
+        let static_buf = |label: &str, bytes: &[u8]| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+            })
+        };
+        let nodes_buf = static_buf("mesh-nodes", bytemuck::cast_slice(&nodes));
+        let prims_buf = static_buf("mesh-prims", bytemuck::cast_slice(&prims));
+        let mats_buf = static_buf("mesh-mats", bytemuck::cast_slice(&mats));
+
+        let job_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("mesh-job"),
+            size: core::mem::size_of::<GpuMeshJob>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let panels_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("mesh-panels"),
+            size: (MAX_PANELS * core::mem::size_of::<GpuPanel>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let out_buf = |label: &str, words: usize| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: (words * 4) as u64,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+        };
+        let bins_buf = out_buf("mesh-bins", BINS_LEN);
+        let dirs_buf = out_buf("mesh-dirs", DIRS_LEN);
+        let read_buf = |label: &str, words: usize| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: (words * 4) as u64,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let read_bins = read_buf("mesh-bins-read", BINS_LEN);
+        let read_dirs = read_buf("mesh-dirs-read", DIRS_LEN);
+
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("trace_mesh"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: job_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: nodes_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: prims_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: mats_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: panels_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: bins_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: dirs_buf.as_entire_binding() },
+            ],
+        });
+
+        Some(Self {
+            device,
+            queue,
+            pipeline,
+            job_buf,
+            panels_buf,
+            bins_buf,
+            dirs_buf,
+            read_bins,
+            read_dirs,
+            bind,
+        })
+    }
+
+    /// One synchronous world trace: dispatch, wait, decode.
+    pub fn trace(
+        &self,
+        src: Vec3,
+        lis: Vec3,
+        n_rays: u32,
+        energy: [f32; NBANDS],
+        seed: u32,
+        panels: &[GpuPanel],
+        out: &mut Echogram,
+    ) {
+        let n_panels = panels.len().min(MAX_PANELS);
+        let job = GpuMeshJob {
+            n_rays,
+            seed,
+            n_panels: n_panels as u32,
+            _p0: 0,
+            source: [src.x, src.y, src.z],
+            _p1: 0,
+            listener: [lis.x, lis.y, lis.z],
+            _p2: 0,
+            energy,
+            _p3: 0,
+        };
+        self.queue.write_buffer(&self.job_buf, 0, bytemuck::bytes_of(&job));
+        if n_panels > 0 {
+            self.queue
+                .write_buffer(&self.panels_buf, 0, bytemuck::cast_slice(&panels[..n_panels]));
+        }
+
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("mesh") });
+        enc.clear_buffer(&self.bins_buf, 0, None);
+        enc.clear_buffer(&self.dirs_buf, 0, None);
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("mesh"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind, &[]);
+            pass.dispatch_workgroups(n_rays.div_ceil(64), 1, 1);
+        }
+        enc.copy_buffer_to_buffer(&self.bins_buf, 0, &self.read_bins, 0, (BINS_LEN * 4) as u64);
+        enc.copy_buffer_to_buffer(&self.dirs_buf, 0, &self.read_dirs, 0, (DIRS_LEN * 4) as u64);
+        self.queue.submit([enc.finish()]);
+
+        let map = |buf: &wgpu::Buffer| {
+            buf.slice(..).map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+        };
+        map(&self.read_bins);
+        map(&self.read_dirs);
+        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+
+        let bins: Vec<u32> = {
+            let view = self.read_bins.slice(..).get_mapped_range().expect("mapped bins");
+            bytemuck::cast_slice(&view).to_vec()
+        };
+        let dirs: Vec<i32> = {
+            let view = self.read_dirs.slice(..).get_mapped_range().expect("mapped dirs");
+            bytemuck::cast_slice(&view).to_vec()
+        };
+        self.read_bins.unmap();
+        self.read_dirs.unmap();
+        decode_echogram(&bins, &dirs, out);
+    }
+}
+
+/// The world-late backend for `early=traced` (registered under
+/// OMG_GPU=1). The scene's one-trace-per-tick budget stays; the GPU
+/// just makes that one trace 8× denser for the same wall-clock class.
+pub struct GpuWorldLateBackend {
+    tracer: GpuMeshTracer,
+    seed: u32,
+}
+
+const WORLD_RAY_MULT: u32 = 8;
+const WORLD_RAY_CAP: u32 = 8192;
+
+impl GpuWorldLateBackend {
+    pub fn new(mesh: &Mesh) -> Option<Self> {
+        Some(Self { tracer: GpuMeshTracer::new(mesh)?, seed: 0x5EED_C6D1 })
+    }
+}
+
+impl omg_scene::late::WorldLateBackend for GpuWorldLateBackend {
+    fn trace_world(
+        &mut self,
+        _id: u32,
+        src: Vec3,
+        lis: Vec3,
+        rays: u32,
+        panels: &[(Vec3, Vec3, Material)],
+        out: &mut Echogram,
+    ) -> bool {
+        let gp: Vec<GpuPanel> = panels
+            .iter()
+            .take(MAX_PANELS)
+            .map(|(mn, mx, m)| GpuPanel {
+                pmin: [mn.x, mn.y, mn.z],
+                scattering: m.scattering,
+                pmax: [mx.x, mx.y, mx.z],
+                _p0: 0,
+                absorption: m.absorption,
+                _p1: 0,
+            })
+            .collect();
+        self.seed = self.seed.wrapping_mul(747796405).wrapping_add(2891336453);
+        let n = (rays * WORLD_RAY_MULT).min(WORLD_RAY_CAP);
+        self.tracer.trace(src, lis, n, [1.0; NBANDS], self.seed, &gp, out);
+        true
     }
 }
 
