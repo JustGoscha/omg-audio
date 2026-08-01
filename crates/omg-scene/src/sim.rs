@@ -7,7 +7,7 @@ use omg_core::material::Material;
 use omg_core::params::ParamBlock;
 use omg_core::rng::Rng;
 use omg_core::scene::Shoebox;
-use omg_core::tracer::{estimate_reverb, trace, Echogram};
+use omg_core::tracer::{estimate_reverb, Echogram};
 use omg_core::vec3::Vec3;
 use omg_core::{NBANDS, SPEED_OF_SOUND};
 
@@ -172,10 +172,14 @@ impl Sim {
         // spreading loss over the pre-door path).
         let src_energy: [f32; NBANDS] =
             core::array::from_fn(|b| muffle[b] * muffle[b] / (1.0 + extra_dist * extra_dist));
-        let traced = self.gate.should_trace(src, listener, src_energy) && {
-            let rays = crate::quality::tier().trace_rays();
-            crate::late::run_trace(self.id, room, src, listener, rays, src_energy, &mut self.rng, &mut self.echo_cur)
-        };
+        // An async backend's earlier job may land this tick; consuming it
+        // short-circuits the gate for one tick, which is harmless (the
+        // move/energy checks re-fire next tick).
+        let traced = crate::late::poll_into(self.id, &mut self.echo_cur)
+            || (self.gate.should_trace(src, listener, src_energy) && {
+                let rays = crate::quality::tier().trace_rays();
+                crate::late::run_trace(self.id, room, src, listener, rays, src_energy, &mut self.rng, &mut self.echo_cur)
+            });
         self.finish_update(traced)
     }
 
@@ -209,10 +213,11 @@ impl Sim {
         }
         // Reverb: one trace from the rig centroid-ish (first emitter);
         // in-room late statistics barely depend on the exact position.
-        let traced = self.gate.should_trace(emitters[0], listener, [1.0; NBANDS]) && {
-            let rays = crate::quality::tier().trace_rays();
-            crate::late::run_trace(self.id, room, emitters[0], listener, rays, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur)
-        };
+        let traced = crate::late::poll_into(self.id, &mut self.echo_cur)
+            || (self.gate.should_trace(emitters[0], listener, [1.0; NBANDS]) && {
+                let rays = crate::quality::tier().trace_rays();
+                crate::late::run_trace(self.id, room, emitters[0], listener, rays, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur)
+            });
         self.finish_update(traced)
     }
 
@@ -319,12 +324,14 @@ impl Sim {
         src: Vec3,
         receiver: Vec3,
     ) -> omg_core::params::ReverbParams {
-        if self.gate.should_trace(src, receiver, [1.0; NBANDS]) {
-            let rays = crate::quality::tier().trace_rays();
-            if crate::late::run_trace(self.id, room, src, receiver, rays, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur) {
-                let alpha = if self.version == 0 { 1.0 } else { 0.3 };
-                self.echo_avg.ema(&self.echo_cur, alpha);
-            }
+        let traced = crate::late::poll_into(self.id, &mut self.echo_cur)
+            || (self.gate.should_trace(src, receiver, [1.0; NBANDS]) && {
+                let rays = crate::quality::tier().trace_rays();
+                crate::late::run_trace(self.id, room, src, receiver, rays, [1.0; NBANDS], &mut self.rng, &mut self.echo_cur)
+            });
+        if traced {
+            let alpha = if self.version == 0 { 1.0 } else { 0.3 };
+            self.echo_avg.ema(&self.echo_cur, alpha);
         }
         self.version += 1;
         estimate_reverb(&self.echo_avg)

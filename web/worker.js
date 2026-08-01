@@ -1,7 +1,10 @@
 // Simulation worker: wasm WorldSim ticked at 20 Hz with the latest listener
 // pose from the main thread; posts flat ParamBlocks (transferred) + a small
-// state buffer for the canvas viz.
+// state buffer for the canvas viz. When WebGPU is available, the sim's
+// stochastic traces run on the GPU through gpu.js (feature-detected here in
+// the worker; any init failure keeps the inline CPU tracer).
 let w = null;
+let gpu = null;
 let pose = { x: 3.0, y: 3.0, z: 1.6, yaw: 0.0, projs: [] };
 
 onmessage = async (e) => {
@@ -10,6 +13,14 @@ onmessage = async (e) => {
     const { instance } = await WebAssembly.instantiate(m.bytes, {});
     w = instance.exports;
     w.sim_setup();
+    try {
+      const { initGpu } = await import('./gpu.js');
+      gpu = await initGpu(w);
+      if (gpu) w.sim_gpu_enable();
+      console.log(`[gpu] late field: ${gpu ? 'WebGPU' : 'CPU'}`);
+    } catch (err) {
+      console.warn('[gpu] unavailable, late field on CPU:', err);
+    }
     setInterval(tick, 50);
   } else if (m.type === 'pose') {
     pose = m;
@@ -21,6 +32,11 @@ onmessage = async (e) => {
     // 4 ISM order); value 0 hands it back to the tier
     if (w) w.sim_set_override(m.id, m.value);
   }
+};
+
+const inject = (id, echo) => {
+  new Float32Array(w.memory.buffer, w.sim_gpu_buf_ptr(), echo.length).set(echo);
+  w.sim_gpu_inject(id);
 };
 
 function tick() {
@@ -36,6 +52,7 @@ function tick() {
   const t0 = performance.now();
   w.sim_tick(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw);
   const tickMs = performance.now() - t0;
+  if (gpu) gpu.pump(w, inject);
   const blocks = [];
   for (let i = 0; i < 10; i++) {
     const len = w.sim_params_len(i);
@@ -43,6 +60,8 @@ function tick() {
     blocks.push(src.slice().buffer);
   }
   const state = new Float32Array(w.memory.buffer, w.sim_state_ptr(), w.sim_state_len()).slice();
-  postMessage({ type: 'tick', blocks, state: state.buffer, envOff: w.sim_env_off(), tickMs },
-              [...blocks, state.buffer]);
+  postMessage({
+    type: 'tick', blocks, state: state.buffer, envOff: w.sim_env_off(), tickMs,
+    gpu: gpu ? 1 : 0, gpuMs: gpu ? gpu.stats() : 0,
+  }, [...blocks, state.buffer]);
 }

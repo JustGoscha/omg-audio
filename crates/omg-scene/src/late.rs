@@ -37,6 +37,14 @@ pub trait LateBackend: Send {
         rng: &mut Rng,
         out: &mut Echogram,
     ) -> bool;
+
+    /// Asynchronous backends (the web's JS-driven WebGPU dispatch)
+    /// deliver a previously submitted trace here, one tick late — the
+    /// staleness the two-clock design already absorbs. Synchronous
+    /// backends keep the default.
+    fn poll_into(&mut self, _id: u32, _out: &mut Echogram) -> bool {
+        false
+    }
 }
 
 static BACKEND: Mutex<Option<Box<dyn LateBackend>>> = Mutex::new(None);
@@ -46,6 +54,15 @@ static BACKEND: Mutex<Option<Box<dyn LateBackend>>> = Mutex::new(None);
 /// working backend; unregistered means the inline CPU tracer.
 pub fn set_late_backend(b: Box<dyn LateBackend>) {
     *BACKEND.lock().unwrap() = Some(b);
+}
+
+/// Deliver an async backend's finished trace for `id`, if one arrived.
+pub(crate) fn poll_into(id: u32, out: &mut Echogram) -> bool {
+    let mut guard = BACKEND.lock().unwrap();
+    match guard.as_mut() {
+        Some(b) => b.poll_into(id, out),
+        None => false,
+    }
 }
 
 /// Route one trace: the registered backend if any, else the inline CPU

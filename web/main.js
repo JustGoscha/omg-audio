@@ -212,6 +212,7 @@ const QUAL_STAT_TIPS = {
   'sim tick': 'Worker-side cost of one 20 Hz simulation tick. The budget is 50 ms; above ~40 the auto governor sheds a tier.',
   'render load': 'Audio-thread render time as a share of realtime. Above 85% the worklet governor sheds to its floor.',
   gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
+  'late field': 'Where the reverb ray traces run: WebGPU when the browser exposes an adapter (with per-dispatch ms), the in-wasm CPU tracer otherwise. Identical sound either way — the GPU just buys the sim thread headroom.',
 };
 
 function buildQuality() {
@@ -269,7 +270,7 @@ function buildQuality() {
 
   const stats = document.createElement('div');
   stats.className = 'qstats';
-  const cells = ['sim tick', 'render load', 'gaps'].map((k) => {
+  const cells = ['sim tick', 'render load', 'gaps', 'late field'].map((k) => {
     const c = document.createElement('div');
     c.className = 'cell';
     c.title = QUAL_STAT_TIPS[k];
@@ -320,6 +321,8 @@ function buildQuality() {
     cells[1].classList.toggle('hot', load > 0.85);
     cells[2].textContent = `${state.debug.gaps || 0}`;
     cells[2].classList.toggle('hot', (state.debug.gaps || 0) > 0);
+    cells[3].textContent = state.debug.gpu
+      ? `gpu ${(state.debug.gpuMs || 0).toFixed(1)}` : 'cpu';
     const btn = document.getElementById('qualbtn');
     btn.textContent = `⚙ ${state.qual.manual || Object.keys(state.qual.over).length
       ? 'custom' : ['high', 'med', 'low'][q.tier] + (q.auto ? ' ·auto' : '')}`;
@@ -1332,6 +1335,8 @@ async function startAudio() {
     state.simState = new Float32Array(e.data.state);
     state.debug.tickMs = Math.max(state.debug.tickMs || 0, e.data.tickMs || 0) * 0.9
       + (e.data.tickMs || 0) * 0.1; // decaying peak-ish: spikes stay visible
+    state.debug.gpu = e.data.gpu || 0;
+    state.debug.gpuMs = e.data.gpuMs || 0;
     const q = state.quality;
     if (q.auto) {
       // shed on a blown budget immediately (a 20 Hz tick has 50 ms; at

@@ -118,6 +118,137 @@ pub extern "C" fn sim_set_quality(t: u32) {
     omg_scene::quality::set_tier(t);
 }
 
+// ------------------------------------------------------- GPU trace bridge
+// GPU_PLAN.md phase 3: the wasm stays freestanding, so the WebGPU driver
+// is plain JS (web/gpu.js) running in the worker. When enabled, the
+// registered proxy backend queues each gate-opened trace as a flat job
+// for JS to fetch after the tick; JS dispatches trace_box.wgsl, decodes
+// the fixed-point output to f32, and injects the echogram back, which
+// `Sim` consumes via poll_into one tick later. Never enabled = the
+// inline CPU tracer exactly as before (node harnesses unaffected).
+
+/// Flat job layout, `GPU_JOB_F32S` f32 words per job:
+/// [0] sim id · [1] n_rays · [2] seed · [3..6] room size ·
+/// [6..9] source · [9..12] listener · [12..15] band energy ·
+/// [15..39] 6 faces × (absorption ×3, scattering).
+/// Bump `GPU_JOB_VERSION` on ANY change — gpu.js checks it and refuses
+/// to enable on mismatch (CPU fallback beats decoding garbage).
+pub const GPU_JOB_F32S: usize = 39;
+pub const GPU_JOB_VERSION: u32 = 1;
+/// Echogram injection: 300 bins × 3 bands, then 300 bins × xyz.
+const GPU_ECHO_F32S: usize = 300 * 3 + 300 * 3;
+const GPU_MAX_JOBS: usize = 32;
+
+struct WebGpuProxy;
+
+static GPU_JOBS: std::sync::Mutex<Vec<f32>> = std::sync::Mutex::new(Vec::new());
+static GPU_RESULTS: std::sync::Mutex<Vec<(u32, Vec<f32>)>> = std::sync::Mutex::new(Vec::new());
+
+impl omg_scene::late::LateBackend for WebGpuProxy {
+    fn trace(
+        &mut self,
+        id: u32,
+        room: &omg_core::scene::Shoebox,
+        src: omg_core::vec3::Vec3,
+        lis: omg_core::vec3::Vec3,
+        n_rays: u32,
+        energy: [f32; omg_core::NBANDS],
+        rng: &mut omg_core::rng::Rng,
+        _out: &mut omg_core::tracer::Echogram,
+    ) -> bool {
+        let mut jobs = GPU_JOBS.lock().unwrap();
+        if jobs.len() >= GPU_MAX_JOBS * GPU_JOB_F32S {
+            return false; // JS stalled; drop, the gate will re-fire
+        }
+        let seed = (rng.next_u64() >> 16) as u32 as f32;
+        jobs.extend_from_slice(&[id as f32, n_rays as f32, seed]);
+        jobs.extend_from_slice(&[room.size.x, room.size.y, room.size.z]);
+        jobs.extend_from_slice(&[src.x, src.y, src.z]);
+        jobs.extend_from_slice(&[lis.x, lis.y, lis.z]);
+        jobs.extend_from_slice(&energy);
+        for w in &room.walls {
+            jobs.extend_from_slice(&w.absorption);
+            jobs.push(w.scattering);
+        }
+        false // result arrives via poll_into after JS injects it
+    }
+
+    fn poll_into(&mut self, id: u32, out: &mut omg_core::tracer::Echogram) -> bool {
+        let mut results = GPU_RESULTS.lock().unwrap();
+        let Some(i) = results.iter().position(|(rid, _)| *rid == id) else {
+            return false;
+        };
+        let (_, data) = results.swap_remove(i);
+        for bin in 0..300 {
+            for b in 0..3 {
+                out.bins[bin][b] = data[bin * 3 + b];
+            }
+            for k in 0..3 {
+                out.dirs[bin][k] = data[900 + bin * 3 + k];
+            }
+        }
+        true
+    }
+}
+
+/// Version handshake for the flat job format (gpu.js checks this).
+#[no_mangle]
+pub extern "C" fn sim_gpu_job_version() -> u32 {
+    GPU_JOB_VERSION
+}
+
+/// Route traces through the JS WebGPU driver. Call once, before the
+/// first tick, and only after gpu.js initialized successfully.
+#[no_mangle]
+pub extern "C" fn sim_gpu_enable() {
+    omg_scene::late::set_late_backend(Box::new(WebGpuProxy));
+}
+
+static mut GPU_JOBS_OUT: Option<&'static mut [f32]> = None;
+static mut GPU_INJECT: Option<&'static mut [f32]> = None;
+
+/// Drain this tick's queued trace jobs into the export buffer; returns
+/// the f32 count (a multiple of GPU_JOB_F32S).
+#[no_mangle]
+pub extern "C" fn sim_gpu_jobs_len() -> u32 {
+    let out = unsafe {
+        (*(&raw mut GPU_JOBS_OUT)).get_or_insert_with(|| leak_f32(GPU_MAX_JOBS * GPU_JOB_F32S))
+    };
+    let mut jobs = GPU_JOBS.lock().unwrap();
+    let n = jobs.len().min(out.len());
+    out[..n].copy_from_slice(&jobs[..n]);
+    jobs.clear();
+    n as u32
+}
+
+#[no_mangle]
+pub extern "C" fn sim_gpu_jobs_ptr() -> *const f32 {
+    let out = unsafe {
+        (*(&raw mut GPU_JOBS_OUT)).get_or_insert_with(|| leak_f32(GPU_MAX_JOBS * GPU_JOB_F32S))
+    };
+    out.as_ptr()
+}
+
+/// Staging buffer JS writes one decoded echogram into (1800 f32:
+/// bins[300×3] then dirs[300×3]) before calling sim_gpu_inject.
+#[no_mangle]
+pub extern "C" fn sim_gpu_buf_ptr() -> *mut f32 {
+    let buf =
+        unsafe { (*(&raw mut GPU_INJECT)).get_or_insert_with(|| leak_f32(GPU_ECHO_F32S)) };
+    buf.as_mut_ptr()
+}
+
+/// Deliver the staged echogram as sim `id`'s trace result.
+#[no_mangle]
+pub extern "C" fn sim_gpu_inject(id: u32) {
+    let buf =
+        unsafe { (*(&raw mut GPU_INJECT)).get_or_insert_with(|| leak_f32(GPU_ECHO_F32S)) };
+    let mut results = GPU_RESULTS.lock().unwrap();
+    // one pending result per sim id: newest wins
+    results.retain(|(rid, _)| *rid != id);
+    results.push((id, buf.to_vec()));
+}
+
 /// Pin one quality lever independently of the tier (a tuning panel's
 /// sliders). Ids: 0 trace rays, 1 gate age, 2 dome rays, 3 dome events,
 /// 4 ISM order. `value` 0 hands the lever back to the tier.
