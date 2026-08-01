@@ -73,6 +73,10 @@ pub fn early_traced() -> bool {
     EARLY.load(Ordering::Relaxed) != 0
 }
 
+pub fn early() -> u32 {
+    EARLY.load(Ordering::Relaxed)
+}
+
 /// Manually pin one lever (see `OVERRIDES` for ids); `value` 0 hands the
 /// lever back to the tier. Out-of-range ids are ignored.
 pub fn set_override(id: u32, value: u32) {

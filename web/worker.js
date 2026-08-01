@@ -86,5 +86,6 @@ function tick() {
     type: 'tick', blocks, state: state.buffer, envOff: w.sim_env_off(), tickMs,
     gpu: gpu && gpuOn ? 1 : 0, gpuAvail: gpu ? 1 : 0,
     gpuMs: gpu ? gpu.stats().ms : 0, gpuDuty: gpu ? gpu.stats().duty : 0,
+    early: w.sim_early_mode(), ptMs: gpu ? gpu.stats().ptMs : 0, ptN: gpu ? gpu.stats().ptN : 0,
   }, [...blocks, state.buffer]);
 }

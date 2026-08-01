@@ -214,6 +214,7 @@ const QUAL_STAT_TIPS = {
   'render load': 'Audio-thread render time as a share of realtime. Above 85% the worklet governor sheds to its floor.',
   gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
   'late field': 'Where the reverb ray traces run: WebGPU (with per-dispatch ms, 8× the ray budget) or the in-wasm CPU tracer. Click to A/B live — statistically identical sound, the GPU buys the sim thread headroom and a steadier estimate.',
+  early: 'The ACTIVE early-reflections engine as the sim reports it. traced shows where chain discovery runs (gpu with dispatch count, cpu otherwise). In empty rooms ism and traced are gate-proven identical — the audible difference arrives with furniture.',
 };
 
 function buildQuality() {
@@ -291,7 +292,7 @@ function buildQuality() {
 
   const stats = document.createElement('div');
   stats.className = 'qstats';
-  const cells = ['sim tick', 'render load', 'gaps', 'late field'].map((k) => {
+  const cells = ['sim tick', 'render load', 'gaps', 'late field', 'early'].map((k) => {
     const c = document.createElement('div');
     c.className = 'cell';
     c.title = QUAL_STAT_TIPS[k];
@@ -354,6 +355,9 @@ function buildQuality() {
     cells[3].textContent = state.debug.gpu
       ? `gpu ${((state.debug.gpuDuty || 0) * 100).toFixed(0)}% · ${(state.debug.gpuMs || 0).toFixed(1)}ms ⇄`
       : (state.debug.gpuAvail ? 'cpu ⇄' : 'cpu');
+    cells[4].textContent = !state.debug.early ? 'ism'
+      : state.debug.gpu && state.debug.ptN
+        ? `traced · gpu ×${state.debug.ptN}` : 'traced · cpu';
     const btn = document.getElementById('qualbtn');
     btn.textContent = `⚙ ${state.qual.manual || Object.keys(state.qual.over).length
       ? 'custom' : ['high', 'med', 'low'][q.tier] + (q.auto ? ' ·auto' : '')}`;
@@ -1421,6 +1425,9 @@ async function startAudio() {
     state.debug.gpuAvail = e.data.gpuAvail || 0;
     state.debug.gpuMs = e.data.gpuMs || 0;
     state.debug.gpuDuty = e.data.gpuDuty || 0;
+    state.debug.early = e.data.early || 0;
+    state.debug.ptMs = e.data.ptMs || 0;
+    state.debug.ptN = e.data.ptN || 0;
     const q = state.quality;
     if (q.auto) {
       // shed on a blown budget immediately (a 20 Hz tick has 50 ms; at

@@ -75,6 +75,8 @@ export async function initGpu(wasm) {
   }
 
   let lastMs = 0;
+  let ptMs = 0;
+  let ptN = 0;
   // rolling duty: GPU-busy wall time per second of real time
   let busyMs = 0;
   let duty = 0;
@@ -193,7 +195,9 @@ export async function initGpu(wasm) {
       const words = new Uint32Array(pt.read.getMappedRange()).slice();
       pt.read.unmap();
       injectPt(id, words);
-      noteBusy(performance.now() - t0);
+      ptMs = performance.now() - t0;
+      ptN++;
+      noteBusy(ptMs);
     } catch (e) {
       console.warn('[gpu] pt dispatch failed:', e);
     } finally {
@@ -223,6 +227,6 @@ export async function initGpu(wasm) {
       const jobs = new Float32Array(wasmExports.memory.buffer, wasmExports.sim_pt_jobs_ptr(), n);
       ptDispatch(jobs[0], jobs.slice(0, 8), injectPt);
     },
-    stats: () => ({ ms: lastMs, duty }),
+    stats: () => ({ ms: lastMs, duty, ptMs, ptN }),
   };
 }

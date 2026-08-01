@@ -126,6 +126,13 @@ pub extern "C" fn sim_set_early(mode: u32) {
     omg_scene::quality::set_early(mode);
 }
 
+/// The ACTIVE early backend as the sim sees it (0 = ism, 1 = traced) —
+/// ground truth for the UI, not an echo of what was requested.
+#[no_mangle]
+pub extern "C" fn sim_early_mode() -> u32 {
+    omg_scene::quality::early()
+}
+
 // ------------------------------------------------------- GPU trace bridge
 // GPU_PLAN.md phase 3: the wasm stays freestanding, so the WebGPU driver
 // is plain JS (web/gpu.js) running in the worker. When enabled, the
