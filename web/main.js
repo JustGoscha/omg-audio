@@ -485,8 +485,22 @@ function walkableMove(x0, y0, x1, y1) {
 // ------------------------------------------------------------ three scene
 
 const glCanvas = document.getElementById('gl');
-const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({
+  canvas: glCanvas, antialias: true, powerPreference: 'high-performance',
+});
+// Physical-pixel budget: audio dispatches share the GPU with this
+// canvas, and a 4K Windows desktop at high refresh renders ~3× the
+// pixels this was tuned on — saturating the GPU starves the WebGPU
+// compute queue and the whole thing "runs like shit" on great
+// hardware. Scale the pixel ratio so the canvas never exceeds the
+// budget; `?px=` (megapixels) overrides for testing.
+const PIXEL_BUDGET =
+  (+new URLSearchParams(location.search).get('px') || 3.4) * 1e6;
+const fitRatio = () => Math.max(
+  0.6,
+  Math.min(devicePixelRatio, 2, Math.sqrt(PIXEL_BUDGET / Math.max(1, innerWidth * innerHeight))),
+);
+renderer.setPixelRatio(fitRatio());
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0d12);
 scene.fog = new THREE.Fog(0x0a0d12, 24, 100);
@@ -496,12 +510,42 @@ camera.rotation.order = 'YXZ';
 const v3 = (wx, wy, wz) => new THREE.Vector3(wx, wz, -wy);
 
 function fit() {
+  renderer.setPixelRatio(fitRatio());
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
 }
 addEventListener('resize', fit);
 fit();
+
+// System probe: one line to paste into any performance report — which
+// GPU the browser actually picked, real canvas resolution, display
+// refresh. (A "great" Windows box turning out to render on the iGPU,
+// or at 8 MP @ 144 Hz, is diagnosed right here.)
+(async () => {
+  const sys = {
+    plat: navigator.platform || '?',
+    dpr: +devicePixelRatio.toFixed(2),
+    screen: `${screen.width}x${screen.height}`,
+    webgpu: !!navigator.gpu,
+  };
+  try {
+    const gl = renderer.getContext();
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    sys.gpu = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+  } catch { /* renderer string stays unknown */ }
+  await new Promise(requestAnimationFrame);
+  const t0 = performance.now();
+  await new Promise((res) => {
+    let n = 0;
+    const f = () => (++n < 30 ? requestAnimationFrame(f) : res());
+    requestAnimationFrame(f);
+  });
+  sys.hz = Math.round(30000 / (performance.now() - t0));
+  sys.px = `${renderer.domElement.width}x${renderer.domElement.height}`;
+  state.sys = sys;
+  console.info('[sys]', JSON.stringify(sys));
+})();
 
 scene.add(new THREE.HemisphereLight(0x8899bb, 0x1a1410, 0.9));
 scene.add(new THREE.AmbientLight(0x404860, 0.5));
@@ -1171,8 +1215,16 @@ async function startAudio() {
   // Native device rate: forcing 48 kHz makes some Android audio paths
   // run silent. The engine is rate-parametric (assets resample on
   // decode; the worklet passes its real sampleRate to eng_init).
-  const audio = new AudioContext({ latencyHint: 'interactive' });
+  // `?latency=playback` trades output delay for bigger device buffers —
+  // the Windows escape hatch when the audio thread can't hold the
+  // 'interactive' quantum cadence (see WINDOWS_PLAN.md).
+  const latencyHint =
+    new URLSearchParams(location.search).get('latency') || 'interactive';
+  const audio = new AudioContext({ latencyHint });
   state.audio = audio; // debug panel reads live output latency from it
+  console.info('[sys-audio]', JSON.stringify({
+    rate: audio.sampleRate, base: +(audio.baseLatency * 1000).toFixed(1), hint: latencyHint,
+  }));
   // "Sound stopped and never came back": under sustained overload (or a
   // device switch / long tab freeze) Chrome can move the context to
   // 'suspended'/'interrupted' — and nothing resumes it by itself. Log
