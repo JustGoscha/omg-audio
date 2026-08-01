@@ -172,69 +172,38 @@ pub fn record_for(
     })
 }
 
-/// Discovery: a deterministic golden-spiral fan from the listener
-/// (`rot` rotates the fan so coverage accumulates across ticks),
-/// bounced specularly up to PT_MAX_ORDER. Every prefix of every ray's
-/// wall sequence is a candidate chain — in a convex empty box each
-/// vertex connects to every source (NEE is a free pass here; occluder
-/// shadow tests arrive with C5) — plus the direct path. Candidates are
-/// deduped and exactly solved; only validated chains emit records.
-pub fn pt_discover(
-    room: &Shoebox,
-    sources: &[Vec3],
-    listener: Vec3,
-    n_rays: u32,
-    rot: u32,
-    out: &mut Vec<PathRecord>,
-) {
-    out.clear();
-    let mut seen = std::collections::HashSet::new();
-    let mut consider = |chain: &[u8], out: &mut Vec<PathRecord>| {
-        for (si, &sp) in sources.iter().enumerate() {
-            // digits offset +1 and a nonzero start: leading wall 0 must
-            // never alias the empty chain (a zero contributes nothing
-            // to a plain positional hash — measured bug, not theory)
-            let mut k = si as u64 * 4096 + 1;
-            for &w in chain {
-                k = k * 8 + (w as u64 + 1);
-            }
-            if !seen.insert(k) {
-                continue;
-            }
-            if let Some(r) = record_for(room, chain, si as u16, sp, listener) {
-                // Corner degeneracy: at an exact edge both orderings of
-                // the two walls validate as the SAME physical path —
-                // emitting both would double its energy. Same source,
-                // same arrival (delay + direction) ⇒ same path.
-                let dup = out.iter().any(|q: &PathRecord| {
-                    q.source == r.source
-                        && (q.delay_s - r.delay_s).abs() < 2e-5
-                        && q.dir[0] * r.dir[0] + q.dir[1] * r.dir[1] + q.dir[2] * r.dir[2]
-                            > 0.99999
-                });
-                if !dup {
-                    out.push(r);
-                }
-            }
-        }
-    };
+/// A candidate chain: walls in listener-first order, plus length.
+pub type Chain = ([u8; PT_MAX_ORDER], u8);
 
-    consider(&[], out); // order 0: the direct path
-
-    // Deterministic seeding of every order ≤2 chain: 6 + 30 exact
-    // solves cost nothing, guarantee low-order completeness regardless
-    // of ray luck (corner-adjacent paths live in mm-wide discovery
-    // corridors), and leave the rays to earn the combinatorial tail —
-    // order 3 here, occluder-face chains from C5 on.
+/// Seed set: the direct path and every order ≤2 chain. 37 exact solves
+/// cost nothing, guarantee low-order completeness regardless of ray
+/// luck (corner-adjacent paths live in mm-wide discovery corridors),
+/// and leave the rays to earn the combinatorial tail — order 3 here,
+/// occluder-face chains from C5 on.
+pub fn seed_chains(out: &mut Vec<Chain>) {
+    out.push(([NO_WALL; PT_MAX_ORDER], 0));
     for w1 in 0..6u8 {
-        consider(&[w1], out);
+        let mut c = [NO_WALL; PT_MAX_ORDER];
+        c[0] = w1;
+        out.push((c, 1));
         for w2 in 0..6u8 {
             if w2 != w1 {
-                consider(&[w1, w2], out);
+                let mut c2 = c;
+                c2[1] = w2;
+                out.push((c2, 2));
             }
         }
     }
+}
 
+/// Ray discovery: a deterministic golden-spiral fan from the listener
+/// (`rot` rotates the fan so coverage accumulates across ticks),
+/// bounced specularly up to PT_MAX_ORDER. Every prefix of every ray's
+/// wall sequence is a candidate chain. Chains are source-independent
+/// in a convex box — this is exactly the part the GPU kernel
+/// (pt_early.wgsl) replaces, emitting the same chain set as a bitmap.
+pub fn pt_chains(room: &Shoebox, listener: Vec3, n_rays: u32, rot: u32, out: &mut Vec<Chain>) {
+    let mut seen = std::collections::HashSet::new();
     let ga = core::f32::consts::PI * (3.0 - 5.0f32.sqrt());
     let mut jitter = Rng::new(0x9E37 ^ rot as u64 | 1);
     for i in 0..n_rays {
@@ -247,19 +216,71 @@ pub fn pt_discover(
             + jitter.next_f32() * 0.02;
         let mut dir = Vec3::new(r * phi.cos(), r * phi.sin(), z);
         let mut pos = listener;
-        let mut chain: Vec<u8> = Vec::with_capacity(PT_MAX_ORDER);
-        for _ in 0..PT_MAX_ORDER {
+        let mut chain = [NO_WALL; PT_MAX_ORDER];
+        for k in 0..PT_MAX_ORDER {
             let (t, wall) = room.raycast(pos, dir);
             if !t.is_finite() || t <= 1e-5 {
                 break;
             }
             pos = pos + dir * t;
-            chain.push(wall as u8);
-            consider(&chain, out);
+            chain[k] = wall as u8;
+            // leading-zero-proof key (a plain positional hash aliases
+            // wall 0 with "no wall" — measured bug, not theory)
+            let mut key = 1u64;
+            for &w in &chain[..=k] {
+                key = key * 8 + (w as u64 + 1);
+            }
+            if seen.insert(key) {
+                out.push((chain, (k + 1) as u8));
+            }
             let mut n = Vec3::new(0.0, 0.0, 0.0);
             n.set(wall / 2, if wall % 2 == 0 { 1.0 } else { -1.0 });
             dir = dir - n * (2.0 * dir.dot(n));
             pos = pos + n * 1e-5;
+        }
+    }
+}
+
+/// Discovery + seeding + exact solving in one call (the C1 shape; the
+/// engine's cache drives pt_chains/seed_chains/record_for itself).
+pub fn pt_discover(
+    room: &Shoebox,
+    sources: &[Vec3],
+    listener: Vec3,
+    n_rays: u32,
+    rot: u32,
+    out: &mut Vec<PathRecord>,
+) {
+    out.clear();
+    let mut chains = Vec::new();
+    seed_chains(&mut chains);
+    pt_chains(room, listener, n_rays, rot, &mut chains);
+
+    let mut seen = std::collections::HashSet::new();
+    for (chain, order) in chains {
+        let chain = &chain[..order as usize];
+        for (si, &sp) in sources.iter().enumerate() {
+            let mut k = si as u64 * 4096 + 1;
+            for &w in chain {
+                k = k * 8 + (w as u64 + 1);
+            }
+            if !seen.insert(k) {
+                continue;
+            }
+            if let Some(r) = record_for(room, chain, si as u16, sp, listener) {
+                // Corner degeneracy: at an exact edge both orderings of
+                // the two walls validate as the SAME physical path —
+                // emitting both would double its energy.
+                let dup = out.iter().any(|q: &PathRecord| {
+                    q.source == r.source
+                        && (q.delay_s - r.delay_s).abs() < 2e-5
+                        && q.dir[0] * r.dir[0] + q.dir[1] * r.dir[1] + q.dir[2] * r.dir[2]
+                            > 0.99999
+                });
+                if !dup {
+                    out.push(r);
+                }
+            }
         }
     }
 }

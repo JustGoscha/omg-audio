@@ -201,6 +201,10 @@ fn main() {
                 omg_scene::late::set_late_backend(Box::new(b));
                 omg_scene::quality::set_gpu_backend(true);
                 println!("late field: GPU (wgpu, 8x ray budget)");
+                if let Some(d) = omg_gpu::GpuEarlyDiscovery::new() {
+                    omg_scene::early::set_early_discovery(Box::new(d));
+                    println!("early discovery: GPU (wgpu)");
+                }
             }
             None => println!("late field: CPU (OMG_GPU=1 but no adapter)"),
         }

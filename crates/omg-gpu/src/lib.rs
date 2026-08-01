@@ -182,6 +182,165 @@ impl GpuLateBackend {
     }
 }
 
+/// PT-early chain discovery on the GPU (Track C phase C3): dispatches
+/// pt_early.wgsl and decodes the 258-bit chain bitmap. Synchronous by
+/// the same measurement as the late backend — the dispatch is tiny.
+pub struct GpuEarlyDiscovery {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipeline: wgpu::ComputePipeline,
+    job_buf: wgpu::Buffer,
+    bitmap: wgpu::Buffer,
+    read: wgpu::Buffer,
+    bind: wgpu::BindGroup,
+}
+
+pub const PT_RAYS: u32 = 4096;
+
+impl GpuEarlyDiscovery {
+    pub fn new() -> Option<Self> {
+        pollster::block_on(Self::new_async())
+    }
+
+    async fn new_async() -> Option<Self> {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            })
+            .await
+            .ok()?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("omg-gpu-pt"),
+                ..Default::default()
+            })
+            .await
+            .ok()?;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("pt_early"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/pt_early.wgsl").into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("pt_early"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("discover"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let job_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pt-job"),
+            size: 32,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bitmap = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pt-bitmap"),
+            size: 36,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pt-read"),
+            size: 36,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("pt_early"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: job_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: bitmap.as_entire_binding() },
+            ],
+        });
+        Some(Self { device, queue, pipeline, job_buf, bitmap, read, bind })
+    }
+
+    pub fn bitmap_for(&self, size: [f32; 3], listener: [f32; 3], rot: u32) -> [u32; 9] {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct Job {
+            size: [f32; 3],
+            n_rays: u32,
+            listener: [f32; 3],
+            rot: u32,
+        }
+        let job = Job { size, n_rays: PT_RAYS, listener, rot };
+        self.queue.write_buffer(&self.job_buf, 0, bytemuck::bytes_of(&job));
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pt") });
+        enc.clear_buffer(&self.bitmap, 0, None);
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("pt"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind, &[]);
+            pass.dispatch_workgroups(PT_RAYS.div_ceil(64), 1, 1);
+        }
+        enc.copy_buffer_to_buffer(&self.bitmap, 0, &self.read, 0, 36);
+        self.queue.submit([enc.finish()]);
+        self.read
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        let words: [u32; 9] = {
+            let view = self.read.slice(..).get_mapped_range().expect("mapped");
+            bytemuck::cast_slice(&view).try_into().unwrap()
+        };
+        self.read.unmap();
+        words
+    }
+}
+
+/// Decode the kernel's chain bitmap into Chain values (shared with the
+/// web driver's inject path via omg-web).
+pub fn decode_chain_bitmap(words: &[u32; 9], out: &mut Vec<omg_core::pt::Chain>) {
+    let bit = |i: usize| words[i >> 5] >> (i & 31) & 1 == 1;
+    const NO: u8 = omg_core::pt::NO_WALL;
+    for w1 in 0..6usize {
+        if bit(w1) {
+            out.push(([w1 as u8, NO, NO], 1));
+        }
+        for w2 in 0..6usize {
+            if bit(6 + w1 * 6 + w2) {
+                out.push(([w1 as u8, w2 as u8, NO], 2));
+            }
+            for w3 in 0..6usize {
+                if bit(42 + w1 * 36 + w2 * 6 + w3) {
+                    out.push(([w1 as u8, w2 as u8, w3 as u8], 3));
+                }
+            }
+        }
+    }
+}
+
+impl omg_scene::early::EarlyDiscovery for GpuEarlyDiscovery {
+    fn discover(
+        &mut self,
+        _id: u32,
+        room: &Shoebox,
+        listener: Vec3,
+        rot: u32,
+        out: &mut Vec<omg_core::pt::Chain>,
+    ) -> bool {
+        let words = self.bitmap_for(
+            [room.size.x, room.size.y, room.size.z],
+            [listener.x, listener.y, listener.z],
+            rot,
+        );
+        decode_chain_bitmap(&words, out);
+        true
+    }
+}
+
 impl omg_scene::late::LateBackend for GpuLateBackend {
     fn trace(
         &mut self,

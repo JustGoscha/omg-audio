@@ -129,7 +129,8 @@ impl Sim {
             // PT-early (Track C): discovered chains, exact solves. Same
             // Tap contract, PT key namespace — everything downstream
             // (yaw rotation, portal folding, renderer) is unchanged.
-            let cache = self.pt.get_or_insert_with(Default::default);
+            let id = self.id;
+            let cache = self.pt.get_or_insert_with(|| crate::early::PathCache::new(id));
             cache.update(room, src, listener, &mut self.taps_buf);
         } else {
             image_source_taps(room, src, listener, crate::quality::tier().ism_order(), &mut self.taps_buf);
