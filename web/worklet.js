@@ -11,12 +11,23 @@ class OmgProcessor extends AudioWorkletProcessor {
     // own render load and walks N between the floor and cap with hysteresis
     // — a throttled CPU (Low Power Mode, phones) settles low, a fast
     // desktop climbs to the cap. Bench: tools/bench_web.mjs.
-    this.budget = 16;
+    // Start at 8, not 16: bench shows 16 is *below* realtime at the
+    // worst-case position (~547 taps), so a cold start there breaks up
+    // for a full adaptation window before the first shed. 8 is ~1.0x
+    // worst-case; the grow path climbs within seconds when there's room.
+    this.budget = 8;
     // floor 2: point rendering is a sharpness tier, not a requirement —
     // the order-2 bus keeps everything spatialized when a squeezed CPU
     // (camera on, thermal throttle) needs the headroom back
     this.BUDGET_MIN = 2;
     this.BUDGET_MAX = 32;
+    // Tap-ceiling ladder (eng_set_tap_ceiling): the per-source cap on
+    // incoming taps. The point budget is a *sharpness* tier; this is a
+    // *density* tier — the real lever when a doorway carries ~145
+    // taps/source and the device can't render them all. Evicted taps
+    // release with the slot fade, so stepping down is click-free.
+    this.CEILINGS = [160, 112, 64];
+    this.ceilIdx = 0;
     this.loadMs = 0;
     this.loadFrames = 0;
     this.port.onmessage = (e) => this.onMessage(e.data);
@@ -102,6 +113,31 @@ class OmgProcessor extends AudioWorkletProcessor {
     } else if (m.type === 'fx' && this.ready) {
       if (m.action === 'play') this.w.eng_fx_play(m.src, m.kind);
       else this.w.eng_fx_stop(m.src, m.kind);
+    } else if (m.type === 'ceilfloor' && this.ready) {
+      // manual quality pin: the governor may shed below this ladder index
+      // but never recover above it (0 = unpinned, full ladder)
+      this.ceilFloor = m.idx || 0;
+      if (this.ceilIdx < this.ceilFloor) {
+        this.ceilIdx = this.ceilFloor;
+        this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+      }
+    } else if (m.type === 'manual' && this.ready) {
+      // tuning-panel override: freeze the governor and set both audio
+      // levers directly. {on: false} hands control back to the meters.
+      this.manual = !!m.on;
+      if (this.manual) {
+        if (m.points != null) {
+          this.budget = Math.max(0, m.points | 0);
+          this.w.eng_set_point_budget(this.budget);
+        }
+        if (m.ceiling != null) {
+          this.manualCeil = Math.max(1, m.ceiling | 0);
+          this.w.eng_set_tap_ceiling(this.manualCeil);
+        }
+      } else {
+        this.manualCeil = null;
+        this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+      }
     }
   }
 
@@ -119,6 +155,21 @@ class OmgProcessor extends AudioWorkletProcessor {
     if (this.lastFrame !== undefined && currentFrame - this.lastFrame > n) {
       this.gaps = (this.gaps || 0) + 1;
       this.gapFrames = (this.gapFrames || 0) + (currentFrame - this.lastFrame - n);
+      // A gap is ground truth that we missed the deadline — don't wait
+      // for the 1 s load window to notice; shed to the floor NOW and
+      // restart the window so the grow path re-earns the budget.
+      if (this.manual) {
+        // tuning panel holds the levers: count the gap, touch nothing
+      } else if (this.budget > this.BUDGET_MIN) {
+        this.budget = this.BUDGET_MIN;
+        this.w.eng_set_point_budget(this.budget);
+      } else if (this.ceilIdx < this.CEILINGS.length - 1) {
+        // already at the sharpness floor and still gapping: shed density
+        this.ceilIdx++;
+        this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+      }
+      this.loadMs = 0;
+      this.loadFrames = 0;
     }
     this.lastFrame = currentFrame;
     const t0 = Date.now();
@@ -131,17 +182,32 @@ class OmgProcessor extends AudioWorkletProcessor {
     if (this.loadFrames >= sampleRate) {
       const ratio = this.loadMs / (this.loadFrames / sampleRate * 1000);
       this.loadRatio = ratio; // exposed via the meters message
-      if (ratio > 0.85) {
+      if (this.manual) {
+        // tuning panel holds the levers: keep metering, don't govern
+      } else if (ratio > 0.85) {
         // emergency: the render is close to (or past) realtime — shed to
         // the floor NOW; audible breakup costs more than soft focus
-        this.budget = this.BUDGET_MIN;
-        this.w.eng_set_point_budget(this.budget);
+        if (this.budget > this.BUDGET_MIN) {
+          this.budget = this.BUDGET_MIN;
+          this.w.eng_set_point_budget(this.budget);
+        } else if (this.ceilIdx < this.CEILINGS.length - 1) {
+          // sharpness floor wasn't enough: shed tap density a tier
+          this.ceilIdx++;
+          this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+        }
       } else if (ratio > 0.55 && this.budget > this.BUDGET_MIN) {
         this.budget = Math.max(this.BUDGET_MIN, this.budget - 4);
         this.w.eng_set_point_budget(this.budget);
-      } else if (ratio < 0.30 && this.budget < this.BUDGET_MAX) {
-        this.budget = Math.min(this.BUDGET_MAX, this.budget + 4);
-        this.w.eng_set_point_budget(this.budget);
+      } else if (ratio < 0.30) {
+        // recover density before sharpness: full tap coverage at soft
+        // focus beats razor focus on a thinned field
+        if (this.ceilIdx > (this.ceilFloor || 0)) {
+          this.ceilIdx--;
+          this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+        } else if (this.budget < this.BUDGET_MAX) {
+          this.budget = Math.min(this.BUDGET_MAX, this.budget + 4);
+          this.w.eng_set_point_budget(this.budget);
+        }
       }
       this.loadMs = 0;
       this.loadFrames = 0;
@@ -169,6 +235,8 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.port.postMessage({
         type: 'meters', l: this.mL, r: this.mR, agc: this.w.eng_agc_gain(),
         tts: this.w.eng_ear_fatigue(), pts: this.budget,
+        ceil: this.manualCeil || this.CEILINGS[this.ceilIdx],
+        manual: !!this.manual,
         load: this.loadRatio || 0, gaps: this.gaps || 0,
         gapMs: ((this.gapFrames || 0) / sampleRate) * 1000, chans, amb, dbg,
       });

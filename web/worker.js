@@ -13,6 +13,13 @@ onmessage = async (e) => {
     setInterval(tick, 50);
   } else if (m.type === 'pose') {
     pose = m;
+  } else if (m.type === 'quality') {
+    // sim-side quality ladder: 0 = high, 1 = med, 2 = low
+    if (w) w.sim_set_quality(m.tier);
+  } else if (m.type === 'override') {
+    // pin one sim lever (id: 0 rays, 1 gate, 2 dome rays, 3 dome events,
+    // 4 ISM order); value 0 hands it back to the tier
+    if (w) w.sim_set_override(m.id, m.value);
   }
 };
 
