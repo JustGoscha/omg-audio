@@ -167,6 +167,36 @@ impl WorldSim {
     /// Move dynamic source `slot` (0..DYN_SLOTS). `gain` scales the
     /// slot's authored gain per spawn (one car is louder than another);
     /// ≤ 0 deactivates.
+    /// Debug: world-space polylines of the traced early paths, flat
+    /// [src_idx, n_verts, x,y,z × n]…, capped. Consumes each Sim's
+    /// last-traced geometry so rooms you left stop emitting.
+    pub fn debug_rays(&mut self, out: &mut Vec<f32>) {
+        let mut local = Vec::new();
+        for (si, per_room) in self.sims.iter_mut().enumerate() {
+            for (ri, sim) in per_room.iter_mut().enumerate() {
+                local.clear();
+                sim.debug_rays(24, &mut local);
+                if local.is_empty() {
+                    continue;
+                }
+                let r = &self.rooms[ri];
+                let (ox, oy, oz) = (r.min.0, r.min.1, r.floor_z);
+                let mut k = 0;
+                while k < local.len() && out.len() < 6000 {
+                    let n = local[k] as usize;
+                    out.push(si as f32);
+                    out.push(n as f32);
+                    for v in 0..n {
+                        out.push(local[k + 1 + v * 3] + ox);
+                        out.push(local[k + 2 + v * 3] + oy);
+                        out.push(local[k + 3 + v * 3] + oz);
+                    }
+                    k += 1 + n * 3;
+                }
+            }
+        }
+    }
+
     pub fn set_dynamic(&mut self, slot: usize, x: f32, y: f32, z: f32, gain: f32) {
         if slot >= walkthrough::DYN_SLOTS {
             return;

@@ -457,6 +457,41 @@ pub fn record_for_occ(
 /// A candidate chain: walls in listener-first order, plus length.
 pub type Chain = ([u8; PT_MAX_ORDER], u8);
 
+/// The actual polyline of a chain's path: listener, each reflection
+/// point, source — for visualization. None if the chain is invalid.
+pub fn chain_vertices(
+    room: &Shoebox,
+    chain: &[u8],
+    source: Vec3,
+    listener: Vec3,
+    out: &mut Vec<Vec3>,
+) -> bool {
+    let Some((_, dir, _, _)) = solve_chain_trans(room, chain, source, listener, &[]) else {
+        return false;
+    };
+    out.clear();
+    out.push(listener);
+    let mut pos = listener;
+    let mut d = dir;
+    for &w in chain {
+        let axis = (w / 2) as usize;
+        let plane = if w % 2 == 0 { 0.0 } else { room.size.get(axis) };
+        let di = d.get(axis);
+        if di.abs() < 1e-9 {
+            return false;
+        }
+        let t = ((plane - pos.get(axis)) / di).max(0.0);
+        pos = pos + d * t;
+        pos.set(axis, plane);
+        out.push(pos);
+        let mut n = Vec3::new(0.0, 0.0, 0.0);
+        n.set(axis, if w % 2 == 0 { 1.0 } else { -1.0 });
+        d = d - n * (2.0 * d.dot(n));
+    }
+    out.push(source);
+    true
+}
+
 /// Seed set: the direct path and every order ≤2 chain. 37 exact solves
 /// cost nothing, guarantee low-order completeness regardless of ray
 /// luck (corner-adjacent paths live in mm-wide discovery corridors),

@@ -6,6 +6,7 @@
 let w = null;
 let gpu = null;
 let gpuOn = false;
+let debugOn = false;
 let pose = { x: 3.0, y: 3.0, z: 1.6, yaw: 0.0, projs: [] };
 
 onmessage = async (e) => {
@@ -35,6 +36,8 @@ onmessage = async (e) => {
     // pin one sim lever (id: 0 rays, 1 gate, 2 dome rays, 3 dome events,
     // 4 ISM order); value 0 hands it back to the tier
     if (w) w.sim_set_override(m.id, m.value);
+  } else if (m.type === 'debug') {
+    debugOn = !!m.on; // ray extraction only runs while the panel is open
   } else if (m.type === 'early') {
     // early-reflections backend: 0 = ism, 1 = traced (PT)
     if (w) w.sim_set_early(m.mode);
@@ -82,10 +85,16 @@ function tick() {
     blocks.push(src.slice().buffer);
   }
   const state = new Float32Array(w.memory.buffer, w.sim_state_ptr(), w.sim_state_len()).slice();
+  let rays = null;
+  if (debugOn) {
+    const rn = w.sim_debug_rays_len();
+    if (rn) rays = new Float32Array(w.memory.buffer, w.sim_debug_rays_ptr(), rn).slice().buffer;
+  }
   postMessage({
     type: 'tick', blocks, state: state.buffer, envOff: w.sim_env_off(), tickMs,
     gpu: gpu && gpuOn ? 1 : 0, gpuAvail: gpu ? 1 : 0,
     gpuMs: gpu ? gpu.stats().ms : 0, gpuDuty: gpu ? gpu.stats().duty : 0,
     early: w.sim_early_mode(), ptMs: gpu ? gpu.stats().ptMs : 0, ptN: gpu ? gpu.stats().ptN : 0,
-  }, [...blocks, state.buffer]);
+    rays,
+  }, rays ? [...blocks, state.buffer, rays] : [...blocks, state.buffer]);
 }

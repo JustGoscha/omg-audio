@@ -1131,6 +1131,8 @@ document.getElementById('start').onclick = async (ev) => {
       e.target.blur();
       state.debug.on = !state.debug.on;
       document.getElementById('debug').hidden = !state.debug.on;
+      // ray extraction in the sim runs ONLY while the panel is open
+      worker.postMessage({ type: 'debug', on: state.debug.on });
     };
     buildMixer();
     document.getElementById('mixerbtn').onclick = (e) => {
@@ -1480,6 +1482,7 @@ async function startAudio() {
     state.debug.gpuMs = e.data.gpuMs || 0;
     state.debug.gpuDuty = e.data.gpuDuty || 0;
     state.debug.early = e.data.early || 0;
+    state.debug.rays = e.data.rays ? new Float32Array(e.data.rays) : state.debug.on ? state.debug.rays : null;
     state.debug.ptMs = e.data.ptMs || 0;
     state.debug.ptN = e.data.ptN || 0;
     const q = state.quality;
@@ -1990,6 +1993,7 @@ function frame(t) {
     drawSpec();
     drawFaceWire();
     drawSoundRays();
+    drawReflectionFans();
     if (state.debug.on) drawDebug();
   }
 
@@ -2358,6 +2362,56 @@ function drawSpec() {
 // buffer carries ≤4 route points per source (portal hops, bends); a
 // glowing line runs source → hops → ears, colored per source.
 const rayLines = [];
+const fanLines = [];
+const FAN_CAP = 512; // segments per source
+function drawReflectionFans() {
+  const rays = state.debug.rays;
+  const show = !!state.debug.on && !!rays;
+  const counts = new Array(11).fill(0);
+  if (show) {
+    // pass 1: bucket segment endpoints per source
+    const segs = Array.from({ length: 11 }, () => []);
+    let k = 0;
+    while (k < rays.length - 1) {
+      const si = rays[k] | 0;
+      const n = rays[k + 1] | 0;
+      if (n < 2 || si < 0 || si > 10 || k + 2 + n * 3 > rays.length) break;
+      for (let v = 0; v + 1 < n; v++) {
+        const a = k + 2 + v * 3;
+        const b = a + 3;
+        segs[si].push(rays[a], rays[a + 2], -rays[a + 1],
+                      rays[b], rays[b + 2], -rays[b + 1]);
+      }
+      k += 2 + n * 3;
+    }
+    for (let i = 0; i < 11; i++) {
+      if (!fanLines[i]) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position',
+          new THREE.BufferAttribute(new Float32Array(FAN_CAP * 6), 3));
+        const color = parseInt((DBG_COLORS[i] || '#ffffff').slice(1), 16);
+        fanLines[i] = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+          color, transparent: true, opacity: 0.22, depthTest: false,
+        }));
+        fanLines[i].renderOrder = 8;
+        scene.add(fanLines[i]);
+      }
+      const line = fanLines[i];
+      const data = segs[i];
+      counts[i] = Math.min(data.length / 6, FAN_CAP) | 0;
+      line.visible = counts[i] > 0;
+      if (!line.visible) continue;
+      const pos = line.geometry.attributes.position;
+      pos.array.set(data.slice(0, counts[i] * 6));
+      line.geometry.setDrawRange(0, counts[i] * 2);
+      pos.needsUpdate = true;
+      line.geometry.computeBoundingSphere();
+    }
+  } else {
+    for (const l of fanLines) if (l) l.visible = false;
+  }
+}
+
 function drawSoundRays() {
   if (!state.simState) return;
   const show = !!state.debug.on;

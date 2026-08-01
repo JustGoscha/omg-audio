@@ -85,6 +85,8 @@ pub struct Sim {
     taps_buf: Vec<omg_core::params::Tap>,
     /// PT-early path cache, built lazily when `early = traced`.
     pt: Option<crate::early::PathCache>,
+    /// Last traced (room, src, listener) — debug ray extraction.
+    pt_geom: Option<(Shoebox, Vec3, Vec3)>,
     version: u64,
 }
 
@@ -104,6 +106,7 @@ impl Sim {
             echo_cur: Echogram::new(),
             taps_buf: Vec::new(),
             pt: None,
+            pt_geom: None,
             version: 0,
         }
     }
@@ -133,6 +136,7 @@ impl Sim {
             let id = self.id;
             let cache = self.pt.get_or_insert_with(|| crate::early::PathCache::new(id));
             cache.update(room, src, listener, occluders, &mut self.taps_buf);
+            self.pt_geom = Some((room.clone(), src, listener));
         } else {
             image_source_taps(room, src, listener, crate::quality::tier().ism_order(), &mut self.taps_buf);
         }
@@ -348,6 +352,17 @@ impl Sim {
         }
         self.version += 1;
         estimate_reverb(&self.echo_avg)
+    }
+}
+
+impl Sim {
+    /// Debug: the live traced paths' polylines, room-local (see
+    /// PathCache::debug_rays). No-op when not traced recently.
+    pub fn debug_rays(&mut self, max_paths: usize, out: &mut Vec<f32>) {
+        if let (Some(cache), Some((room, src, lis))) = (&self.pt, &self.pt_geom) {
+            cache.debug_rays(room, *src, *lis, max_paths, out);
+        }
+        self.pt_geom = None; // stale rooms stop emitting next tick
     }
 }
 

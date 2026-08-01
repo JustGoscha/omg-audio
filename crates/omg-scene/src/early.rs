@@ -14,7 +14,7 @@
 //! renderer's normal slot release.
 
 use omg_core::params::Tap;
-use omg_core::pt::{pt_chains, record_for_occ, seed_chains, Aabb, Chain, PT_MAX_ORDER};
+use omg_core::pt::{chain_vertices, pt_chains, record_for_occ, seed_chains, Aabb, Chain, PT_MAX_ORDER};
 use omg_core::scene::Shoebox;
 use omg_core::vec3::Vec3;
 use std::sync::Mutex;
@@ -146,5 +146,27 @@ impl PathCache {
             }
         });
         out.len()
+    }
+
+    /// Debug: append every live chain's polyline as
+    /// [n_verts, x,y,z × n] (room-local). Caps at `max_paths`.
+    pub fn debug_rays(
+        &self,
+        room: &Shoebox,
+        src: Vec3,
+        listener: Vec3,
+        max_paths: usize,
+        out: &mut Vec<f32>,
+    ) {
+        let mut verts = Vec::new();
+        for c in self.chains.iter().take(max_paths) {
+            let chain = &c.chain[..c.order as usize];
+            if chain_vertices(room, chain, src, listener, &mut verts) {
+                out.push(verts.len() as f32);
+                for v in &verts {
+                    out.extend_from_slice(&[v.x, v.y, v.z]);
+                }
+            }
+        }
     }
 }

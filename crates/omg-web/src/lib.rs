@@ -206,6 +206,28 @@ impl omg_scene::late::LateBackend for WebGpuProxy {
     }
 }
 
+static mut RAYS_OUT: Option<&'static mut [f32]> = None;
+
+/// Debug rays (called by the worker ONLY while the debug panel is
+/// open): world-space traced-path polylines, flat
+/// [src, n_verts, x,y,z × n]…; returns the f32 count.
+#[no_mangle]
+pub extern "C" fn sim_debug_rays_len() -> u32 {
+    let out = unsafe { (*(&raw mut RAYS_OUT)).get_or_insert_with(|| leak_f32(6144)) };
+    let ctx = sim();
+    let mut buf = Vec::with_capacity(4096);
+    ctx.world.debug_rays(&mut buf);
+    let n = buf.len().min(out.len());
+    out[..n].copy_from_slice(&buf[..n]);
+    n as u32
+}
+
+#[no_mangle]
+pub extern "C" fn sim_debug_rays_ptr() -> *const f32 {
+    let out = unsafe { (*(&raw mut RAYS_OUT)).get_or_insert_with(|| leak_f32(6144)) };
+    out.as_ptr()
+}
+
 /// Version handshake for the flat job format (gpu.js checks this).
 #[no_mangle]
 pub extern "C" fn sim_gpu_job_version() -> u32 {
