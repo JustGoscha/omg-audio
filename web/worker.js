@@ -73,6 +73,7 @@ function tick() {
   const state = new Float32Array(w.memory.buffer, w.sim_state_ptr(), w.sim_state_len()).slice();
   postMessage({
     type: 'tick', blocks, state: state.buffer, envOff: w.sim_env_off(), tickMs,
-    gpu: gpu && gpuOn ? 1 : 0, gpuAvail: gpu ? 1 : 0, gpuMs: gpu ? gpu.stats() : 0,
+    gpu: gpu && gpuOn ? 1 : 0, gpuAvail: gpu ? 1 : 0,
+    gpuMs: gpu ? gpu.stats().ms : 0, gpuDuty: gpu ? gpu.stats().duty : 0,
   }, [...blocks, state.buffer]);
 }

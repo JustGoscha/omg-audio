@@ -69,6 +69,19 @@ export async function initGpu(wasm) {
   }
 
   let lastMs = 0;
+  // rolling duty: GPU-busy wall time per second of real time
+  let busyMs = 0;
+  let duty = 0;
+  let windowT0 = performance.now();
+  const noteBusy = (ms) => {
+    busyMs += ms;
+    const now = performance.now();
+    if (now - windowT0 >= 1000) {
+      duty = busyMs / (now - windowT0);
+      busyMs = 0;
+      windowT0 = now;
+    }
+  };
 
   // Build the 160-byte Job uniform (layout.rs / trace_box.wgsl v1) from
   // one flat job record.
@@ -120,6 +133,7 @@ export async function initGpu(wasm) {
       slot.readDirs.unmap();
       inject(id, echo);
       lastMs = performance.now() - t0;
+      noteBusy(lastMs);
     } catch (e) {
       console.warn('[gpu] dispatch failed:', e);
     } finally {
@@ -141,6 +155,6 @@ export async function initGpu(wasm) {
         dispatch(slot, jobs[o], jobs[o + 1], packJob(jobs, o), inject);
       }
     },
-    stats: () => lastMs,
+    stats: () => ({ ms: lastMs, duty }),
   };
 }

@@ -121,7 +121,7 @@ const MIXER = [
   { name: 'radio', srcs: [4], base: 80, def: 64, meters: [4], spl: true },
   { name: 'balls', srcs: [5, 6, 7], base: 89, def: 89, meters: [5, 6, 7], spl: true },
   { name: 'cars', srcs: [8, 9], base: 92, def: 86, meters: [8, 9], spl: true },
-  { name: 'steps', srcs: [10], base: 78, def: 70, meters: [10], spl: true },
+  { name: 'steps', srcs: [10], base: 78, def: 62, meters: [10], spl: true },
   { name: 'ambience', target: 'ambient', def: -16, meters: [11] },
   { name: 'rain', target: 'rainGain', def: 0, meters: [12] },
   { name: 'master', target: 'master', def: 0, meters: 'lr' },
@@ -324,14 +324,14 @@ function buildQuality() {
     }
     const tick = state.debug.tickMs || 0;
     const load = state.debug.load || 0;
-    cells[0].textContent = `${tick.toFixed(1)} ms`;
+    cells[0].textContent = `${tick.toFixed(1)}ms · ${(tick / 50 * 100).toFixed(0)}%`;
     cells[0].classList.toggle('hot', tick > 40);
     cells[1].textContent = `${(load * 100).toFixed(0)} %`;
     cells[1].classList.toggle('hot', load > 0.85);
     cells[2].textContent = `${state.debug.gaps || 0}`;
     cells[2].classList.toggle('hot', (state.debug.gaps || 0) > 0);
     cells[3].textContent = state.debug.gpu
-      ? `gpu ${(state.debug.gpuMs || 0).toFixed(1)} ⇄`
+      ? `gpu ${((state.debug.gpuDuty || 0) * 100).toFixed(0)}% · ${(state.debug.gpuMs || 0).toFixed(1)}ms ⇄`
       : (state.debug.gpuAvail ? 'cpu ⇄' : 'cpu');
     const btn = document.getElementById('qualbtn');
     btn.textContent = `⚙ ${state.qual.manual || Object.keys(state.qual.over).length
@@ -1189,9 +1189,30 @@ async function startAudio() {
   // Footsteps (CC0, Kenney "Impact Sounds"): 4 surfaces × 5 variants,
   // played as fx one-shots on the dedicated feet source, so each step
   // picks up the room's real acoustics (parquet knock + hall reverb).
+  // Shaped on decode: the raw files carry a heavy LF thump that reads
+  // as boots-on-a-drum through the engine — highpass at ~160 Hz, trim
+  // the silence so steps land ON the stride, keep the peak modest.
+  const decodeStep = async (buf) => {
+    const raw = await decodeMono(buf, 0.32);
+    const k = Math.exp(-2 * Math.PI * 160 / audio.sampleRate);
+    let lp = 0;
+    for (let i = 0; i < raw.length; i++) {
+      lp += (1 - k) * (raw[i] - lp);
+      raw[i] -= lp; // one-pole highpass: kill the boom, keep the knock
+    }
+    let a = 0;
+    while (a < raw.length && Math.abs(raw[a]) < 0.01) a++;
+    a = Math.max(0, a - 32);
+    let b = raw.length - 1;
+    while (b > a && Math.abs(raw[b]) < 0.004) b--;
+    const out = raw.slice(a, Math.min(b + 480, raw.length));
+    for (let i = 0; i < 48 && i < out.length; i++) out[i] *= i / 48;
+    for (let i = 0; i < 480 && i < out.length; i++) out[out.length - 1 - i] *= i / 480;
+    return out;
+  };
   const steps = await Promise.all(
     STEP_SURFACES.flatMap((surf) => [0, 1, 2, 3, 4].map((v) =>
-      fetchBuf(`../assets/steps/${surf}_${v}.ogg`).then((b) => decodeMono(b, 0.5)))),
+      fetchBuf(`../assets/steps/${surf}_${v}.ogg`).then(decodeStep))),
   );
   // projectile slots + feet: fx voices only (one buffer each — transferables)
   const silents = [new Float32Array(480), new Float32Array(480), new Float32Array(480),
@@ -1358,6 +1379,7 @@ async function startAudio() {
     state.debug.gpu = e.data.gpu || 0;
     state.debug.gpuAvail = e.data.gpuAvail || 0;
     state.debug.gpuMs = e.data.gpuMs || 0;
+    state.debug.gpuDuty = e.data.gpuDuty || 0;
     const q = state.quality;
     if (q.auto) {
       // shed on a blown budget immediately (a 20 Hz tick has 50 ms; at
