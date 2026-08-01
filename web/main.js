@@ -1783,13 +1783,19 @@ const ROOM_SURFACE = {
   Outside: 'grass',
 };
 let strideAcc = 0;
-let strideNext = 0.72;
+let strideNext = 1.5;
+let lastStepT = 0;
 let lastVariant = -1;
 function strideStep(d) {
   strideAcc += d;
   if (strideAcc < strideNext || !state.fx) return;
+  // human cadence gate: even sprinting, feet don't land more than
+  // ~3 times a second — distance alone over-triggers at game speeds
+  const now = performance.now();
+  if (now - lastStepT < 320) return;
+  lastStepT = now;
   strideAcc = 0;
-  strideNext = 0.65 + Math.random() * 0.15; // no metronome feet
+  strideNext = 1.35 + Math.random() * 0.3; // no metronome feet
   const room = state.simState ? ROOMS[state.simState[2] | 0] : null;
   const surf = ROOM_SURFACE[room ? room.name : 'Outside'] || 'concrete';
   let v = (Math.random() * 5) | 0;

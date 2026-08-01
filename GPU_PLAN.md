@@ -276,6 +276,79 @@ Only after 1–4 are stable:
 
 ---
 
+## Track C — PT-early: path-traced early reflections (replace ISM)
+
+Goal: a real-time path-traced early-reflection engine over arbitrary
+geometry — rooms with things IN them — that keeps every invariant the
+tap pipeline depends on (stable identities, exact delays, Doppler by
+glide). ISM stays only as the test oracle: in an empty shoebox the two
+must agree, and that equivalence is the acceptance gate.
+
+Why ISM loses once rooms have contents: each image source needs a
+visibility test against every occluder (combinatorial in order), and
+occluded images don't just attenuate — they need diffraction handling
+per image. A traced path's cost is CONSTANT in scene clutter (BVH
+depth), constant in source count for the walk itself, and occlusion
+falls out of the tracing instead of being patched in.
+
+### The algorithm
+
+1. **Listener-launched** rays (reciprocity): one fan from the head,
+   NOT per-source mirroring. Deterministic golden-spiral base
+   directions with a per-tick low-discrepancy rotation, so coverage
+   accumulates across ticks instead of re-sampling the same set.
+2. **Bounce over the world mesh** (the dome's BVH — walls, slabs,
+   roofs, door leaves, furniture when it arrives) up to ~4 events,
+   specular with material scattering (same rules as the late tracer).
+3. **Next-event estimation at every vertex**: connect each bounce
+   vertex to each audible source with a shadow ray. A clear connection
+   yields a path listener→v1→…→vk→source whose length is the exact
+   segment sum — sample-accurate delay, NO receiver-sphere
+   quantization (this kills the classic precision objection to MC
+   early reflections). Direction at the ear = the first segment;
+   per-band gain = product of surface reflections × air × 1/d.
+4. **Path-space hashing** — the stability trick that makes it a tap
+   engine instead of noise: key = hash(source id, ordered chain of hit
+   surface ids). Every ray that finds the same surface chain dedupes
+   into ONE path record (keep the energy-weighted representative).
+   The key survives motion while the geometry glides → the tap keeps
+   its identity, the delay line keeps gliding, Doppler and click-free
+   transitions survive by construction.
+5. **Temporal path cache with hysteresis**: the path table persists
+   across ticks. A sighted path refreshes its TTL (~0.5 s); unsighted
+   paths decay and fade out through the normal slot release — a path
+   missed by this tick's rays does NOT flicker. The deterministic
+   rotating fan + cache turns temporal coverage into spatial
+   completeness.
+6. **Validation before emission**: a candidate path re-checks with
+   exact segment intersections (no ray epsilon slop) before becoming
+   a tap; grazing false positives die here, not in the ear.
+7. Direct paths and diffraction stay as they are (straight-tap logic,
+   AutoPaths knife-edge floors) — PT-early replaces the ISM taps only.
+
+### GPU mapping (kernel K3)
+
+Thread-per-ray mega-kernel: bounce loop + NEE, emitting compact path
+records (source id, packed surface chain, length, band gains, first
+segment direction — ~32 B) into an append buffer. Host (or worker JS)
+folds records into the hash table and emits ParamBlock taps. Budget:
+4–8 k rays × 4 events × NEE to ~10 sources — trivially realtime on
+the measured M-series numbers; the CPU fallback runs the same code at
+1–2 k rays and simply converges the cache slower, same correctness.
+
+### Acceptance
+
+- **Shoebox equivalence**: empty golden rooms — PT-early must
+  reproduce the ISM ≤3-order path set (delay ±0.5 ms, level ±1 dB,
+  per path) after cache convergence. ISM is the oracle, then retires.
+- **Occluder test**: a pillar between source and listener — direct
+  tap hands off to the diffraction floor with no level step (extend
+  the existing shadow-walk regression).
+- **Stability**: stationary listener → zero tap birth/death per tick;
+  walking pace → order-1 paths never flicker (identity churn counter
+  in the debug panel).
+- `bench_web.mjs` unchanged (audio clock untouched, as ever).
+
 ## Track B — the CPU quality ladder (independent of GPU, do first)
 
 The GPU port keeps the CPU tracer as a switchable backend forever
