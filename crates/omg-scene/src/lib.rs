@@ -3,6 +3,7 @@
 //! (interactive listener). No I/O, no clocks — compiles to wasm unchanged.
 
 pub mod dome;
+pub mod early;
 pub mod environment;
 pub mod late;
 pub mod quality;

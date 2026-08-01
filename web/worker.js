@@ -35,6 +35,9 @@ onmessage = async (e) => {
     // pin one sim lever (id: 0 rays, 1 gate, 2 dome rays, 3 dome events,
     // 4 ISM order); value 0 hands it back to the tier
     if (w) w.sim_set_override(m.id, m.value);
+  } else if (m.type === 'early') {
+    // early-reflections backend: 0 = ism, 1 = traced (PT)
+    if (w) w.sim_set_early(m.mode);
   } else if (m.type === 'gpu') {
     // live A/B toggle; only meaningful when the driver initialized
     if (w && gpu) {

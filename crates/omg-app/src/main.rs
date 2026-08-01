@@ -180,6 +180,19 @@ fn main() {
         omg_scene::quality::set_tier(tier);
         println!("quality tier: {q}");
     }
+    // OMG_EARLY=traced|ism: early-reflections backend (Track C).
+    if let Ok(e) = std::env::var("OMG_EARLY") {
+        let mode = match e.as_str() {
+            "traced" | "pt" => 1,
+            "ism" => 0,
+            other => {
+                eprintln!("OMG_EARLY: unknown backend '{other}' (ism|traced), using ism");
+                0
+            }
+        };
+        omg_scene::quality::set_early(mode);
+        println!("early reflections: {}", if mode == 1 { "traced (PT)" } else { "ism" });
+    }
     // OMG_GPU=1: run the stochastic traces on the wgpu kernel; anything
     // else (or no usable adapter) stays on the inline CPU tracer.
     if std::env::var("OMG_GPU").map(|v| v == "1").unwrap_or(false) {

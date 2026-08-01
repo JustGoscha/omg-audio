@@ -269,6 +269,26 @@ function buildQuality() {
     state.qual.rows.push({ s, input, val });
   }
 
+  // early-reflections backend (Track C): live A/B, same tap contract
+  const eh = document.createElement('div');
+  eh.className = 'qsection';
+  eh.textContent = 'early reflections';
+  panel.append(eh);
+  const eseg = document.createElement('div');
+  eseg.className = 'seg';
+  eseg.style.gridTemplateColumns = 'repeat(2, 1fr)';
+  const esegBtns = [['ism', 0], ['traced', 1]].map(([name, mode]) => {
+    const b = document.createElement('button');
+    b.textContent = name;
+    b.title = mode === 0
+      ? 'Image-source method: the exact closed-form solution for empty shoebox rooms. The classic engine.'
+      : 'Path-traced (Track C): rays discover reflection chains, each solved exactly by mirror reconstruction. Identical here; built for rooms with things in them.';
+    b.onclick = () => { state.setEarly(mode); b.blur(); };
+    eseg.append(b);
+    return { mode, b };
+  });
+  panel.append(eseg);
+
   const stats = document.createElement('div');
   stats.className = 'qstats';
   const cells = ['sim tick', 'render load', 'gaps', 'late field'].map((k) => {
@@ -305,6 +325,7 @@ function buildQuality() {
     if (panel.hidden) return;
     const q = state.quality || { auto: true, tier: 0, mode: 'auto' };
     for (const { mode, b } of segBtns) b.classList.toggle('on', q.mode === mode);
+    for (const { mode, b } of esegBtns) b.classList.toggle('on', (state.earlyMode || 0) === mode);
     for (const { s, input, val } of state.qual.rows) {
       let v; let pinned;
       if (s.audio) {
@@ -1372,6 +1393,11 @@ async function startAudio() {
     state.setAudioManual = (on, points, ceiling) =>
       node.port.postMessage({ type: 'manual', on, points, ceiling });
     state.setGpu = (on) => worker.postMessage({ type: 'gpu', on });
+    state.setEarly = (mode) => {
+      state.earlyMode = mode;
+      worker.postMessage({ type: 'early', mode });
+    };
+    state.earlyMode = 0; // ism default
   }
   worker.onmessage = (e) => {
     if (e.data.type !== 'tick') return;

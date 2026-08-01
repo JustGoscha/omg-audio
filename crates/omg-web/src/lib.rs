@@ -118,6 +118,14 @@ pub extern "C" fn sim_set_quality(t: u32) {
     omg_scene::quality::set_tier(t);
 }
 
+/// Early-reflections backend (Track C): 0 = ism, 1 = traced. Live
+/// switch — both emit the same Tap contract, PT keys are namespaced,
+/// so flipping crossfades through the renderer's slot release.
+#[no_mangle]
+pub extern "C" fn sim_set_early(mode: u32) {
+    omg_scene::quality::set_early(mode);
+}
+
 // ------------------------------------------------------- GPU trace bridge
 // GPU_PLAN.md phase 3: the wasm stays freestanding, so the WebGPU driver
 // is plain JS (web/gpu.js) running in the worker. When enabled, the

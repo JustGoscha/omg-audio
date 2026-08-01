@@ -58,6 +58,21 @@ pub fn set_gpu_backend(on: bool) {
 const GPU_RAY_MULT: u32 = 8;
 const GPU_RAY_CAP: u32 = 32768;
 
+/// Early-reflections backend (GPU_PLAN.md Track C): 0 = ism (the
+/// classic image-source engine), 1 = traced (PT-early: discovery +
+/// exact chain solve). Both are kept forever; `traced` currently also
+/// covers what C5's `hybrid` will refine (low orders are already
+/// seeded deterministically inside discovery).
+static EARLY: AtomicU32 = AtomicU32::new(0);
+
+pub fn set_early(mode: u32) {
+    EARLY.store(mode.min(2), Ordering::Relaxed);
+}
+
+pub fn early_traced() -> bool {
+    EARLY.load(Ordering::Relaxed) != 0
+}
+
 /// Manually pin one lever (see `OVERRIDES` for ids); `value` 0 hands the
 /// lever back to the tier. Out-of-range ids are ignored.
 pub fn set_override(id: u32, value: u32) {

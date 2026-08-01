@@ -83,6 +83,8 @@ pub struct Sim {
     echo_avg: Echogram,
     echo_cur: Echogram,
     taps_buf: Vec<omg_core::params::Tap>,
+    /// PT-early path cache, built lazily when `early = traced`.
+    pt: Option<crate::early::PathCache>,
     version: u64,
 }
 
@@ -101,6 +103,7 @@ impl Sim {
             echo_avg: Echogram::new(),
             echo_cur: Echogram::new(),
             taps_buf: Vec::new(),
+            pt: None,
             version: 0,
         }
     }
@@ -122,7 +125,15 @@ impl Sim {
         extra_dist: f32,
         muffle: [f32; NBANDS],
     ) -> ParamBlock {
-        image_source_taps(room, src, listener, crate::quality::tier().ism_order(), &mut self.taps_buf);
+        if crate::quality::early_traced() {
+            // PT-early (Track C): discovered chains, exact solves. Same
+            // Tap contract, PT key namespace — everything downstream
+            // (yaw rotation, portal folding, renderer) is unchanged.
+            let cache = self.pt.get_or_insert_with(Default::default);
+            cache.update(room, src, listener, &mut self.taps_buf);
+        } else {
+            image_source_taps(room, src, listener, crate::quality::tier().ism_order(), &mut self.taps_buf);
+        }
 
         // World → listener frame (listener faces +x at yaw = 0), then fold
         // the pre-door path into each tap. The aperture is a Huygens
