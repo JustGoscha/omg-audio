@@ -361,6 +361,32 @@ Both backends emit the SAME tap structure through the same pipeline;
 switching mid-walk crossfades through the normal slot release, exactly
 like the tap-ceiling ladder.
 
+### The endgame: one mesh, one tracer — rooms stop being simulated
+
+The full win of tracing is not (only) speed: traced over the WORLD
+mesh, the portal apparatus stops existing. No door graph BFS, no
+virtual sources at apertures, no routed-source pre-door paths, no
+coupled-reverb door emitters, no Sabine seep balance — a ray that
+threads a doorway or a window costs one BVH traversal like any other
+ray, and inter-room sound is EMERGENT. The repo already proves this
+twice in miniature: the ambient dome (no room graph, openings localize
+the world outside by construction) and the mesh tracer's
+emergent-portal test (doorway hole, listener outside, zero authoring).
+Track C's end state is that architecture for every path: sources and
+listener in one world mesh, K3 finding whatever transport exists.
+
+What straight rays cannot deliver stays explicit, by physics not by
+architecture:
+- **Diffraction** — rays don't bend; without the knife-edge floors the
+  shadow zone behind a jamb goes silent. AutoPaths stays, priced over
+  the same mesh.
+- **Transmission** — rays must continue THROUGH surfaces with
+  mass-law loss (the dome's trace_through already does this), or the
+  club stops rumbling through its walls.
+- **Late field** — remains the statistical tracer (K1), eventually
+  also over the world mesh instead of per-room shoeboxes; the per-room
+  Sabine/FDN machinery then simplifies to per-region decay estimates.
+
 ### Hybrid: where the combination beats either
 
 Each method is strongest at a different order:
