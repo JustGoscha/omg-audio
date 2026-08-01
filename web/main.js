@@ -204,7 +204,7 @@ const QUAL_SLIDERS = [
     tip: 'Maximum early-reflection taps rendered per source. A doorway can carry ~145/source and the weakest half sit below the masking threshold of the strongest. Evicted taps fade out — lowering this mid-play is click-free.' },
 ];
 const QUAL_TIER_TIPS = {
-  auto: 'Walks the tier from measured load: sheds when a sim tick blows 40 ms or the audio thread gaps, recovers after ~10 s of calm.',
+  auto: 'Starts at low and earns its way up: climbs a tier after ~10 s of clean running, sheds the moment a sim tick blows 40 ms or the audio thread gaps.',
   high: 'Full budgets — 4096 trace rays, reflection order 3, 384 dome rays. The reference sound.',
   med: 'Half the trace rays, slower idle refresh, leaner dome. Statistically the same field with slightly more reverb flutter.',
   low: 'Quarter rays, reflection order 2, lean dome. For throttled machines — everything stays spatialized, the estimate just gets coarser.',
@@ -1341,11 +1341,14 @@ async function startAudio() {
   {
     const qp = (new URLSearchParams(location.search).get('q') || 'auto').toLowerCase();
     const tiers = { high: 0, med: 1, medium: 1, low: 2 };
+    // Auto starts at LOW and earns its way up: the cost of starting too
+    // high is audible (breakup until the first shed), the cost of
+    // starting too low is a few seconds of soft focus nobody notices.
     state.quality = {
-      auto: !(qp in tiers), tier: tiers[qp] ?? 0, calm: 0, forced: '',
+      auto: !(qp in tiers), tier: tiers[qp] ?? 2, calm: 0, forced: '',
       mode: qp in tiers ? (qp === 'medium' ? 'med' : qp) : 'auto',
     };
-    if (!state.quality.auto) worker.postMessage({ type: 'quality', tier: state.quality.tier });
+    worker.postMessage({ type: 'quality', tier: state.quality.tier });
     // Manual override (Q key / console): pins the sim tier AND floors the
     // worklet's tap-ceiling ladder to match, so a pinned "low" is low on
     // both clocks. "auto" hands both governors back their freedom.

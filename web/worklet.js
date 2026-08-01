@@ -11,11 +11,11 @@ class OmgProcessor extends AudioWorkletProcessor {
     // own render load and walks N between the floor and cap with hysteresis
     // — a throttled CPU (Low Power Mode, phones) settles low, a fast
     // desktop climbs to the cap. Bench: tools/bench_web.mjs.
-    // Start at 8, not 16: bench shows 16 is *below* realtime at the
-    // worst-case position (~547 taps), so a cold start there breaks up
-    // for a full adaptation window before the first shed. 8 is ~1.0x
-    // worst-case; the grow path climbs within seconds when there's room.
-    this.budget = 8;
+    // Cold-start at the FLOOR and earn the way up: starting high is
+    // audible (breakup until the first shed), starting low is a few
+    // seconds of soft focus while the grow path (one rung per clean
+    // 1 s window) observes that quality holds.
+    this.budget = 2;
     // floor 2: point rendering is a sharpness tier, not a requirement —
     // the order-2 bus keeps everything spatialized when a squeezed CPU
     // (camera on, thermal throttle) needs the headroom back
@@ -27,7 +27,7 @@ class OmgProcessor extends AudioWorkletProcessor {
     // taps/source and the device can't render them all. Evicted taps
     // release with the slot fade, so stepping down is click-free.
     this.CEILINGS = [160, 112, 64];
-    this.ceilIdx = 0;
+    this.ceilIdx = this.CEILINGS.length - 1; // start dense-shedded too
     this.loadMs = 0;
     this.loadFrames = 0;
     this.port.onmessage = (e) => this.onMessage(e.data);
@@ -81,6 +81,7 @@ class OmgProcessor extends AudioWorkletProcessor {
         this.w.eng_fx_commit();
       });
       this.w.eng_set_point_budget(this.budget);
+      this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
       this.ready = true;
       this.port.postMessage({ type: 'ready' });
     } else if (m.type === 'params' && this.ready) {
