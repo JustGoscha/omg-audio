@@ -336,11 +336,55 @@ folds records into the hash table and emits ParamBlock taps. Budget:
 the measured M-series numbers; the CPU fallback runs the same code at
 1–2 k rays and simply converges the cache slower, same correctness.
 
+### GPU-first, CPU-capable
+
+K3 is designed FOR the GPU: bounce loop + NEE is the same shape as
+the late tracer that already runs at 1.5 ms for 32 k rays, and the
+append-buffer output (~32 B/record) is a fraction of an echogram
+readback. The CPU fallback is the same algorithm at 1–2 k rays —
+correctness identical, cache convergence slower. Web host reuses the
+phase 3 bridge pattern (flat job/record buffers, versioned, JS driver,
+silent CPU fallback).
+
+### The early-reflections backend is a SETTING, not a migration
+
+`early = ism | traced | hybrid` (env var native, quality panel web —
+same pattern as the late-field cpu/gpu toggle, A/B-able live):
+
+- `ism` — today's engine, kept permanently. It is the exact solution
+  for empty shoeboxes, the cheapest path on GPU-less devices, and the
+  oracle the traced backend is validated against. Never deleted.
+- `traced` — the full PT-early path set from K3.
+- `hybrid` — probably the end state (see below).
+
+Both backends emit the SAME tap structure through the same pipeline;
+switching mid-walk crossfades through the normal slot release, exactly
+like the tap-ceiling ladder.
+
+### Hybrid: where the combination beats either
+
+Each method is strongest at a different order:
+
+- **Order-1 and the direct set**: ISM/analytic — a handful of exact,
+  never-flickering, zero-variance paths that carry localization. Keep
+  them analytic even in mesh rooms (single-reflection solve per major
+  planar surface + occlusion shadow ray = trivially cheap, and the
+  perceptually dominant paths get determinism for free).
+- **Order 2+ and everything occluded/cluttered**: traced — where
+  image mirroring explodes and tracing's constant budget wins.
+- **Empty shoebox rooms at Low tier**: pure ISM (no rays spent).
+
+The hybrid dedupes by path key: an analytic path and a traced path
+with the same surface chain are the same tap (analytic wins — exact
+beats sampled). This is likely the shipping default; `ism` and
+`traced` remain as pure modes for A/B and regression.
+
 ### Acceptance
 
 - **Shoebox equivalence**: empty golden rooms — PT-early must
   reproduce the ISM ≤3-order path set (delay ±0.5 ms, level ±1 dB,
-  per path) after cache convergence. ISM is the oracle, then retires.
+  per path) after cache convergence. ISM stays as the oracle and as
+  a selectable backend (see above) — it never retires.
 - **Occluder test**: a pillar between source and listener — direct
   tap hands off to the diffraction floor with no level step (extend
   the existing shadow-walk regression).
