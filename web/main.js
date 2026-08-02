@@ -583,8 +583,17 @@ const FPS_CAP = (() => {
 })();
 let lastDraw = -1e9;
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a0d12);
-scene.fog = new THREE.Fog(0x0a0d12, 24, 100);
+scene.background = new THREE.Color(0x10141d);
+// CC0 night sky (Poly Haven "Satara Night", tone-mapped in-repo — see
+// assets/sky/LICENSE.txt): equirect starfield whose horizon dissolves
+// into the fog color, so geometry melts into the same mist the sky
+// rises from. Assigned on load; the flat color covers the first frames.
+new THREE.TextureLoader().load('../assets/sky/night.png', (sky) => {
+  sky.mapping = THREE.EquirectangularReflectionMapping;
+  sky.colorSpace = THREE.SRGBColorSpace;
+  scene.background = sky;
+});
+scene.fog = new THREE.Fog(0x1a2233, 28, 150);
 const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 120);
 camera.rotation.order = 'YXZ';
 
@@ -628,8 +637,15 @@ fit();
   console.info('[sys]', JSON.stringify(sys));
 })();
 
-scene.add(new THREE.HemisphereLight(0x8899bb, 0x1a1410, 0.9));
-scene.add(new THREE.AmbientLight(0x404860, 0.5));
+// starlit night, not a cave: a fuller hemisphere + a cool moon key
+// light give walls readable faces while keeping the night palette
+scene.add(new THREE.HemisphereLight(0x9db1d8, 0x201a12, 1.35));
+scene.add(new THREE.AmbientLight(0x4a5670, 0.8));
+{
+  const moon = new THREE.DirectionalLight(0xbfd2ff, 0.55);
+  moon.position.set(-60, 90, 40);
+  scene.add(moon);
+}
 
 const wallMat = new THREE.MeshLambertMaterial({ color: 0x39465c });
 const glassMat = new THREE.MeshLambertMaterial({
