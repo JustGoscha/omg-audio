@@ -83,6 +83,9 @@ pub struct Sim {
     echo_avg: Echogram,
     echo_cur: Echogram,
     taps_buf: Vec<omg_core::params::Tap>,
+    /// Source↔listener distance at the last WORLD reverb trace —
+    /// staleness compensation for moving sources (see reverb_world).
+    rp_dist: f32,
     /// PT-early path cache, built lazily when `early = traced`.
     pt: Option<crate::early::PathCache>,
     /// Last traced (room, src, listener) — debug ray extraction.
@@ -105,6 +108,7 @@ impl Sim {
             echo_avg: Echogram::new(),
             echo_cur: Echogram::new(),
             taps_buf: Vec::new(),
+            rp_dist: f32::MAX,
             pt: None,
             pt_geom: None,
             version: 0,
@@ -371,10 +375,25 @@ impl Sim {
         if traced {
             let alpha = if self.version == 0 { 1.0 } else { 0.3 };
             self.echo_avg.ema(&self.echo_cur, alpha);
+            self.rp_dist = (src - receiver).length();
         }
         self.version += 1;
         let (dir, aniso) = self.echo_avg.late_direction(0.08);
-        (estimate_reverb(&self.echo_avg), dir, aniso)
+        let mut rp = estimate_reverb(&self.echo_avg);
+        // Staleness compensation: the echogram is an ABSOLUTE
+        // measurement at the listener, refreshed round-robin — a car
+        // that passed close would otherwise keep droning its close-by
+        // wet level for seconds while it drives away. Between traces,
+        // scale the level by the separation then/now (attenuate only;
+        // the next trace corrects upward).
+        if self.rp_dist < f32::MAX {
+            let d_now = (src - receiver).length();
+            let k = ((self.rp_dist + 1.0) / (d_now + 1.0)).min(1.0);
+            for b in 0..NBANDS {
+                rp.level[b] *= k;
+            }
+        }
+        (rp, dir, aniso)
     }
 
     /// Reverb estimate only (no taps): used for the coupled-room wet field —

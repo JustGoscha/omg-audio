@@ -532,11 +532,14 @@ impl WorldSim {
                 let ew = self.early_world.as_mut().unwrap();
                 let n_em = if def.emitters.len() > 1 { def.emitters.len() } else { 1 };
                 let amp = 1.0 / (n_em as f32).sqrt();
-                // How OPEN the straight ray is, per band: the solved direct
-                // record over its free-space level. Diffraction only
-                // carries what the straight ray does not — additive bends
-                // over a clear sight line are a comb filter, not physics.
-                let mut lit = [0.0f32; NBANDS];
+                // How OPEN the straight rays are, per band: the solved
+                // direct records over their free-space levels, summed
+                // over the WHOLE rig — one lit speaker must not silence
+                // the bends the three shadowed ones need (the club-door
+                // cliff). Diffraction only carries what the straight
+                // rays do not.
+                let mut lit_num = [0.0f32; NBANDS];
+                let mut lit_den = [0.0f32; NBANDS];
                 for ei in 0..n_em {
                     let (ex, ey) = if n_em > 1 { def.emitters[ei] } else { def.pos };
                     let e3 = Vec3::new(ex, ey, src_z);
@@ -548,12 +551,15 @@ impl WorldSim {
                         &self.extras_buf,
                         &mut self.recs_buf,
                     );
+                    let d_free = (e3 - eye).length().max(0.3);
+                    let air = air_attenuation(d_free);
+                    for b in 0..NBANDS {
+                        lit_den[b] += air[b] / d_free;
+                    }
                     for r in &self.recs_buf {
-                        if ei == 0 && r.order == 0 {
-                            let d = (r.delay_s * SPEED_OF_SOUND).max(0.3);
-                            let air = air_attenuation(d);
+                        if r.order == 0 {
                             for b in 0..NBANDS {
-                                lit[b] = (r.gains[b] * d / air[b]).clamp(0.0, 1.0);
+                                lit_num[b] += r.gains[b];
                             }
                         }
                         pb.taps.push(Tap {
@@ -564,6 +570,9 @@ impl WorldSim {
                         });
                     }
                 }
+                let lit: [f32; NBANDS] = core::array::from_fn(|b| {
+                    (lit_num[b] / lit_den[b].max(1e-9)).clamp(0.0, 1.0)
+                });
 
                 // Diffraction: knife-edge paths over the SAME mesh (door
                 // jambs, building corners, roof lines are auto-extracted
@@ -590,36 +599,96 @@ impl WorldSim {
                     let budget =
                         PathBudget { edge_candidates: 48, pair_edges: 32, max_paths: 4 };
                     self.auto.find(&self.dome.mesh, src0, eye, budget, &mut self.paths_buf);
-                    let bt = &mut self.bend_taps[si];
-                    bt.clear();
-                    // ONE tap: the dominant edge. The diffracted field is
-                    // the best path, not the sum — four near-equal edge
-                    // copies overcount by ~10 dB (the old floor took the
-                    // max over paths for the same reason).
-                    if let Some(p) = self
+                    // The dominant edge plus a half-strength runner-up:
+                    // one tap alone cliffs to silence whenever the edge
+                    // ranking misses at the next cell (the club-door
+                    // artifact); summing all four overcounts ~10 dB.
+                    let mut cand: Vec<&omg_core::paths::FoundPath> = self
                         .paths_buf
                         .iter()
                         .filter(|p| p.key != 0 && p.points.len() >= 3)
-                        .max_by(|a, b| {
-                            let ga = a.gains[1] / a.length.max(0.3);
-                            let gb = b.gains[1] / b.length.max(0.3);
-                            ga.total_cmp(&gb)
-                        })
-                    {
+                        .collect();
+                    cand.sort_by(|a, b| {
+                        let ga = a.gains[1] / a.length.max(0.3);
+                        let gb = b.gains[1] / b.length.max(0.3);
+                        gb.total_cmp(&ga)
+                    });
+                    // coincident wall planes (adjacent rooms author the
+                    // same boundary) yield DUPLICATE edges — the same
+                    // physical path twice, +50% energy and a flappy key.
+                    // Accept up to two geometrically DISTINCT paths.
+                    let mut picked: Vec<&omg_core::paths::FoundPath> = Vec::new();
+                    for p in &cand {
+                        if picked.len() >= 2 {
+                            break;
+                        }
+                        let dup = picked.iter().any(|q| {
+                            (q.length - p.length).abs() < 0.05
+                                && (q.points[q.points.len() - 2] - eye)
+                                    .normalize()
+                                    .dot((p.points[p.points.len() - 2] - eye).normalize())
+                                    > 0.99
+                        });
+                        if !dup {
+                            picked.push(p);
+                        }
+                    }
+                    let mut fresh: Vec<Tap> = Vec::new();
+                    for (rank, p) in picked.iter().enumerate() {
                         let len = p.length.max(0.3);
                         let air = air_attenuation(len);
-                        let gains: [f32; NBANDS] =
-                            core::array::from_fn(|b| p.gains[b] * air[b] / len);
-                        if !gains.iter().all(|&g| g < 2e-5) {
-                            let toward = p.points[p.points.len() - 2] - eye;
-                            let dl = toward.length().max(1e-4);
-                            bt.push(Tap {
-                                key: crate::early::PT_KEY_BASE + 0x0800_0000 + p.key,
-                                delay_s: len / SPEED_OF_SOUND,
-                                dir: [toward.x / dl, toward.y / dl, toward.z / dl],
-                                gains,
-                            });
+                        let w = if rank == 0 { 1.0 } else { 0.5 };
+                        // AutoPaths prices the MESH — and the mesh has
+                        // HOLES where apertures are. A bend around a
+                        // window jamb or a closed door's frame must pay
+                        // whatever fills the hole (pane, leaf) and any
+                        // furniture it threads; without this, closed
+                        // apertures leaked open-air diffraction (the
+                        // "loud beside the shut door" artifact).
+                        let mut pane = [1.0f32; NBANDS];
+                        'seg: for seg in p.points.windows(2) {
+                            for (mn, mx, m) in &self.late_panels {
+                                let bx = Aabb {
+                                    min: *mn,
+                                    max: *mx,
+                                    transmission: m.transmission,
+                                };
+                                if bx.clip(seg[0], seg[1]).is_some() {
+                                    for b in 0..NBANDS {
+                                        pane[b] *= m.transmission[b];
+                                    }
+                                    if pane.iter().all(|&x| x < 1e-4) {
+                                        break 'seg;
+                                    }
+                                }
+                            }
                         }
+                        let gains: [f32; NBANDS] =
+                            core::array::from_fn(|b| p.gains[b] * air[b] / len * w * pane[b]);
+                        if gains.iter().all(|&g| g < 2e-5) {
+                            continue;
+                        }
+                        let toward = p.points[p.points.len() - 2] - eye;
+                        let dl = toward.length().max(1e-4);
+                        fresh.push(Tap {
+                            key: crate::early::PT_KEY_BASE + 0x0800_0000 + p.key,
+                            delay_s: len / SPEED_OF_SOUND,
+                            dir: [toward.x / dl, toward.y / dl, toward.z / dl],
+                            gains,
+                        });
+                    }
+                    let bt = &mut self.bend_taps[si];
+                    if fresh.is_empty() && !bt.is_empty() {
+                        // ranking whiffed at this cell: HOLD the previous
+                        // bends, decayed — a stale bend beats a cliff
+                        for t in bt.iter_mut() {
+                            for b in 0..NBANDS {
+                                t.gains[b] *= 0.7;
+                            }
+                        }
+                        bt.retain(|t| t.gains.iter().any(|&g| g >= 2e-5));
+                    } else {
+                        *bt = fresh;
                     }
                 }
                 for t in &self.bend_taps[si] {
