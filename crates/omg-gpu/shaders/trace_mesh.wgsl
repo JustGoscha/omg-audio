@@ -254,7 +254,7 @@ fn trace(@builtin(global_invocation_id) gid: vec3<u32>) {
         let t2 = hit.transmission * hit.transmission;
         let p_raw = max(max(t2.x, t2.y), t2.z);
         // importance floor — mirrors tracer.rs: branch often, weight less
-        let p_t = select(0.0, min(max(p_raw, 0.06), 0.5), p_raw > 1e-5);
+        let p_t = select(0.0, min(max(p_raw, 0.02), 0.5), p_raw > 1e-5);
         let floor_e = 1e-7 * per_ray;
         if (p_t > 0.0 && rand_f32() < p_t) {
             energy = energy * t2 / p_t;

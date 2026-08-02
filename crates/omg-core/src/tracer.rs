@@ -154,7 +154,7 @@ pub fn trace(
             // through-wall continuations and the neighbor's echogram
             // stays empty. Branch MORE OFTEN with LESS weight (t²/p):
             // same expectation, samplable variance.
-            let p = if p_t > 1e-5 { p_t.max(0.06).min(0.5) } else { 0.0 };
+            let p = if p_t > 1e-5 { p_t.max(0.02).min(0.5) } else { 0.0 };
             let transmitted = p > 0.0 && rng.next_f32() < p;
             let mut alive = false;
             if transmitted {
