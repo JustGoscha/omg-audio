@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How the Sound Is Made — the omg-audio engine, layer by layer</title>
+<style>
+  :root {
+    --bg: #0a0d12;
+    --panel: #10141b;
+    --ink: #e8e2d4;
+    --dim: #8a92a2;
+    --faint: #4a5160;
+    --gold: #c9a25f;
+    --serif: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.65;
+  }
+  a { color: var(--gold); text-decoration: none; border-bottom: 1px dotted var(--faint); }
+  a:hover, a:focus-visible { border-bottom-color: var(--gold); outline: none; }
+
+  /* ---------- overture ---------- */
+  header {
+    min-height: 92vh;
+    display: grid;
+    place-content: center;
+    text-align: center;
+    padding: 8vh 24px;
+    position: relative;
+    overflow: hidden;
+  }
+  header svg.fan {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: .5;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    header svg.fan { animation: breathe 14s ease-in-out infinite alternate; }
+    @keyframes breathe { from { opacity: .28; } to { opacity: .6; } }
+  }
+  header > * { position: relative; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .3em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  h1 {
+    font-style: italic;
+    font-weight: 500;
+    font-size: clamp(38px, 7vw, 76px);
+    line-height: 1.08;
+    margin: 26px 0 22px;
+    text-wrap: balance;
+  }
+  .thesis {
+    max-width: 34em;
+    margin: 0 auto;
+    color: var(--dim);
+    font-size: 18px;
+    text-wrap: balance;
+  }
+  .thesis em { color: var(--ink); }
+  .down {
+    margin-top: 7vh;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--faint);
+    letter-spacing: .2em;
+  }
+
+  /* ---------- movements ---------- */
+  main { max-width: 1020px; margin: 0 auto; padding: 0 24px 12vh; }
+  section.mv {
+    display: grid;
+    grid-template-columns: 120px minmax(0, 1fr);
+    gap: 36px;
+    padding: 9vh 0 4vh;
+    border-top: 1px solid #1b212c;
+  }
+  .num {
+    font-style: italic;
+    font-size: 30px;
+    color: var(--faint);
+    line-height: 1.1;
+    position: sticky;
+    top: 5vh;
+    align-self: start;
+    text-align: right;
+    padding-right: 4px;
+  }
+  .num small {
+    display: block;
+    font-family: var(--mono);
+    font-style: normal;
+    font-size: 10px;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    margin-top: 10px;
+    color: var(--faint);
+  }
+  .body { max-width: 66ch; }
+  h2 {
+    font-style: italic;
+    font-weight: 500;
+    font-size: clamp(26px, 3.4vw, 36px);
+    line-height: 1.15;
+    margin-bottom: 6px;
+    text-wrap: balance;
+  }
+  .deck {
+    color: var(--dim);
+    font-size: 15px;
+    margin-bottom: 26px;
+  }
+  .body p { margin: 0 0 18px; }
+  .body p:last-of-type { margin-bottom: 0; }
+  .body strong { font-weight: 600; color: var(--ink); }
+  code, .k {
+    font-family: var(--mono);
+    font-size: .82em;
+    color: var(--ink);
+    background: var(--panel);
+    padding: 1px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  figure {
+    margin: 30px 0;
+    padding: 26px 22px 14px;
+    background: var(--panel);
+    border: 1px solid #1b212c;
+    overflow-x: auto;
+  }
+  figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  figcaption {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    text-align: center;
+    margin-top: 14px;
+    line-height: 1.6;
+  }
+  .measured {
+    margin-top: 26px;
+    padding: 14px 18px;
+    border-left: 2px solid var(--gold);
+    background: var(--panel);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.75;
+    color: var(--dim);
+  }
+  .measured b { color: var(--gold); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .measured .lbl {
+    display: block;
+    font-size: 10px;
+    letter-spacing: .24em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 6px;
+  }
+
+  /* diagrams share a stroke language */
+  .d-ink { stroke: var(--ink); fill: none; stroke-width: 1.2; }
+  .d-dim { stroke: var(--dim); fill: none; stroke-width: 1; }
+  .d-faint { stroke: var(--faint); fill: none; stroke-width: 1; }
+  .d-gold { stroke: var(--gold); fill: none; stroke-width: 1.2; }
+  .d-dash { stroke-dasharray: 4 4; }
+  .d-txt { font-family: var(--mono); font-size: 10px; fill: var(--dim); }
+  .d-txt2 { font-family: var(--mono); font-size: 10px; fill: var(--gold); }
+  .d-dot { fill: var(--ink); stroke: none; }
+  .d-gdot { fill: var(--gold); stroke: none; }
+
+  /* ---------- coda ---------- */
+  footer {
+    border-top: 1px solid #1b212c;
+    padding: 8vh 24px 12vh;
+    text-align: center;
+  }
+  footer .body { margin: 0 auto; text-align: left; }
+  footer h2 { text-align: center; }
+  .arc {
+    display: flex;
+    justify-content: center;
+    gap: 34px;
+    flex-wrap: wrap;
+    margin: 34px 0 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .arc div b { display: block; font-size: 22px; color: var(--gold); font-variant-numeric: tabular-nums; margin-bottom: 4px; }
+
+  @media (max-width: 720px) {
+    section.mv { grid-template-columns: 1fr; gap: 10px; }
+    .num { position: static; text-align: left; display: flex; gap: 14px; align-items: baseline; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <svg class="fan" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <g class="d-faint" opacity=".55">
+      <path d="M600 430 L80 120"/><path d="M600 430 L230 60"/><path d="M600 430 L420 40"/>
+      <path d="M600 430 L620 30"/><path d="M600 430 L810 50"/><path d="M600 430 L990 90"/>
+      <path d="M600 430 L1130 170"/><path d="M600 430 L60 330"/><path d="M600 430 L1150 360"/>
+      <path d="M600 430 L150 640"/><path d="M600 430 L400 740"/><path d="M600 430 L830 730"/>
+      <path d="M600 430 L1080 620"/>
+    </g>
+    <g class="d-dim" opacity=".5">
+      <path d="M600 430 L980 260 L700 90"/>
+      <path d="M600 430 L260 300 L520 80"/>
+      <path d="M600 430 L340 560 L120 470"/>
+    </g>
+    <circle cx="600" cy="430" r="3.5" class="d-gdot"/>
+  </svg>
+  <p class="eyebrow">omg-audio · the simulation stack</p>
+  <h1>How the Sound<br>Is Made</h1>
+  <p class="thesis">Thirteen simulations run at once so that a piano behind a bookshelf sounds like a piano behind a bookshelf. Each layer answers one physical question, hands its result to the next, and <em>every claim below is a passing test in the repository</em>.</p>
+  <p class="down">↓ &nbsp;read as a score — the layers build in order</p>
+</header>
+
+<main>
+
+<!-- ══════════════════════════ I ══════════════════════════ -->
+<section class="mv">
+  <div class="num">I<small>architecture</small></div>
+  <div class="body">
+    <h2>Two clocks, one contract</h2>
+    <p class="deck">Everything else lives inside this split.</p>
+    <p>Sound needs two speeds at once. The <strong>world</strong> changes slowly — you walk, a door swings — so a simulation tick every 50&nbsp;ms (20&nbsp;Hz, in a Web Worker or a native thread) is plenty. The <strong>waveform</strong> changes 48,000 times a second and tolerates zero lateness, so an AudioWorklet renders it sample by sample on the browser's real-time thread.</p>
+    <p>The only thing that crosses between them is a <strong>tap table</strong>: each acoustic path, of any origin, is one tap — <code>key · delay · direction · gains[3]</code>. Gains come in three bands (below 250&nbsp;Hz, 250–2500, above 2500) because every physical effect in this engine is frequency-dependent. The <code>key</code> is a stable identity: as long as a path keeps its key across ticks, the renderer <em>glides</em> its delay — which is physically exact Doppler for free — and when a key vanishes, its tap fades out instead of clicking. Engines can be swapped live because they all speak tap.</p>
+    <figure>
+      <svg viewBox="0 0 640 150" role="img" aria-label="Two clocks diagram">
+        <rect x="20" y="30" width="200" height="60" class="d-dim"/>
+        <text x="120" y="55" text-anchor="middle" class="d-txt">SIMULATION · 20 Hz</text>
+        <text x="120" y="72" text-anchor="middle" class="d-txt">rays · mirrors · statistics</text>
+        <rect x="420" y="30" width="200" height="60" class="d-dim"/>
+        <text x="520" y="55" text-anchor="middle" class="d-txt">AUDIO · per sample</text>
+        <text x="520" y="72" text-anchor="middle" class="d-txt">delay lines · HRTF · reverb</text>
+        <path d="M220 60 L420 60" class="d-gold"/>
+        <path d="M412 55 L420 60 L412 65" class="d-gold"/>
+        <text x="320" y="50" text-anchor="middle" class="d-txt2">taps: key · delay · dir · gains</text>
+        <text x="320" y="112" text-anchor="middle" class="d-txt">stable key → delay glide → Doppler · vanished key → crossfade</text>
+      </svg>
+    </figure>
+    <div class="measured"><span class="lbl">measured</span>
+      one tick budget <b>50 ms</b> · typical traced tick <b>1.5–7 ms</b> · a doorway can produce <b>~145 taps</b> per source before the ceiling
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ II ══════════════════════════ -->
+<section class="mv">
+  <div class="num">II<small>early · classic</small></div>
+  <div class="body">
+    <h2>Image sources</h2>
+    <p class="deck">The exact solution for an empty box — the engine everything is measured against.</p>
+    <p>Reflect the source across a wall and the echo behaves exactly like a second source standing in the mirror room. Reflect the mirrors again for second-order bounces. For a shoebox room this is closed-form and <strong>exact</strong>: order 3 yields precisely 63 image sources, each with a machine-perfect delay, direction, and per-band wall loss.</p>
+    <p>Its weakness is its assumption: an <em>empty</em> box. Furniture breaks it, and other rooms are invisible to it — so the classic build routes sound between rooms through authored <strong>portals</strong>: virtual sources standing in doorways, blend zones while you cross, aperture re-radiation. That machinery worked, and it is still selectable as <code>early&nbsp;=&nbsp;ism</code> — but it is bookkeeping about geometry rather than geometry, and it made every doorway cost 2.5× a normal tick. The rest of this page is, in part, the story of deleting it.</p>
+    <figure>
+      <svg viewBox="0 0 640 190" role="img" aria-label="Image source construction">
+        <rect x="200" y="30" width="240" height="130" class="d-ink"/>
+        <circle cx="260" cy="120" r="3.5" class="d-dot"/>
+        <text x="260" y="140" text-anchor="middle" class="d-txt">source</text>
+        <circle cx="380" cy="70" r="3.5" class="d-dot"/>
+        <text x="380" y="58" text-anchor="middle" class="d-txt">listener</text>
+        <circle cx="140" cy="120" r="3.5" class="d-gdot"/>
+        <text x="120" y="140" text-anchor="middle" class="d-txt2">image</text>
+        <path d="M140 120 L380 70" class="d-gold d-dash"/>
+        <path d="M260 120 L200 108 L380 70" class="d-ink"/>
+        <text x="320" y="180" text-anchor="middle" class="d-txt">the mirrored source's straight line IS the bounce path — length and angle exact</text>
+      </svg>
+    </figure>
+    <div class="measured"><span class="lbl">measured · trace_golden, world tests</span>
+      order-3 shoebox: <b>63</b> images, closed form · direct-path delay exact to <b>10⁻⁶ s</b> · doorway tick in the portal era: <b>2.5×</b> open ground
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ III ══════════════════════════ -->
+<section class="mv">
+  <div class="num">III<small>geometry</small></div>
+  <div class="body">
+    <h2>One world, made of surfaces with names</h2>
+    <p class="deck">The mesh is the acoustic truth — and every plane keeps its identity.</p>
+    <p>The whole map — every wall, slab, roof, and the ground — is one triangle mesh under one BVH (a bounding-volume tree, so a ray finds its nearest hit in logarithmic time). Door and window holes are simply <em>absent triangles</em>. Each authored plane carries a stable <strong>surface id</strong>: a wall keeps one identity no matter how its door holes fracture it into patches, and each material carries per-band absorption, scattering, and transmission.</p>
+    <p>Identity is what makes paths <em>durable</em>. A reflection path is a <strong>chain</strong> of surface ids — <code>[hall-east-wall]</code>, <code>[floor, north-wall]</code> — and a chain survives your movement even as its geometry glides underneath. That single property is what the next layer exploits.</p>
+    <div class="measured"><span class="lbl">measured · mesh_surfaces gate</span>
+      world mesh: <b>183,880</b> BVH primitives, <b>129,011</b> nodes · every surface's triangles provably coplanar · door holes share their wall's id
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ IV ══════════════════════════ -->
+<section class="mv">
+  <div class="num">IV<small>early · traced</small></div>
+  <div class="body">
+    <h2>Path-traced early reflections</h2>
+    <p class="deck">Rays discover that a path exists; geometry then supplies it exactly.</p>
+    <p>The traced engine splits the problem in a way most engines don't. A rotating golden fan of rays leaves the <em>listener</em> each tick and bounces over the world mesh, recording which surface chains it crosses — that is <strong>discovery</strong>, and it is cheap, statistical, and shared by every source (rays from your ears don't care what they're listening for). Each discovered chain enters a cache with a time-to-live.</p>
+    <p>Then, for every source, every cached chain is <strong>solved exactly</strong>: mirror the source across the chain's planes, draw the straight line, validate that each bounce lands on real mesh — a bounce that would land inside a door hole is refused. The solve is a handful of mirror operations, cheaper than one traced ray, and its delay and direction are machine-exact — so the sound is as stable as image sources, in geometry image sources could never handle. Every leg of the path also crosses the mesh honestly: a leg through a doorway hole passes free, a leg through masonry pays <strong>mass law</strong> (amplitude ∝ 1/thickness, bass surviving treble). Doorways stopped being a special case; they are just places where the wall isn't.</p>
+    <figure>
+      <svg viewBox="0 0 640 200" role="img" aria-label="Chain threading a doorway">
+        <path d="M60 40 L360 40" class="d-ink"/>
+        <path d="M60 40 L60 170 L360 170" class="d-ink"/>
+        <path d="M360 40 L360 90" class="d-ink"/>
+        <path d="M360 130 L360 170" class="d-ink"/>
+        <text x="352" y="115" text-anchor="end" class="d-txt">door = absent triangles</text>
+        <circle cx="120" cy="120" r="3.5" class="d-dot"/>
+        <text x="120" y="140" text-anchor="middle" class="d-txt">source</text>
+        <circle cx="520" cy="100" r="3.5" class="d-dot"/>
+        <text x="520" y="88" text-anchor="middle" class="d-txt">listener</text>
+        <path d="M120 120 L360 110 L520 100" class="d-gold"/>
+        <path d="M120 120 L300 40 L360 112 L520 102" class="d-dim"/>
+        <text x="470" y="150" text-anchor="middle" class="d-txt">direct + ceiling bounce, both threading the hole</text>
+        <text x="470" y="166" text-anchor="middle" class="d-txt2">zero portal code anywhere</text>
+      </svg>
+    </figure>
+    <div class="measured"><span class="lbl">measured · pt_mesh & world_traced gates</span>
+      mesh solver ≡ analytic solver in a golden box: <b>25/25</b> low-order paths, <b>57</b> records · through the open door <b>−14.2 dB</b> (free space) vs through masonry <b>−59.3 dB</b>, bass outliving treble · doorway tick now <b>0.83×</b> open ground — <em>cheaper than the field</em>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ V ══════════════════════════ -->
+<section class="mv">
+  <div class="num">V<small>diffraction</small></div>
+  <div class="body">
+    <h2>Sound bends</h2>
+    <p class="deck">Rays travel straight; hearing does not.</p>
+    <p>Step just past a doorway and the voice inside doesn't vanish — it dulls and seems to come <em>from the door frame</em>. That is knife-edge diffraction, and mirrors can't produce it. The engine prices it with the Kurze–Anderson approximation: the loss depends on the <strong>detour</strong> — how much longer the path over the edge is than the blocked straight line — measured in wavelengths, which is why shadows are bass-light and treble-dark.</p>
+    <p>The edges themselves are not authored. Door jambs, building corners and roof lines are <strong>auto-extracted</strong> from the world mesh as sharp creases, so a jamb and a skyline are the same object. Each shadowed source gets one tap from its <em>dominant</em> edge (summing four near-equal edges overcounts by ~10&nbsp;dB — a measured mistake), scaled by the complement of the solved direct path so a clear sight line never double-counts. This layer is a live switch in the quality panel: turn it <em>off</em> and you get the hard shadows most game audio ships with.</p>
+    <figure>
+      <svg viewBox="0 0 640 180" role="img" aria-label="Knife edge diffraction">
+        <path d="M320 40 L320 160" class="d-ink"/>
+        <circle cx="120" cy="130" r="3.5" class="d-dot"/>
+        <text x="120" y="150" text-anchor="middle" class="d-txt">source</text>
+        <circle cx="540" cy="130" r="3.5" class="d-dot"/>
+        <text x="540" y="150" text-anchor="middle" class="d-txt">listener, in shadow</text>
+        <path d="M120 130 L540 130" class="d-faint d-dash"/>
+        <text x="240" y="122" class="d-txt">blocked straight line</text>
+        <path d="M120 130 L320 40 L540 130" class="d-gold"/>
+        <text x="332" y="36" class="d-txt2">detour δ → loss ≈ f(δ/λ) · bass bends, treble doesn't</text>
+      </svg>
+    </figure>
+    <div class="measured"><span class="lbl">measured · world_traced & module gates</span>
+      walk-past profile: a clean <b>~15 dB</b> aperture bump, step-free at 0.5 m resolution · shadow boundary held to <b>&lt; −5 dB</b> discontinuity · switch off → measurably harder shadow, restores exactly
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ VI ══════════════════════════ -->
+<section class="mv">
+  <div class="num">VI<small>occluders</small></div>
+  <div class="body">
+    <h2>Furniture has ears-side consequences</h2>
+    <p class="deck">The room isn't empty, so the engine stopped pretending it is.</p>
+    <p>Sofas, seminar tables, cathedral pillars, the club's bar — each is an acoustic box with per-band transmission. Every solved path leg checks what it passes through: a soft sofa eats treble and lets bass through, a bookshelf is nearly a wall, a wooden table barely matters. The <em>reflection</em> field feels them too, because a bounce whose leg crosses an occluder is attenuated like any other.</p>
+    <p>This is precisely where image sources broke and tracing wins on principle: the ray budget is constant no matter how cluttered the room is, while mirror enumeration explodes. It's also the second live switch — <code>furniture: off</code> makes every object acoustically transparent, which is the empty-shoebox assumption you can now hear as an absence.</p>
+    <div class="measured"><span class="lbl">measured · module_switches gate</span>
+      piano heard through the living-room bookshelf: <b>0.91</b> occluded vs <b>4.41</b> transparent — the shelf costs <b>~14 dB</b>, and re-enabling restores the exact value
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ VII ══════════════════════════ -->
+<section class="mv">
+  <div class="num">VII<small>late field</small></div>
+  <div class="body">
+    <h2>The reverberant tail is a statistic</h2>
+    <p class="deck">Thousands of rays, measured — never authored.</p>
+    <p>After the first reflections, a room's response stops being individual paths and becomes a texture: thousands of overlapping arrivals decaying together. The engine measures it stochastically. Rays carry three-band energy from the source, bounce with material absorption and scattering (Lambert or specular, chosen per hit), and every crossing of a half-meter sphere around the listener deposits energy into a 10&nbsp;ms-binned <strong>echogram</strong>. Schroeder backward integration over the echogram, fitted between −5 and −25&nbsp;dB, yields the <strong>RT60</strong> per band; energy after 80&nbsp;ms yields the diffuse level. Those two numbers drive the renderer's reverb network.</p>
+    <p>Two disciplines keep it honest. No Russian roulette — stochastically killing rays corrupts the decay fit in stone rooms (measured, not theorized), so the honest budget lever is ray <em>count</em>, whose noise a running average absorbs. And a <strong>trace gate</strong> refuses to re-measure a scene that hasn't changed: motion, door swings and level changes re-trace instantly; stillness coasts on the average.</p>
+    <figure>
+      <svg viewBox="0 0 640 190" role="img" aria-label="Echogram and RT60 fit">
+        <path d="M60 30 L60 160 L600 160" class="d-faint"/>
+        <g class="d-dim">
+          <path d="M80 160 L80 45"/><path d="M96 160 L96 90"/><path d="M112 160 L112 75"/>
+          <path d="M128 160 L128 100"/><path d="M144 160 L144 95"/><path d="M168 160 L168 108"/>
+          <path d="M192 160 L192 115"/><path d="M224 160 L224 122"/><path d="M264 160 L264 130"/>
+          <path d="M312 160 L312 138"/><path d="M368 160 L368 145"/><path d="M432 160 L432 151"/>
+          <path d="M504 160 L504 156"/>
+        </g>
+        <path d="M80 52 C 240 90, 400 130, 590 156" class="d-gold"/>
+        <text x="90" y="40" class="d-txt">echogram: energy per 10 ms bin</text>
+        <text x="400" y="120" class="d-txt2">Schroeder fit −5…−25 dB → RT60</text>
+        <text x="330" y="180" text-anchor="middle" class="d-txt">level = energy after 80 ms — deliberately NOT distance-scaled: the diffuse field doesn't get louder as you approach</text>
+      </svg>
+    </figure>
+    <div class="measured"><span class="lbl">measured · tracer & late gates</span>
+      concrete vs acoustic tile: RT60 ordering &gt; <b>2×</b> · all-drywall Sabine check ≈ <b>1.6 s</b> · late level distance-independent within <b>±3 dB</b> over 1→6 m · mesh backend ≡ shoebox backend to <b>4 decimals</b>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ VIII ══════════════════════════ -->
+<section class="mv">
+  <div class="num">VIII<small>coupled rooms</small></div>
+  <div class="body">
+    <h2>The wet field is measured, with a direction</h2>
+    <p class="deck">Stand in the corridor: the living room's reverb reaches you through the door — because the rays did.</p>
+    <p>Since the late tracer runs on the <em>world</em> mesh, coupled rooms emerge instead of being routed. A source's rays leave its room through the doorway hole, decay in your room, and the echogram at your head simply contains it all: the coupled decay time, the level — and, because each energy deposit remembers its arrival direction, the tail's <strong>anisotropy</strong>. A reverberant room heard through a doorway reports a tail that mostly arrives <em>from the doorway</em>; the engine plays that share on a directional wet bus and the diffuse remainder in the reverb network. The last piece of portal bookkeeping — Lambert radiators, aperture routing — was deleted the day this measurement replaced it.</p>
+    <p>Doors themselves are <strong>panel overlays</strong> on the geometry: a leaf at 40% open covers 60% of its hole as a wood box that solved paths transmit through (mass law) and late rays bounce off. Swing it and every filter sweeps continuously.</p>
+    <div class="measured"><span class="lbl">measured · late_world gate</span>
+      corridor listener, piano in the living room: coupled RT60 <b>0.82 s</b>, tail <b>~29%</b> directional toward the door · close the leaf → wet drops <b>4×</b> · reopen → restores · a panel over a test hole seals its through-energy to <b>0.000000</b>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ IX ══════════════════════════ -->
+<section class="mv">
+  <div class="num">IX<small>environment</small></div>
+  <div class="body">
+    <h2>The ambient dome</h2>
+    <p class="deck">An audio skybox, sampled through real geometry.</p>
+    <p>Rain, wind and city rumble are not sources standing anywhere — they are a field arriving from the sky. Every tick, a fan of rays leaves your head and asks the world: <em>which directions reach open sky, and through what?</em> A ray escaping through a window carries the outdoor field from that window's direction, attenuated by the panes it crossed; a ray dying in masonry carries nothing. Binned by direction and smoothed over time, this produces the ambient image — walk from the field into the hall and the sky narrows to the doorway behind you, continuously, with no authored transition.</p>
+    <p>A parallel power balance handles what rays can't: through-shell <strong>seep</strong> (the storm as a bass presence inside a closed building), an <strong>enclosure</strong> factor that is geometric rather than reverberant, and roof exposure. Rain additionally anchors drop sounds on the glass panes themselves.</p>
+    <div class="measured"><span class="lbl">measured · ambience continuity gate</span>
+      walking through the hall door: total ambient energy step-free at <b>0.25 m</b> resolution (every step &lt; <b>3 dB</b>) · enclosure ramps <b>0 → 1</b> smoothly across the threshold
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ X ══════════════════════════ -->
+<section class="mv">
+  <div class="num">X<small>bodies</small></div>
+  <div class="body">
+    <h2>Things that move, including you</h2>
+    <p class="deck">Every moving thing is just a source; the layers above do the rest.</p>
+    <p>Your <strong>footsteps</strong> are a source in the world, at your feet. Steps fire on <em>distance travelled</em> (~1.5 m of stride, jittered so your feet aren't a metronome, gated to human cadence), pick their sample by the room's floor — wood, carpet, concrete, gravel — and then propagate like any other source: your steps echo in the cathedral and dull behind the bar, for free. Thrown balls and passing cars are dynamic sources with live positions; crouch, jump and sprint move the listener's actual ears, so ducking behind the club bar physically changes the solved paths. Face tracking, when enabled, steers the binaural head directly.</p>
+    <div class="measured"><span class="lbl">mechanics</span>
+      stride <b>1.35–1.65 m</b> · cadence gate <b>320 ms</b> · never the same sample twice in a row · sources: <b>11</b> (5 placed, feet, 3 balls, 2 cars)
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ XI ══════════════════════════ -->
+<section class="mv">
+  <div class="num">XI<small>binaural</small></div>
+  <div class="body">
+    <h2>Rendering for two ears</h2>
+    <p class="deck">Where taps become the feeling that the sound is *there*.</p>
+    <p>Every tap is binaural. All of them encode, at their arrival direction, into <strong>second-order ambisonics</strong> — a compact directional sound field — decoded through twenty virtual loudspeakers, each convolved with its measured KEMAR head-related response. That gives the full field correct interaural time and level differences, slightly blurred in angle. On top, the strongest N paths get a <strong>dedicated nearest-neighbor HRIR</strong> from a 710-direction grid: pin-sharp localization exactly where the precedence effect says hearing takes its bearings — from the loudest, earliest arrivals. The weak tail reads as envelopment either way.</p>
+    <p>Each tap runs through a per-sample fractional delay line (whose glide is the Doppler from layer I), per-band gain smoothing, and the diffuse and directional wet buses join at the end, before a slow AGC that protects your ears, not the mix. This is the one workload the GPU can never help with — it must produce the next sample <em>now</em> — which is why the governors of the next layer exist.</p>
+    <div class="measured"><span class="lbl">render path</span>
+      ambisonic order <b>2</b> → <b>20</b> virtual speakers × KEMAR HRIRs · point-tap grid <b>710</b> directions · budget: the <b>N strongest</b> paths (a live slider)
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ XII ══════════════════════════ -->
+<section class="mv">
+  <div class="num">XII<small>governors</small></div>
+  <div class="body">
+    <h2>Shedding the right work first</h2>
+    <p class="deck">Every quality lever trades variance or staleness — never a different sound.</p>
+    <p>Two governors watch two clocks. The <strong>sim governor</strong> starts every session at the lowest tier and earns its way up only after sustained calm, sheds instantly when a tick blows 40&nbsp;ms or audio pressure persists. The <strong>audio governor</strong> watches render load per quantum: above 80% of realtime it sheds tap ceilings and point-HRIR count feed-forward — before the miss, because a missed audio deadline is the one failure you can hear. Every lever was chosen so that turning it down adds statistical noise (fewer rays), staleness (slower refresh), or spatial blur (fewer point HRIRs) — perceptually graceful degradations — and never bias.</p>
+    <p>The quality panel exposes all of it: pin any lever, or hand them back to the governors. The engine-module switches — <code>ism/traced</code>, <code>cpu/gpu</code>, <code>diffraction</code>, <code>furniture</code> — are the A/B instruments this page's claims can be checked with, live.</p>
+    <div class="measured"><span class="lbl">policy</span>
+      shed at load &gt; <b>80%</b> · climb after <b>~10 s</b> calm · tap ceilings <b>160/112/64/32</b> · feed-forward shed on a &gt; <b>420</b>-tap surge, before the deadline is at risk
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ XIII ══════════════════════════ -->
+<section class="mv">
+  <div class="num">XIII<small>compute</small></div>
+  <div class="body">
+    <h2>The same physics, on the GPU</h2>
+    <p class="deck">Four WGSL kernels, one rule: silent fallback, parity-tested against the CPU.</p>
+    <p>The ray workloads are embarrassingly parallel, so they run as WebGPU compute — the <em>same</em> WGSL kernels on native wgpu and in the browser. <strong>K1</strong> traces shoebox reverb; the <strong>PT kernel</strong> discovers box chains; <strong>K2</strong> traces the world mesh (the BVH uploads once, ~9&nbsp;MB; door leaves travel per-dispatch as 48-byte panel boxes); <strong>K3</strong> runs chain discovery over the same buffers. The CPU implementations never leave: they are the fallback for machines without adapters and the <em>oracle</em> every kernel is statistically parity-tested against. A version handshake guards each bridge — on any mismatch the driver refuses and the sim keeps computing on CPU, because decoding garbage is worse than being slower.</p>
+    <p>What the GPU buys is density, not different sound: the same tick budget carries 8–16× the rays, so estimates are steadier — pure variance reduction, which is the only kind of free lunch this engine believes in.</p>
+    <div class="measured"><span class="lbl">measured · parity & speed gates</span>
+      K1: 4096 rays <b>1.0 ms</b> vs CPU <b>7.3 ms</b> · K2: 8192 world rays <b>9.2 ms</b> vs CPU 512 in <b>11.6 ms</b> — <b>16×</b> density at equal wall-clock · K3 finds <b>97%</b> of the CPU chain set at 5× density, <b>4.3 ms</b> · levels agree to <b>3–4 decimals</b>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="body">
+    <h2>Coda: the door that cost nothing</h2>
+    <p style="color:var(--dim); text-align:center; max-width:38em; margin:14px auto 0;">The engine's whole arc compresses into one number: what a doorway costs. Portals simulated two rooms at once and spiked. One world listener context made the door just a hole. The measured wet made it <em>cheaper</em> than open ground — there is simply nothing special left to do there.</p>
+    <div class="arc">
+      <div><b>2.5×</b>portal era</div>
+      <div><b>0.98×</b>portals deleted</div>
+      <div><b>0.83×</b>wet measured</div>
+      <div><b>0.60×</b>club door, today</div>
+    </div>
+    <p style="font-family:var(--mono); font-size:11px; color:var(--faint); text-align:center; margin-top:40px;">every number on this page is asserted by a test under crates/*/tests · flip the engine-module switches in the demo's quality panel to hear any layer leave</p>
+  </div>
+</footer>
+
+</body>
+</html>
