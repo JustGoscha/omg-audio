@@ -461,6 +461,63 @@ the measured 2.5× doorway tick). C6 removes them:
   The per-room FDN reduces to region estimates once regions replace
   rooms in authoring.
 
+
+### C7 — the many-sources endgame: exact for the few, statistical for the many
+
+What limits source count today, measured: the sim's per-source exact
+solve (~1 ms × audible source × tick — the wall sits at ~30–40
+audible), and the audio thread's tap budget (~4k taps ≈ 400 sources at
+10 taps each, if the sim could feed them). Everything else is already
+O(1) in sources: chain discovery is listener-launched (C6), the late
+trace and bend refreshes amortize over a per-tick budget, and the
+through-wall branch (C6d+) made the ONE listener-side field carry
+every source's leakage. The fundamental limits are taps on the audio
+thread and distinct SIGNALS in memory — never source count itself.
+
+The architecture, three tiers by perceptual role, one shared world:
+
+- **C7a — K4, the batched solve.** The exact solve is sources × chains
+  × a handful of dot products — embarrassingly parallel and tiny. One
+  kernel over the already-uploaded BVH/SurfaceTable solves EVERY
+  (source, chain) pair per tick and returns validated records; the
+  wasm keeps only key management. Sim-side per-source cost drops to
+  ~zero; the 30-source wall falls. Gate: identical records to the CPU
+  solve (machine-exact construction, so exact match modulo float
+  order), and a 100-source scene ticking under the doorway budget.
+
+- **C7b — cluster sources.** Sources within a direction/delay
+  resolution cell (~10°, ~5 ms at the listener) merge: their SIGNALS
+  sum pre-pipeline into one cluster source that gets the full solve.
+  Legitimate because the ear cannot separate them; the club rig
+  (power-summed co-located emitters) is the degenerate case already
+  shipped. Clusters re-form hysteretically as the listener moves so
+  keys stay stable. Gate: a 100-voice crowd renders as ≤ 12 cluster
+  sources with per-cluster level within 1 dB of the exact sum.
+
+- **C7c — the statistical tier.** Beyond clusters, sources dissolve
+  into the FIELD: the listener-side late trace gathers their energy by
+  reservoir sampling (importance ∝ gain/distance²) — the many-lights
+  lesson from graphics; uniform gathering drowns in variance,
+  reservoirs do not. Their summed contribution feeds the echogram and
+  the ambient dome; no taps, no signals, no per-source anything. A
+  thousand cicadas is an environment. Gate: 1000 statistical sources
+  cost < 1 ms over the empty-scene tick and their aggregate level
+  matches the closed-form sum within 1.5 dB.
+
+- **C7d — the global tap budget.** The tap ceiling becomes MIX-WIDE
+  and perceptual: taps ranked by loudness against a masking estimate
+  of the current mix, shed from the bottom — a quiet source behind the
+  club keeps 2 taps, the foreground voice keeps 60. The delay-line
+  reads vectorize (4–8 taps per SIMD lane). Gate: at the global
+  ceiling, muting the masker must bring the masked source's taps back
+  within one governor window.
+
+Promotion between tiers is continuous and hysteretic: a cicada that
+lands on your shoulder climbs statistical → cluster → exact; keys
+survive promotion (cluster keys are namespaced per member), so the
+renderer crossfades. The mixer kill switches and LOD ladder already
+implement the bottom rung (silence); C7 fills the middle.
+
 ### Hybrid: where the combination beats either
 
 Each method is strongest at a different order:
