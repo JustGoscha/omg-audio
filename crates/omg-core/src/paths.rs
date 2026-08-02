@@ -45,26 +45,6 @@ impl Default for PathBudget {
     }
 }
 
-/// Deflection distinctness: how much a path actually BENDS at an apex,
-/// as a 0..1 factor. Fresnel diffraction into a shadow requires real
-/// deflection; a near-straight "bend" through a wall corner is the
-/// TRANSMITTED field wearing a costume — the direct path already prices
-/// the straight line honestly, so an (almost) exactly straight "bend"
-/// must fade to zero. Kept NARROW (~1°..6°): near-boundary jamb bends
-/// at small angles are the designed −5 dB shadow continuity, and the
-/// coincident-plane/off-mesh ghost classes are killed independently by
-/// leg extension and bounce-landing validation.
-fn deflection_weight(incoming: Vec3, outgoing: Vec3) -> f32 {
-    let (li, lo) = (incoming.length(), outgoing.length());
-    if li < 1e-6 || lo < 1e-6 {
-        return 0.0;
-    }
-    let cosang = (incoming.dot(outgoing) / (li * lo)).clamp(-1.0, 1.0);
-    let ang = cosang.acos(); // radians; 0 = straight
-    let (lo_a, hi_a) = (0.02, 0.10); // ~1°..6°
-    ((ang - lo_a) / (hi_a - lo_a)).clamp(0.0, 1.0)
-}
-
 /// One found propagation path from source to listener.
 pub struct FoundPath {
     /// src, bend points…, listener.
@@ -239,13 +219,9 @@ impl AutoPaths {
             }
             let detour = d1 + d2 - (lis - src).length();
             let ke = knife_edge_bands(detour.max(1e-4));
-            let w = if budget.taps { deflection_weight(p - src, lis - p) } else { 1.0 };
-            if w <= 0.0 {
-                continue;
-            }
             let mut gains = [0.0f32; NBANDS];
             for band in 0..NBANDS {
-                gains[band] = ke[band] * l1[band] * l2[band] * w;
+                gains[band] = ke[band] * l1[band] * l2[band];
             }
             bent.push(FoundPath {
                 points: vec![src, p, lis],
@@ -329,18 +305,9 @@ impl AutoPaths {
                 let det2 = dm + d2 - (lis - p1).length();
                 let ke1 = knife_edge_bands(det1.max(1e-4));
                 let ke2 = knife_edge_bands(det2.max(1e-4));
-                let w = if budget.taps {
-                    deflection_weight(p1 - src, p2 - p1)
-                        * deflection_weight(p2 - p1, lis - p2)
-                } else {
-                    1.0
-                };
-                if w <= 0.0 {
-                    continue;
-                }
                 let mut gains = [0.0f32; NBANDS];
                 for band in 0..NBANDS {
-                    gains[band] = ke1[band] * ke2[band] * l1[band] * lm[band] * l2[band] * w;
+                    gains[band] = ke1[band] * ke2[band] * l1[band] * lm[band] * l2[band];
                 }
                 bent.push(FoundPath {
                     points: vec![src, p1, p2, lis],
