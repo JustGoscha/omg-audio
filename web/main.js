@@ -1812,7 +1812,7 @@ function setupControls() {
   };
 
   if (!isTouch) {
-    hintEl.textContent = 'click: capture mouse · WASD walk · Shift run · Space jump · C crouch · click throw · E door · R rain';
+    hintEl.textContent = 'click: capture mouse · WASD walk · Shift run · Space jump · C crouch · click throw · E door · B bells · R rain';
     glCanvas.addEventListener('click', () => {
       if (document.pointerLockElement !== glCanvas) glCanvas.requestPointerLock();
       else throwBall();
