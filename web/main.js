@@ -966,7 +966,8 @@ function spawnCar() {
     y: (north ? -1 : 1) * (900 + Math.random() * 900),
     north,
     vy: (north ? 1 : -1) * (12 + Math.random() * 12),
-    vol: 0.6 + Math.random(), // some cars are just louder
+    baseVol: 0.6 + Math.random(), // some cars are just louder
+    vol: 0,
   });
 }
 
@@ -974,11 +975,16 @@ function updateCars(dt, now) {
   if (now > (state.nextCarAt || 0)) {
     spawnCar();
     if (Math.random() < 0.35) spawnCar(); // sometimes two come at once
-    state.nextCarAt = now + 5000 + Math.random() * 10000;
+    state.nextCarAt = now + 20000 + Math.random() * 25000;
   }
   for (const c of state.cars) {
     c.y += c.vy * dt;
     c.mesh.position.copy(v3(c.x, c.y, 0));
+    // perceptual envelope: physically a motor IS faintly audible for
+    // hundreds of meters, but two looping motors somewhere out there
+    // read as a constant drone — fade fully out beyond ~320 m
+    const d = Math.hypot(c.x - state.pose.x, c.y - state.pose.y);
+    c.vol = (c.baseVol ?? 1) * (d < 140 ? 1 : Math.max(0, 1 - (d - 140) / 180));
   }
   state.cars = state.cars.filter((c) => {
     // free the slot once it is inaudible again on the far side — no
