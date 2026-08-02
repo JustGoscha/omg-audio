@@ -1585,7 +1585,7 @@ async function startAudio() {
           const d = e.data.dbg || [];
           let taps = 0;
           let gain = 0;
-          for (let i = 0; i < 14; i++) {
+          for (let i = 0; i < NSRC_UI; i++) {
             taps += d[i * 5] || 0;
             gain += d[i * 5 + 2] || 0;
           }
@@ -2274,6 +2274,7 @@ function frame(t) {
 // scrolling history of the totals — pile-ups, leaks and perf spikes are
 // visible at a glance instead of reconstructed from ear-memory.
 
+const NSRC_UI = 14; // keep in sync with wasm sim_nsrc()
 const DBG_NAMES = ['music', 'voice', 'club', 'flute', 'radio',
   'owl·c', 'owl·h', 'bells',
   'ball0', 'ball1', 'ball2', 'car0', 'car1', 'feet', 'amb', 'rain'];
@@ -2311,7 +2312,7 @@ function drawDebug() {
   g.fillStyle = '#7a8496';
   g.fillText('source    dB  taps  fdn  rem    d', 14, 30);
   let y = 54;
-  for (let i = 0; i < 13; i++) {
+  for (let i = 0; i < NSRC_UI + 2; i++) { // sources + amb + rain
     const rms = chans[i * 2 + 1] || 0;
     const audible = rms > 1e-5;
     g.fillStyle = audible ? DBG_COLORS[i] : '#3a4456';
@@ -2624,15 +2625,15 @@ const FAN_CAP = 512; // segments per source
 function drawReflectionFans() {
   const rays = state.debug.rays;
   const show = !!state.debug.on && !!rays;
-  const counts = new Array(11).fill(0);
+  const counts = new Array(NSRC_UI).fill(0);
   if (show) {
     // pass 1: bucket segment endpoints per source
-    const segs = Array.from({ length: 11 }, () => []);
+    const segs = Array.from({ length: NSRC_UI }, () => []);
     let k = 0;
     while (k < rays.length - 1) {
       const si = rays[k] | 0;
       const n = rays[k + 1] | 0;
-      if (n < 2 || si < 0 || si > 10 || k + 2 + n * 3 > rays.length) break;
+      if (n < 2 || si < 0 || si >= NSRC_UI || k + 2 + n * 3 > rays.length) break;
       for (let v = 0; v + 1 < n; v++) {
         const a = k + 2 + v * 3;
         const b = a + 3;
@@ -2641,7 +2642,7 @@ function drawReflectionFans() {
       }
       k += 2 + n * 3;
     }
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < NSRC_UI; i++) {
       if (!fanLines[i]) {
         const geo = new THREE.BufferGeometry();
         geo.setAttribute('position',
@@ -2672,7 +2673,7 @@ function drawReflectionFans() {
 function drawSoundRays() {
   if (!state.simState) return;
   const show = !!state.debug.on;
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < NSRC_UI; i++) {
     if (!rayLines[i]) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6 * 3), 3));
