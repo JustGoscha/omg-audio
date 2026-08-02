@@ -66,6 +66,11 @@ lums.sort()
 # on their own. A percentile-of-star target just amplifies sensor noise.
 k = 0.042 / max(lums[len(lums) // 2], 1e-6)
 print('sky exposure k =', round(k, 2))
+# black point: subtract the sky BACKGROUND (airglow / light pollution)
+# so the darkest sky is pitch black — stars and the Milky Way sit far
+# above it and survive; a post-boost buys back their energy.
+BLACK = 0.042 * 1.1
+BOOST = 1.9
 # subtle night grade: cool the warm sensor gray toward blue
 TINT = (0.88, 0.95, 1.12)
 
@@ -96,6 +101,7 @@ for y in range(H):
             b = rgbe[i + 2] * s * TINT[2]
         out = bytearray(3)
         for c, vv in enumerate((r, g, b)):
+            vv = max(0.0, vv - BLACK) * BOOST
             vv = vv * (1 - blend) + FOG[c] * blend
             key = int(vv * 4096)
             u = lut.get(key)

@@ -30,7 +30,11 @@ pub struct ReverbParams {
 
 impl Default for ReverbParams {
     fn default() -> Self {
-        Self { rt60: [0.5; NBANDS], level: [0.05; NBANDS] }
+        // level MUST default to silence: a default block is what
+        // inactive sources ship, and 0.05 here meant every idle car
+        // slot fed its motor loop into the reverb network forever —
+        // the "constant motor from somewhere" field report.
+        Self { rt60: [0.5; NBANDS], level: [0.0; NBANDS] }
     }
 }
 

@@ -38,6 +38,20 @@ fn departing_car_takes_its_wet_bed_along() {
         last = wet(&blocks[CAR0]);
     }
     eprintln!("car wet: near {near:.5} · after 2 s of driving away {last:.5}");
+
+    // the OTHER constant-motor bug: an INACTIVE slot ships a default
+    // block, whose reverb level must be SILENCE — 0.05 here meant every
+    // idle car slot fed its motor loop into the reverb network forever
+    w.set_dynamic(3, 17.5, 700.0, 0.7, 0.0);
+    let (blocks, _) = w.tick_at(lx, ly, 0.0);
+    let idle = &blocks[CAR0];
+    assert!(idle.taps.is_empty(), "inactive slot must carry no taps");
+    assert!(
+        idle.reverb.level.iter().all(|&l| l == 0.0),
+        "inactive slot must carry NO reverb level: {:?}",
+        idle.reverb.level
+    );
+    assert!(idle.remote.is_none(), "inactive slot must carry no remote wet");
     if near > 1e-4 {
         assert!(
             last < 0.25 * near,

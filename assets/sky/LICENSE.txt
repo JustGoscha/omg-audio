@@ -5,5 +5,6 @@ night.jpg
   Guest (Poly Haven), https://polyhaven.com/a/rogland_clear_night
   License: CC0 (Poly Haven publishes all assets as CC0).
   Conversion: tools/hdr_to_sky.py from the 4k HDR (RGBE decode,
-  sky-median exposure at 0.042, horizon dissolve into the scene fog,
+  sky-median exposure at 0.042 with BLACK-POINT subtraction so the
+  darkest sky is pitch black, horizon dissolve into the scene fog,
   gentle blue grade), JPEG-encoded via sips at quality 88.

@@ -167,7 +167,7 @@ const MIXER = [
   { name: 'flute', srcs: [3], base: 88, def: 76, meters: [3], spl: true },
   { name: 'radio', srcs: [4], base: 80, def: 64, meters: [4], spl: true },
   { name: 'owls', srcs: [5, 6], base: 74, def: 66, meters: [5, 6], spl: true },
-  { name: 'bells', srcs: [7], base: 100, def: 94, meters: [7], spl: true },
+  { name: 'bells', srcs: [7], base: 100, def: 100, meters: [7], spl: true },
   { name: 'balls', srcs: [8, 9, 10], base: 89, def: 89, meters: [8, 9, 10], spl: true },
   { name: 'cars', srcs: [11, 12], base: 92, def: 86, meters: [11, 12], spl: true },
   { name: 'steps', srcs: [13], base: 78, def: 62, meters: [13], spl: true },
@@ -594,10 +594,28 @@ new THREE.TextureLoader().load('../assets/sky/night.jpg', (sky) => {
   scene.background = sky;
 });
 scene.fog = new THREE.Fog(0x1a2233, 28, 150);
-const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 120);
+const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 600);
 camera.rotation.order = 'YXZ';
 
 const v3 = (wx, wy, wz) => new THREE.Vector3(wx, wz, -wy);
+
+// The belfry stands beyond the fog (28–150 m), so its auto-built room
+// box dissolves — give it an UNFOGGED silhouette that floats on the
+// mist like the sky's own mountains: tower shaft, arched belfry stage,
+// pyramid spire. Flat near-sky color = a shape, not a building.
+{
+  const sil = new THREE.MeshBasicMaterial({ color: 0x222b3f, fog: false });
+  const g = new THREE.Group();
+  const shaft = new THREE.Mesh(new THREE.BoxGeometry(6, 24, 6), sil);
+  shaft.position.copy(v3(10, 321, 12));
+  const stage = new THREE.Mesh(new THREE.BoxGeometry(6.8, 3, 6.8), sil);
+  stage.position.copy(v3(10, 321, 25.5));
+  const spire = new THREE.Mesh(new THREE.ConeGeometry(4.4, 7, 4), sil);
+  spire.position.copy(v3(10, 321, 30.5));
+  spire.rotation.y = Math.PI / 4;
+  g.add(shaft, stage, spire);
+  scene.add(g);
+}
 
 function fit() {
   renderer.setPixelRatio(fitRatio());
@@ -1809,6 +1827,7 @@ function setupControls() {
       else if (e.code === 'KeyR') cycleRain();
       else if (e.code === 'KeyE') toggleNearestDoor();
       else if (e.code === 'KeyQ') cycleQuality();
+      else if (e.code === 'KeyB') ringBells();
       else state.keys.add(e.code);
     });
     addEventListener('keyup', (e) => state.keys.delete(e.code));
@@ -2151,8 +2170,13 @@ function strideStep(d) {
 const wild = {
   owl1: 8 + Math.random() * 12,
   owl2: 16 + Math.random() * 16,
-  bells: 20 + Math.random() * 30,
+  bells: 10 + Math.random() * 15,
 };
+function ringBells() {
+  if (!state.fx) return;
+  wild.bells = performance.now() / 1000 + 30 + Math.random() * 90;
+  state.fx(7, Math.random() < 0.75 ? 26 : 27);
+}
 function updateWildlife(t) {
   if (!state.fx || !state.running) return;
   const s = t / 1000;
@@ -2166,9 +2190,8 @@ function updateWildlife(t) {
   }
   if (s > wild.bells) {
     // "randomly sometimes, 30 s – 2 min": one peal per event, the big
-    // bell three times out of four
-    wild.bells = s + 30 + Math.random() * 90;
-    state.fx(7, Math.random() < 0.75 ? 26 : 27);
+    // bell three times out of four; B rings it on demand
+    ringBells();
   }
 }
 
