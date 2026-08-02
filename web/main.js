@@ -611,9 +611,10 @@ new THREE.TextureLoader().load('../assets/sky/night.jpg', (sky) => {
 });
 // Exponential fog: real night haze — nearby geometry stays crisp,
 // depth dissolves progressively instead of hitting a linear wall.
-// ~30% haze at 50 m, ~75% at 100 m, gone by ~160 m.
-scene.fog = new THREE.FogExp2(0x14122c, 0.0118);
-const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 600);
+// Tuned for ~700 m visibility: 6% haze at 100 m, ~40% at 300 m (the
+// belfry stands IN the mist), ~95% gone at 700 m.
+scene.fog = new THREE.FogExp2(0x14122c, 0.0025);
+const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 1200);
 camera.rotation.order = 'YXZ';
 
 const v3 = (wx, wy, wz) => new THREE.Vector3(wx, wz, -wy);
@@ -623,7 +624,9 @@ const v3 = (wx, wy, wz) => new THREE.Vector3(wx, wz, -wy);
 // mist like the sky's own mountains: tower shaft, arched belfry stage,
 // pyramid spire. Flat near-sky color = a shape, not a building.
 {
-  const sil = new THREE.MeshBasicMaterial({ color: 0x1f1c38, fog: false });
+  // with ~700 m visibility the tower sits INSIDE the haze — let the
+  // fog shade it like everything else
+  const sil = new THREE.MeshBasicMaterial({ color: 0x100e22 });
   const g = new THREE.Group();
   const shaft = new THREE.Mesh(new THREE.BoxGeometry(6, 24, 6), sil);
   shaft.position.copy(v3(10, 321, 12));
