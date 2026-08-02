@@ -14,7 +14,9 @@ import sys
 import zlib
 
 SRC, DST = sys.argv[1], sys.argv[2]
-FOG = (0x1a / 255, 0x22 / 255, 0x33 / 255)  # match scene fog (linear-ish)
+# The scene fog color, as DISPLAY sRGB — blended after tone mapping so
+# the sky's horizon band is exactly what THREE.Fog paints on geometry.
+FOG = (0x14 / 255, 0x12 / 255, 0x2c / 255)
 HORIZON = 0.455   # v where the photo content starts to dissolve
 BLEND_END = 0.52  # fully fog below this
 data = open(SRC, 'rb').read()
@@ -81,10 +83,11 @@ for y in range(H):
     raw.append(0)
     v = y / H
     if v >= BLEND_END:
-        # below the horizon: fog fading toward near-black at the nadir
+        # below the horizon: the fog color fading toward black at the
+        # nadir (display space — no second gamma)
         t = min(1.0, (v - BLEND_END) / (1.0 - BLEND_END))
-        f = 1.0 - 0.65 * t
-        px = bytes(min(255, int(255 * ((c * f) ** inv_g) + 0.5)) for c in FOG)
+        f = 1.0 - 0.75 * t
+        px = bytes(min(255, int(255 * c * f + 0.5)) for c in FOG)
         raw += px * W
         continue
     blend = 0.0 if v < HORIZON else (v - HORIZON) / (BLEND_END - HORIZON)
@@ -102,13 +105,14 @@ for y in range(H):
         out = bytearray(3)
         for c, vv in enumerate((r, g, b)):
             vv = max(0.0, vv - BLACK) * BOOST
-            vv = vv * (1 - blend) + FOG[c] * blend
             key = int(vv * 4096)
             u = lut.get(key)
             if u is None:
-                u = min(255, int(255.0 * ((1.0 - math.exp(-vv)) ** inv_g) + 0.5))
+                u = (1.0 - math.exp(-vv)) ** inv_g
                 lut[key] = u
-            out[c] = u
+            # blend with the fog color in DISPLAY space: the band must
+            # equal the scene fog, not a tone-mapped brighter cousin
+            out[c] = min(255, int(255.0 * (u * (1 - blend) + FOG[c] * blend) + 0.5))
         raw += out
 
 

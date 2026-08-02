@@ -201,7 +201,14 @@ function buildMixer() {
     const lvl = document.createElement('div');
     lvl.className = 'lvl';
     lvl.textContent = '−∞';
-    row.append(label, mid, lvl);
+    // kill switch: gain to zero AND (for real sources) the sim stops
+    // computing paths for it — a muted source costs nothing anywhere
+    const mute = document.createElement('button');
+    mute.className = 'mute';
+    mute.textContent = '●';
+    mute.title = 'Disable this channel completely — a muted source is skipped by the simulation and the renderer (it costs nothing).';
+    let muted = false;
+    row.append(mute, label, mid, lvl);
     panel.append(row);
     const apply = () => {
       const v = fader.value / 1000;
@@ -215,10 +222,19 @@ function buildMixer() {
         gain = v === 0 ? 0 : 10 ** (db / 20);
         text = `${db >= 0 ? '+' : ''}${db.toFixed(0)} dB`;
       }
-      label.querySelector('.spl').textContent = text;
+      if (muted) gain = 0;
+      label.querySelector('.spl').textContent = muted ? 'off' : text;
       if (state.node) {
         state.node.port.postMessage({ type: 'mixer', target: ch.target, srcs: ch.srcs, gain });
       }
+      if (ch.srcs && state.setMute) state.setMute(ch.srcs, muted);
+    };
+    mute.onclick = () => {
+      muted = !muted;
+      mute.classList.toggle('off', muted);
+      row.classList.toggle('muted', muted);
+      apply();
+      mute.blur();
     };
     fader.oninput = apply;
     fader.onpointerup = () => fader.blur();
@@ -583,7 +599,7 @@ const FPS_CAP = (() => {
 })();
 let lastDraw = -1e9;
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x10141d);
+scene.background = new THREE.Color(0x0c0b16);
 // CC0 night sky (Poly Haven "Satara Night", tone-mapped in-repo — see
 // assets/sky/LICENSE.txt): equirect starfield whose horizon dissolves
 // into the fog color, so geometry melts into the same mist the sky
@@ -593,7 +609,10 @@ new THREE.TextureLoader().load('../assets/sky/night.jpg', (sky) => {
   sky.colorSpace = THREE.SRGBColorSpace;
   scene.background = sky;
 });
-scene.fog = new THREE.Fog(0x1a2233, 28, 150);
+// Exponential fog: real night haze — nearby geometry stays crisp,
+// depth dissolves progressively instead of hitting a linear wall.
+// ~30% haze at 50 m, ~75% at 100 m, gone by ~160 m.
+scene.fog = new THREE.FogExp2(0x14122c, 0.0118);
 const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 600);
 camera.rotation.order = 'YXZ';
 
@@ -604,7 +623,7 @@ const v3 = (wx, wy, wz) => new THREE.Vector3(wx, wz, -wy);
 // mist like the sky's own mountains: tower shaft, arched belfry stage,
 // pyramid spire. Flat near-sky color = a shape, not a building.
 {
-  const sil = new THREE.MeshBasicMaterial({ color: 0x222b3f, fog: false });
+  const sil = new THREE.MeshBasicMaterial({ color: 0x1f1c38, fog: false });
   const g = new THREE.Group();
   const shaft = new THREE.Mesh(new THREE.BoxGeometry(6, 24, 6), sil);
   shaft.position.copy(v3(10, 321, 12));
@@ -1068,6 +1087,17 @@ function buildWorld() {
   const grid = new THREE.GridHelper(100, 100, 0x24402e, 0x16281d);
   grid.position.copy(v3(20, 36, 0.0));
   scene.add(grid);
+  // the world's edge must never be visible: an effectively infinite
+  // ground skirt below everything, fog carries it to the horizon
+  {
+    const skirt = new THREE.Mesh(
+      new THREE.PlaneGeometry(8000, 8000),
+      new THREE.MeshBasicMaterial({ color: 0x141f18 }),
+    );
+    skirt.rotation.x = -Math.PI / 2;
+    skirt.position.copy(v3(10, 40, -0.06));
+    scene.add(skirt);
+  }
 
   // hand-authored wall list (avoids coplanar duplicates between rooms)
   wallY(0, 0, 8, 2.7);            // living south
@@ -1652,6 +1682,7 @@ async function startAudio() {
       try { localStorage.setItem('omg-early', mode ? 'traced' : 'ism'); } catch (_) {}
       worker.postMessage({ type: 'early', mode });
     };
+    state.setMute = (srcs, on) => worker.postMessage({ type: 'mute', srcs, on });
     state.setModule = (id, on) => {
       (state.modules = state.modules || [true, true])[id] = on;
       try { localStorage.setItem('omg-mod' + id, on ? '1' : '0'); } catch (_) {}

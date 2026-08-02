@@ -69,8 +69,12 @@
   .panel h2::after { content: ''; flex: 1; height: 1px; background: var(--line);
     align-self: center; }
 
-  #mixer .row { display: grid; grid-template-columns: 62px 1fr 58px;
+  #mixer .row { display: grid; grid-template-columns: 16px 62px 1fr 58px;
     align-items: center; gap: 8px; margin: 7px 0; }
+  #mixer .mute { background: transparent; border: 0; color: var(--ink);
+    font-size: 9px; padding: 0; cursor: pointer; line-height: 1; }
+  #mixer .mute.off { color: var(--faint); }
+  #mixer .row.muted .fader, #mixer .row.muted .lvl { opacity: .3; }
   #mixer .fader { width: 100%; accent-color: var(--ink); }
   #mixer .meter { position: relative; height: 3px; background: #1c1c21;
     margin-top: 3px; overflow: hidden; }

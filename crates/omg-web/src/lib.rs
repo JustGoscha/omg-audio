@@ -775,6 +775,13 @@ pub extern "C" fn sim_set_override(id: u32, value: u32) {
     omg_scene::quality::set_override(id, value);
 }
 
+/// Mixer kill switch: a muted source is skipped by the whole
+/// simulation and ships silent blocks.
+#[no_mangle]
+pub extern "C" fn sim_set_mute(i: u32, on: u32) {
+    sim().world.set_muted(i as usize, on != 0);
+}
+
 /// A/B module switches (quality panel): 0 = edge diffraction,
 /// 1 = furniture acoustics. All default on.
 #[no_mangle]
@@ -1228,6 +1235,20 @@ pub extern "C" fn eng_process(n: u32) {
         for (si, (src, ren)) in
             ctx.sources.iter_mut().zip(ctx.renderers.iter_mut()).enumerate()
         {
+            // muted and fully faded: keep the stream and any one-shots
+            // ticking (so unmute resumes in time) but skip ALL rendering
+            // — taps, HRIRs, buses. A muted channel costs nothing.
+            if ctx.mixer[si].target_val() == 0.0 && ctx.mixer[si].current() < 1e-4 {
+                if !src.data.is_empty() {
+                    src.pos = (src.pos + 1) % src.data.len();
+                }
+                for v in &mut ctx.voices {
+                    if v.src == si && v.pos < ctx.fx_bufs[v.buf].len() {
+                        v.pos += 1;
+                    }
+                }
+                continue;
+            }
             let mut x = if src.data.is_empty() {
                 0.0
             } else {

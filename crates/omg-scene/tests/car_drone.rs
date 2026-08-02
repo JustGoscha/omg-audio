@@ -52,6 +52,15 @@ fn departing_car_takes_its_wet_bed_along() {
         idle.reverb.level
     );
     assert!(idle.remote.is_none(), "inactive slot must carry no remote wet");
+
+    // the mixer kill switch takes the same silent path for ANY source,
+    // and unmuting recomputes immediately (no stale LOD replay)
+    w.set_muted(0, true);
+    let (blocks, _) = w.tick_at(lx, ly, 0.0);
+    assert!(blocks[0].taps.is_empty(), "muted source must be skipped");
+    w.set_muted(0, false);
+    let (blocks, _) = w.tick_at(lx, ly, 0.0);
+    assert!(!blocks[0].taps.is_empty(), "unmuted source must come back at once");
     if near > 1e-4 {
         assert!(
             last < 0.25 * near,

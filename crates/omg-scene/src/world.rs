@@ -38,6 +38,10 @@ pub struct WorldSim {
     pub rooms: Vec<RoomDef>,
     pub doors: Vec<Door>,
     pub defs: Vec<SourceDef>,
+    /// Mixer kill switches: a muted source is skipped by the WHOLE
+    /// simulation — no solve, no bends, no reverb probe. It ships a
+    /// default (silent) block so the renderer fades it out cleanly.
+    muted: Vec<bool>,
     /// Per source, per room: simulation state (echogram accumulation).
     sims: Vec<Vec<Sim>>,
     /// Per source: source-room-at-exit-door state for coupled reverb.
@@ -154,6 +158,7 @@ impl WorldSim {
                 .map(|_| (0..rooms.len()).map(|_| Sim::new()).collect())
                 .collect(),
             sim_remotes: defs.iter().map(|_| Sim::new()).collect(),
+            muted: defs.iter().map(|_| false).collect(),
             src_z: defs.iter().map(|d| d.z).collect(),
             dynamic_active: [false; walkthrough::DYN_SLOTS],
             dyn_base: defs[defs.len() - walkthrough::DYN_SLOTS..]
@@ -249,6 +254,18 @@ impl WorldSim {
             if !d.glass {
                 d.openness = openness.clamp(0.0, 1.0);
             }
+        }
+    }
+
+    /// Mixer kill switch (see `muted`).
+    pub fn set_muted(&mut self, i: usize, on: bool) {
+        if let Some(m) = self.muted.get_mut(i) {
+            if *m && !on {
+                // unmuting: force an immediate recompute (LOD would
+                // otherwise replay the stale silent block for a while)
+                self.last_level[i] = f32::MAX;
+            }
+            *m = on;
         }
     }
 
@@ -403,7 +420,7 @@ impl WorldSim {
         let n_static = self.defs.len() - walkthrough::DYN_SLOTS;
         for si in 0..self.defs.len() {
             let def = self.defs[si]; // Copy — frees `self` for &mut queries
-            if si >= n_static && !self.dynamic_active[si - n_static] {
+            if self.muted[si] || (si >= n_static && !self.dynamic_active[si - n_static]) {
                 let mut pb = ParamBlock::default();
                 pb.version = self.tick_no;
                 blocks.push(pb);
