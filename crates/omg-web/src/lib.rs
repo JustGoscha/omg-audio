@@ -151,11 +151,11 @@ pub extern "C" fn sim_early_mode() -> u32 {
 /// Flat job layout, `GPU_JOB_F32S` f32 words per job:
 /// [0] sim id · [1] n_rays · [2] seed · [3..6] room size ·
 /// [6..9] source · [9..12] listener · [12..15] band energy ·
-/// [15..39] 6 faces × (absorption ×3, scattering).
+/// [15..57] 6 faces × (absorption ×3, scattering, transmission ×3).
 /// Bump `GPU_JOB_VERSION` on ANY change — gpu.js checks it and refuses
 /// to enable on mismatch (CPU fallback beats decoding garbage).
-pub const GPU_JOB_F32S: usize = 39;
-pub const GPU_JOB_VERSION: u32 = 1;
+pub const GPU_JOB_F32S: usize = 57;
+pub const GPU_JOB_VERSION: u32 = 2;
 /// Echogram injection: 300 bins × 3 bands, then 300 bins × xyz.
 const GPU_ECHO_F32S: usize = 300 * 3 + 300 * 3;
 const GPU_MAX_JOBS: usize = 32;
@@ -190,6 +190,7 @@ impl omg_scene::late::LateBackend for WebGpuProxy {
         for w in &room.walls {
             jobs.extend_from_slice(&w.absorption);
             jobs.push(w.scattering);
+            jobs.extend_from_slice(&w.transmission);
         }
         false // result arrives via poll_into after JS injects it
     }
@@ -366,14 +367,14 @@ pub extern "C" fn sim_pt_inject(id: u32) {
 /// One world job, fixed stride: [0] sim id · [1] n_rays · [2] seed ·
 /// [3..6] source · [6..9] listener · [9] n_panels · [10..] panels,
 /// 12 f32 each laid out EXACTLY like omg-gpu's GpuPanel (48 B):
-/// min xyz, scattering, max xyz, 0, absorption xyz, 0 — JS memcpies
-/// the slice straight into the panels buffer.
+/// min xyz, scattering, max xyz, 0, absorption xyz, 0, transmission
+/// xyz, 0 — JS memcpies the slice straight into the panels buffer.
 pub const WLATE_MAX_PANELS: usize = 64;
-pub const WLATE_JOB_F32S: usize = 10 + WLATE_MAX_PANELS * 12;
+pub const WLATE_JOB_F32S: usize = 10 + WLATE_MAX_PANELS * 16;
 const WLATE_MAX_JOBS: usize = 4;
 /// Mirrors omg-gpu layout::MESH_LAYOUT_VERSION — gpu.js refuses the
 /// mesh pipeline on mismatch.
-pub const WLATE_VERSION: u32 = 2;
+pub const WLATE_VERSION: u32 = 3;
 
 struct WebWorldLateProxy;
 
@@ -408,6 +409,7 @@ impl omg_scene::late::WorldLateBackend for WebWorldLateProxy {
             jobs.extend_from_slice(&[mn.x, mn.y, mn.z, m.scattering]);
             jobs.extend_from_slice(&[mx.x, mx.y, mx.z, 0.0]);
             jobs.extend_from_slice(&[m.absorption[0], m.absorption[1], m.absorption[2], 0.0]);
+            jobs.extend_from_slice(&[m.transmission[0], m.transmission[1], m.transmission[2], 0.0]);
         }
         jobs.resize(base + WLATE_JOB_F32S, 0.0); // fixed stride
         false // result arrives via sim_gpu_inject → poll_into
@@ -649,6 +651,10 @@ fn mesh_flat() -> &'static (Vec<u32>, Vec<u32>, Vec<u32>) {
                     m.absorption[1].to_bits(),
                     m.absorption[2].to_bits(),
                     m.scattering.to_bits(),
+                    m.transmission[0].to_bits(),
+                    m.transmission[1].to_bits(),
+                    m.transmission[2].to_bits(),
+                    0,
                 ]);
             }
             (nodes, prims, mats)

@@ -66,7 +66,7 @@ pub fn golden_configs() -> Vec<GoldenConfig> {
             ),
             src: Vec3::new(1.5, 1.0, 1.5),
             lis: Vec3::new(4.5, 3.0, 1.6),
-            expect: [1.10, 0.98, 1.03, -4.9, -3.4, -4.8, 0.015],
+            expect: [1.19, 1.05, 1.05, -6.8, -3.4, -4.7, 0.010],
         },
         GoldenConfig {
             // Large dead room: short RT60, weak late field.
@@ -84,7 +84,7 @@ pub fn golden_configs() -> Vec<GoldenConfig> {
             ),
             src: Vec3::new(3.0, 2.0, 1.5),
             lis: Vec3::new(9.0, 7.0, 1.6),
-            expect: [0.69, 0.21, 0.17, -21.7, -41.4, -50.4, 0.123],
+            expect: [0.49, 0.20, 0.16, -26.6, -42.9, -50.5, 0.187],
         },
         GoldenConfig {
             // Elongated hall, listener at the far end: the late field
@@ -103,7 +103,7 @@ pub fn golden_configs() -> Vec<GoldenConfig> {
             ),
             src: Vec3::new(1.5, 1.75, 1.5),
             lis: Vec3::new(14.0, 1.75, 1.6),
-            expect: [0.96, 1.36, 1.46, -17.3, -10.2, -8.4, 0.015],
+            expect: [0.75, 1.32, 1.46, -19.8, -10.3, -8.4, 0.014],
         },
     ]
 }
@@ -156,7 +156,11 @@ pub fn assert_golden(name: &str, got: &[f32; 7], expect: &[f32; 7]) {
         let ddb = (got[3 + b] - expect[3 + b]).abs();
         // a band whose late tail sits below the audibility floor may
         // wobble more in absolute dB while staying inaudible
-        let tol = if expect[3 + b] < ANISO_LEVEL_FLOOR_DB { 2.5 } else { LEVEL_DB_TOL };
+        // below the audibility floor the tail is carried by a handful
+        // of rays — and since the transmission branch (rare events,
+        // heavy weights) the seed spread there reaches ~3 dB on a
+        // −50 dB quantity nobody can hear
+        let tol = if expect[3 + b] < ANISO_LEVEL_FLOOR_DB { 4.0 } else { LEVEL_DB_TOL };
         assert!(
             ddb <= tol,
             "{name}: level[{b}] {:.2} dB vs golden {:.2} dB (Δ{ddb:.2} > {tol})",

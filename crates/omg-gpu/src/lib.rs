@@ -607,6 +607,8 @@ impl omg_scene::late::WorldLateBackend for GpuWorldLateBackend {
                 _p0: 0,
                 absorption: m.absorption,
                 _p1: 0,
+                transmission: m.transmission,
+                _p2: 0,
             })
             .collect();
         self.seed = self.seed.wrapping_mul(747796405).wrapping_add(2891336453);

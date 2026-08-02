@@ -63,6 +63,13 @@ impl Shoebox {
 
 impl AcousticGeometry for Shoebox {
     fn raycast_hit(&self, p: Vec3, d: Vec3) -> Option<GeomHit> {
+        // a ray that TRANSMITTED through a wall has left the box's
+        // world: outside is void (the mesh geometry has a real outside;
+        // the legacy box does not — without this, CPU and GPU invented
+        // different phantom walls out there)
+        if !self.contains(p) {
+            return None;
+        }
         let (t, wall) = self.raycast(p, d);
         if !t.is_finite() || t <= 0.0 {
             return None;

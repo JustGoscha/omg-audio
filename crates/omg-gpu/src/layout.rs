@@ -9,7 +9,7 @@
 use omg_core::tracer::{BIN_DT, MAX_TIME};
 use omg_core::NBANDS;
 
-pub const LAYOUT_VERSION: u32 = 1;
+pub const LAYOUT_VERSION: u32 = 2;
 
 pub const NBINS: usize = (MAX_TIME / BIN_DT) as usize; // 300
 /// Output buffer lengths (u32 words / i32 words).
@@ -24,17 +24,21 @@ pub const ENERGY_SCALE: f32 = (1u32 << 30) as f32;
 /// bounded by the same ≤ 1 energy sum. Decode: `i as f32 / DIR_SCALE`.
 pub const DIR_SCALE: f32 = (1u32 << 28) as f32;
 
-/// One face's acoustics. WGSL: absorption vec3<f32> @0, scattering @12.
+/// One face's acoustics. WGSL: absorption @0, scattering @12,
+/// transmission @16 — 32 B. Transmission drives the tracer's
+/// through-the-wall branch (mass law).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuFace {
     pub absorption: [f32; 3],
     pub scattering: f32,
+    pub transmission: [f32; 3],
+    pub _p: u32,
 }
 
 /// The whole trace job as one uniform block.
 /// WGSL offsets: size @0, n_rays @12, source @16, seed @28, listener
-/// @32, _pad0 @44, energy @48, _pad1 @60, faces @64 (6 × 16 B) = 160 B.
+/// @32, _pad0 @44, energy @48, _pad1 @60, faces @64 (6 × 32 B) = 256 B.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuTraceJob {
@@ -63,6 +67,8 @@ impl GpuTraceJob {
         let face = |i: usize| GpuFace {
             absorption: room.walls[i].absorption,
             scattering: room.walls[i].scattering,
+            transmission: room.walls[i].transmission,
+            _p: 0,
         };
         Self {
             size: [room.size.x, room.size.y, room.size.z],
@@ -82,7 +88,7 @@ impl GpuTraceJob {
 
 /// Bump on ANY change to the mesh-kernel structs here or in
 /// trace_mesh.wgsl — the web driver checks it like LAYOUT_VERSION.
-pub const MESH_LAYOUT_VERSION: u32 = 2;
+pub const MESH_LAYOUT_VERSION: u32 = 3;
 /// Panel slots in the panels buffer (door leaves + panes + the late
 /// field's significant furniture).
 pub const MAX_PANELS: usize = 64;
@@ -117,7 +123,8 @@ pub struct GpuPrim {
 
 /// A transient overlay box (door leaf, glass pane) with INLINE
 /// acoustics — panel materials need not exist in the mesh's material
-/// table. WGSL: pmin @0, scattering @12, pmax @16, absorption @32 — 48 B.
+/// table. WGSL: pmin @0, scattering @12, pmax @16, absorption @32,
+/// transmission @48 — 64 B.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuPanel {
@@ -127,6 +134,8 @@ pub struct GpuPanel {
     pub _p0: u32,
     pub absorption: [f32; 3],
     pub _p1: u32,
+    pub transmission: [f32; 3],
+    pub _p2: u32,
 }
 
 /// The world-trace job uniform. WGSL: n_rays @0, seed @4, n_panels @8,
@@ -175,7 +184,12 @@ pub fn flatten_mesh(
     let mats = mesh
         .materials
         .iter()
-        .map(|m| GpuFace { absorption: m.absorption, scattering: m.scattering })
+        .map(|m| GpuFace {
+            absorption: m.absorption,
+            scattering: m.scattering,
+            transmission: m.transmission,
+            _p: 0,
+        })
         .collect();
     (nodes, prims, mats)
 }
@@ -199,8 +213,8 @@ mod tests {
 
     #[test]
     fn layout_sizes() {
-        assert_eq!(core::mem::size_of::<GpuFace>(), 16);
-        assert_eq!(core::mem::size_of::<GpuTraceJob>(), 160);
+        assert_eq!(core::mem::size_of::<GpuFace>(), 32);
+        assert_eq!(core::mem::size_of::<GpuTraceJob>(), 256);
         assert_eq!(core::mem::offset_of!(GpuTraceJob, n_rays), 12);
         assert_eq!(core::mem::offset_of!(GpuTraceJob, source), 16);
         assert_eq!(core::mem::offset_of!(GpuTraceJob, seed), 28);
@@ -219,8 +233,9 @@ mod tests {
         assert_eq!(core::mem::offset_of!(GpuPrim, e1), 16);
         assert_eq!(core::mem::offset_of!(GpuPrim, surf), 28);
         assert_eq!(core::mem::offset_of!(GpuPrim, e2), 32);
-        assert_eq!(core::mem::size_of::<GpuPanel>(), 48);
+        assert_eq!(core::mem::size_of::<GpuPanel>(), 64);
         assert_eq!(core::mem::offset_of!(GpuPanel, absorption), 32);
+        assert_eq!(core::mem::offset_of!(GpuPanel, transmission), 48);
         assert_eq!(core::mem::size_of::<GpuMeshJob>(), 64);
         assert_eq!(core::mem::offset_of!(GpuMeshJob, source), 16);
         assert_eq!(core::mem::offset_of!(GpuMeshJob, listener), 32);

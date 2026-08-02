@@ -96,6 +96,8 @@ fn panel_over_the_hole_seals_it() {
         _p0: 0,
         absorption: Material::WOOD_PANEL.absorption,
         _p1: 0,
+        transmission: Material::WOOD_PANEL.transmission,
+        _p2: 0,
     };
     let mut closed = Echogram::new();
     gpu.trace(src, lis, 16_384, [1.0; 3], 7, &[leaf], &mut closed);

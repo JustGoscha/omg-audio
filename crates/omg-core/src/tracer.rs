@@ -137,9 +137,45 @@ pub fn trace(
                 break;
             }
             let mat = &hit.material;
-            let mut alive = false;
+            // Through-the-wall branch (mass law): the club "boom" next
+            // door IS the reverberant field leaking through walls — a
+            // tracer whose rays only reflect cannot measure it. One ray,
+            // one branch: transmit with probability p (the strongest
+            // band's energy transmission), re-weighted per band so the
+            // estimate stays unbiased; the reflected branch gives up the
+            // transmitted share. Energy leaves rooms through walls now —
+            // exactly like reality, which is why the goldens moved.
+            let mut p_t = 0.0f32;
             for b in 0..NBANDS {
-                energy[b] *= 1.0 - mat.absorption[b];
+                p_t = p_t.max(mat.transmission[b] * mat.transmission[b]);
+            }
+            // importance floor: heavy walls transmit ~0.2% of energy —
+            // at the natural probability 512 rays produce a couple of
+            // through-wall continuations and the neighbor's echogram
+            // stays empty. Branch MORE OFTEN with LESS weight (t²/p):
+            // same expectation, samplable variance.
+            let p = if p_t > 1e-5 { p_t.max(0.06).min(0.5) } else { 0.0 };
+            let transmitted = p > 0.0 && rng.next_f32() < p;
+            let mut alive = false;
+            if transmitted {
+                for b in 0..NBANDS {
+                    energy[b] *= (mat.transmission[b] * mat.transmission[b]) / p;
+                    if energy[b] > 1e-7 * per_ray {
+                        alive = true;
+                    }
+                }
+                if !alive {
+                    break;
+                }
+                // continue straight, just past the surface
+                pos = pos + dir * (2.0 * WALL_EPS);
+                continue;
+            }
+            for b in 0..NBANDS {
+                let keep = (1.0 - mat.absorption[b]
+                    - mat.transmission[b] * mat.transmission[b])
+                    .max(0.0);
+                energy[b] *= keep / (1.0 - p);
                 if energy[b] > 1e-7 * per_ray {
                     alive = true;
                 }

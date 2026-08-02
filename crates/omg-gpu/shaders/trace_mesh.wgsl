@@ -7,10 +7,12 @@
 // real opening; its final segment still passes the receiver check —
 // that segment is how sound leaves a room through a doorway.
 //
-// MESH_LAYOUT_VERSION 1 — must match crates/omg-gpu/src/layout.rs:
+// MESH_LAYOUT_VERSION 3 — must match crates/omg-gpu/src/layout.rs:
 //   Node  {bmin@0, a@12, bmax@16, b@28}                 32 B
 //   Prim  {a@0, mat@12, e1@16, e2@32}                   48 B
-//   Panel {pmin@0, scattering@12, pmax@16, absorption@32} 48 B
+//   Panel {pmin@0, scattering@12, pmax@16, absorption@32,
+//          transmission@48}                             64 B
+//   Mat   {absorption@0, scattering@12, transmission@16} 32 B
 //   Job   {n_rays@0, seed@4, n_panels@8, source@16,
 //          listener@32, energy@48}                      64 B
 // Fixed point: energy u32 = e * 2^30; direction i32 = d·e * 2^28.
@@ -51,11 +53,15 @@ struct Panel {
     _p0: u32,
     absorption: vec3<f32>,
     _p1: u32,
+    transmission: vec3<f32>,
+    _p2: u32,
 }
 
 struct Mat {
     absorption: vec3<f32>,
     scattering: f32,
+    transmission: vec3<f32>,
+    _p: u32,
 }
 
 struct Job {
@@ -120,6 +126,7 @@ struct Hit {
     normal: vec3<f32>,
     absorption: vec3<f32>,
     scattering: f32,
+    transmission: vec3<f32>,
 }
 
 fn raycast_world(o: vec3<f32>, d: vec3<f32>) -> Hit {
@@ -168,6 +175,7 @@ fn raycast_world(o: vec3<f32>, d: vec3<f32>) -> Hit {
         let m = mats[p.mat];
         h.absorption = m.absorption;
         h.scattering = m.scattering;
+        h.transmission = m.transmission;
     }
 
     // panel overlays: slab ENTRY test, nearest wins
@@ -190,6 +198,7 @@ fn raycast_world(o: vec3<f32>, d: vec3<f32>) -> Hit {
             h.normal = n;
             h.absorption = pl.absorption;
             h.scattering = pl.scattering;
+            h.transmission = pl.transmission;
         }
     }
     return h;
@@ -241,8 +250,19 @@ fn trace(@builtin(global_invocation_id) gid: vec3<u32>) {
         dist_total = dist_total + t_hit;
         if (dist_total / SPEED_OF_SOUND > MAX_TIME) { break; }
 
-        energy = energy * (vec3<f32>(1.0) - hit.absorption);
+        // through-the-wall branch (mass law) — mirrors tracer.rs
+        let t2 = hit.transmission * hit.transmission;
+        let p_raw = max(max(t2.x, t2.y), t2.z);
+        // importance floor — mirrors tracer.rs: branch often, weight less
+        let p_t = select(0.0, min(max(p_raw, 0.06), 0.5), p_raw > 1e-5);
         let floor_e = 1e-7 * per_ray;
+        if (p_t > 0.0 && rand_f32() < p_t) {
+            energy = energy * t2 / p_t;
+            if (energy.x <= floor_e && energy.y <= floor_e && energy.z <= floor_e) { break; }
+            pos = pos + dir * (2.0 * WALL_EPS);
+            continue;
+        }
+        energy = energy * max(vec3<f32>(1.0) - hit.absorption - t2, vec3<f32>(0.0)) / (1.0 - p_t);
         if (energy.x <= floor_e && energy.y <= floor_e && energy.z <= floor_e) { break; }
 
         let normal = hit.normal;

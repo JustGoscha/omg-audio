@@ -12,9 +12,9 @@
 // RNG differs by design (PCG hash chain vs xorshift64*): parity is
 // statistical, enforced by the Phase 0 goldens.
 //
-// LAYOUT_VERSION 1 — must match crates/omg-gpu/src/layout.rs.
+// LAYOUT_VERSION 2 — must match crates/omg-gpu/src/layout.rs.
 // Job uniform offsets: size@0 n_rays@12 source@16 seed@28 listener@32
-// energy@48 faces@64 (6×16 B) — total 160 B.
+// energy@48 faces@64 (6×32 B) — total 256 B.
 // Fixed point: energy u32 = e * 2^30; direction i32 = d·e * 2^28.
 
 const NBANDS: u32 = 3u;
@@ -31,6 +31,8 @@ const DIR_SCALE: f32 = 268435456.0; // 2^28
 struct Face {
     absorption: vec3<f32>,
     scattering: f32,
+    transmission: vec3<f32>,
+    _p: u32,
 }
 
 struct Job {
@@ -148,8 +150,17 @@ fn trace(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (dist_total / SPEED_OF_SOUND > MAX_TIME) { break; }
 
         let mat = job.faces[wall];
-        energy = energy * (vec3<f32>(1.0) - mat.absorption);
+        // through-the-wall branch (mass law) — mirrors tracer.rs
+        let t2 = mat.transmission * mat.transmission;
+        let p_raw = max(max(t2.x, t2.y), t2.z);
+        // importance floor — mirrors tracer.rs: branch often, weight less
+        let p_t = select(0.0, min(max(p_raw, 0.06), 0.5), p_raw > 1e-5);
         let floor_e = 1e-7 * per_ray;
+        if (p_t > 0.0 && rand_f32() < p_t) {
+            // transmitted rays leave the box's world: outside is void
+            break;
+        }
+        energy = energy * max(vec3<f32>(1.0) - mat.absorption - t2, vec3<f32>(0.0)) / (1.0 - p_t);
         if (energy.x <= floor_e && energy.y <= floor_e && energy.z <= floor_e) { break; }
 
         let normal = wall_normal(wall);

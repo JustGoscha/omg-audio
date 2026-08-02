@@ -6,8 +6,8 @@
 // any point = the driver reports disabled and the sim keeps its inline
 // CPU tracer — nothing to undo.
 
-const JOB_F32S = 39; // must match omg-web GPU_JOB_F32S
-const JOB_VERSION = 1; // must match omg-web GPU_JOB_VERSION
+const JOB_F32S = 57; // must match omg-web GPU_JOB_F32S
+const JOB_VERSION = 2; // must match omg-web GPU_JOB_VERSION
 const NBINS = 300;
 const BINS_WORDS = NBINS * 3;
 const DIRS_WORDS = NBINS * 3;
@@ -49,7 +49,7 @@ export async function initGpu(wasm) {
   // the in-wasm CPU tracer, exactly as without GPU.
   let mesh = null;
   try {
-    if (wasm.sim_wlate_version && wasm.sim_wlate_version() === 2) {
+    if (wasm.sim_wlate_version && wasm.sim_wlate_version() === 3) {
       const code = await (await fetch('../crates/omg-gpu/shaders/trace_mesh.wgsl')).text();
       const pipe = device.createComputePipeline({
         layout: 'auto',
@@ -75,7 +75,7 @@ export async function initGpu(wasm) {
         prims: staticBuf(wasm.sim_mesh_prims_len, wasm.sim_mesh_prims_ptr),
         mats: staticBuf(wasm.sim_mesh_mats_len, wasm.sim_mesh_mats_ptr),
         job: device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-        panels: device.createBuffer({ size: 64 * 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+        panels: device.createBuffer({ size: 64 * 64, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
       };
       // K3: chain discovery over the same BVH buffers
       const discCode = await (await fetch('../crates/omg-gpu/shaders/discover_mesh.wgsl')).text();
@@ -140,7 +140,7 @@ export async function initGpu(wasm) {
   const POOL = 4;
   const slots = Array.from({ length: POOL }, () => ({
     busy: false,
-    job: device.createBuffer({ size: 160, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+    job: device.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
     bins: mkOut(BINS_WORDS),
     dirs: mkOut(DIRS_WORDS),
     readBins: mkRead(BINS_WORDS),
@@ -175,10 +175,11 @@ export async function initGpu(wasm) {
     }
   };
 
-  // Build the 160-byte Job uniform (layout.rs / trace_box.wgsl v1) from
-  // one flat job record.
+  // Build the 256-byte Job uniform (layout.rs / trace_box.wgsl v2) from
+  // one flat job record: faces carry absorption + scattering +
+  // TRANSMISSION (the through-the-wall branch).
   const packJob = (f, o) => {
-    const buf = new ArrayBuffer(160);
+    const buf = new ArrayBuffer(256);
     const f32 = new Float32Array(buf);
     const u32 = new Uint32Array(buf);
     f32[0] = f[o + 3]; f32[1] = f[o + 4]; f32[2] = f[o + 5]; // size
@@ -188,10 +189,11 @@ export async function initGpu(wasm) {
     f32[8] = f[o + 9]; f32[9] = f[o + 10]; f32[10] = f[o + 11]; // listener
     f32[12] = f[o + 12]; f32[13] = f[o + 13]; f32[14] = f[o + 14]; // energy
     for (let face = 0; face < 6; face++) {
-      const src = o + 15 + face * 4;
-      const dst = 16 + face * 4;
+      const src = o + 15 + face * 7;
+      const dst = 16 + face * 8;
       f32[dst] = f[src]; f32[dst + 1] = f[src + 1]; f32[dst + 2] = f[src + 2];
       f32[dst + 3] = f[src + 3]; // scattering
+      f32[dst + 4] = f[src + 4]; f32[dst + 5] = f[src + 5]; f32[dst + 6] = f[src + 6];
     }
     return buf;
   };
@@ -411,7 +413,7 @@ export async function initGpu(wasm) {
       const jobs = new Float32Array(wasmExports.memory.buffer, wasmExports.sim_pt_jobs_ptr(), n);
       ptDispatch(jobs[0], jobs.slice(0, 8), injectPt);
     },
-    /// World-late jobs (K2): fixed 778-f32 stride — id, n_rays, seed,
+    /// World-late jobs (K2): fixed 1034-f32 stride — id, n_rays, seed,
     /// source, listener, n_panels, then panels laid out exactly like the
     /// kernel's 48-byte Panel struct (copied verbatim). One in flight;
     /// results ride the SAME inject path as the box traces.
@@ -431,7 +433,7 @@ export async function initGpu(wasm) {
       f32[4] = jobs[3]; f32[5] = jobs[4]; f32[6] = jobs[5]; // source
       f32[8] = jobs[6]; f32[9] = jobs[7]; f32[10] = jobs[8]; // listener
       f32[12] = 1.0; f32[13] = 1.0; f32[14] = 1.0; // unit energy
-      meshDispatch(jobs[0], jobs[1], buf, jobs.slice(10, 10 + nPanels * 12), inject);
+      meshDispatch(jobs[0], jobs[1], buf, jobs.slice(10, 10 + nPanels * 16), inject);
     },
     /// World-discovery jobs (K3): one 4-f32 job per tick, newest wins;
     /// the raw chain list injects back and the wasm TTL cache dedups.
