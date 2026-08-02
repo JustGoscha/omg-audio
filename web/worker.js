@@ -8,6 +8,42 @@ let gpu = null;
 let gpuOn = false;
 let debugOn = false;
 let pose = { x: 3.0, y: 3.0, z: 1.6, yaw: 0.0, projs: [] };
+// Config sent while `init` is still awaiting wasm/WebGPU would be
+// silently dropped (the handlers guard on `w`) — the classic symptom
+// was the remembered `early=traced` arriving early and the sim
+// starting on ism anyway. Queue everything until init finishes, then
+// replay in order.
+let preInit = [];
+
+function handle(m) {
+  if (m.type === 'pose') {
+    pose = m;
+  } else if (m.type === 'quality') {
+    // sim-side quality ladder: 0 = high, 1 = med, 2 = low
+    w.sim_set_quality(m.tier);
+  } else if (m.type === 'override') {
+    // pin one sim lever (id: 0 rays, 1 gate, 2 dome rays, 3 dome events,
+    // 4 ISM order); value 0 hands it back to the tier
+    w.sim_set_override(m.id, m.value);
+  } else if (m.type === 'debug') {
+    debugOn = !!m.on; // ray extraction only runs while the panel is open
+  } else if (m.type === 'early') {
+    // early-reflections backend: 0 = ism, 1 = traced (PT)
+    w.sim_set_early(m.mode);
+  } else if (m.type === 'module') {
+    // engine A/B switches: 0 = diffraction, 1 = furniture acoustics
+    if (w.sim_set_module) w.sim_set_module(m.id, m.on ? 1 : 0);
+  } else if (m.type === 'gpu') {
+    // live A/B toggle; only meaningful when the driver initialized
+    if (gpu) {
+      gpuOn = !!m.on;
+      if (gpuOn) {
+        w.sim_gpu_enable();
+        if (gpu.meshOk && w.sim_wlate_enable) w.sim_wlate_enable();
+      } else w.sim_gpu_disable();
+    }
+  }
+}
 
 onmessage = async (e) => {
   const m = e.data;
@@ -28,33 +64,14 @@ onmessage = async (e) => {
     } catch (err) {
       console.warn('[gpu] unavailable, late field on CPU:', err);
     }
+    const q = preInit;
+    preInit = null;
+    q.forEach(handle);
     setInterval(tick, 50);
-  } else if (m.type === 'pose') {
-    pose = m;
-  } else if (m.type === 'quality') {
-    // sim-side quality ladder: 0 = high, 1 = med, 2 = low
-    if (w) w.sim_set_quality(m.tier);
-  } else if (m.type === 'override') {
-    // pin one sim lever (id: 0 rays, 1 gate, 2 dome rays, 3 dome events,
-    // 4 ISM order); value 0 hands it back to the tier
-    if (w) w.sim_set_override(m.id, m.value);
-  } else if (m.type === 'debug') {
-    debugOn = !!m.on; // ray extraction only runs while the panel is open
-  } else if (m.type === 'early') {
-    // early-reflections backend: 0 = ism, 1 = traced (PT)
-    if (w) w.sim_set_early(m.mode);
-  } else if (m.type === 'module') {
-    // engine A/B switches: 0 = diffraction, 1 = furniture acoustics
-    if (w && w.sim_set_module) w.sim_set_module(m.id, m.on ? 1 : 0);
-  } else if (m.type === 'gpu') {
-    // live A/B toggle; only meaningful when the driver initialized
-    if (w && gpu) {
-      gpuOn = !!m.on;
-      if (gpuOn) {
-        w.sim_gpu_enable();
-        if (gpu.meshOk && w.sim_wlate_enable) w.sim_wlate_enable();
-      } else w.sim_gpu_disable();
-    }
+  } else if (preInit) {
+    preInit.push(m);
+  } else {
+    handle(m);
   }
 };
 

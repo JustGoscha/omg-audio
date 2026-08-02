@@ -254,7 +254,7 @@ const QUAL_STAT_TIPS = {
   'render load': 'Audio-thread render time as a share of realtime. Above 85% the worklet governor sheds to its floor.',
   gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
   'late field': 'Where the reverb ray traces run, with the wall-clock cost of the last trace dispatch (incl. readback). GPU runs 8× the ray budget for a fraction of the CPU cost — flip it under engine modules → compute.',
-  early: 'The ACTIVE early-reflections engine as the sim reports it. traced shows where chain discovery runs and the last dispatch cost. ism and traced sound identical in open space; behind furniture (cathedral pillars, the club bar) only traced shadows.',
+  early: 'The ACTIVE early-reflections engine as the sim reports it. Early is CPU-side by design: discovery is a few hundred rays per tick (~1 ms) and every found path is then solved EXACTLY by mirror reconstruction — tiny, branchy work the GPU can’t win. The heavy ray budgets (the reverb traces) are what the compute switch moves. ism and traced sound identical in open space; behind furniture only traced shadows.',
 };
 
 function buildQuality() {
