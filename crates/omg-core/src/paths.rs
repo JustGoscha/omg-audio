@@ -30,12 +30,39 @@ pub struct PathBudget {
     pub pair_edges: usize,
     /// How many bent paths to return (strongest first).
     pub max_paths: usize,
+    /// Strict TAP semantics: paths become ADDITIVE audio taps, so a
+    /// near-straight corner "bend" (deflection < ~6°) is rejected and
+    /// legs are priced extended past their apex (coincident-plane
+    /// grazing pays its wall). The default (false) keeps the classic
+    /// occlusion-FLOOR semantics, where grazing corner paths carry the
+    /// designed −5 dB boundary continuity under a max().
+    pub taps: bool,
 }
 
 impl Default for PathBudget {
     fn default() -> Self {
-        Self { edge_candidates: 24, pair_edges: 8, max_paths: 4 }
+        Self { edge_candidates: 24, pair_edges: 8, max_paths: 4, taps: false }
     }
+}
+
+/// Deflection distinctness: how much a path actually BENDS at an apex,
+/// as a 0..1 factor. Fresnel diffraction into a shadow requires real
+/// deflection; a near-straight "bend" through a wall corner is the
+/// TRANSMITTED field wearing a costume — the direct path already prices
+/// the straight line honestly, so an (almost) exactly straight "bend"
+/// must fade to zero. Kept NARROW (~1°..6°): near-boundary jamb bends
+/// at small angles are the designed −5 dB shadow continuity, and the
+/// coincident-plane/off-mesh ghost classes are killed independently by
+/// leg extension and bounce-landing validation.
+fn deflection_weight(incoming: Vec3, outgoing: Vec3) -> f32 {
+    let (li, lo) = (incoming.length(), outgoing.length());
+    if li < 1e-6 || lo < 1e-6 {
+        return 0.0;
+    }
+    let cosang = (incoming.dot(outgoing) / (li * lo)).clamp(-1.0, 1.0);
+    let ang = cosang.acos(); // radians; 0 = straight
+    let (lo_a, hi_a) = (0.02, 0.10); // ~1°..6°
+    ((ang - lo_a) / (hi_a - lo_a)).clamp(0.0, 1.0)
 }
 
 /// One found propagation path from source to listener.
@@ -195,16 +222,30 @@ impl AutoPaths {
             // degrades smoothly (mass law), so paths fade at clearance
             // boundaries instead of vanishing — hard thresholds made
             // shadow levels jump as candidate paths popped in and out.
-            let l1 = self.transmission(mesh, src, p);
-            let l2 = self.transmission(mesh, p, lis);
+            // TAP semantics: legs price EXTENDED slightly past the apex
+            // (an apex ON a coincident wall plane otherwise grazes that
+            // wall at t = 1 and pays nothing — the sealed-club "sharp
+            // pocket" bug); a true silhouette edge has air beyond it and
+            // is unaffected. Floor semantics keep exact legs.
+            let (e1, e2) = if budget.taps {
+                (p + (p - src).normalize() * 0.06, p + (p - lis).normalize() * 0.06)
+            } else {
+                (p, p)
+            };
+            let l1 = self.transmission(mesh, src, e1);
+            let l2 = self.transmission(mesh, e2, lis);
             if l1[0] * l2[0] < 1e-4 {
                 continue;
             }
             let detour = d1 + d2 - (lis - src).length();
             let ke = knife_edge_bands(detour.max(1e-4));
+            let w = if budget.taps { deflection_weight(p - src, lis - p) } else { 1.0 };
+            if w <= 0.0 {
+                continue;
+            }
             let mut gains = [0.0f32; NBANDS];
             for band in 0..NBANDS {
-                gains[band] = ke[band] * l1[band] * l2[band];
+                gains[band] = ke[band] * l1[band] * l2[band] * w;
             }
             bent.push(FoundPath {
                 points: vec![src, p, lis],
@@ -265,9 +306,21 @@ impl AutoPaths {
             {
                 let (d1, dm, d2) =
                     ((p1 - src).length(), (p2 - p1).length(), (lis - p2).length());
-                let l1 = self.transmission(mesh, src, p1);
-                let lm = self.transmission(mesh, p1, p2);
-                let l2 = self.transmission(mesh, p2, lis);
+                // same endpoint-grazing rule as single bends (tap
+                // semantics only)
+                let (x1, m1, m2, x2) = if budget.taps {
+                    (
+                        p1 + (p1 - src).normalize() * 0.06,
+                        p1 + (p1 - p2).normalize() * 0.06,
+                        p2 + (p2 - p1).normalize() * 0.06,
+                        p2 + (p2 - lis).normalize() * 0.06,
+                    )
+                } else {
+                    (p1, p1, p2, p2)
+                };
+                let l1 = self.transmission(mesh, src, x1);
+                let lm = self.transmission(mesh, m1, m2);
+                let l2 = self.transmission(mesh, x2, lis);
                 if l1[0] * lm[0] * l2[0] < 1e-4 {
                     continue;
                 }
@@ -276,9 +329,18 @@ impl AutoPaths {
                 let det2 = dm + d2 - (lis - p1).length();
                 let ke1 = knife_edge_bands(det1.max(1e-4));
                 let ke2 = knife_edge_bands(det2.max(1e-4));
+                let w = if budget.taps {
+                    deflection_weight(p1 - src, p2 - p1)
+                        * deflection_weight(p2 - p1, lis - p2)
+                } else {
+                    1.0
+                };
+                if w <= 0.0 {
+                    continue;
+                }
                 let mut gains = [0.0f32; NBANDS];
                 for band in 0..NBANDS {
-                    gains[band] = ke1[band] * ke2[band] * l1[band] * lm[band] * l2[band];
+                    gains[band] = ke1[band] * ke2[band] * l1[band] * lm[band] * l2[band] * w;
                 }
                 bent.push(FoundPath {
                     points: vec![src, p1, p2, lis],

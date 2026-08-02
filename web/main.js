@@ -560,7 +560,7 @@ function crossesWall(x0, y0, x1, y1, z = 1.6) {
 }
 
 function walkableMove(x0, y0, x1, y1) {
-  if (x1 < WORLD.min[0] || x1 > WORLD.max[0] || y1 < WORLD.min[1] || y1 > WORLD.max[1]) return false;
+  // no boundary: the ground goes forever and so can you
   const z = state.pose.z || 0;
   for (const f of FURNITURE) {
     if (x1 > f[0] - 0.25 && x1 < f[3] + 0.25 && y1 > f[1] - 0.25 && y1 < f[4] + 0.25
@@ -609,9 +609,8 @@ new THREE.TextureLoader().load('../assets/sky/night.jpg', (sky) => {
   sky.colorSpace = THREE.SRGBColorSpace;
   scene.background = sky;
 });
-// Fog moved to a DEPTH POST PASS (buildPostFog below): per-pixel world
-// reconstruction gives distance haze plus ground mist across the whole
-// level, masked out inside room volumes — material fog can't do that.
+// No fog, by request: the night is clear — the sky's baked horizon
+// band carries the distance, and geometry stays crisp at any range.
 const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 1200);
 camera.rotation.order = 'YXZ';
 
@@ -640,101 +639,9 @@ const v3 = (wx, wy, wz) => new THREE.Vector3(wx, wz, -wy);
 function fit() {
   renderer.setPixelRatio(fitRatio());
   renderer.setSize(innerWidth, innerHeight);
-  if (post) {
-    const pr = fitRatio();
-    post.rt.setSize((innerWidth * pr) | 0, (innerHeight * pr) | 0);
-  }
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
 }
-// ---------------------------------------------- depth-fog post pass
-// The night's atmosphere: the scene renders into a target with a depth
-// texture; a fullscreen pass reconstructs each pixel's world position
-// and mixes in indigo haze — quadratic distance fog (visibility ~800 m)
-// plus a ground-hugging mist term — everywhere OUTSIDE the rooms.
-// Interiors stay clear: the shader carries the walkable room volumes
-// and suppresses fog for pixels inside them. Sky pixels keep the
-// skybox's own baked horizon band.
-const post = (() => {
-  const dt = new THREE.DepthTexture(2, 2);
-  const rt = new THREE.WebGLRenderTarget(2, 2, { depthTexture: dt });
-  const boxes = ROOMS.filter((r) => !r.outdoor && !r.solid && !r.upper);
-  const mins = [];
-  const maxs = [];
-  for (const r of boxes) {
-    const fz = r.fz || 0;
-    // Old House box covers both storeys via its 2-storey height
-    mins.push(new THREE.Vector3(r.min[0], r.min[1], fz - 0.3));
-    maxs.push(new THREE.Vector3(r.max[0], r.max[1], fz + r.h + 0.3));
-  }
-  const NR = mins.length;
-  const mat = new THREE.ShaderMaterial({
-    uniforms: {
-      tDiffuse: { value: rt.texture },
-      tDepth: { value: dt },
-      uInvProj: { value: new THREE.Matrix4() },
-      uCamWorld: { value: new THREE.Matrix4() },
-      uFog: { value: new THREE.Color(0x14122c) },
-      uMins: { value: mins },
-      uMaxs: { value: maxs },
-    },
-    defines: { NR },
-    depthTest: false,
-    depthWrite: false,
-    vertexShader: `
-      varying vec2 vUv;
-      void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
-    fragmentShader: `
-      varying vec2 vUv;
-      uniform sampler2D tDiffuse;
-      uniform sampler2D tDepth;
-      uniform mat4 uInvProj;
-      uniform mat4 uCamWorld;
-      uniform vec3 uFog;
-      uniform vec3 uMins[NR];
-      uniform vec3 uMaxs[NR];
-      void main() {
-        vec4 col = texture2D(tDiffuse, vUv);
-        float depth = texture2D(tDepth, vUv).x;
-        if (depth >= 0.99999) { gl_FragColor = col; return; } // sky
-        vec4 ndc = vec4(vUv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
-        vec4 view = uInvProj * ndc;
-        view /= view.w;
-        float dist = length(view.xyz);
-        vec3 world = (uCamWorld * view).xyz;
-        // back to sim coords: x east, y north, z up
-        vec3 sim = vec3(world.x, -world.z, world.y);
-        float inside = 0.0;
-        for (int i = 0; i < NR; i++) {
-          vec3 a = step(uMins[i], sim) * step(sim, uMaxs[i]);
-          inside = max(inside, a.x * a.y * a.z);
-        }
-        // distance haze: ~10% at 150 m, ~50% at 400 m, gone past ~800 m
-        float haze = 1.0 - exp(-pow(dist * 0.0021, 2.0));
-        // ground mist: saturates with distance, hugs low altitudes
-        float mist = 0.38 * (1.0 - exp(-dist * 0.028))
-                   * exp(-max(sim.z, 0.0) / 7.0);
-        float f = clamp(haze + mist, 0.0, 0.96) * (1.0 - 0.94 * inside);
-        gl_FragColor = vec4(mix(col.rgb, uFog, f), col.a);
-      }`,
-  });
-  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
-  const pscene = new THREE.Scene();
-  pscene.add(quad);
-  const pcam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  return {
-    rt,
-    render() {
-      mat.uniforms.uInvProj.value.copy(camera.projectionMatrixInverse);
-      mat.uniforms.uCamWorld.value.copy(camera.matrixWorld);
-      renderer.setRenderTarget(rt);
-      renderer.render(scene, camera);
-      renderer.setRenderTarget(null);
-      renderer.render(pscene, pcam);
-    },
-  };
-})();
-
 addEventListener('resize', fit);
 fit();
 
@@ -2243,8 +2150,17 @@ function movePose(t) {
   const r = (strafe / mag) * len;
   const ch = Math.cos(state.heading);
   const sh = Math.sin(state.heading);
-  const sprint = state.keys.has('ShiftLeft') || state.keys.has('ShiftRight') ? 1.8 : 1;
-  const step = WALK_SPEED * dt * sprint * (1 - 0.45 * (state.crouch || 0));
+  // sprint builds: Shift gives the old 1.8× immediately, then keeps
+  // accelerating at 1 m/s² for as long as it's held — the belfry is a
+  // quarter kilometer away, after all. Release bleeds off quickly.
+  const shifting = state.keys.has('ShiftLeft') || state.keys.has('ShiftRight');
+  if (shifting) {
+    state.sprintV = Math.min((state.sprintV ?? 0) < WALK_SPEED * 0.8
+      ? WALK_SPEED * 0.8 : state.sprintV + 1.0 * dt, 27);
+  } else {
+    state.sprintV = Math.max(0, (state.sprintV || 0) - 30 * dt);
+  }
+  const step = (WALK_SPEED + (state.sprintV || 0)) * dt * (1 - 0.45 * (state.crouch || 0));
   const nx = state.pose.x + (ch * f + sh * r) * step;
   const ny = state.pose.y + (sh * f - ch * r) * step;
   const { x, y } = state.pose;
@@ -2370,7 +2286,7 @@ function frame(t) {
 
   if (!FPS_CAP || t - lastDraw >= 1000 / FPS_CAP - 1) {
     lastDraw = t;
-    post.render();
+    renderer.render(scene, camera);
     if (state.running) {
       drawMinimap();
       drawMeters();

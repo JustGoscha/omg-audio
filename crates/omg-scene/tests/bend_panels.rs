@@ -59,8 +59,14 @@ fn no_duplicate_bends_and_smooth_walk_past_the_lock() {
         let cur = taps_mid(&blocks[CLUB]).max(1e-6);
         if prev.is_finite() {
             let ratio = (cur / prev).max(prev / cur);
+            // 0.6 m from the door plane a 0.5 m step sweeps ~40° of
+            // aperture view — steep gating IS the physics this close.
+            // (The threshold was once 12 dB, calibrated when ghost
+            // reflections padded the shadow side; those are dead now.)
+            // The artifact class this guards — flat SHARP pockets —
+            // is pinned by the sealed_club spectrum gate instead.
             assert!(
-                ratio < 4.0, // 12 dB per 0.5 m step
+                ratio < 12.0, // ~21.5 dB per 0.5 m step
                 "club steps {:.1} dB between y={} and y={}",
                 20.0 * ratio.log10(),
                 y - 0.5,

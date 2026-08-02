@@ -239,28 +239,32 @@ pub fn mesh_record(
             }
         } else {
             // the reflection point must land on REAL mesh of this surface
-            // (not in a door hole): the nearest mesh hit along the ray must
-            // be this surface at this distance
+            // (not in a door hole, and NOT in the empty air beyond the
+            // wall's extent — the plane is infinite, the wall is not):
+            // the nearest mesh hit along the ray must be this surface AT
+            // this distance. A first hit BEYOND t means nothing stands
+            // at the bounce point — the sealed-club ghost that reflected
+            // off a neighbor's wall plane three meters past its corner.
             let (rt, rtri) = mesh.raycast(pos + d * 1e-4, d)?;
-            if mesh.tri_surface(rtri) != sid {
-                // something else is closer: it must be transmissive to
-                // continue, and the chain surface must still be reachable —
-                // handled below by leg transmission; but a NEARER opaque
-                // reflector than the chain surface invalidates the
-                // specular claim only if it blocks the hit point. Use the
-                // segment test with the expected crossing skipped.
+            let on_surface = mesh.tri_surface(rtri) == sid && (rt - t).abs() < 2e-2;
+            if !on_surface {
                 if rt < t - 1e-3 {
-                    let seg_len = t;
-                    let t_expect = rt / seg_len;
+                    // a nearer blocker: opaque kills the specular claim;
+                    // a transmissive one may stand in front, but the
+                    // chain surface must still EXIST at the bounce point
                     let m = &mesh.materials[mesh.tri_material[rtri as usize] as usize];
-                    if m.transmission.iter().all(|&x| x < 1e-4) && t_expect < 1.0 - 1e-3 {
-                        // opaque blocker strictly before the reflection
-                        // point: transmission accumulation decides below;
-                        // fully opaque ⇒ dead
-                        if m.transmission.iter().all(|&x| x < 1e-6) {
-                            return None;
-                        }
+                    if m.transmission.iter().all(|&x| x < 1e-4) {
+                        return None;
                     }
+                    mesh.segment_hits(pos, hit + d * 0.05, buf);
+                    if !buf
+                        .iter()
+                        .any(|h| mesh.tri_surface(h.tri) == sid && (h.t * (t + 0.05) - t).abs() < 0.1)
+                    {
+                        return None;
+                    }
+                } else {
+                    return None;
                 }
             }
         }
@@ -274,6 +278,17 @@ pub fn mesh_record(
         }
         pos = hit + s.n * if s.n.dot(d) < 0.0 { 1e-4 } else { -1e-4 };
         d = d - s.n * (2.0 * s.n.dot(d));
+    }
+    // ISM validity: the source must lie on the SAME side of the last
+    // mirror plane as the reflected ray — a source BEHIND the mirror is
+    // a transmission ghost wearing a reflection costume (its re-crossing
+    // of the plane starts exactly at the hit point and evades payment):
+    // the sealed-club "sharp pocket" solve records.
+    if let Some(&last) = chain.last() {
+        let s = table.surfaces.get(last as usize)?;
+        if (s.n.dot(pos) - s.d) * (s.n.dot(src_pos) - s.d) < 0.0 {
+            return None;
+        }
     }
     // final leg to the source, transmission for every crossing
     if !leg_transmission(mesh, pos, src_pos, None, extras, buf, &mut gains_mul) {

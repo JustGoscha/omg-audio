@@ -74,8 +74,11 @@ fn doorway_contrast_survives_portal_delete() {
         assert!(cur > 1e-5, "voice fully dead at ({x}, 25.2)");
         if prev.is_finite() {
             let ratio = (cur / prev).max(prev / cur);
+            // 13 dB per 0.5 m: recalibrated after the ghost-path kills
+            // (off-extent plane reflections used to pad the deep shadow);
+            // sharp-pocket artifacts are pinned by sealed_club instead
             assert!(
-                ratio < 3.2,
+                ratio < 4.5,
                 "shadow step {:.1} dB between x={} and x={}",
                 db(ratio),
                 x - 0.5,

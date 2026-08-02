@@ -610,8 +610,12 @@ impl WorldSim {
                 if crate::quality::diffraction_on() && self.bend_key[si] != cell && bend_budget > 0 {
                     bend_budget -= 1;
                     self.bend_key[si] = cell;
-                    let budget =
-                        PathBudget { edge_candidates: 48, pair_edges: 32, max_paths: 4 };
+                    let budget = PathBudget {
+                        edge_candidates: 48,
+                        pair_edges: 32,
+                        max_paths: 4,
+                        taps: true,
+                    };
                     self.auto.find(&self.dome.mesh, src0, eye, budget, &mut self.paths_buf);
                     // The dominant edge plus a half-strength runner-up:
                     // one tap alone cliffs to silence whenever the edge
@@ -705,9 +709,25 @@ impl WorldSim {
                         *bt = fresh;
                     }
                 }
+                // CAP: diffraction may never sum LOUDER than the
+                // unobstructed direct path would be at this distance —
+                // stacked bends (or bend + seep) must not amplify.
+                let d0 = ((src0 - eye).length()).max(0.3);
+                let cap_air = air_attenuation(d0);
+                let mut bend_sum = [0.0f32; NBANDS];
                 for t in &self.bend_taps[si] {
-                    let gains: [f32; NBANDS] =
-                        core::array::from_fn(|b| t.gains[b] * (1.0 - lit[b]));
+                    for b in 0..NBANDS {
+                        bend_sum[b] += t.gains[b] * (1.0 - lit[b]);
+                    }
+                }
+                let cap_scale: [f32; NBANDS] = core::array::from_fn(|b| {
+                    let cap = cap_air[b] / d0;
+                    if bend_sum[b] > cap { cap / bend_sum[b] } else { 1.0 }
+                });
+                for t in &self.bend_taps[si] {
+                    let gains: [f32; NBANDS] = core::array::from_fn(|b| {
+                        t.gains[b] * (1.0 - lit[b]) * cap_scale[b]
+                    });
                     if gains.iter().all(|&g| g < 2e-5) {
                         continue;
                     }
@@ -1321,7 +1341,8 @@ impl WorldSim {
         let (auto, mesh, buf) = (&mut self.auto, &self.dome.mesh, &mut self.paths_buf);
         // the occlusion floor is what keeps shadows continuous — worth a
         // deeper search than the default (only blocked exits pay it)
-        let budget = PathBudget { edge_candidates: 48, pair_edges: 32, max_paths: 4 };
+        let budget =
+            PathBudget { edge_candidates: 48, pair_edges: 32, max_paths: 4, taps: false };
         auto.find(mesh, a, b, budget, buf);
         // Max over ALL paths, the mesh direct included: occlusion takes
         // max(2D straight, this), and letting the two direct estimators
