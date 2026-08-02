@@ -167,7 +167,7 @@ const MIXER = [
   { name: 'flute', srcs: [3], base: 88, def: 76, meters: [3], spl: true },
   { name: 'radio', srcs: [4], base: 80, def: 64, meters: [4], spl: true },
   { name: 'owls', srcs: [5, 6], base: 74, def: 66, meters: [5, 6], spl: true },
-  { name: 'bells', srcs: [7], base: 100, def: 100, meters: [7], spl: true },
+  { name: 'bells', srcs: [7], base: 100, def: 110, meters: [7], spl: true },
   { name: 'balls', srcs: [8, 9, 10], base: 89, def: 89, meters: [8, 9, 10], spl: true },
   { name: 'cars', srcs: [11, 12], base: 92, def: 86, meters: [11, 12], spl: true },
   { name: 'steps', srcs: [13], base: 78, def: 62, meters: [13], spl: true },
