@@ -219,9 +219,10 @@ fn main() {
                 let rooms = omg_scene::walkthrough::rooms();
                 let doors = omg_scene::walkthrough::doors();
                 let (mesh, _) = omg_scene::dome::build_world_mesh(&rooms, &doors);
-                if let Some(w) = omg_gpu::GpuWorldLateBackend::new(&mesh) {
+                if let Some((w, disc)) = omg_gpu::GpuWorldLateBackend::with_discovery(&mesh) {
                     omg_scene::late::set_world_late_backend(Box::new(w));
-                    println!("world late field: GPU (wgpu K2, 8x ray budget)");
+                    omg_scene::early_world::set_world_discovery(Box::new(disc));
+                    println!("world late field + discovery: GPU (wgpu K2+K3)");
                 }
             }
             None => println!("late field: CPU (OMG_GPU=1 but no adapter)"),

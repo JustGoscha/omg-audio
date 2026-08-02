@@ -458,8 +458,8 @@ function buildQuality() {
       ? `gpu · ${(state.debug.gpuMs || 0).toFixed(1)}ms`
       : 'cpu';
     cells[4].textContent = !state.debug.early ? 'ism'
-      : state.debug.gpu && state.debug.ptN
-        ? `traced · gpu ${(state.debug.ptMs || 0).toFixed(1)}ms` : 'traced · cpu';
+      : state.debug.gpu && state.debug.wdN
+        ? `traced · gpu ${(state.debug.wdMs || 0).toFixed(1)}ms` : 'traced · cpu';
     const btn = document.getElementById('qualbtn');
     btn.textContent = `⚙ ${state.qual.manual || Object.keys(state.qual.over).length
       ? 'custom' : ['high', 'med', 'low'][q.tier] + (q.auto ? ' ·auto' : '')}`;
@@ -1636,6 +1636,8 @@ async function startAudio() {
     state.debug.rays = e.data.rays ? new Float32Array(e.data.rays) : state.debug.on ? state.debug.rays : null;
     state.debug.ptMs = e.data.ptMs || 0;
     state.debug.ptN = e.data.ptN || 0;
+    state.debug.wdMs = e.data.wdMs || 0;
+    state.debug.wdN = e.data.wdN || 0;
     const q = state.quality;
     if (q.auto) {
       // shed on a blown budget immediately (a 20 Hz tick has 50 ms; at

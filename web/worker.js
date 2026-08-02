@@ -40,6 +40,7 @@ function handle(m) {
       if (gpuOn) {
         w.sim_gpu_enable();
         if (gpu.meshOk && w.sim_wlate_enable) w.sim_wlate_enable();
+        if (gpu.meshOk && w.sim_wdisc_enable) w.sim_wdisc_enable();
       } else w.sim_gpu_disable();
     }
   }
@@ -56,8 +57,10 @@ onmessage = async (e) => {
       gpu = await initGpu(w);
       if (gpu) {
         w.sim_gpu_enable();
-        // world-late kernel (K2) only when its pipeline actually built
+        // world kernels (K2 late, K3 discovery) only when the mesh
+        // pipelines actually built
         if (gpu.meshOk && w.sim_wlate_enable) w.sim_wlate_enable();
+        if (gpu.meshOk && w.sim_wdisc_enable) w.sim_wdisc_enable();
         gpuOn = true;
       }
       console.log(`[gpu] late field: ${gpu ? 'WebGPU' : 'CPU'}`);
@@ -78,6 +81,11 @@ onmessage = async (e) => {
 const inject = (id, echo) => {
   new Float32Array(w.memory.buffer, w.sim_gpu_buf_ptr(), echo.length).set(echo);
   w.sim_gpu_inject(id);
+};
+
+const injectWd = (n, words) => {
+  new Uint32Array(w.memory.buffer, w.sim_wdisc_buf_ptr(), words.length).set(words);
+  w.sim_wdisc_inject(n);
 };
 
 const injectPt = (id, words) => {
@@ -102,6 +110,7 @@ function tick() {
     gpu.pump(w, inject);
     gpu.pumpPt(w, injectPt);
     gpu.pumpWorldLate(w, inject);
+    gpu.pumpWorldDisc(w, injectWd);
   }
   const blocks = [];
   for (let i = 0; i < 11; i++) {
@@ -120,6 +129,7 @@ function tick() {
     gpu: gpu && gpuOn ? 1 : 0, gpuAvail: gpu ? 1 : 0,
     gpuMs: gpu ? gpu.stats().ms : 0, gpuDuty: gpu ? gpu.stats().duty : 0,
     early: w.sim_early_mode(), ptMs: gpu ? gpu.stats().ptMs : 0, ptN: gpu ? gpu.stats().ptN : 0,
+    wdMs: gpu ? gpu.stats().wdMs : 0, wdN: gpu ? gpu.stats().wdN : 0,
     rays,
   }, rays ? [...blocks, state.buffer, rays] : [...blocks, state.buffer]);
 }

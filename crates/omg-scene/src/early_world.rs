@@ -13,6 +13,31 @@ use omg_core::pt::Aabb;
 use omg_core::pt_mesh::{mesh_chains, mesh_record, mesh_vertices, MChain, MeshRecord, SurfaceTable};
 use omg_core::vec3::Vec3;
 use std::collections::HashMap;
+use std::sync::Mutex;
+
+/// A world-discovery provider (the GPU seam, kernel K3): returns chains
+/// found for THIS call synchronously (native wgpu), or chains injected
+/// from an earlier async dispatch (the web driver). `false` = nothing
+/// this tick AND don't run the CPU fan (a job is pending); the direct
+/// path is always solved regardless, and a stalled driver falls back to
+/// the CPU fan after a grace window.
+pub trait WorldDiscovery: Send {
+    fn discover(&mut self, listener: Vec3, rot: u32, out: &mut Vec<MChain>) -> bool;
+}
+
+static DISCOVERY: Mutex<Option<Box<dyn WorldDiscovery>>> = Mutex::new(None);
+
+pub fn set_world_discovery(d: Box<dyn WorldDiscovery>) {
+    *DISCOVERY.lock().unwrap() = Some(d);
+}
+
+pub fn clear_world_discovery() {
+    *DISCOVERY.lock().unwrap() = None;
+}
+
+/// Ticks a pending async provider may stay silent before the CPU fan
+/// backstops it (chains TTL over 200 ticks; this is far inside that).
+const PROVIDER_GRACE: u32 = 20;
 
 /// Ticks a discovered chain stays cached without re-discovery. The pool
 /// is shared across sources, so a chain any source validates stays warm.
@@ -37,6 +62,11 @@ pub struct WorldEarly {
     scratch: Vec<MChain>,
     seg_buf: Vec<SegHit>,
     verts_buf: Vec<Vec3>,
+    /// Consecutive silent ticks from an async provider (grace counter).
+    pending: u32,
+    /// True when the last discovery came from a registered provider —
+    /// telemetry for the UI's early cell.
+    pub gpu_discovery: bool,
     /// Debug-ray capture: enabled by the first consumer call, filled
     /// during solves as [src_idx, n_verts, xyz × n]… in world coords.
     pub debug_on: bool,
@@ -52,15 +82,34 @@ impl WorldEarly {
             scratch: Vec::new(),
             seg_buf: Vec::new(),
             verts_buf: Vec::new(),
+            pending: 0,
+            gpu_discovery: false,
             debug_on: false,
             debug_buf: Vec::new(),
         }
     }
 
-    /// Once per tick: run the listener fan, refresh the shared TTL table.
+    /// Once per tick: run the listener fan (the registered GPU provider
+    /// when present, the CPU fan otherwise), refresh the shared TTL table.
     pub fn begin_tick(&mut self, mesh: &Mesh, listener: Vec3) {
         self.scratch.clear();
-        mesh_chains(mesh, listener, RAYS_PER_TICK, self.rot, &mut self.scratch);
+        let (provided, have_provider) = {
+            let mut guard = DISCOVERY.lock().unwrap();
+            match guard.as_mut() {
+                Some(d) => (d.discover(listener, self.rot, &mut self.scratch), true),
+                None => (false, false),
+            }
+        };
+        if provided || !self.scratch.is_empty() {
+            self.pending = 0;
+            self.gpu_discovery = true;
+        } else if !have_provider || {
+            self.pending += 1;
+            self.pending > PROVIDER_GRACE
+        } {
+            mesh_chains(mesh, listener, RAYS_PER_TICK, self.rot, &mut self.scratch);
+            self.gpu_discovery = false;
+        }
         self.rot = self.rot.wrapping_add(1);
         for &c in &self.scratch {
             match self.chains.get_mut(&c) {

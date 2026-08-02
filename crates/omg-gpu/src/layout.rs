@@ -101,14 +101,16 @@ pub struct GpuBvhNode {
 }
 
 /// One packed primitive (vertex + two edges, Möller–Trumbore form).
-/// WGSL: a @0, mat @12, e1 @16, e2 @32 — 48 B.
+/// WGSL: a @0, mat @12, e1 @16, surf @28, e2 @32 — 48 B. `surf` is the
+/// authored-surface id (C6a) the discovery kernel builds chains from;
+/// the trace kernel ignores it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuPrim {
     pub a: [f32; 3],
     pub mat: u32,
     pub e1: [f32; 3],
-    pub _p0: u32,
+    pub surf: u32,
     pub e2: [f32; 3],
     pub _p1: u32,
 }
@@ -159,12 +161,12 @@ pub fn flatten_mesh(
                 b,
             });
         },
-        &mut |a, e1, e2, m| {
+        &mut |a, e1, e2, m, surf| {
             prims.push(GpuPrim {
                 a: [a.x, a.y, a.z],
                 mat: m as u32,
                 e1: [e1.x, e1.y, e1.z],
-                _p0: 0,
+                surf: surf as u32,
                 e2: [e2.x, e2.y, e2.z],
                 _p1: 0,
             });
@@ -215,6 +217,7 @@ mod tests {
         assert_eq!(core::mem::offset_of!(GpuBvhNode, bmax), 16);
         assert_eq!(core::mem::size_of::<GpuPrim>(), 48);
         assert_eq!(core::mem::offset_of!(GpuPrim, e1), 16);
+        assert_eq!(core::mem::offset_of!(GpuPrim, surf), 28);
         assert_eq!(core::mem::offset_of!(GpuPrim, e2), 32);
         assert_eq!(core::mem::size_of::<GpuPanel>(), 48);
         assert_eq!(core::mem::offset_of!(GpuPanel, absorption), 32);

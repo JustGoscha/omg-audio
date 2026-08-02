@@ -408,6 +408,102 @@ impl omg_scene::late::WorldLateBackend for WebWorldLateProxy {
     }
 }
 
+// -------------------------------------- C6d world-discovery bridge (K3)
+// Discovery is listener-launched and source-independent, so the whole
+// world needs ONE job per tick: [lx, ly, lz, rot]. JS dispatches
+// discover_mesh.wgsl over the same uploaded BVH and injects the raw
+// chain list (2 u32 per chain); the TTL cache dedups. While a job is in
+// flight the provider reports pending — the CPU fan backstops after a
+// grace window and the direct path never depends on discovery at all.
+
+const WDISC_CAP: usize = 16384;
+
+struct WebWorldDiscProxy;
+
+static WDISC_JOB: std::sync::Mutex<Option<[f32; 4]>> = std::sync::Mutex::new(None);
+static WDISC_CHAINS: std::sync::Mutex<Vec<omg_core::pt_mesh::MChain>> =
+    std::sync::Mutex::new(Vec::new());
+
+impl omg_scene::early_world::WorldDiscovery for WebWorldDiscProxy {
+    fn discover(
+        &mut self,
+        listener: omg_core::vec3::Vec3,
+        rot: u32,
+        out: &mut Vec<omg_core::pt_mesh::MChain>,
+    ) -> bool {
+        let had = {
+            let mut got = WDISC_CHAINS.lock().unwrap();
+            let had = !got.is_empty();
+            out.append(&mut got);
+            had
+        };
+        // single job slot, newest pose wins
+        *WDISC_JOB.lock().unwrap() = Some([listener.x, listener.y, listener.z, rot as f32]);
+        had
+    }
+}
+
+static mut WDISC_JOB_OUT: Option<&'static mut [f32]> = None;
+static mut WDISC_INJECT: Option<&'static mut [u32]> = None;
+
+/// This tick's discovery job, if any: 4 f32 [lx, ly, lz, rot]; 0 = none.
+#[no_mangle]
+pub extern "C" fn sim_wdisc_jobs_len() -> u32 {
+    let out =
+        unsafe { (*(&raw mut WDISC_JOB_OUT)).get_or_insert_with(|| leak_f32(4)) };
+    match WDISC_JOB.lock().unwrap().take() {
+        Some(j) => {
+            out.copy_from_slice(&j);
+            4
+        }
+        None => 0,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn sim_wdisc_jobs_ptr() -> *const f32 {
+    let out =
+        unsafe { (*(&raw mut WDISC_JOB_OUT)).get_or_insert_with(|| leak_f32(4)) };
+    out.as_ptr()
+}
+
+fn leak_u32_buf(n: usize) -> &'static mut [u32] {
+    Box::leak(vec![0u32; n].into_boxed_slice())
+}
+
+/// Staging JS writes the raw chain list into (2 u32 per chain:
+/// (s0 | s1<<16), (s2 | order<<16)) before sim_wdisc_inject(n_chains).
+#[no_mangle]
+pub extern "C" fn sim_wdisc_buf_ptr() -> *mut u32 {
+    let buf = unsafe {
+        (*(&raw mut WDISC_INJECT)).get_or_insert_with(|| leak_u32_buf(WDISC_CAP * 2))
+    };
+    buf.as_mut_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn sim_wdisc_inject(n: u32) {
+    let buf = unsafe {
+        (*(&raw mut WDISC_INJECT)).get_or_insert_with(|| leak_u32_buf(WDISC_CAP * 2))
+    };
+    let n = (n as usize).min(WDISC_CAP);
+    let mut chains = WDISC_CHAINS.lock().unwrap();
+    chains.clear();
+    for i in 0..n {
+        let (w0, w1) = (buf[i * 2], buf[i * 2 + 1]);
+        let chain = [(w0 & 0xFFFF) as u16, (w0 >> 16) as u16, (w1 & 0xFFFF) as u16];
+        let order = ((w1 >> 16) as u8).clamp(1, 3);
+        chains.push((chain, order));
+    }
+}
+
+/// Route world discovery to the JS driver — like sim_wlate_enable, only
+/// after gpu.js confirmed the discovery pipeline built.
+#[no_mangle]
+pub extern "C" fn sim_wdisc_enable() {
+    omg_scene::early_world::set_world_discovery(Box::new(WebWorldDiscProxy));
+}
+
 static mut WLATE_JOBS_OUT: Option<&'static mut [f32]> = None;
 
 /// Drain this tick's world-trace jobs; returns the f32 count (a
@@ -467,7 +563,7 @@ fn mesh_flat() -> &'static (Vec<u32>, Vec<u32>, Vec<u32>) {
                         b,
                     ]);
                 },
-                &mut |a, e1, e2, m| {
+                &mut |a, e1, e2, m, surf| {
                     prims.extend_from_slice(&[
                         a.x.to_bits(),
                         a.y.to_bits(),
@@ -476,7 +572,7 @@ fn mesh_flat() -> &'static (Vec<u32>, Vec<u32>, Vec<u32>) {
                         e1.x.to_bits(),
                         e1.y.to_bits(),
                         e1.z.to_bits(),
-                        0,
+                        surf as u32,
                         e2.x.to_bits(),
                         e2.y.to_bits(),
                         e2.z.to_bits(),
@@ -553,12 +649,15 @@ pub extern "C" fn sim_gpu_disable() {
     omg_scene::late::clear_late_backend();
     omg_scene::late::clear_world_late_backend();
     omg_scene::early::clear_early_discovery();
+    omg_scene::early_world::clear_world_discovery();
     omg_scene::quality::set_gpu_backend(false);
     GPU_JOBS.lock().unwrap().clear();
     GPU_RESULTS.lock().unwrap().clear();
     PT_JOBS.lock().unwrap().clear();
     PT_BITMAPS.lock().unwrap().clear();
     WLATE_JOBS.lock().unwrap().clear();
+    *WDISC_JOB.lock().unwrap() = None;
+    WDISC_CHAINS.lock().unwrap().clear();
 }
 
 static mut GPU_JOBS_OUT: Option<&'static mut [f32]> = None;

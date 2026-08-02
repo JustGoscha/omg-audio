@@ -77,6 +77,31 @@ export async function initGpu(wasm) {
         job: device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
         panels: device.createBuffer({ size: 32 * 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
       };
+      // K3: chain discovery over the same BVH buffers
+      const discCode = await (await fetch('../crates/omg-gpu/shaders/discover_mesh.wgsl')).text();
+      mesh.discPipe = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: device.createShaderModule({ code: discCode }), entryPoint: 'discover' },
+      });
+      const DISC_CAP = 16384;
+      mesh.discBusy = false;
+      mesh.discJob = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      mesh.discChains = device.createBuffer({ size: DISC_CAP * 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      mesh.discCount = device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+      });
+      mesh.discRead = device.createBuffer({ size: 4 + DISC_CAP * 8, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      mesh.discBind = device.createBindGroup({
+        layout: mesh.discPipe.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: mesh.discJob } },
+          { binding: 1, resource: { buffer: mesh.nodes } },
+          { binding: 2, resource: { buffer: mesh.prims } },
+          { binding: 3, resource: { buffer: mesh.discChains } },
+          { binding: 4, resource: { buffer: mesh.discCount } },
+        ],
+      });
       console.info('[gpu] world mesh uploaded:',
         wasm.sim_mesh_prims_len() / 12, 'prims,', wasm.sim_mesh_nodes_len() / 8, 'bvh nodes');
     }
@@ -270,6 +295,46 @@ export async function initGpu(wasm) {
     }
   };
 
+  let wdMs = 0;
+  let wdN = 0;
+  const DISC_RAYS = 4096;
+  const discDispatch = async (jobF32, injectWd) => {
+    mesh.discBusy = true;
+    const t0 = performance.now();
+    try {
+      const buf = new ArrayBuffer(32);
+      const f32 = new Float32Array(buf);
+      const u32 = new Uint32Array(buf);
+      u32[0] = DISC_RAYS;
+      u32[1] = jobF32[3]; // rot
+      f32[4] = jobF32[0]; f32[5] = jobF32[1]; f32[6] = jobF32[2]; // listener
+      device.queue.writeBuffer(mesh.discJob, 0, buf);
+      const enc = device.createCommandEncoder();
+      enc.clearBuffer(mesh.discCount);
+      const pass = enc.beginComputePass();
+      pass.setPipeline(mesh.discPipe);
+      pass.setBindGroup(0, mesh.discBind);
+      pass.dispatchWorkgroups(Math.ceil(DISC_RAYS / 64));
+      pass.end();
+      enc.copyBufferToBuffer(mesh.discCount, 0, mesh.discRead, 0, 4);
+      enc.copyBufferToBuffer(mesh.discChains, 0, mesh.discRead, 4, 16384 * 8);
+      device.queue.submit([enc.finish()]);
+      await mesh.discRead.mapAsync(GPUMapMode.READ);
+      const words = new Uint32Array(mesh.discRead.getMappedRange());
+      const n = Math.min(words[0], 16384);
+      const chains = words.slice(1, 1 + n * 2);
+      mesh.discRead.unmap();
+      injectWd(n, chains);
+      wdMs = performance.now() - t0;
+      wdN++;
+      noteBusy(wdMs);
+    } catch (e) {
+      console.warn('[gpu] discovery dispatch failed:', e);
+    } finally {
+      mesh.discBusy = false;
+    }
+  };
+
   const ptDispatch = async (id, jobF32, injectPt) => {
     pt.busy = true;
     const t0 = performance.now();
@@ -349,9 +414,18 @@ export async function initGpu(wasm) {
       f32[12] = 1.0; f32[13] = 1.0; f32[14] = 1.0; // unit energy
       meshDispatch(jobs[0], jobs[1], buf, jobs.slice(10, 10 + nPanels * 12), inject);
     },
+    /// World-discovery jobs (K3): one 4-f32 job per tick, newest wins;
+    /// the raw chain list injects back and the wasm TTL cache dedups.
+    pumpWorldDisc(wasmExports, injectWd) {
+      if (!mesh || mesh.discBusy || !wasmExports.sim_wdisc_jobs_len) return;
+      const n = wasmExports.sim_wdisc_jobs_len();
+      if (!n) return;
+      const job = new Float32Array(wasmExports.memory.buffer, wasmExports.sim_wdisc_jobs_ptr(), 4).slice();
+      discDispatch(job, injectWd);
+    },
     /// True when the world-mesh kernel compiled and the BVH uploaded —
     /// the worker registers the wasm-side world proxy only then.
     meshOk: !!mesh,
-    stats: () => ({ ms: lastMs, duty, ptMs, ptN }),
+    stats: () => ({ ms: lastMs, duty, ptMs, ptN, wdMs, wdN }),
   };
 }

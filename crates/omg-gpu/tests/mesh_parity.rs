@@ -109,6 +109,48 @@ fn panel_over_the_hole_seals_it() {
 }
 
 #[test]
+fn discovery_kernel_finds_the_cpu_chain_set() {
+    use omg_core::pt_mesh::{mesh_chains, MChain};
+    let rooms = omg_scene::walkthrough::rooms();
+    let doors = omg_scene::walkthrough::doors();
+    let (mesh, _) = omg_scene::dome::build_world_mesh(&rooms, &doors);
+    let Some(gpu) = omg_gpu::GpuMeshTracer::new(&mesh) else {
+        eprintln!("SKIP discovery_kernel_finds_the_cpu_chain_set: no wgpu adapter");
+        return;
+    };
+    let lis = Vec3::new(4.4, 7.5, 1.6); // corridor, near the living door
+    let dedup = |v: &mut Vec<MChain>| {
+        v.sort();
+        v.dedup();
+    };
+    let mut cpu: Vec<MChain> = Vec::new();
+    for rot in 0..8 {
+        mesh_chains(&mesh, lis, 768, rot, &mut cpu);
+    }
+    dedup(&mut cpu);
+    let mut gpu_c: Vec<MChain> = Vec::new();
+    let t0 = std::time::Instant::now();
+    for rot in 0..8u32 {
+        gpu.discover(lis, rot, omg_gpu::DISC_RAYS, &mut gpu_c);
+    }
+    let ms = t0.elapsed().as_secs_f64() * 125.0;
+    dedup(&mut gpu_c);
+    let found = cpu.iter().filter(|c| gpu_c.contains(c)).count();
+    eprintln!(
+        "discovery: cpu set {} · gpu set {} · overlap {found} · {ms:.2} ms/dispatch",
+        cpu.len(),
+        gpu_c.len()
+    );
+    // both are stochastic samplers of the same chain space; the GPU fan
+    // is 5× denser, so it must cover the bulk of the CPU set
+    assert!(
+        found * 10 >= cpu.len() * 8,
+        "gpu discovery found {found}/{} of the CPU chain set",
+        cpu.len()
+    );
+}
+
+#[test]
 fn world_trace_speed_probe() {
     let rooms = omg_scene::walkthrough::rooms();
     let doors = omg_scene::walkthrough::doors();

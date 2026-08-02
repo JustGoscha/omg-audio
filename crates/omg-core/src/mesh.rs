@@ -427,13 +427,13 @@ impl Mesh {
     pub fn visit_bvh(
         &self,
         node: &mut dyn FnMut(Vec3, Vec3, u32, u32),
-        prim: &mut dyn FnMut(Vec3, Vec3, Vec3, u16),
+        prim: &mut dyn FnMut(Vec3, Vec3, Vec3, u16, u16),
     ) {
         for n in &self.nodes {
             node(n.bmin, n.bmax, n.a, n.b);
         }
         for p in &self.packed {
-            prim(p.a, p.e1, p.e2, p.material);
+            prim(p.a, p.e1, p.e2, p.material, self.tri_surface[p.tri as usize]);
         }
     }
 

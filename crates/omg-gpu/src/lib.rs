@@ -186,7 +186,22 @@ pub struct GpuMeshTracer {
     read_bins: wgpu::Buffer,
     read_dirs: wgpu::Buffer,
     bind: wgpu::BindGroup,
+    // K3: chain discovery over the same BVH buffers
+    disc_pipeline: wgpu::ComputePipeline,
+    disc_job: wgpu::Buffer,
+    disc_chains: wgpu::Buffer,
+    disc_count: wgpu::Buffer,
+    disc_read: wgpu::Buffer,
+    disc_bind: wgpu::BindGroup,
 }
+
+/// Chain slots in the discovery output list (must match
+/// discover_mesh.wgsl CAP).
+pub const DISC_CAP: usize = 16384;
+/// Discovery rays per dispatch — the CPU fan runs 768/tick; discovery
+/// only has to find each chain once per TTL window, so density here is
+/// pure freshness.
+pub const DISC_RAYS: u32 = 4096;
 
 impl GpuMeshTracer {
     pub fn new(mesh: &Mesh) -> Option<Self> {
@@ -286,6 +301,59 @@ impl GpuMeshTracer {
             ],
         });
 
+        // K3: discovery pipeline sharing the SAME nodes/prims buffers
+        let disc_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("discover_mesh"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../shaders/discover_mesh.wgsl").into(),
+            ),
+        });
+        let disc_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("discover_mesh"),
+            layout: None,
+            module: &disc_shader,
+            entry_point: Some("discover"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let disc_job = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("disc-job"),
+            size: 32,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let disc_chains = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("disc-chains"),
+            size: (DISC_CAP * 8) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let disc_count = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("disc-count"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let disc_read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("disc-read"),
+            size: (4 + DISC_CAP * 8) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let disc_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("discover_mesh"),
+            layout: &disc_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: disc_job.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: nodes_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: prims_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: disc_chains.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: disc_count.as_entire_binding() },
+            ],
+        });
+
         Some(Self {
             device,
             queue,
@@ -297,7 +365,80 @@ impl GpuMeshTracer {
             read_bins,
             read_dirs,
             bind,
+            disc_pipeline,
+            disc_job,
+            disc_chains,
+            disc_count,
+            disc_read,
+            disc_bind,
         })
+    }
+
+    /// One synchronous discovery dispatch: the listener fan over the
+    /// BVH, raw chain prefixes appended (duplicates included — the
+    /// caller's TTL table dedups).
+    pub fn discover(
+        &self,
+        listener: Vec3,
+        rot: u32,
+        n_rays: u32,
+        out: &mut Vec<omg_core::pt_mesh::MChain>,
+    ) {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct Job {
+            n_rays: u32,
+            rot: u32,
+            _p0: u32,
+            _p1: u32,
+            listener: [f32; 3],
+            _p2: u32,
+        }
+        let job = Job {
+            n_rays,
+            rot,
+            _p0: 0,
+            _p1: 0,
+            listener: [listener.x, listener.y, listener.z],
+            _p2: 0,
+        };
+        self.queue.write_buffer(&self.disc_job, 0, bytemuck::bytes_of(&job));
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("disc") });
+        enc.clear_buffer(&self.disc_count, 0, None);
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("disc"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.disc_pipeline);
+            pass.set_bind_group(0, &self.disc_bind, &[]);
+            pass.dispatch_workgroups(n_rays.div_ceil(64), 1, 1);
+        }
+        enc.copy_buffer_to_buffer(&self.disc_count, 0, &self.disc_read, 0, 4);
+        enc.copy_buffer_to_buffer(&self.disc_chains, 0, &self.disc_read, 4, (DISC_CAP * 8) as u64);
+        self.queue.submit([enc.finish()]);
+        self.disc_read
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        {
+            let view = self.disc_read.slice(..).get_mapped_range().expect("mapped");
+            let words: &[u32] = bytemuck::cast_slice(&view);
+            let n = (words[0] as usize).min(DISC_CAP);
+            for i in 0..n {
+                let (w0, w1) = (words[1 + i * 2], words[2 + i * 2]);
+                let chain = [
+                    (w0 & 0xFFFF) as u16,
+                    (w0 >> 16) as u16,
+                    (w1 & 0xFFFF) as u16,
+                ];
+                let order = ((w1 >> 16) as u8).clamp(1, 3);
+                out.push((chain, order));
+            }
+        }
+        self.disc_read.unmap();
     }
 
     /// One synchronous world trace: dispatch, wait, decode.
@@ -373,8 +514,14 @@ impl GpuMeshTracer {
 /// OMG_GPU=1). The scene's one-trace-per-tick budget stays; the GPU
 /// just makes that one trace 8× denser for the same wall-clock class.
 pub struct GpuWorldLateBackend {
-    tracer: GpuMeshTracer,
+    tracer: std::sync::Arc<GpuMeshTracer>,
     seed: u32,
+}
+
+/// Chain discovery (K3) as the world-discovery provider — shares the
+/// late backend's device and BVH buffers.
+pub struct GpuWorldDiscovery {
+    tracer: std::sync::Arc<GpuMeshTracer>,
 }
 
 const WORLD_RAY_MULT: u32 = 8;
@@ -382,7 +529,28 @@ const WORLD_RAY_CAP: u32 = 8192;
 
 impl GpuWorldLateBackend {
     pub fn new(mesh: &Mesh) -> Option<Self> {
-        Some(Self { tracer: GpuMeshTracer::new(mesh)?, seed: 0x5EED_C6D1 })
+        Some(Self { tracer: std::sync::Arc::new(GpuMeshTracer::new(mesh)?), seed: 0x5EED_C6D1 })
+    }
+
+    /// Both world backends over ONE device and one BVH upload.
+    pub fn with_discovery(mesh: &Mesh) -> Option<(Self, GpuWorldDiscovery)> {
+        let tracer = std::sync::Arc::new(GpuMeshTracer::new(mesh)?);
+        Some((
+            Self { tracer: tracer.clone(), seed: 0x5EED_C6D1 },
+            GpuWorldDiscovery { tracer },
+        ))
+    }
+}
+
+impl omg_scene::early_world::WorldDiscovery for GpuWorldDiscovery {
+    fn discover(
+        &mut self,
+        listener: Vec3,
+        rot: u32,
+        out: &mut Vec<omg_core::pt_mesh::MChain>,
+    ) -> bool {
+        self.tracer.discover(listener, rot, DISC_RAYS, out);
+        true
     }
 }
 
