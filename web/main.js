@@ -2672,7 +2672,12 @@ function drawReflectionFans() {
 
 function drawSoundRays() {
   if (!state.simState) return;
-  const show = !!state.debug.on;
+  // Route polylines visualize the PORTAL routing (source → door →
+  // listener). That machinery only runs in ism mode — with the traced
+  // engine the reflection fans are the real simulation, and drawing
+  // deleted-code routes over them was misleading. Debug shows only
+  // what is actually simulated.
+  const show = !!state.debug.on && !state.debug.early;
   for (let i = 0; i < NSRC_UI; i++) {
     if (!rayLines[i]) {
       const geo = new THREE.BufferGeometry();
