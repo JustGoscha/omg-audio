@@ -240,7 +240,8 @@ impl Door {
     /// sub-apertures — powers add).
     pub fn fill_energy(&self) -> [f32; NBANDS] {
         if self.glass {
-            core::array::from_fn(|b| GLASS_TRANSMISSION[b] * GLASS_TRANSMISSION[b])
+            let g = glass_transmission(self.heavy);
+            core::array::from_fn(|b| g[b] * g[b])
         } else {
             let o = self.openness.clamp(0.0, 1.0);
             let panel =
@@ -261,17 +262,21 @@ pub fn doors() -> Vec<Door> {
         Door { rooms: (LIVING, CORRIDOR), pos: (4.0, 6.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
         Door { rooms: (CORRIDOR, HALL), pos: (4.0, 14.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
         Door { rooms: (HALL, OUTSIDE), pos: (7.0, 24.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
-        Door { rooms: (OUTSIDE, ENTRANCE), pos: (20.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
-        Door { rooms: (ENTRANCE, CLUB), pos: (22.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
+        // the club's sound-lock: both vestibule doors are heavy
+        // acoustic doors — closed, they seal like the bunker's
+        Door { rooms: (OUTSIDE, ENTRANCE), pos: (20.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: true },
+        Door { rooms: (ENTRANCE, CLUB), pos: (22.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 0.0, heavy: true },
         Door { rooms: (OUTSIDE, HOUSE), pos: (26.5, 23.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
-        // cathedral portal: a tall double door (E-toggleable, index 6)
-        Door { rooms: (OUTSIDE, CATHEDRAL), pos: (8.0, 52.0), axis: 1, half: 1.2, height: 3.5, zc: 1.75, glass: false, openness: 1.0, heavy: false },
+        // cathedral portal: a tall bronze-clad double door (E-toggleable,
+        // index 6) — closed, it transmits like the blast door, not wood
+        Door { rooms: (OUTSIDE, CATHEDRAL), pos: (8.0, 52.0), axis: 1, half: 1.2, height: 3.5, zc: 1.75, glass: false, openness: 0.0, heavy: true },
         // bunker blockhouse: a heavy steel door at the stair head (index 7)
         Door { rooms: (OUTSIDE, BUNKER), pos: (31.4, 7.0), axis: 0, half: 0.7, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: true },
         // windows
         Door { rooms: (LIVING, OUTSIDE), pos: (3.0, 0.0), axis: 1, half: 1.3, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
-        Door { rooms: (CLUB, OUTSIDE), pos: (32.0, 32.0), axis: 0, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
-        Door { rooms: (CLUB, OUTSIDE), pos: (26.0, 38.0), axis: 1, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
+        // club windows are laminated glazing: the boom passes, the hiss dies
+        Door { rooms: (CLUB, OUTSIDE), pos: (32.0, 32.0), axis: 0, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: true },
+        Door { rooms: (CLUB, OUTSIDE), pos: (26.0, 38.0), axis: 1, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: true },
         // house windows look out onto the square, club and hall
         Door { rooms: (HOUSE, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
         Door { rooms: (HOUSE, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
@@ -288,6 +293,16 @@ pub const DOOR_HALF_WIDTH: f32 = 0.55;
 
 /// Single-pane glass, per band (much leakier than any wall).
 pub const GLASS_TRANSMISSION: [f32; NBANDS] = [0.50, 0.32, 0.20];
+
+/// Laminated/double glazing (club windows): mass law with an air gap —
+/// bass thumps through, mids and highs die. This is what makes a club
+/// BOOM from outside instead of hissing.
+pub const HEAVY_GLASS_TRANSMISSION: [f32; NBANDS] = [0.18, 0.05, 0.012];
+
+/// The pane transmission a glass aperture actually has.
+pub fn glass_transmission(heavy: bool) -> [f32; NBANDS] {
+    if heavy { HEAVY_GLASS_TRANSMISSION } else { GLASS_TRANSMISSION }
+}
 
 /// A closed door: ~4 cm wood panel filling the aperture (mass law).
 pub const DOOR_PANEL_TRANSMISSION: [f32; NBANDS] = [0.28, 0.12, 0.05];
@@ -1062,7 +1077,7 @@ pub fn aperture_routes(
                 // a pane transmits (flat loss) rather than diffracting; an
                 // open aperture is priced by the bend it forces
                 extra_dist: dist(src.pos, v),
-                muffle: if d.glass { GLASS_TRANSMISSION } else { ke },
+                muffle: if d.glass { glass_transmission(d.heavy) } else { ke },
                 wet_trans: d.fill_amplitude(),
                 exit_axis: Some(d.axis),
                 route: vec![src.pos, v, lis],

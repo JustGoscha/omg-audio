@@ -255,8 +255,12 @@ mod tests {
             if r.outdoor {
                 continue;
             }
+            // upper bound 0.85: the Entrance is a 2 m porch whose only
+            // open aperture is a full doorway to the street (its inner
+            // door now defaults CLOSED), so its field legitimately sits
+            // near the outdoor level — indoors just must stay below it
             assert!(
-                f[ri][1] > 1e-5 && f[ri][1] < 0.5,
+                f[ri][1] > 1e-5 && f[ri][1] < 0.85,
                 "{}: field {:?} out of the plausible range",
                 r.name,
                 f[ri]

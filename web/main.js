@@ -123,7 +123,10 @@ const state = {
   rainLevel: 0, // index into RAIN_LEVELS
   chanHist: [], // per-channel meter frames, ~1 s
   mixerRows: null,
-  doors: DOORS.map(() => true), // open/closed, index-matched to DOORS
+  // open/closed, index-matched to DOORS. The club's inner door (4) and
+  // the cathedral's great portal (6) start CLOSED: the sound-lock locks
+  // and the nave is a sanctuary until you push the door (E).
+  doors: DOORS.map((_, i) => i !== 4 && i !== 6),
   doorMeshes: [],
 };
 
@@ -959,7 +962,8 @@ function buildDoorPanels() {
     };
     COLLIDERS.push(collider);
     // doors start open: leaf swung back against the wall
-    state.doorMeshes.push({ hinge, collider, pos: d.pos, openness: 1, target: 1 });
+    const open = state.doors[state.doorMeshes.length] ? 1 : 0;
+    state.doorMeshes.push({ hinge, collider, pos: d.pos, openness: open, target: open });
   });
 }
 

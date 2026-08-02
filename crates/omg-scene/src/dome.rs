@@ -21,7 +21,7 @@
 //! a stationary listener gets a bit-identical estimate every tick — no
 //! flicker to smooth away, and motion changes the estimate continuously.
 
-use crate::walkthrough::{Door, RoomDef, DOOR_PANEL_TRANSMISSION, GLASS_TRANSMISSION};
+use crate::walkthrough::{glass_transmission, Door, RoomDef, DOOR_PANEL_TRANSMISSION, HEAVY_PANEL_TRANSMISSION};
 use omg_core::mesh::{Mesh, MeshBuilder, SegHit};
 use omg_core::vec3::Vec3;
 use omg_core::NBANDS;
@@ -48,6 +48,8 @@ pub struct Panel {
     pub lat: (f32, f32),
     pub z: (f32, f32),
     pub glass: bool,
+    /// Heavy build: laminated glazing / steel leaf — mass-law numbers.
+    pub heavy: bool,
 }
 
 impl Panel {
@@ -192,6 +194,7 @@ pub fn build_world_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>)
                         lat: (dl - d.half, dl + d.half),
                         z: (d.zc - 0.5 * d.height, d.zc + 0.5 * d.height),
                         glass: true,
+                        heavy: d.heavy,
                     });
                 }
             }
@@ -261,6 +264,7 @@ pub fn door_panels(doors: &[Door]) -> Vec<Panel> {
                 lat: (lat_c - d.half, lat_c - d.half + covered),
                 z: (d.zc - 0.5 * d.height, d.zc + 0.5 * d.height),
                 glass: false,
+                heavy: d.heavy,
             }
         })
         .collect()
@@ -321,8 +325,9 @@ impl DomeProbe {
                 if !p.glass {
                     return None; // a door leaf blocks
                 }
+                let g = glass_transmission(p.heavy);
                 for b in 0..NBANDS {
-                    tp[b] *= GLASS_TRANSMISSION[b] * GLASS_TRANSMISSION[b];
+                    tp[b] *= g[b] * g[b];
                 }
                 pos = pos + dir * (t_pan + 1e-3);
                 continue;
@@ -381,7 +386,13 @@ impl DomeProbe {
         }
         for p in self.glass.iter().chain(leaves.iter()) {
             if p.hit(eye, dir, HORIZON).is_some() {
-                let t = if p.glass { GLASS_TRANSMISSION } else { DOOR_PANEL_TRANSMISSION };
+                let t = if p.glass {
+                    glass_transmission(p.heavy)
+                } else if p.heavy {
+                    HEAVY_PANEL_TRANSMISSION
+                } else {
+                    DOOR_PANEL_TRANSMISSION
+                };
                 for b in 0..NBANDS {
                     tp[b] *= t[b] * t[b];
                 }

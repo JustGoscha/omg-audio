@@ -104,7 +104,7 @@ const LOD_QUIET: f32 = 0.004;
 fn aperture_box(d: &Door) -> Option<Aabb> {
     let (lat_c, plane) = if d.axis == 0 { (d.pos.1, d.pos.0) } else { (d.pos.0, d.pos.1) };
     let (lat0, lat1, trans) = if d.glass {
-        (lat_c - d.half, lat_c + d.half, walkthrough::GLASS_TRANSMISSION)
+        (lat_c - d.half, lat_c + d.half, walkthrough::glass_transmission(d.heavy))
     } else {
         if d.openness >= 0.999 {
             return None;
@@ -748,6 +748,9 @@ impl WorldSim {
                     // panes/panels always pay their flat transmission; open
                     // chains pay the bending of doors past the first
                     let ap_factor = if routed.glass {
+                        // routed panes: ism path only knows glass-vs-not;
+                        // heavy panes are handled by the traced engine's
+                        // extras — keep the classic constant here
                         walkthrough::GLASS_TRANSMISSION[b]
                     } else {
                         routed.wet_trans[b] * chain_bend[b]
