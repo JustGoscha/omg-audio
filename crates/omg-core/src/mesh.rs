@@ -24,6 +24,10 @@ pub struct Mesh {
     pub materials: Vec<Material>,
     /// Per-triangle authored-surface id (chain-key identity, C6a).
     tri_surface: Vec<u16>,
+    /// Per-triangle tessellation limit (m) for BVH packing — the far
+    /// field can be COARSE: node-bound tightness only matters where
+    /// rays actually travel, and a street 800 m out never sees one.
+    tri_max_edge: Vec<f32>,
     nodes: Vec<BvhNode>,
     /// Intersection primitives in BVH-leaf order. Oversized triangles are
     /// tessellated into patches here (coplanar, same original id) — one
@@ -71,6 +75,10 @@ pub struct MeshBuilder {
     tri_material: Vec<u16>,
     materials: Vec<Material>,
     tri_surface: Vec<u16>,
+    tri_max_edge: Vec<f32>,
+    /// Tessellation limit applied to subsequently pushed tris (see
+    /// `coarse`). 0 = the default MAX_PRIM_EDGE.
+    cur_max_edge: f32,
     /// 1 + the last id begin_surface returned (0 = "no surface yet";
     /// tris pushed before the first begin_surface land on id 0).
     next_surface: u16,
@@ -110,6 +118,19 @@ impl MeshBuilder {
         self.indices.push([ia, ib, ic]);
         self.tri_material.push(material);
         self.tri_surface.push(self.next_surface.saturating_sub(1));
+        self.tri_max_edge.push(if self.cur_max_edge > 0.0 {
+            self.cur_max_edge
+        } else {
+            MAX_PRIM_EDGE
+        });
+    }
+
+    /// Tessellation limit for everything pushed until the next call
+    /// (0 restores the default). The far field wants COARSE packing:
+    /// BVH node tightness only pays where rays travel, and 99% of the
+    /// world's primitives were 4 m patches of street no ray ever sees.
+    pub fn coarse(&mut self, max_edge: f32) {
+        self.cur_max_edge = max_edge;
     }
 
     /// Quad a-b-c-d (planar, in winding order) as two triangles.
@@ -132,12 +153,13 @@ impl MeshBuilder {
     }
 
     pub fn build(self) -> Mesh {
-        Mesh::with_surfaces(
+        Mesh::with_surfaces_edges(
             self.positions,
             self.indices,
             self.tri_material,
             self.materials,
             self.tri_surface,
+            self.tri_max_edge,
         )
     }
 }
@@ -162,14 +184,35 @@ impl Mesh {
         materials: Vec<Material>,
         tri_surface: Vec<u16>,
     ) -> Self {
+        let n = indices.len();
+        Self::with_surfaces_edges(
+            positions,
+            indices,
+            tri_material,
+            materials,
+            tri_surface,
+            vec![MAX_PRIM_EDGE; n],
+        )
+    }
+
+    pub fn with_surfaces_edges(
+        positions: Vec<Vec3>,
+        indices: Vec<[u32; 3]>,
+        tri_material: Vec<u16>,
+        materials: Vec<Material>,
+        tri_surface: Vec<u16>,
+        tri_max_edge: Vec<f32>,
+    ) -> Self {
         assert_eq!(indices.len(), tri_material.len());
         assert_eq!(indices.len(), tri_surface.len());
+        assert_eq!(indices.len(), tri_max_edge.len());
         let mut mesh = Self {
             positions,
             indices,
             tri_material,
             materials,
             tri_surface,
+            tri_max_edge,
             nodes: Vec::new(),
             packed: Vec::new(),
         };
@@ -209,7 +252,7 @@ impl Mesh {
             let (lab, lbc, lca) =
                 ((b - a).length(), (c - b).length(), (a - c).length());
             let longest = lab.max(lbc).max(lca);
-            if longest > MAX_PRIM_EDGE {
+            if longest > self.tri_max_edge[t as usize] {
                 // split the longest edge at its midpoint
                 if lab >= lbc && lab >= lca {
                     let m = (a + b) * 0.5;
