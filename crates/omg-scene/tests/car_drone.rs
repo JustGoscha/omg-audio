@@ -13,7 +13,7 @@ use omg_scene::world::WorldSim;
 fn departing_car_takes_its_wet_bed_along() {
     quality::set_early(1);
     let mut w = WorldSim::new();
-    const CAR0: usize = 8; // dyn slot 3
+    const CAR0: usize = 11; // dyn slot 3 (8 placed + 3 balls)
     let wet = |b: &omg_core::params::ParamBlock| -> f32 {
         b.reverb.level[1] + b.remote.as_ref().map_or(0.0, |r| r.send[1])
     };

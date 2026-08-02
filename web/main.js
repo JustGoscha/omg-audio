@@ -21,6 +21,7 @@ const ROOMS = [
   { name: 'Old House Upper', min: [24, 16], max: [31, 23], upper: true }, // index-aligned with the sim
   { name: 'Cathedral', min: [0, 52], max: [16, 74], h: 15, floor: 0x2b2b36 },
   { name: 'Bunker', min: [34, 6], max: [40, 14], h: 2.2, fz: -3, floor: 0x20241f },
+  { name: 'Belfry', min: [7, 318], max: [13, 324], h: 24, solid: true },
   { name: 'Outside', min: [-28, -1900], max: [48, 2000], outdoor: true, floor: 0x1c2a20 },
 ];
 // axis: 0 = opening in an x=const wall, 1 = opening in a y=const wall
@@ -91,6 +92,9 @@ const SOURCES = [
     emitters: [[23.5, 27.5], [30.5, 27.5], [23.5, 36.5], [30.5, 36.5]] },
   { name: 'flute', pos: [8, 66], color: 0x9ad2ff },
   { name: 'radio', pos: [37.5, 12.5], z: -2.2, color: 0xd2b06e },
+  { name: 'owl', pos: [4, 53], z: 16.3, color: 0xcfd8e6 },
+  { name: 'owl', pos: [27.5, 19.5], z: 5.6, color: 0xcfd8e6 },
+  { name: 'bells', pos: [10, 321], z: 21.8, color: 0xf0d890 },
 ];
 const MARGIN = 0.35;
 const EYE = 1.6;
@@ -162,11 +166,13 @@ const MIXER = [
   { name: 'club', srcs: [2], base: 104, def: 104, meters: [2], spl: true },
   { name: 'flute', srcs: [3], base: 88, def: 76, meters: [3], spl: true },
   { name: 'radio', srcs: [4], base: 80, def: 64, meters: [4], spl: true },
-  { name: 'balls', srcs: [5, 6, 7], base: 89, def: 89, meters: [5, 6, 7], spl: true },
-  { name: 'cars', srcs: [8, 9], base: 92, def: 86, meters: [8, 9], spl: true },
-  { name: 'steps', srcs: [10], base: 78, def: 62, meters: [10], spl: true },
-  { name: 'ambience', target: 'ambient', def: -16, meters: [11] },
-  { name: 'rain', target: 'rainGain', def: 0, meters: [12] },
+  { name: 'owls', srcs: [5, 6], base: 74, def: 66, meters: [5, 6], spl: true },
+  { name: 'bells', srcs: [7], base: 100, def: 94, meters: [7], spl: true },
+  { name: 'balls', srcs: [8, 9, 10], base: 89, def: 89, meters: [8, 9, 10], spl: true },
+  { name: 'cars', srcs: [11, 12], base: 92, def: 86, meters: [11, 12], spl: true },
+  { name: 'steps', srcs: [13], base: 78, def: 62, meters: [13], spl: true },
+  { name: 'ambience', target: 'ambient', def: -16, meters: [14] },
+  { name: 'rain', target: 'rainGain', def: 0, meters: [15] },
   { name: 'master', target: 'master', def: 0, meters: 'lr' },
 ];
 const SPL_MIN = 20, SPL_MAX = 130, TRIM_MIN = -30, TRIM_MAX = 12;
@@ -893,7 +899,7 @@ function spawnCar() {
       const j = p | 0;
       out[i] = m[j % m.length] * (1 - (p - j)) + m[(j + 1) % m.length] * (p - j);
     }
-    state.node.port.postMessage({ type: 'motor', src: free + 5, buf: out.buffer }, [out.buffer]);
+    state.node.port.postMessage({ type: 'motor', src: free + 8, buf: out.buffer }, [out.buffer]);
   }
   state.cars.push({
     slot: free,
@@ -1423,9 +1429,28 @@ async function startAudio() {
     STEP_SURFACES.flatMap((surf) => [0, 1, 2, 3, 4].map((v) =>
       fetchBuf(`../assets/steps/${surf}_${v}.ogg`).then(decodeStep))),
   );
-  // projectile slots + feet: fx voices only (one buffer each — transferables)
-  const silents = [new Float32Array(480), new Float32Array(480), new Float32Array(480),
-                   new Float32Array(480)];
+  // Wildlife & carillon (task: owls on rooftops + a distant belfry).
+  // Owls are synthesized in-repo (no CC0 recording exists on Commons);
+  // the bells are real CC0 recordings — see assets/birds/LICENSE.txt.
+  // Bells trim to a short peal with a musical fade so one 'event' is a
+  // few strikes, not the whole recording.
+  const trimTail = (raw, maxS, fadeS = 2.0) => {
+    const n = Math.min(raw.length, Math.floor(maxS * audio.sampleRate));
+    const out = raw.slice(0, n);
+    const f = Math.min(out.length, Math.floor(fadeS * audio.sampleRate));
+    for (let i = 0; i < f; i++) out[out.length - 1 - i] *= i / f;
+    return out;
+  };
+  const [owl0, owl1, owl2, bellBig, bellSmall] = await Promise.all([
+    fetchBuf('../assets/birds/owl_0.wav').then((b) => decodeMono(b, 0.5)),
+    fetchBuf('../assets/birds/owl_1.wav').then((b) => decodeMono(b, 0.5)),
+    fetchBuf('../assets/birds/owl_2.wav').then((b) => decodeMono(b, 0.5)),
+    fetchBuf('../assets/birds/bell_big.ogg').then((b) => decodeMono(b, 0.6)).then((r) => trimTail(r, 16)),
+    fetchBuf('../assets/birds/bell_small.ogg').then((b) => decodeMono(b, 0.5)).then((r) => trimTail(r, 10)),
+  ]);
+  // projectile slots + owls/bells + feet: fx voices only (one buffer
+  // each — transferables)
+  const silents = Array.from({ length: 7 }, () => new Float32Array(480));
 
   await audio.audioWorklet.addModule('worklet.js');
   const node = new AudioWorkletNode(audio, 'omg-engine', {
@@ -1444,13 +1469,16 @@ async function startAudio() {
   node.port.postMessage(
     { type: 'wasm', bytes: wasm1, grid, speakers,
       sources: [aria.buffer, alice.buffer, club.buffer, flute.buffer, radio.buffer,
-                silents[0].buffer, silents[1].buffer, silents[2].buffer,
-                m0.buffer, m1.buffer, silents[3].buffer],
-      fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer)],
+                silents[0].buffer, silents[1].buffer, silents[2].buffer, // owls + bells
+                silents[3].buffer, silents[4].buffer, silents[5].buffer, // balls
+                m0.buffer, m1.buffer, silents[6].buffer],                // cars + feet
+      fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
+           owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer],
       ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,
-     radio.buffer, silents[0].buffer, silents[1].buffer, silents[2].buffer, silents[3].buffer,
+     radio.buffer, ...silents.map((b) => b.buffer),
      whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
+     owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
      ambience.buffer, drops.buffer],
   );
   await new Promise((res, rej) => {
@@ -1483,7 +1511,7 @@ async function startAudio() {
           const now = performance.now() / 1000;
           const peak = Math.max(e.data.l, e.data.r);
           let srcRms = 0;
-          for (let i = 0; i < 22; i += 2) srcRms = Math.max(srcRms, e.data.chans[i + 1]);
+          for (let i = 0; i < 28; i += 2) srcRms = Math.max(srcRms, e.data.chans[i + 1]);
           bb.ring.push({
             t: +now.toFixed(2), peak: +peak.toFixed(5), agc: +e.data.agc.toFixed(3),
             tts: +(e.data.tts || 0).toFixed(2), src: +srcRms.toFixed(5),
@@ -1523,7 +1551,7 @@ async function startAudio() {
           const d = e.data.dbg || [];
           let taps = 0;
           let gain = 0;
-          for (let i = 0; i < 11; i++) {
+          for (let i = 0; i < 14; i++) {
             taps += d[i * 5] || 0;
             gain += d[i * 5 + 2] || 0;
           }
@@ -1894,7 +1922,7 @@ function throwBall() {
     vx: ch * cp * speed, vy: sh * cp * speed, vz: sp * speed + 2.5,
     landedAt: 0, boomAt: 0, mesh, light,
   });
-  state.fx(5 + slot, 0, 'play'); // whistle
+  state.fx(8 + slot, 0, 'play'); // whistle
 }
 
 function roomHeightAt(x, y) {
@@ -1909,7 +1937,7 @@ function updateProjectiles(dt, now) {
 }
 
 function updateProjectile(p, dt, now) {
-  const fx = (kind, action = 'play') => state.fx(5 + p.slot, kind, action);
+  const fx = (kind, action = 'play') => state.fx(8 + p.slot, kind, action);
 
   if (p.boomAt) {
     // explosion flash decays, then the source goes silent and disappears
@@ -2098,7 +2126,34 @@ function strideStep(d) {
   let v = (Math.random() * 5) | 0;
   if (v === lastVariant) v = (v + 1) % 5; // never the same step twice
   lastVariant = v;
-  state.fx(10, 3 + STEP_SURFACES.indexOf(surf) * 5 + v);
+  state.fx(13, 3 + STEP_SURFACES.indexOf(surf) * 5 + v);
+}
+
+// -------------------------------------------------- wildlife & carillon
+// fx-bank indices: 0 whistle, 1 thump, 2 boom, 3..22 steps,
+// 23..25 owls, 26 big peal, 27 small peal.
+const wild = {
+  owl1: 8 + Math.random() * 12,
+  owl2: 16 + Math.random() * 16,
+  bells: 20 + Math.random() * 30,
+};
+function updateWildlife(t) {
+  if (!state.fx || !state.running) return;
+  const s = t / 1000;
+  if (s > wild.owl1) {
+    wild.owl1 = s + 20 + Math.random() * 40;
+    state.fx(5, 23 + ((Math.random() * 3) | 0));
+  }
+  if (s > wild.owl2) {
+    wild.owl2 = s + 25 + Math.random() * 45;
+    state.fx(6, 23 + ((Math.random() * 3) | 0));
+  }
+  if (s > wild.bells) {
+    // "randomly sometimes, 30 s – 2 min": one peal per event, the big
+    // bell three times out of four
+    wild.bells = s + 30 + Math.random() * 90;
+    state.fx(7, Math.random() < 0.75 ? 26 : 27);
+  }
 }
 
 // ------------------------------------------------------------ render loop
@@ -2121,6 +2176,7 @@ function frame(t) {
     updateProjectiles(dt, t);
     updateDoors(dt);
     updateCars(dt, t);
+    updateWildlife(t);
     if (state.faceTarget) {
       // one-pole toward the last camera-frame pose (τ 45 ms) bridges
       // 30–60 fps detections to render rate; the engine smooths 30 ms
@@ -2180,20 +2236,22 @@ function frame(t) {
 // visible at a glance instead of reconstructed from ear-memory.
 
 const DBG_NAMES = ['music', 'voice', 'club', 'flute', 'radio',
+  'owl·c', 'owl·h', 'bells',
   'ball0', 'ball1', 'ball2', 'car0', 'car1', 'feet', 'amb', 'rain'];
 const DBG_COLORS = ['#ffaa3c', '#6ee0a0', '#ff5a9e', '#9ad2ff', '#d2b06e',
+  '#cfd8e6', '#cfd8e6', '#f0d890',
   '#fff1a8', '#fff1a8', '#fff1a8', '#7ad7ff', '#7ad7ff', '#ddd6c9', '#8a95ff', '#59c9e8'];
 
 function dbgSourceDist(i) {
-  if (i < 5) {
+  if (i < 8) {
     const s = SOURCES[i];
     return Math.hypot(s.pos[0] - state.pose.x, s.pos[1] - state.pose.y);
   }
-  if (i < 8) {
-    const p = state.projs.find((q) => q.slot === i - 5);
+  if (i < 11) {
+    const p = state.projs.find((q) => q.slot === i - 8);
     return p ? Math.hypot(p.x - state.pose.x, p.y - state.pose.y) : null;
   }
-  const c = state.cars.find((q) => q.slot === i - 5);
+  const c = state.cars.find((q) => q.slot === i - 8);
   return c ? Math.hypot(c.x - state.pose.x, c.y - state.pose.y) : null;
 }
 
@@ -2544,7 +2602,7 @@ function drawReflectionFans() {
       }
       k += 2 + n * 3;
     }
-    for (let i = 0; i < 11; i++) {
+    for (let i = 0; i < 14; i++) {
       if (!fanLines[i]) {
         const geo = new THREE.BufferGeometry();
         geo.setAttribute('position',
@@ -2575,7 +2633,7 @@ function drawReflectionFans() {
 function drawSoundRays() {
   if (!state.simState) return;
   const show = !!state.debug.on;
-  for (let i = 0; i < 11; i++) {
+  for (let i = 0; i < 14; i++) {
     if (!rayLines[i]) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6 * 3), 3));

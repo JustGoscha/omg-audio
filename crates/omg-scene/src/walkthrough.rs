@@ -180,6 +180,20 @@ pub fn rooms() -> Vec<RoomDef> {
             wall_thickness: 0.4,
             outdoor: false,
         },
+        // A brick bell tower ~250 m north across the field: doorless
+        // (nobody enters), but its shaft occludes, reflects and lets the
+        // bells above it ring over the roof line.
+        RoomDef {
+            name: "Belfry",
+            min: (7.0, 318.0),
+            max: (13.0, 324.0),
+            height: 24.0,
+            barrier_height: 24.5,
+            floor_z: 0.0,
+            walls: [Material::BRICK; 6],
+            wall_thickness: 0.4,
+            outdoor: false,
+        },
         // Outside must come LAST: enclosed rooms overlap its rectangle and
         // room_of matches in order. It surrounds all buildings.
         RoomDef {
@@ -205,7 +219,8 @@ pub const HOUSE: usize = 5;
 pub const HOUSE_UP: usize = 8;
 pub const CATHEDRAL: usize = 9;
 pub const BUNKER: usize = 10;
-pub const OUTSIDE: usize = 11;
+pub const BELFRY: usize = 11;
+pub const OUTSIDE: usize = 12;
 
 /// A doorway between two rooms. `axis`: 0 = opening in an x=const wall,
 /// 1 = opening in a y=const wall. Arbitrary graph topology (BFS routing).
@@ -409,6 +424,9 @@ pub struct SourceDef {
     pub room: usize,
     /// Linear gain applied to everything this source produces.
     pub gain: f32,
+    /// WORLD z of the emitter (a rooftop owl sits at 17 m; a room
+    /// source at floor_z + SRC_HEIGHT). Dynamic slots override per tick.
+    pub z: f32,
     /// Same-room emitter positions playing the identical, sample-locked
     /// signal (a speaker rig). Power is split across them.
     pub emitters: &'static [(f32, f32)],
@@ -418,10 +436,11 @@ pub struct SourceDef {
 pub const CLUB_SPEAKERS: [(f32, f32); 4] =
     [(23.5, 27.5), (30.5, 27.5), (23.5, 36.5), (30.5, 36.5)];
 
-pub fn sources() -> [SourceDef; 11] {
+pub fn sources() -> [SourceDef; 14] {
     [
         SourceDef {
             name: "music",
+            z: 1.5,
             pos: (2.0, 3.0),
             room: LIVING,
             gain: 1.0,
@@ -429,6 +448,7 @@ pub fn sources() -> [SourceDef; 11] {
         },
         SourceDef {
             name: "voice",
+            z: 1.5,
             pos: (10.5, 20.5),
             room: HALL,
             gain: 0.5,
@@ -436,6 +456,7 @@ pub fn sources() -> [SourceDef; 11] {
         },
         SourceDef {
             name: "club",
+            z: 1.5,
             pos: (27.0, 32.0),
             room: CLUB,
             // realistic PA level: far above speech/piano; the ear-adaptation
@@ -445,6 +466,7 @@ pub fn sources() -> [SourceDef; 11] {
         },
         SourceDef {
             name: "flute",
+            z: 1.5,
             pos: (8.0, 66.0),
             room: CATHEDRAL,
             gain: 1.0,
@@ -452,23 +474,54 @@ pub fn sources() -> [SourceDef; 11] {
         },
         SourceDef {
             name: "radio",
+            z: -1.5, // bunker floor −3 m + source height
             pos: (37.5, 12.5),
             room: BUNKER,
             // a little transistor radio, not a hi-fi
             gain: 0.5,
             emitters: &[(37.5, 12.5)],
         },
+        // Wildlife & carillon (fx one-shots on placed sources — like
+        // the feet, they inherit the world's real acoustics for free).
+        // The owls PERCH ABOVE the rooms they sit on: room = OUTSIDE,
+        // z on the roof line — elevation is native to the traced engine.
+        SourceDef {
+            name: "owl·cathedral",
+            pos: (4.0, 53.0),
+            room: OUTSIDE,
+            gain: 1.6,
+            z: 17.0,
+            emitters: &[(4.0, 53.0)],
+        },
+        SourceDef {
+            name: "owl·house",
+            pos: (27.5, 19.5),
+            room: OUTSIDE,
+            gain: 1.4,
+            z: 6.3,
+            emitters: &[(27.5, 19.5)],
+        },
+        SourceDef {
+            name: "bells",
+            pos: (10.0, 321.0),
+            room: OUTSIDE,
+            // a real bell peals ~100 dB at the tower; 250 m of air and
+            // spreading make it the distant Sunday sound, bass carrying
+            gain: 30.0,
+            z: 22.5,
+            emitters: &[(10.0, 321.0)],
+        },
         // Dynamic slots: thrown projectiles + passing cars (positions
         // set per tick by the frontend).
-        SourceDef { name: "ball0", pos: (0.0, 0.0), room: OUTSIDE, gain: 0.9, emitters: &[(0.0, 0.0)] },
-        SourceDef { name: "ball1", pos: (0.0, 0.0), room: OUTSIDE, gain: 0.9, emitters: &[(0.0, 0.0)] },
-        SourceDef { name: "ball2", pos: (0.0, 0.0), room: OUTSIDE, gain: 0.9, emitters: &[(0.0, 0.0)] },
-        SourceDef { name: "car0", pos: (-18.0, 0.0), room: OUTSIDE, gain: 2.2, emitters: &[(-18.0, 0.0)] },
-        SourceDef { name: "car1", pos: (-18.0, 0.0), room: OUTSIDE, gain: 2.2, emitters: &[(-18.0, 0.0)] },
+        SourceDef { name: "ball0", pos: (0.0, 0.0), room: OUTSIDE, gain: 0.9, z: 1.5, emitters: &[(0.0, 0.0)] },
+        SourceDef { name: "ball1", pos: (0.0, 0.0), room: OUTSIDE, gain: 0.9, z: 1.5, emitters: &[(0.0, 0.0)] },
+        SourceDef { name: "ball2", pos: (0.0, 0.0), room: OUTSIDE, gain: 0.9, z: 1.5, emitters: &[(0.0, 0.0)] },
+        SourceDef { name: "car0", pos: (-18.0, 0.0), room: OUTSIDE, gain: 2.2, z: 1.5, emitters: &[(-18.0, 0.0)] },
+        SourceDef { name: "car1", pos: (-18.0, 0.0), room: OUTSIDE, gain: 2.2, z: 1.5, emitters: &[(-18.0, 0.0)] },
         // The listener's own feet: footstep one-shots placed at ground
         // level under the walker, so steps pick up each room's acoustics
         // (parquet knock + hall reverb) with zero special-casing.
-        SourceDef { name: "feet", pos: (0.0, 0.0), room: OUTSIDE, gain: 1.0, emitters: &[(0.0, 0.0)] },
+        SourceDef { name: "feet", pos: (0.0, 0.0), room: OUTSIDE, gain: 1.0, z: 0.3, emitters: &[(0.0, 0.0)] },
     ]
 }
 

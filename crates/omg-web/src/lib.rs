@@ -21,7 +21,7 @@ use omg_dsp::output::OutputStage;
 use omg_dsp::Renderer;
 use omg_scene::world::WorldSim;
 
-const NSRC: usize = 11;
+const NSRC: usize = 14;
 const MAX_FLAT: usize = 4096; // f32s per param buffer (~450 taps headroom)
 /// State layout: [0..4] pose/room/rt60, then NSRC route-viz entries of
 /// 9 floats each, then the flat Environment block (see omg_dsp::env).
@@ -108,6 +108,12 @@ pub extern "C" fn sim_state_len() -> u32 {
 #[no_mangle]
 pub extern "C" fn sim_env_off() -> u32 {
     ENV_OFF as u32
+}
+
+/// Source count — JS sizes its block loop and meter reads from this.
+#[no_mangle]
+pub extern "C" fn sim_nsrc() -> u32 {
+    NSRC as u32
 }
 
 /// Quality ladder for the sim-side ray budgets (GPU_PLAN.md Track B):

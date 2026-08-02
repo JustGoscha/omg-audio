@@ -256,7 +256,7 @@ class OmgProcessor extends AudioWorkletProcessor {
       // copy each snapshot before the next call — amb_debug reuses the
       // meter buffer
       const mp = this.w.eng_meters_commit();
-      const chans = Array.from(new Float32Array(this.w.memory.buffer, mp, 26));
+      const chans = Array.from(new Float32Array(this.w.memory.buffer, mp, 32));
       const amb = Array.from(new Float32Array(this.w.memory.buffer, this.w.eng_amb_debug(), 12));
       const dbg = Array.from(new Float32Array(this.w.memory.buffer, this.w.eng_debug_render(), 55));
       this.port.postMessage({

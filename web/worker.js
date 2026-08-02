@@ -113,7 +113,8 @@ function tick() {
     gpu.pumpWorldDisc(w, injectWd);
   }
   const blocks = [];
-  for (let i = 0; i < 11; i++) {
+  const nsrc = w.sim_nsrc ? w.sim_nsrc() : 11;
+  for (let i = 0; i < nsrc; i++) {
     const len = w.sim_params_len(i);
     const src = new Float32Array(w.memory.buffer, w.sim_params_ptr(i), len);
     blocks.push(src.slice().buffer);

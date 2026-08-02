@@ -1,0 +1,19 @@
+assets/birds — sources and licenses
+
+bell_big.ogg
+  "Cloche de l'Eglise de Sainte-Marie-des-Batignolles"
+  https://commons.wikimedia.org/wiki/File:Cloche_de_l%27Eglise_de_Sainte-Marie-des-Batignolles.ogg
+  License: CC0 (public domain dedication)
+
+bell_small.ogg
+  "Zajeci zvony kostel 2025"
+  https://commons.wikimedia.org/wiki/File:Zajeci_zvony_kostel_2025.ogg
+  License: CC0 (public domain dedication)
+
+owl_0.wav, owl_1.wav, owl_2.wav
+  Synthesized in-repo (tawny-owl-style call, deterministic; see git
+  history for the generator). No CC0 owl RECORDING could be found on
+  Wikimedia Commons at the time of writing — the available recordings
+  are CC BY-SA (attribution/share-alike). These synthesized files are
+  dedicated to the public domain (CC0); drop-in replace them with real
+  recordings any time.

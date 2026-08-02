@@ -154,10 +154,7 @@ impl WorldSim {
                 .map(|_| (0..rooms.len()).map(|_| Sim::new()).collect())
                 .collect(),
             sim_remotes: defs.iter().map(|_| Sim::new()).collect(),
-            src_z: defs
-                .iter()
-                .map(|d| rooms[d.room].floor_z + walkthrough::SRC_HEIGHT)
-                .collect(),
+            src_z: defs.iter().map(|d| d.z).collect(),
             dynamic_active: [false; walkthrough::DYN_SLOTS],
             dyn_base: defs[defs.len() - walkthrough::DYN_SLOTS..]
                 .iter()
@@ -1520,7 +1517,7 @@ mod tests {
     #[test]
     fn distant_cars_stay_distant_indoors() {
         let mut w = WorldSim::new();
-        const CAR0: usize = 8; // 5 static + ball0..2
+        const CAR0: usize = 11; // 8 placed + ball0..2
         let level_at = |w: &mut WorldSim, lx: f32, ly: f32, lz: f32, car_y: f32| {
             w.set_dynamic(3, -18.0, car_y, 0.7, 1.0);
             // long settle: the reverb estimate EMAs over traced ticks
