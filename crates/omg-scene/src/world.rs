@@ -336,7 +336,9 @@ impl WorldSim {
             let ew = self.early_world.as_mut().unwrap();
             ew.begin_tick(&self.dome.mesh, eye);
             self.extras_buf.clear();
-            self.extras_buf.extend_from_slice(&self.furniture_world);
+            if crate::quality::furniture_on() {
+                self.extras_buf.extend_from_slice(&self.furniture_world);
+            }
             self.late_panels.clear();
             for d in &self.doors {
                 if let Some(b) = aperture_box(d) {
@@ -388,7 +390,7 @@ impl WorldSim {
             // it, which is what makes walking behind a building continuous.
             let bend_floor: Vec<((f32, f32), [f32; NBANDS])> = {
                 let mut m = Vec::new();
-                if self.rooms[st.room].outdoor {
+                if self.rooms[st.room].outdoor && crate::quality::diffraction_on() {
                     let mut pts: Vec<(f32, f32)> = Vec::new();
                     if def.room == st.room {
                         pts.push(def.pos);
@@ -528,6 +530,12 @@ impl WorldSim {
                 // specular set cuts off. Cached per source, refreshed
                 // round-robin on listener/source cell changes.
                 let src0 = Vec3::new(def.pos.0, def.pos.1, src_z);
+                if !crate::quality::diffraction_on() {
+                    // module switch: hard shadows on purpose (A/B); the
+                    // key reset forces a fresh solve on re-enable
+                    self.bend_taps[si].clear();
+                    self.bend_key[si] = [i32::MAX; 5];
+                }
                 let cell = [
                     (eye.x * 2.0) as i32,
                     (eye.y * 2.0) as i32,
@@ -535,7 +543,7 @@ impl WorldSim {
                     (src0.x * 2.0) as i32,
                     (src0.y * 2.0) as i32,
                 ];
-                if self.bend_key[si] != cell && bend_budget > 0 {
+                if crate::quality::diffraction_on() && self.bend_key[si] != cell && bend_budget > 0 {
                     bend_budget -= 1;
                     self.bend_key[si] = cell;
                     let budget =
@@ -986,7 +994,11 @@ impl WorldSim {
                     state.yaw,
                     routed.extra_dist,
                     routed.muffle,
-                    walkthrough::furniture(state.room),
+                    if crate::quality::furniture_on() {
+                        walkthrough::furniture(state.room)
+                    } else {
+                        &[]
+                    },
                 )
             };
             // Door-routed sound radiates FROM the doorway: whatever

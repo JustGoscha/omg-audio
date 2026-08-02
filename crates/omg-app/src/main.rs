@@ -193,6 +193,15 @@ fn main() {
         omg_scene::quality::set_early(mode);
         println!("early reflections: {}", if mode == 1 { "traced (PT)" } else { "ism" });
     }
+    // module A/B switches (parity with the web quality panel)
+    if std::env::var("OMG_DIFFRACTION").map(|v| v == "0").unwrap_or(false) {
+        omg_scene::quality::set_module(0, false);
+        println!("diffraction: off");
+    }
+    if std::env::var("OMG_FURNITURE").map(|v| v == "0").unwrap_or(false) {
+        omg_scene::quality::set_module(1, false);
+        println!("furniture acoustics: off");
+    }
     // OMG_GPU=1: run the stochastic traces on the wgpu kernel; anything
     // else (or no usable adapter) stays on the inline CPU tracer.
     if std::env::var("OMG_GPU").map(|v| v == "1").unwrap_or(false) {

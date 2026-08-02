@@ -614,6 +614,13 @@ pub extern "C" fn sim_set_override(id: u32, value: u32) {
     omg_scene::quality::set_override(id, value);
 }
 
+/// A/B module switches (quality panel): 0 = edge diffraction,
+/// 1 = furniture acoustics. All default on.
+#[no_mangle]
+pub extern "C" fn sim_set_module(id: u32, on: u32) {
+    omg_scene::quality::set_module(id, on != 0);
+}
+
 #[no_mangle]
 pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
     let ctx = sim();

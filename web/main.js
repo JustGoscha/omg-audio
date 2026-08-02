@@ -253,7 +253,7 @@ const QUAL_STAT_TIPS = {
   'sim tick': 'Worker-side cost of one 20 Hz simulation tick. The budget is 50 ms; above ~40 the auto governor sheds a tier.',
   'render load': 'Audio-thread render time as a share of realtime. Above 85% the worklet governor sheds to its floor.',
   gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
-  'late field': 'Where the reverb ray traces run, with the wall-clock cost of the last trace dispatch (incl. readback). GPU runs 8× the ray budget for a fraction of the CPU cost. Click to A/B live — statistically identical sound.',
+  'late field': 'Where the reverb ray traces run, with the wall-clock cost of the last trace dispatch (incl. readback). GPU runs 8× the ray budget for a fraction of the CPU cost — flip it under engine modules → compute.',
   early: 'The ACTIVE early-reflections engine as the sim reports it. traced shows where chain discovery runs and the last dispatch cost. ism and traced sound identical in open space; behind furniture (cathedral pillars, the club bar) only traced shadows.',
 };
 
@@ -310,25 +310,88 @@ function buildQuality() {
     state.qual.rows.push({ s, input, val });
   }
 
-  // early-reflections backend (Track C): live A/B, same tap contract
-  const eh = document.createElement('div');
-  eh.className = 'qsection';
-  eh.textContent = 'early reflections';
-  panel.append(eh);
-  const eseg = document.createElement('div');
-  eseg.className = 'seg';
-  eseg.style.gridTemplateColumns = 'repeat(2, 1fr)';
-  const esegBtns = [['ism', 0], ['traced', 1]].map(([name, mode]) => {
-    const b = document.createElement('button');
-    b.textContent = name;
-    b.title = mode === 0
-      ? 'Image-source method: the exact closed-form solution for empty shoebox rooms. The classic engine.'
-      : 'Path-traced (Track C): rays discover reflection chains, each solved exactly by mirror reconstruction. Identical here; built for rooms with things in them.';
-    b.onclick = () => { state.setEarly(mode); b.blur(); };
-    eseg.append(b);
-    return { mode, b };
-  });
-  panel.append(eseg);
+  // engine modules: every live-switchable variant of the engine, one
+  // labeled row each — flip any of them mid-play for an instant A/B
+  const mh = document.createElement('div');
+  mh.className = 'qsection';
+  mh.textContent = 'engine modules';
+  panel.append(mh);
+  const switchRows = [];
+  const mkSwitch = (label, tip, options) => {
+    const row = document.createElement('div');
+    row.className = 'qrow qmod';
+    const lab = document.createElement('label');
+    lab.innerHTML = `<span>${label}</span>`;
+    lab.dataset.tip = tip;
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    seg.style.gridTemplateColumns = `repeat(${options.length}, 1fr)`;
+    const btns = options.map((o) => {
+      const b = document.createElement('button');
+      b.textContent = o.name;
+      b.title = o.tip;
+      b.onclick = () => { o.set(); b.blur(); };
+      seg.append(b);
+      return { o, b };
+    });
+    row.append(lab, seg);
+    panel.append(row);
+    switchRows.push(btns);
+  };
+  const mods = () => state.modules || [true, true];
+
+  mkSwitch('early refl',
+    'Which engine produces the discrete early echoes. Both feed the identical tap contract downstream — switch mid-play, the renderer crossfades.',
+    [
+      { name: 'ism',
+        tip: 'Image-source method: the exact closed-form solution for empty shoebox rooms, routed through doorway portals. The classic engine.',
+        set: () => state.setEarly?.(0),
+        active: () => !(state.earlyMode || 0) },
+      { name: 'traced',
+        tip: 'World-mesh path tracing (C6): one listener context over the whole map — doorways are just holes the solved paths thread, walls pay mass law, furniture shadows. No portal code anywhere.',
+        set: () => state.setEarly?.(1),
+        active: () => !!state.earlyMode },
+    ]);
+
+  mkSwitch('compute',
+    'Where the ray workloads run. GPU dispatches the same WGSL kernels the native build uses — late-field traces run 8× denser for a fraction of the CPU cost. Statistically identical sound; only variance changes.',
+    [
+      { name: 'cpu',
+        tip: 'Everything in wasm on the worker thread. The fallback and the oracle the GPU kernels are parity-tested against.',
+        set: () => state.setGpu?.(false),
+        active: () => !state.debug.gpu },
+      { name: 'gpu',
+        tip: 'WebGPU compute: late-field reverb traces (per-room and world-mesh) + chain discovery. Requires Chrome with WebGPU; greyed out when unavailable.',
+        set: () => { if (state.debug.gpuAvail) state.setGpu?.(true); },
+        active: () => !!state.debug.gpu,
+        avail: () => !!state.debug.gpuAvail },
+    ]);
+
+  mkSwitch('diffraction',
+    'Knife-edge bending around door jambs, building corners and roof lines (plus the outdoor occlusion floors). This is what keeps a source audible — bass-tilted, from the edge’s direction — when you lose the sight line.',
+    [
+      { name: 'on',
+        tip: 'Physical: shadow zones stay continuous, blocked sources bend around the nearest edge.',
+        set: () => state.setModule?.(0, true),
+        active: () => mods()[0] },
+      { name: 'off',
+        tip: 'Hard shadows: step behind a wall and the source cuts to wall-transmission only. Instructive A/B — this is what most game audio sounds like.',
+        set: () => state.setModule?.(0, false),
+        active: () => !mods()[0] },
+    ]);
+
+  mkSwitch('furniture',
+    'Whether furniture (sofas, tables, pillars, the club bar) participates acoustically: occluding sight lines, transmitting per material, shadowing reflections. Geometry always renders; this is ears-only.',
+    [
+      { name: 'on',
+        tip: 'Furniture occludes and filters — crouch behind the club bar and the PA dulls.',
+        set: () => state.setModule?.(1, true),
+        active: () => mods()[1] },
+      { name: 'off',
+        tip: 'Acoustically transparent furniture: sources sound identical through a bookshelf. The empty-shoebox assumption, kept for A/B.',
+        set: () => state.setModule?.(1, false),
+        active: () => !mods()[1] },
+    ]);
 
   const stats = document.createElement('div');
   stats.className = 'qstats';
@@ -337,12 +400,6 @@ function buildQuality() {
     c.className = 'cell';
     c.title = QUAL_STAT_TIPS[k];
     c.innerHTML = `<span class="k">${k}</span><span class="v">–</span>`;
-    if (k === 'late field') {
-      c.style.cursor = 'pointer';
-      c.onclick = () => {
-        if (state.debug.gpuAvail && state.setGpu) state.setGpu(!state.debug.gpu);
-      };
-    }
     stats.append(c);
     return c.querySelector('.v');
   });
@@ -366,7 +423,12 @@ function buildQuality() {
     if (panel.hidden) return;
     const q = state.quality || { auto: true, tier: 0, mode: 'auto' };
     for (const { mode, b } of segBtns) b.classList.toggle('on', q.mode === mode);
-    for (const { mode, b } of esegBtns) b.classList.toggle('on', (state.earlyMode || 0) === mode);
+    for (const btns of switchRows) {
+      for (const { o, b } of btns) {
+        b.classList.toggle('on', !!o.active());
+        if (o.avail) b.disabled = !o.avail();
+      }
+    }
     for (const { s, input, val } of state.qual.rows) {
       let v; let pinned;
       if (s.audio) {
@@ -393,8 +455,8 @@ function buildQuality() {
     cells[2].textContent = `${state.debug.gaps || 0}`;
     cells[2].classList.toggle('hot', (state.debug.gaps || 0) > 0);
     cells[3].textContent = state.debug.gpu
-      ? `gpu · ${(state.debug.gpuMs || 0).toFixed(1)}ms ⇄`
-      : (state.debug.gpuAvail ? 'cpu ⇄' : 'cpu');
+      ? `gpu · ${(state.debug.gpuMs || 0).toFixed(1)}ms`
+      : 'cpu';
     cells[4].textContent = !state.debug.early ? 'ism'
       : state.debug.gpu && state.debug.ptN
         ? `traced · gpu ${(state.debug.ptMs || 0).toFixed(1)}ms` : 'traced · cpu';
@@ -1514,12 +1576,20 @@ async function startAudio() {
     state.setOverride = (id, value) => worker.postMessage({ type: 'override', id, value });
     state.setAudioManual = (on, points, ceiling) =>
       node.port.postMessage({ type: 'manual', on, points, ceiling });
-    state.setGpu = (on) => worker.postMessage({ type: 'gpu', on });
+    state.setGpu = (on) => {
+      try { localStorage.setItem('omg-gpu', on ? '1' : '0'); } catch (_) {}
+      worker.postMessage({ type: 'gpu', on });
+    };
     state.setDebugRays = (on) => worker.postMessage({ type: 'debug', on });
     state.setEarly = (mode) => {
       state.earlyMode = mode;
       try { localStorage.setItem('omg-early', mode ? 'traced' : 'ism'); } catch (_) {}
       worker.postMessage({ type: 'early', mode });
+    };
+    state.setModule = (id, on) => {
+      (state.modules = state.modules || [true, true])[id] = on;
+      try { localStorage.setItem('omg-mod' + id, on ? '1' : '0'); } catch (_) {}
+      worker.postMessage({ type: 'module', id, on });
     };
     // a real setting: ?early=traced|ism wins, else the remembered
     // choice, else ism (the classic engine)
@@ -1532,6 +1602,16 @@ async function startAudio() {
           : stored === 'traced' ? 1 : 0;
       state.earlyMode = pick;
       if (pick) worker.postMessage({ type: 'early', mode: pick });
+      // remembered module switches (default on)
+      state.modules = [true, true];
+      for (const id of [0, 1]) {
+        let s = null;
+        try { s = localStorage.getItem('omg-mod' + id); } catch (_) {}
+        if (s === '0') {
+          state.modules[id] = false;
+          worker.postMessage({ type: 'module', id, on: false });
+        }
+      }
     }
   }
   worker.onmessage = (e) => {
@@ -1542,6 +1622,14 @@ async function startAudio() {
       + (e.data.tickMs || 0) * 0.1; // decaying peak-ish: spikes stay visible
     state.debug.gpu = e.data.gpu || 0;
     state.debug.gpuAvail = e.data.gpuAvail || 0;
+    // remembered compute choice, applied once the driver reports in
+    // (posting earlier would race the worker's own gpu init)
+    if (!state.gpuPrefDone && state.debug.gpuAvail) {
+      state.gpuPrefDone = true;
+      let s = null;
+      try { s = localStorage.getItem('omg-gpu'); } catch (_) {}
+      if (s === '0' && state.debug.gpu) worker.postMessage({ type: 'gpu', on: false });
+    }
     state.debug.gpuMs = e.data.gpuMs || 0;
     state.debug.gpuDuty = e.data.gpuDuty || 0;
     state.debug.early = e.data.early || 0;

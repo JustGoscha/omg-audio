@@ -77,6 +77,27 @@ pub fn early() -> u32 {
     EARLY.load(Ordering::Relaxed)
 }
 
+/// A/B module switches (all default ON) — not quality levers but whole
+/// engine features, toggleable live for listening comparisons.
+/// Ids: 0 = edge diffraction (knife-edge bend taps around jambs and
+/// building corners + the outdoor occlusion floors), 1 = furniture
+/// acoustics (occluder boxes shadowing/transmitting in the early solve).
+static MODULES: [AtomicU32; 2] = [AtomicU32::new(1), AtomicU32::new(1)];
+
+pub fn set_module(id: u32, on: bool) {
+    if let Some(m) = MODULES.get(id as usize) {
+        m.store(on as u32, Ordering::Relaxed);
+    }
+}
+
+pub fn diffraction_on() -> bool {
+    MODULES[0].load(Ordering::Relaxed) != 0
+}
+
+pub fn furniture_on() -> bool {
+    MODULES[1].load(Ordering::Relaxed) != 0
+}
+
 /// Manually pin one lever (see `OVERRIDES` for ids); `value` 0 hands the
 /// lever back to the tier. Out-of-range ids are ignored.
 pub fn set_override(id: u32, value: u32) {

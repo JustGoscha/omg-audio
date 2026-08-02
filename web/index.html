@@ -94,6 +94,10 @@
   #quality .seg button:last-child { border-right: 0; }
   #quality .seg button:hover { color: var(--ink); }
   #quality .seg button.on { background: var(--ink); color: #111; }
+  #quality .seg button:disabled { opacity: .3; cursor: default; }
+  #quality .seg button:disabled:hover { color: var(--dim); }
+  #quality .qrow.qmod { grid-template-columns: 92px 1fr; }
+  #quality .qrow.qmod .seg { margin: 0; }
   #quality .qrow { display: grid; grid-template-columns: 92px 1fr 64px;
     align-items: center; gap: 10px; margin: 8px 0; }
   #quality .qrow label { color: var(--dim); font-size: 11px; position: relative;

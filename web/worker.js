@@ -43,6 +43,9 @@ onmessage = async (e) => {
   } else if (m.type === 'early') {
     // early-reflections backend: 0 = ism, 1 = traced (PT)
     if (w) w.sim_set_early(m.mode);
+  } else if (m.type === 'module') {
+    // engine A/B switches: 0 = diffraction, 1 = furniture acoustics
+    if (w && w.sim_set_module) w.sim_set_module(m.id, m.on ? 1 : 0);
   } else if (m.type === 'gpu') {
     // live A/B toggle; only meaningful when the driver initialized
     if (w && gpu) {
