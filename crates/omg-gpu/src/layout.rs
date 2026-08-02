@@ -82,10 +82,10 @@ impl GpuTraceJob {
 
 /// Bump on ANY change to the mesh-kernel structs here or in
 /// trace_mesh.wgsl — the web driver checks it like LAYOUT_VERSION.
-pub const MESH_LAYOUT_VERSION: u32 = 1;
-/// Panel slots in the panels buffer (door leaves + panes; the demo
-/// world has ~17 apertures).
-pub const MAX_PANELS: usize = 32;
+pub const MESH_LAYOUT_VERSION: u32 = 2;
+/// Panel slots in the panels buffer (door leaves + panes + the late
+/// field's significant furniture).
+pub const MAX_PANELS: usize = 64;
 
 /// One BVH node, exactly as `Mesh` traverses it. WGSL: bmin @0, a @12,
 /// bmax @16, b @28 — 32 B.

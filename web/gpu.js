@@ -49,7 +49,7 @@ export async function initGpu(wasm) {
   // the in-wasm CPU tracer, exactly as without GPU.
   let mesh = null;
   try {
-    if (wasm.sim_wlate_version && wasm.sim_wlate_version() === 1) {
+    if (wasm.sim_wlate_version && wasm.sim_wlate_version() === 2) {
       const code = await (await fetch('../crates/omg-gpu/shaders/trace_mesh.wgsl')).text();
       const pipe = device.createComputePipeline({
         layout: 'auto',
@@ -75,7 +75,7 @@ export async function initGpu(wasm) {
         prims: staticBuf(wasm.sim_mesh_prims_len, wasm.sim_mesh_prims_ptr),
         mats: staticBuf(wasm.sim_mesh_mats_len, wasm.sim_mesh_mats_ptr),
         job: device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-        panels: device.createBuffer({ size: 32 * 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+        panels: device.createBuffer({ size: 64 * 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
       };
       // K3: chain discovery over the same BVH buffers
       const discCode = await (await fetch('../crates/omg-gpu/shaders/discover_mesh.wgsl')).text();
@@ -92,6 +92,22 @@ export async function initGpu(wasm) {
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
       });
       mesh.discRead = device.createBuffer({ size: 4 + DISC_CAP * 8, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      // furniture overlay boxes (static, like the BVH); ≥1 word so the
+      // binding is never zero-sized
+      const nFurnWords = wasm.sim_wdisc_boxes_len ? wasm.sim_wdisc_boxes_len() : 0;
+      mesh.discNBoxes = nFurnWords / 8;
+      mesh.discBase = wasm.sim_wdisc_base ? wasm.sim_wdisc_base() : 0;
+      mesh.discBoxes = device.createBuffer({
+        size: Math.max(32, nFurnWords * 4),
+        usage: GPUBufferUsage.STORAGE,
+        mappedAtCreation: true,
+      });
+      if (nFurnWords) {
+        new Uint32Array(mesh.discBoxes.getMappedRange()).set(
+          new Uint32Array(wasm.memory.buffer, wasm.sim_wdisc_boxes_ptr(), nFurnWords),
+        );
+      }
+      mesh.discBoxes.unmap();
       mesh.discBind = device.createBindGroup({
         layout: mesh.discPipe.getBindGroupLayout(0),
         entries: [
@@ -100,6 +116,7 @@ export async function initGpu(wasm) {
           { binding: 2, resource: { buffer: mesh.prims } },
           { binding: 3, resource: { buffer: mesh.discChains } },
           { binding: 4, resource: { buffer: mesh.discCount } },
+          { binding: 5, resource: { buffer: mesh.discBoxes } },
         ],
       });
       console.info('[gpu] world mesh uploaded:',
@@ -307,6 +324,8 @@ export async function initGpu(wasm) {
       const u32 = new Uint32Array(buf);
       u32[0] = DISC_RAYS;
       u32[1] = jobF32[3]; // rot
+      u32[2] = jobF32[4] ? mesh.discNBoxes : 0; // furniture switch
+      u32[3] = mesh.discBase;
       f32[4] = jobF32[0]; f32[5] = jobF32[1]; f32[6] = jobF32[2]; // listener
       device.queue.writeBuffer(mesh.discJob, 0, buf);
       const enc = device.createCommandEncoder();
@@ -392,7 +411,7 @@ export async function initGpu(wasm) {
       const jobs = new Float32Array(wasmExports.memory.buffer, wasmExports.sim_pt_jobs_ptr(), n);
       ptDispatch(jobs[0], jobs.slice(0, 8), injectPt);
     },
-    /// World-late jobs (K2): fixed 394-f32 stride — id, n_rays, seed,
+    /// World-late jobs (K2): fixed 778-f32 stride — id, n_rays, seed,
     /// source, listener, n_panels, then panels laid out exactly like the
     /// kernel's 48-byte Panel struct (copied verbatim). One in flight;
     /// results ride the SAME inject path as the box traces.
@@ -402,7 +421,7 @@ export async function initGpu(wasm) {
       if (!n) return;
       const jobs = new Float32Array(wasmExports.memory.buffer, wasmExports.sim_wlate_jobs_ptr(), n);
       // one slot: take the FIRST job; the others' gates re-fire
-      const nPanels = Math.min(jobs[9], 32);
+      const nPanels = Math.min(jobs[9], 64);
       const buf = new ArrayBuffer(64);
       const f32 = new Float32Array(buf);
       const u32 = new Uint32Array(buf);
@@ -420,7 +439,7 @@ export async function initGpu(wasm) {
       if (!mesh || mesh.discBusy || !wasmExports.sim_wdisc_jobs_len) return;
       const n = wasmExports.sim_wdisc_jobs_len();
       if (!n) return;
-      const job = new Float32Array(wasmExports.memory.buffer, wasmExports.sim_wdisc_jobs_ptr(), 4).slice();
+      const job = new Float32Array(wasmExports.memory.buffer, wasmExports.sim_wdisc_jobs_ptr(), 5).slice();
       discDispatch(job, injectWd);
     },
     /// True when the world-mesh kernel compiled and the BVH uploaded —

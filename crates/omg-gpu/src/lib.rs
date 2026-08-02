@@ -193,6 +193,7 @@ pub struct GpuMeshTracer {
     disc_count: wgpu::Buffer,
     disc_read: wgpu::Buffer,
     disc_bind: wgpu::BindGroup,
+    disc_n_boxes: u32,
 }
 
 /// Chain slots in the discovery output list (must match
@@ -204,11 +205,14 @@ pub const DISC_CAP: usize = 16384;
 pub const DISC_RAYS: u32 = 4096;
 
 impl GpuMeshTracer {
-    pub fn new(mesh: &Mesh) -> Option<Self> {
-        pollster::block_on(Self::new_async(mesh))
+    /// `boxes`: overlay boxes (furniture) the DISCOVERY kernel reflects
+    /// off, ids `base + box·6 + face` where base is the mesh's surface
+    /// count — must match the SurfaceTable the caller solves against.
+    pub fn new(mesh: &Mesh, boxes: &[(Vec3, Vec3)]) -> Option<Self> {
+        pollster::block_on(Self::new_async(mesh, boxes))
     }
 
-    async fn new_async(mesh: &Mesh) -> Option<Self> {
+    async fn new_async(mesh: &Mesh, boxes: &[(Vec3, Vec3)]) -> Option<Self> {
         let instance = wgpu::Instance::default();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -342,6 +346,20 @@ impl GpuMeshTracer {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // overlay boxes (furniture) for discovery — static like the BVH
+        let obox_words: Vec<f32> = if boxes.is_empty() {
+            vec![0.0; 8]
+        } else {
+            boxes
+                .iter()
+                .flat_map(|(mn, mx)| [mn.x, mn.y, mn.z, 0.0, mx.x, mx.y, mx.z, 0.0])
+                .collect()
+        };
+        let obox_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("disc-oboxes"),
+            contents: bytemuck::cast_slice(&obox_words),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
         let disc_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("discover_mesh"),
             layout: &disc_pipeline.get_bind_group_layout(0),
@@ -351,8 +369,10 @@ impl GpuMeshTracer {
                 wgpu::BindGroupEntry { binding: 2, resource: prims_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: disc_chains.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: disc_count.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: obox_buf.as_entire_binding() },
             ],
         });
+        let disc_n_boxes = boxes.len() as u32;
 
         Some(Self {
             device,
@@ -371,6 +391,7 @@ impl GpuMeshTracer {
             disc_count,
             disc_read,
             disc_bind,
+            disc_n_boxes,
         })
     }
 
@@ -382,6 +403,8 @@ impl GpuMeshTracer {
         listener: Vec3,
         rot: u32,
         n_rays: u32,
+        base: u16,
+        furniture_on: bool,
         out: &mut Vec<omg_core::pt_mesh::MChain>,
     ) {
         #[repr(C)]
@@ -389,16 +412,16 @@ impl GpuMeshTracer {
         struct Job {
             n_rays: u32,
             rot: u32,
-            _p0: u32,
-            _p1: u32,
+            n_boxes: u32,
+            base: u32,
             listener: [f32; 3],
             _p2: u32,
         }
         let job = Job {
             n_rays,
             rot,
-            _p0: 0,
-            _p1: 0,
+            n_boxes: if furniture_on { self.disc_n_boxes } else { 0 },
+            base: base as u32,
             listener: [listener.x, listener.y, listener.z],
             _p2: 0,
         };
@@ -522,22 +545,31 @@ pub struct GpuWorldLateBackend {
 /// late backend's device and BVH buffers.
 pub struct GpuWorldDiscovery {
     tracer: std::sync::Arc<GpuMeshTracer>,
+    base: u16,
 }
 
 const WORLD_RAY_MULT: u32 = 8;
 const WORLD_RAY_CAP: u32 = 8192;
 
 impl GpuWorldLateBackend {
-    pub fn new(mesh: &Mesh) -> Option<Self> {
-        Some(Self { tracer: std::sync::Arc::new(GpuMeshTracer::new(mesh)?), seed: 0x5EED_C6D1 })
+    pub fn new(mesh: &Mesh, boxes: &[(Vec3, Vec3)]) -> Option<Self> {
+        Some(Self {
+            tracer: std::sync::Arc::new(GpuMeshTracer::new(mesh, boxes)?),
+            seed: 0x5EED_C6D1,
+        })
     }
 
-    /// Both world backends over ONE device and one BVH upload.
-    pub fn with_discovery(mesh: &Mesh) -> Option<(Self, GpuWorldDiscovery)> {
-        let tracer = std::sync::Arc::new(GpuMeshTracer::new(mesh)?);
+    /// Both world backends over ONE device and one BVH upload. `base`
+    /// is the mesh's authored-surface count (SurfaceTable::base_overlay).
+    pub fn with_discovery(
+        mesh: &Mesh,
+        boxes: &[(Vec3, Vec3)],
+        base: u16,
+    ) -> Option<(Self, GpuWorldDiscovery)> {
+        let tracer = std::sync::Arc::new(GpuMeshTracer::new(mesh, boxes)?);
         Some((
             Self { tracer: tracer.clone(), seed: 0x5EED_C6D1 },
-            GpuWorldDiscovery { tracer },
+            GpuWorldDiscovery { tracer, base },
         ))
     }
 }
@@ -549,7 +581,8 @@ impl omg_scene::early_world::WorldDiscovery for GpuWorldDiscovery {
         rot: u32,
         out: &mut Vec<omg_core::pt_mesh::MChain>,
     ) -> bool {
-        self.tracer.discover(listener, rot, DISC_RAYS, out);
+        let furn = omg_scene::quality::furniture_on();
+        self.tracer.discover(listener, rot, DISC_RAYS, self.base, furn, out);
         true
     }
 }

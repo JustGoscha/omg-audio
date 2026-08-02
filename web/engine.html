@@ -370,10 +370,10 @@
   <div class="body">
     <h2>Furniture has ears-side consequences</h2>
     <p class="deck">The room isn't empty, so the engine stopped pretending it is.</p>
-    <p>Sofas, seminar tables, cathedral pillars, the club's bar — each is an acoustic box with per-band transmission. Every solved path leg checks what it passes through: a soft sofa eats treble and lets bass through, a bookshelf is nearly a wall, a wooden table barely matters. The <em>reflection</em> field feels them too, because a bounce whose leg crosses an occluder is attenuated like any other.</p>
+    <p>Sofas, seminar tables, cathedral pillars, the club's bar — each is an acoustic box with a full material: per-band transmission, absorption, scattering. Every solved path leg checks what it passes through: a soft sofa eats treble and lets bass through, a bookshelf is nearly a wall. Significant pieces are also <strong>reflectors</strong> — their faces enter the surface table, discovery bounces off them, and a table-top slap is solved with the same machine-exact mirror as a wall bounce. And they shape the <strong>late field</strong>: reverb rays bounce off furniture with its absorption, so a furnished room measurably decays faster and more diffusely than the empty shell.</p>
     <p>This is precisely where image sources broke and tracing wins on principle: the ray budget is constant no matter how cluttered the room is, while mirror enumeration explodes. It's also the second live switch — <code>furniture: off</code> makes every object acoustically transparent, which is the empty-shoebox assumption you can now hear as an absence.</p>
     <div class="measured"><span class="lbl">measured · module_switches gate</span>
-      piano heard through the living-room bookshelf: <b>0.91</b> occluded vs <b>4.41</b> transparent — the shelf costs <b>~14 dB</b>, and re-enabling restores the exact value
+      piano through the living-room bookshelf: <b>~14 dB</b> of shadow, restored exactly on toggle · a table-top bounce solves to <b>10⁻⁵ s</b> of the analytic mirror · furnished living-room RT60 <b>0.43 s</b> vs empty <b>0.80 s</b> — the sofa halves the decay
     </div>
   </div>
 </section>

@@ -34,10 +34,20 @@ struct Prim {
 struct Job {
     n_rays: u32,
     rot: u32,
-    _p0: u32,
-    _p1: u32,
+    n_boxes: u32,
+    base: u32, // first overlay-face surface id
     listener: vec3<f32>,
     _p2: u32,
+}
+
+// Overlay box (furniture): faces are reflectors with pseudo surface
+// ids base + box*6 + face (face = axis*2 + min/max), matching
+// SurfaceTable::append_box.
+struct OBox {
+    bmin: vec3<f32>,
+    _p0: u32,
+    bmax: vec3<f32>,
+    _p1: u32,
 }
 
 @group(0) @binding(0) var<uniform> job: Job;
@@ -45,6 +55,7 @@ struct Job {
 @group(0) @binding(2) var<storage, read> prims: array<Prim>;
 @group(0) @binding(3) var<storage, read_write> chains: array<vec2<u32>>;
 @group(0) @binding(4) var<storage, read_write> count: atomic<u32>;
+@group(0) @binding(5) var<storage, read> oboxes: array<OBox>;
 
 var<private> rng_state: u32;
 
@@ -77,11 +88,15 @@ fn ray_tri(a: vec3<f32>, e1: vec3<f32>, e2: vec3<f32>, o: vec3<f32>, d: vec3<f32
 struct Hit {
     t: f32,
     prim: u32,
+    // overlay-face result: 0xFFFFFFFF = none, else the pseudo surface id
+    face_sid: u32,
+    normal: vec3<f32>,
 }
 
 fn raycast(o: vec3<f32>, d: vec3<f32>) -> Hit {
     var h: Hit;
     h.t = T_MISS;
+    h.face_sid = 0xFFFFFFFFu;
     let dd = select(d, vec3<f32>(1e-12), abs(d) < vec3<f32>(1e-12));
     let inv_d = vec3<f32>(1.0) / dd;
     var stack: array<u32, 64>;
@@ -111,6 +126,29 @@ fn raycast(o: vec3<f32>, d: vec3<f32>) -> Hit {
             sp += 2u;
         }
     }
+    // overlay boxes: slab entry, nearest wins over the mesh hit
+    for (var i = 0u; i < job.n_boxes; i++) {
+        let bx = oboxes[i];
+        var t0 = 1e-4;
+        var t1 = h.t;
+        var axis = 3u;
+        for (var a = 0u; a < 3u; a++) {
+            var ta = (bx.bmin[a] - o[a]) * inv_d[a];
+            var tb = (bx.bmax[a] - o[a]) * inv_d[a];
+            if (ta > tb) { let tmp = ta; ta = tb; tb = tmp; }
+            if (ta > t0) { t0 = ta; axis = a; }
+            t1 = min(t1, tb);
+            if (t0 > t1) { t0 = T_MISS; break; }
+        }
+        if (t0 < h.t && axis < 3u) {
+            h.t = t0;
+            let face = axis * 2u + select(1u, 0u, d[axis] > 0.0);
+            h.face_sid = job.base + i * 6u + face;
+            var n = vec3<f32>(0.0);
+            n[axis] = select(1.0, -1.0, d[axis] > 0.0);
+            h.normal = n;
+        }
+    }
     return h;
 }
 
@@ -134,8 +172,16 @@ fn discover(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var k = 0u; k < M_MAX_ORDER; k++) {
         let h = raycast(pos, dir);
         if (h.t >= T_MISS || h.t <= 1e-4 || h.t > 200.0) { break; }
-        let p = prims[h.prim];
-        c[k] = p.surf;
+        var n: vec3<f32>;
+        if (h.face_sid != 0xFFFFFFFFu) {
+            c[k] = h.face_sid;
+            n = h.normal;
+        } else {
+            let p = prims[h.prim];
+            c[k] = p.surf;
+            n = normalize(cross(p.e1, p.e2));
+            if (dot(n, dir) > 0.0) { n = -n; }
+        }
         let idx = atomicAdd(&count, 1u);
         if (idx < CAP) {
             chains[idx] = vec2<u32>(
@@ -144,8 +190,6 @@ fn discover(@builtin(global_invocation_id) gid: vec3<u32>) {
             );
         }
         pos = pos + dir * h.t;
-        var n = normalize(cross(p.e1, p.e2));
-        if (dot(n, dir) > 0.0) { n = -n; }
         dir = dir - n * (2.0 * dot(dir, n));
         pos = pos + n * 1e-4;
     }

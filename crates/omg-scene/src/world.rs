@@ -62,6 +62,10 @@ pub struct WorldSim {
     early_world: Option<WorldEarly>,
     /// Furniture in world coordinates (authored per-room, lifted once).
     furniture_world: Vec<Aabb>,
+    /// The same pieces with their FULL material (absorption, scattering,
+    /// transmission) — overlay faces for the early solver, panels for
+    /// the late tracer.
+    furn_full: Vec<(Vec3, Vec3, Material)>,
     /// Per-tick transient blockers: furniture + glass panes + door leaves.
     extras_buf: Vec<Aabb>,
     recs_buf: Vec<omg_core::pt_mesh::MeshRecord>,
@@ -193,6 +197,19 @@ impl WorldSim {
                     for a in walkthrough::furniture(ri) {
                         let o = Vec3::new(r.min.0, r.min.1, r.floor_z);
                         f.push(Aabb { min: a.min + o, max: a.max + o, transmission: a.transmission });
+                    }
+                }
+                f
+            },
+            furn_full: {
+                let mut f = Vec::new();
+                for (ri, r) in rooms.iter().enumerate() {
+                    let boxes = walkthrough::furniture(ri);
+                    let mats = walkthrough::furniture_mats(ri);
+                    debug_assert_eq!(boxes.len(), mats.len());
+                    for (a, m) in boxes.iter().zip(mats) {
+                        let o = Vec3::new(r.min.0, r.min.1, r.floor_z);
+                        f.push((a.min + o, a.max + o, *m));
                     }
                 }
                 f
@@ -331,7 +348,18 @@ impl WorldSim {
         let eye = Vec3::new(bs.raw.0, bs.raw.1, bs.raw.2);
         if traced {
             if self.early_world.is_none() {
-                self.early_world = Some(WorldEarly::new(&self.dome.mesh));
+                // reflector faces only for significant pieces — chairs
+                // occlude via extras but don't reflect (cache pressure)
+                let sig: Vec<_> = self
+                    .furn_full
+                    .iter()
+                    .filter(|(mn, mx, _)| {
+                        let d = *mx - *mn;
+                        d.x * d.y * d.z > walkthrough::FURN_REFLECTOR_MIN_VOL
+                    })
+                    .cloned()
+                    .collect();
+                self.early_world = Some(WorldEarly::new(&self.dome.mesh, &sig));
             }
             let ew = self.early_world.as_mut().unwrap();
             ew.begin_tick(&self.dome.mesh, eye);
@@ -347,6 +375,19 @@ impl WorldSim {
                     let m = if d.glass { Material::CONCRETE } else { Material::WOOD_PANEL };
                     self.late_panels.push((b.min, b.max, m));
                     self.extras_buf.push(b);
+                }
+            }
+            // furniture in the LATE field: rays bounce off it with its
+            // real absorption/scattering, so furnished rooms decay
+            // faster and more diffusely. Only pieces big enough to
+            // matter statistically (chairs shadow the early field but
+            // don't bend a decay curve).
+            if crate::quality::furniture_on() {
+                for (mn, mx, m) in &self.furn_full {
+                    let d = *mx - *mn;
+                    if d.x * d.y * d.z > walkthrough::FURN_REFLECTOR_MIN_VOL {
+                        self.late_panels.push((*mn, *mx, *m));
+                    }
                 }
             }
         }

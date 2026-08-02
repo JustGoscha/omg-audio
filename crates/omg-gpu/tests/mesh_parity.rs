@@ -35,7 +35,7 @@ fn db(v: f32) -> f32 {
 #[test]
 fn mesh_kernel_matches_cpu_tracer() {
     let mesh = holed_room();
-    let Some(gpu) = omg_gpu::GpuMeshTracer::new(&mesh) else {
+    let Some(gpu) = omg_gpu::GpuMeshTracer::new(&mesh, &[]) else {
         eprintln!("SKIP mesh_kernel_matches_cpu_tracer: no wgpu adapter");
         return;
     };
@@ -79,7 +79,7 @@ fn mesh_kernel_matches_cpu_tracer() {
 #[test]
 fn panel_over_the_hole_seals_it() {
     let mesh = holed_room();
-    let Some(gpu) = omg_gpu::GpuMeshTracer::new(&mesh) else {
+    let Some(gpu) = omg_gpu::GpuMeshTracer::new(&mesh, &[]) else {
         eprintln!("SKIP panel_over_the_hole_seals_it: no wgpu adapter");
         return;
     };
@@ -114,7 +114,7 @@ fn discovery_kernel_finds_the_cpu_chain_set() {
     let rooms = omg_scene::walkthrough::rooms();
     let doors = omg_scene::walkthrough::doors();
     let (mesh, _) = omg_scene::dome::build_world_mesh(&rooms, &doors);
-    let Some(gpu) = omg_gpu::GpuMeshTracer::new(&mesh) else {
+    let Some(gpu) = omg_gpu::GpuMeshTracer::new(&mesh, &[]) else {
         eprintln!("SKIP discovery_kernel_finds_the_cpu_chain_set: no wgpu adapter");
         return;
     };
@@ -125,13 +125,13 @@ fn discovery_kernel_finds_the_cpu_chain_set() {
     };
     let mut cpu: Vec<MChain> = Vec::new();
     for rot in 0..8 {
-        mesh_chains(&mesh, lis, 768, rot, &mut cpu);
+        mesh_chains(&mesh, &[], 0, lis, 768, rot, &mut cpu);
     }
     dedup(&mut cpu);
     let mut gpu_c: Vec<MChain> = Vec::new();
     let t0 = std::time::Instant::now();
     for rot in 0..8u32 {
-        gpu.discover(lis, rot, omg_gpu::DISC_RAYS, &mut gpu_c);
+        gpu.discover(lis, rot, omg_gpu::DISC_RAYS, 0, false, &mut gpu_c);
     }
     let ms = t0.elapsed().as_secs_f64() * 125.0;
     dedup(&mut gpu_c);
@@ -155,7 +155,7 @@ fn world_trace_speed_probe() {
     let rooms = omg_scene::walkthrough::rooms();
     let doors = omg_scene::walkthrough::doors();
     let (mesh, _) = omg_scene::dome::build_world_mesh(&rooms, &doors);
-    let Some(gpu) = omg_gpu::GpuMeshTracer::new(&mesh) else {
+    let Some(gpu) = omg_gpu::GpuMeshTracer::new(&mesh, &[]) else {
         eprintln!("SKIP world_trace_speed_probe: no wgpu adapter");
         return;
     };

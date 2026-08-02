@@ -219,7 +219,28 @@ fn main() {
                 let rooms = omg_scene::walkthrough::rooms();
                 let doors = omg_scene::walkthrough::doors();
                 let (mesh, _) = omg_scene::dome::build_world_mesh(&rooms, &doors);
-                if let Some((w, disc)) = omg_gpu::GpuWorldLateBackend::with_discovery(&mesh) {
+                let base = omg_core::pt_mesh::SurfaceTable::build(&mesh).base_overlay;
+                let boxes: Vec<_> = rooms
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(ri, r)| {
+                        omg_scene::walkthrough::furniture(ri)
+                            .iter()
+                            .filter(|a| {
+                                let d = a.max - a.min;
+                                d.x * d.y * d.z
+                                    > omg_scene::walkthrough::FURN_REFLECTOR_MIN_VOL
+                            })
+                            .map(move |a| {
+                                let o =
+                                    omg_core::vec3::Vec3::new(r.min.0, r.min.1, r.floor_z);
+                                (a.min + o, a.max + o)
+                            })
+                    })
+                    .collect();
+                if let Some((w, disc)) =
+                    omg_gpu::GpuWorldLateBackend::with_discovery(&mesh, &boxes, base)
+                {
                     omg_scene::late::set_world_late_backend(Box::new(w));
                     omg_scene::early_world::set_world_discovery(Box::new(disc));
                     println!("world late field + discovery: GPU (wgpu K2+K3)");

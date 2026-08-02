@@ -553,6 +553,74 @@ pub fn furniture(room: usize) -> &'static [omg_core::pt::Aabb] {
     }
 }
 
+/// Full acoustic identity of each furniture piece, PARALLEL to
+/// `furniture(room)` row for row (a gate asserts the lengths match).
+/// Transmission repeats the boxy tables; absorption/scattering are what
+/// the late tracer bounces with and what the early solver reflects
+/// with — a sofa eats the tail, a bookshelf diffuses it, a table top
+/// slaps back.
+/// Pieces below this volume (m³) don't get specular reflector faces or
+/// late-field panels — a chair shadows the early field (extras) but
+/// doesn't bend a decay curve or slap back audibly, and every reflector
+/// face costs chain-cache pressure. One constant, used by the early
+/// overlay, the late panels, and both discovery kernels' box lists.
+pub const FURN_REFLECTOR_MIN_VOL: f32 = 0.25;
+
+pub fn furniture_mats(room: usize) -> &'static [omg_core::material::Material] {
+    use omg_core::material::Material;
+    const STONE_M: Material = Material {
+        absorption: [0.02, 0.03, 0.04],
+        scattering: 0.30,
+        transmission: [0.02, 0.002, 0.0],
+    };
+    const SOFT_M: Material = Material {
+        absorption: [0.35, 0.60, 0.70],
+        scattering: 0.65,
+        transmission: [0.5, 0.25, 0.1],
+    };
+    const WOOD_M: Material = Material {
+        absorption: [0.10, 0.10, 0.12],
+        scattering: 0.40,
+        transmission: [0.5, 0.3, 0.15],
+    };
+    const CABINET_M: Material = Material {
+        absorption: [0.12, 0.14, 0.18],
+        scattering: 0.35,
+        transmission: [0.3, 0.1, 0.03],
+    };
+    const BOOKS_M: Material = Material {
+        absorption: [0.25, 0.42, 0.55],
+        scattering: 0.80,
+        transmission: [0.15, 0.04, 0.01],
+    };
+    const PANEL_M: Material = Material {
+        absorption: [0.18, 0.10, 0.06],
+        scattering: 0.15,
+        transmission: [0.4, 0.2, 0.08],
+    };
+    static CATHEDRAL_M: [Material; 6] = [STONE_M; 6];
+    static CLUB_M: [Material; 1] = [CABINET_M];
+    static LIVING_M: [Material; 5] = [SOFT_M, WOOD_M, SOFT_M, CABINET_M, BOOKS_M];
+    static HALL_M: [Material; 14] = [
+        WOOD_M, WOOD_M, WOOD_M, WOOD_M, WOOD_M, WOOD_M, // tables
+        WOOD_M, WOOD_M, WOOD_M, WOOD_M, WOOD_M, WOOD_M, // chairs
+        CABINET_M, // lectern
+        PANEL_M,   // whiteboard
+    ];
+    static HOUSE_M: [Material; 7] =
+        [SOFT_M, WOOD_M, PANEL_M, CABINET_M, CABINET_M, SOFT_M, SOFT_M];
+    static HOUSE_UP_M: [Material; 4] = [SOFT_M, PANEL_M, CABINET_M, SOFT_M];
+    match room {
+        CATHEDRAL => &CATHEDRAL_M,
+        CLUB => &CLUB_M,
+        LIVING => &LIVING_M,
+        HALL => &HALL_M,
+        HOUSE => &HOUSE_M,
+        HOUSE_UP => &HOUSE_UP_M,
+        _ => &[],
+    }
+}
+
 /// (time s, x, y) — piecewise-linear listener path.
 /// Lingers near the music, walks the corridor, pauses at the narrator,
 /// then leaves through the exterior door into open air.

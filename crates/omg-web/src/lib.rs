@@ -362,12 +362,12 @@ pub extern "C" fn sim_pt_inject(id: u32) {
 /// 12 f32 each laid out EXACTLY like omg-gpu's GpuPanel (48 B):
 /// min xyz, scattering, max xyz, 0, absorption xyz, 0 — JS memcpies
 /// the slice straight into the panels buffer.
-pub const WLATE_MAX_PANELS: usize = 32;
+pub const WLATE_MAX_PANELS: usize = 64;
 pub const WLATE_JOB_F32S: usize = 10 + WLATE_MAX_PANELS * 12;
 const WLATE_MAX_JOBS: usize = 4;
 /// Mirrors omg-gpu layout::MESH_LAYOUT_VERSION — gpu.js refuses the
 /// mesh pipeline on mismatch.
-pub const WLATE_VERSION: u32 = 1;
+pub const WLATE_VERSION: u32 = 2;
 
 struct WebWorldLateProxy;
 
@@ -420,7 +420,7 @@ const WDISC_CAP: usize = 16384;
 
 struct WebWorldDiscProxy;
 
-static WDISC_JOB: std::sync::Mutex<Option<[f32; 4]>> = std::sync::Mutex::new(None);
+static WDISC_JOB: std::sync::Mutex<Option<[f32; 5]>> = std::sync::Mutex::new(None);
 static WDISC_CHAINS: std::sync::Mutex<Vec<omg_core::pt_mesh::MChain>> =
     std::sync::Mutex::new(Vec::new());
 
@@ -437,8 +437,11 @@ impl omg_scene::early_world::WorldDiscovery for WebWorldDiscProxy {
             out.append(&mut got);
             had
         };
-        // single job slot, newest pose wins
-        *WDISC_JOB.lock().unwrap() = Some([listener.x, listener.y, listener.z, rot as f32]);
+        // single job slot, newest pose wins; the 5th float carries the
+        // live furniture switch (0 = kernel skips the overlay boxes)
+        let furn = if omg_scene::quality::furniture_on() { 1.0 } else { 0.0 };
+        *WDISC_JOB.lock().unwrap() =
+            Some([listener.x, listener.y, listener.z, rot as f32, furn]);
         had
     }
 }
@@ -446,15 +449,16 @@ impl omg_scene::early_world::WorldDiscovery for WebWorldDiscProxy {
 static mut WDISC_JOB_OUT: Option<&'static mut [f32]> = None;
 static mut WDISC_INJECT: Option<&'static mut [u32]> = None;
 
-/// This tick's discovery job, if any: 4 f32 [lx, ly, lz, rot]; 0 = none.
+/// This tick's discovery job, if any: 5 f32
+/// [lx, ly, lz, rot, furniture_on]; 0 = none.
 #[no_mangle]
 pub extern "C" fn sim_wdisc_jobs_len() -> u32 {
     let out =
-        unsafe { (*(&raw mut WDISC_JOB_OUT)).get_or_insert_with(|| leak_f32(4)) };
+        unsafe { (*(&raw mut WDISC_JOB_OUT)).get_or_insert_with(|| leak_f32(5)) };
     match WDISC_JOB.lock().unwrap().take() {
         Some(j) => {
             out.copy_from_slice(&j);
-            4
+            5
         }
         None => 0,
     }
@@ -463,8 +467,60 @@ pub extern "C" fn sim_wdisc_jobs_len() -> u32 {
 #[no_mangle]
 pub extern "C" fn sim_wdisc_jobs_ptr() -> *const f32 {
     let out =
-        unsafe { (*(&raw mut WDISC_JOB_OUT)).get_or_insert_with(|| leak_f32(4)) };
+        unsafe { (*(&raw mut WDISC_JOB_OUT)).get_or_insert_with(|| leak_f32(5)) };
     out.as_ptr()
+}
+
+// Furniture overlay boxes for the discovery kernel: 8 u32 words per box
+// (min xyz as f32 bits, 0, max xyz, 0) + the first pseudo-surface id.
+// Static like the BVH — uploaded once by gpu.js.
+static mut FURN_FLAT: Option<(Vec<u32>, u32)> = None;
+
+fn furn_flat() -> &'static (Vec<u32>, u32) {
+    unsafe {
+        (*(&raw mut FURN_FLAT)).get_or_insert_with(|| {
+            let rooms = omg_scene::walkthrough::rooms();
+            let doors = omg_scene::walkthrough::doors();
+            let (mesh, _) = omg_scene::dome::build_world_mesh(&rooms, &doors);
+            let base = omg_core::pt_mesh::SurfaceTable::build(&mesh).base_overlay as u32;
+            let mut words = Vec::new();
+            for (ri, r) in rooms.iter().enumerate() {
+                for a in omg_scene::walkthrough::furniture(ri) {
+                    let d = a.max - a.min;
+                    if d.x * d.y * d.z <= omg_scene::walkthrough::FURN_REFLECTOR_MIN_VOL {
+                        continue;
+                    }
+                    let (ox, oy, oz) = (r.min.0, r.min.1, r.floor_z);
+                    words.extend_from_slice(&[
+                        (a.min.x + ox).to_bits(),
+                        (a.min.y + oy).to_bits(),
+                        (a.min.z + oz).to_bits(),
+                        0,
+                        (a.max.x + ox).to_bits(),
+                        (a.max.y + oy).to_bits(),
+                        (a.max.z + oz).to_bits(),
+                        0,
+                    ]);
+                }
+            }
+            (words, base)
+        })
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn sim_wdisc_boxes_len() -> u32 {
+    furn_flat().0.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn sim_wdisc_boxes_ptr() -> *const u32 {
+    furn_flat().0.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn sim_wdisc_base() -> u32 {
+    furn_flat().1
 }
 
 fn leak_u32_buf(n: usize) -> &'static mut [u32] {

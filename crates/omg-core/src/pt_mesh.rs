@@ -33,11 +33,18 @@ pub struct Surface {
     pub d: f32,
     pub refl: [f32; NBANDS],
     pub trans: [f32; NBANDS],
+    /// Rect-bounded OVERLAY face (a furniture box side): the AABB of
+    /// the face itself. `None` = authored mesh plane, validated by
+    /// raycast; `Some` = validated by the rect (there are no triangles
+    /// to hit — the box is world state, not mesh).
+    pub rect: Option<(Vec3, Vec3)>,
 }
 
 /// Per-surface plane/material table, built once per mesh.
 pub struct SurfaceTable {
     pub surfaces: Vec<Surface>,
+    /// First overlay-face id — everything below is authored mesh.
+    pub base_overlay: u16,
 }
 
 impl SurfaceTable {
@@ -51,6 +58,7 @@ impl SurfaceTable {
                     d: f32::MAX,
                     refl: [0.0; NBANDS],
                     trans: [0.0; NBANDS],
+                    rect: None,
                 });
             }
             let s = &mut surfaces[sid];
@@ -63,10 +71,38 @@ impl SurfaceTable {
                     d: n.dot(p),
                     refl: m.reflection_amplitude(),
                     trans: m.transmission,
+                    rect: None,
                 };
             }
         }
-        Self { surfaces }
+        let base_overlay = surfaces.len() as u16;
+        Self { surfaces, base_overlay }
+    }
+
+    /// Append the six faces of an overlay box (furniture) as
+    /// rect-bounded reflective surfaces with the box's material —
+    /// order: (x·min, x·max, y·min, y·max, z·min, z·max), matching the
+    /// discovery kernels' face indexing. Chains may then reflect off a
+    /// table top exactly like off a wall.
+    pub fn append_box(&mut self, mn: Vec3, mx: Vec3, m: &crate::material::Material) {
+        for axis in 0..3 {
+            for side in 0..2 {
+                let mut n = Vec3::new(0.0, 0.0, 0.0);
+                n.set(axis, if side == 0 { -1.0 } else { 1.0 });
+                let plane = if side == 0 { mn.get(axis) } else { mx.get(axis) };
+                let mut fmin = mn;
+                let mut fmax = mx;
+                fmin.set(axis, plane);
+                fmax.set(axis, plane);
+                self.surfaces.push(Surface {
+                    n,
+                    d: n.dot(if side == 0 { mn } else { mx }),
+                    refl: m.reflection_amplitude(),
+                    trans: m.transmission,
+                    rect: Some((fmin, fmax)),
+                });
+            }
+        }
     }
 }
 
@@ -183,27 +219,47 @@ pub fn mesh_record(
             return None;
         }
         let hit = pos + d * t;
-        // the reflection point must land on REAL mesh of this surface
-        // (not in a door hole): the nearest mesh hit along the ray must
-        // be this surface at this distance
-        let (rt, rtri) = mesh.raycast(pos + d * 1e-4, d)?;
-        if mesh.tri_surface(rtri) != sid {
-            // something else is closer: it must be transmissive to
-            // continue, and the chain surface must still be reachable —
-            // handled below by leg transmission; but a NEARER opaque
-            // reflector than the chain surface invalidates the
-            // specular claim only if it blocks the hit point. Use the
-            // segment test with the expected crossing skipped.
-            if rt < t - 1e-3 {
-                let seg_len = t;
-                let t_expect = rt / seg_len;
-                let m = &mesh.materials[mesh.tri_material[rtri as usize] as usize];
-                if m.transmission.iter().all(|&x| x < 1e-4) && t_expect < 1.0 - 1e-3 {
-                    // opaque blocker strictly before the reflection
-                    // point: transmission accumulation decides below;
-                    // fully opaque ⇒ dead
+        if let Some((fmin, fmax)) = s.rect {
+            // overlay face (furniture): the reflection point must land
+            // ON the face rect — there is no mesh to raycast for it
+            let eps = 1e-3;
+            for a in 0..3 {
+                if hit.get(a) < fmin.get(a) - eps || hit.get(a) > fmax.get(a) + eps {
+                    return None;
+                }
+            }
+            // a NEARER opaque mesh blocker still kills the specular claim
+            if let Some((rt, rtri)) = mesh.raycast(pos + d * 1e-4, d) {
+                if rt < t - 1e-3 {
+                    let m = &mesh.materials[mesh.tri_material[rtri as usize] as usize];
                     if m.transmission.iter().all(|&x| x < 1e-6) {
                         return None;
+                    }
+                }
+            }
+        } else {
+            // the reflection point must land on REAL mesh of this surface
+            // (not in a door hole): the nearest mesh hit along the ray must
+            // be this surface at this distance
+            let (rt, rtri) = mesh.raycast(pos + d * 1e-4, d)?;
+            if mesh.tri_surface(rtri) != sid {
+                // something else is closer: it must be transmissive to
+                // continue, and the chain surface must still be reachable —
+                // handled below by leg transmission; but a NEARER opaque
+                // reflector than the chain surface invalidates the
+                // specular claim only if it blocks the hit point. Use the
+                // segment test with the expected crossing skipped.
+                if rt < t - 1e-3 {
+                    let seg_len = t;
+                    let t_expect = rt / seg_len;
+                    let m = &mesh.materials[mesh.tri_material[rtri as usize] as usize];
+                    if m.transmission.iter().all(|&x| x < 1e-4) && t_expect < 1.0 - 1e-3 {
+                        // opaque blocker strictly before the reflection
+                        // point: transmission accumulation decides below;
+                        // fully opaque ⇒ dead
+                        if m.transmission.iter().all(|&x| x < 1e-6) {
+                            return None;
+                        }
                     }
                 }
             }
@@ -298,8 +354,18 @@ pub fn mesh_vertices(
 /// specular bounces, chains of surface ids. Rays stop at mesh hits
 /// (transmission chains behind walls are seeded by the direct path
 /// and validated with crossings — specular discovery through masonry
-/// is not attempted).
-pub fn mesh_chains(mesh: &Mesh, listener: Vec3, n_rays: u32, rot: u32, out: &mut Vec<MChain>) {
+/// is not attempted). `boxes` are overlay boxes (furniture) whose
+/// faces count as reflectors too, ids `base + box·6 + face`
+/// (face = axis·2 + min/max) — matching `SurfaceTable::append_box`.
+pub fn mesh_chains(
+    mesh: &Mesh,
+    boxes: &[(Vec3, Vec3)],
+    base: u16,
+    listener: Vec3,
+    n_rays: u32,
+    rot: u32,
+    out: &mut Vec<MChain>,
+) {
     let mut seen = std::collections::HashSet::new();
     let ga = core::f32::consts::PI * (3.0 - 5.0f32.sqrt());
     let mut jitter = Rng::new(0xC6B ^ rot as u64 | 1);
@@ -313,11 +379,52 @@ pub fn mesh_chains(mesh: &Mesh, listener: Vec3, n_rays: u32, rot: u32, out: &mut
         let mut pos = listener;
         let mut chain = [NO_SURF; M_MAX_ORDER];
         for k in 0..M_MAX_ORDER {
-            let Some((t, tri)) = mesh.raycast(pos, dir) else { break };
+            let mesh_hit = mesh.raycast(pos, dir);
+            let mut t = mesh_hit.map_or(f32::MAX, |(t, _)| t);
+            let mut sid = mesh_hit.map(|(_, tri)| mesh.tri_surface(tri));
+            let mut normal =
+                mesh_hit.map_or(Vec3::new(0.0, 0.0, 1.0), |(_, tri)| mesh.tri_normal(tri));
+            // overlay boxes: slab-entry test, nearest wins
+            for (bi, (mn, mx)) in boxes.iter().enumerate() {
+                let (mut t0, mut t1) = (1e-4f32, t);
+                let mut axis = 3usize;
+                for a in 0..3 {
+                    let da = dir.get(a);
+                    if da.abs() < 1e-9 {
+                        if pos.get(a) < mn.get(a) || pos.get(a) > mx.get(a) {
+                            t0 = f32::MAX;
+                            break;
+                        }
+                    } else {
+                        let (mut ta, mut tb) =
+                            ((mn.get(a) - pos.get(a)) / da, (mx.get(a) - pos.get(a)) / da);
+                        if ta > tb {
+                            core::mem::swap(&mut ta, &mut tb);
+                        }
+                        if ta > t0 {
+                            t0 = ta;
+                            axis = a;
+                        }
+                        t1 = t1.min(tb);
+                        if t0 > t1 {
+                            t0 = f32::MAX;
+                            break;
+                        }
+                    }
+                }
+                if t0 < t && axis < 3 {
+                    t = t0;
+                    let face = axis * 2 + if dir.get(axis) > 0.0 { 0 } else { 1 };
+                    sid = Some(base + (bi * 6 + face) as u16);
+                    let mut n = Vec3::new(0.0, 0.0, 0.0);
+                    n.set(axis, if dir.get(axis) > 0.0 { -1.0 } else { 1.0 });
+                    normal = n;
+                }
+            }
+            let Some(sid) = sid else { break };
             if t <= 1e-4 || t > 200.0 {
                 break;
             }
-            let sid = mesh.tri_surface(tri);
             pos = pos + dir * t;
             chain[k] = sid;
             let mut key = 1u64;
@@ -327,8 +434,7 @@ pub fn mesh_chains(mesh: &Mesh, listener: Vec3, n_rays: u32, rot: u32, out: &mut
             if seen.insert(key) {
                 out.push((chain, (k + 1) as u8));
             }
-            let n = mesh.tri_normal(tri);
-            let n = if n.dot(dir) > 0.0 { n * -1.0 } else { n };
+            let n = if normal.dot(dir) > 0.0 { normal * -1.0 } else { normal };
             dir = dir - n * (2.0 * dir.dot(n));
             pos = pos + n * 1e-4;
         }

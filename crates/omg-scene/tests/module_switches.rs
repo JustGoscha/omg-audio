@@ -5,7 +5,21 @@
 
 use omg_core::params::ParamBlock;
 use omg_scene::quality;
+use omg_scene::walkthrough;
 use omg_scene::world::WorldSim;
+
+/// Furniture geometry and material tables are parallel arrays —
+/// authored side by side, asserted here so they can never drift.
+#[test]
+fn furniture_tables_are_parallel() {
+    for room in 0..12 {
+        assert_eq!(
+            walkthrough::furniture(room).len(),
+            walkthrough::furniture_mats(room).len(),
+            "room {room}: furniture/material tables out of step"
+        );
+    }
+}
 
 fn taps_mid(pb: &ParamBlock) -> f32 {
     pb.taps.iter().map(|t| t.gains[1]).sum::<f32>()
@@ -51,5 +65,31 @@ fn module_switches_shape_the_field_and_restore() {
     assert!(
         re_occluded < 0.85 * transparent,
         "re-enabling must shadow again: {re_occluded} vs {transparent}"
+    );
+
+    // --- late field: the FURNISHED living room must decay faster than
+    // the empty one (sofa/armchair/books absorb the tail), reversibly
+    // one world trace per tick round-robins 11 sources and the
+    // echogram EMA unwinds slowly — give each state time to converge
+    let rt60_at = |w: &mut WorldSim, settle: usize| {
+        for _ in 0..settle {
+            let _ = w.tick_at(6.0, 2.0, 0.0);
+        }
+        let (blocks, _) = w.tick_at(6.0, 2.0, 0.0);
+        blocks[PIANO].reverb.rt60[1]
+    };
+    let rt_on = rt60_at(&mut w, 120);
+    quality::set_module(1, false);
+    let rt_off = rt60_at(&mut w, 240);
+    quality::set_module(1, true);
+    let rt_back = rt60_at(&mut w, 240);
+    eprintln!("late rt60 mid: furnished {rt_on:.2}s empty {rt_off:.2}s restored {rt_back:.2}s");
+    assert!(
+        rt_off > 1.05 * rt_on,
+        "the empty room must ring longer: furnished {rt_on} vs empty {rt_off}"
+    );
+    assert!(
+        (rt_back - rt_on).abs() < 0.25 * rt_on,
+        "re-furnishing must restore the decay: {rt_back} vs {rt_on}"
     );
 }

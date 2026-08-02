@@ -50,13 +50,15 @@ const RAYS_PER_TICK: u32 = 768;
 /// Live-chain cap: solving is per source per chain, so this bounds the
 /// whole world's early workload. Discovery refresh keeps the set biased
 /// toward what the listener can currently see.
-const MAX_CHAINS: usize = 320;
+const MAX_CHAINS: usize = 384;
 
 /// Debug polyline budget (floats), matching the web bridge buffer.
 const DEBUG_CAP: usize = 6000;
 
 pub struct WorldEarly {
     pub table: SurfaceTable,
+    /// Overlay boxes for discovery (parallel to the appended faces).
+    disc_boxes: Vec<(Vec3, Vec3)>,
     chains: HashMap<MChain, u32>,
     rot: u32,
     scratch: Vec<MChain>,
@@ -74,9 +76,18 @@ pub struct WorldEarly {
 }
 
 impl WorldEarly {
-    pub fn new(mesh: &Mesh) -> Self {
+    /// `furn`: overlay boxes (furniture, world coords) whose faces
+    /// become rect-bounded reflective surfaces — chains may bounce off
+    /// a table top like off a wall; the solve validates against the
+    /// face rect. The live furniture switch gates their use per tick.
+    pub fn new(mesh: &Mesh, furn: &[(Vec3, Vec3, omg_core::material::Material)]) -> Self {
+        let mut table = SurfaceTable::build(mesh);
+        for (mn, mx, m) in furn {
+            table.append_box(*mn, *mx, m);
+        }
         Self {
-            table: SurfaceTable::build(mesh),
+            disc_boxes: furn.iter().map(|(mn, mx, _)| (*mn, *mx)).collect(),
+            table,
             chains: HashMap::new(),
             rot: 0,
             scratch: Vec::new(),
@@ -107,7 +118,20 @@ impl WorldEarly {
             self.pending += 1;
             self.pending > PROVIDER_GRACE
         } {
-            mesh_chains(mesh, listener, RAYS_PER_TICK, self.rot, &mut self.scratch);
+            let boxes: &[(Vec3, Vec3)] = if crate::quality::furniture_on() {
+                &self.disc_boxes
+            } else {
+                &[]
+            };
+            mesh_chains(
+                mesh,
+                boxes,
+                self.table.base_overlay,
+                listener,
+                RAYS_PER_TICK,
+                self.rot,
+                &mut self.scratch,
+            );
             self.gpu_discovery = false;
         }
         self.rot = self.rot.wrapping_add(1);
@@ -116,6 +140,14 @@ impl WorldEarly {
                 Some(ttl) => *ttl = CHAIN_TTL,
                 None => {
                     if self.chains.len() < MAX_CHAINS {
+                        self.chains.insert(c, CHAIN_TTL);
+                    } else if let Some((&old, _)) =
+                        self.chains.iter().min_by_key(|(_, ttl)| **ttl)
+                    {
+                        // full: what the listener sees NOW beats the
+                        // stalest memory — walking must never starve
+                        // the fresh set behind five-steps-ago chains
+                        self.chains.remove(&old);
                         self.chains.insert(c, CHAIN_TTL);
                     }
                 }
@@ -151,8 +183,14 @@ impl WorldEarly {
         self.scratch.clear();
         self.scratch.extend(self.chains.keys().copied());
         self.scratch.sort();
+        let furn_ok = crate::quality::furniture_on();
         for &(chain, order) in &self.scratch {
             let c = &chain[..order as usize];
+            // furniture switch off: overlay-face chains stay cached but
+            // emit nothing (identical to how occluded seeds behave)
+            if !furn_ok && c.iter().any(|&sid| sid >= self.table.base_overlay) {
+                continue;
+            }
             let Some(r) = mesh_record(mesh, &self.table, c, source, src, listener, extras, &mut self.seg_buf)
             else {
                 continue;

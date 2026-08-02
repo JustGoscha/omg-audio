@@ -70,7 +70,7 @@ fn mesh_solver_matches_analytic_in_a_box() {
     // mesh discovery + solve
     let mut chains: Vec<MChain> = Vec::new();
     for rot in 0..8 {
-        mesh_chains(&mesh, lis, 4096, rot, &mut chains);
+        mesh_chains(&mesh, &[], 0, lis, 4096, rot, &mut chains);
     }
     chains.sort();
     chains.dedup();
@@ -170,4 +170,80 @@ fn doorways_thread_with_zero_portal_code() {
         db(r.gains[1]),
         r2.map_or("inaudible (dropped)".into(), |r| format!("{:.1} dB mid", db(r.gains[1])))
     );
+}
+
+/// Furniture faces are first-class reflectors: in a golden box with a
+/// table, the chain [table-top] must solve to the EXACT mirror across
+/// the top plane — machine-exact delay, hit validated on the face rect
+/// — and discovery must find that chain by bouncing off the box.
+#[test]
+fn overlay_face_reflects_exactly() {
+    let size = Vec3::new(6.0, 4.0, 3.0);
+    let mut b = MeshBuilder::new();
+    let v = Vec3::new;
+    let m = b.material(Material::CONCRETE);
+    let quads: [[Vec3; 4]; 6] = [
+        [v(0., 0., 0.), v(0., 4., 0.), v(0., 4., 3.), v(0., 0., 3.)],
+        [v(6., 0., 0.), v(6., 0., 3.), v(6., 4., 3.), v(6., 4., 0.)],
+        [v(0., 0., 0.), v(0., 0., 3.), v(6., 0., 3.), v(6., 0., 0.)],
+        [v(0., 4., 0.), v(6., 4., 0.), v(6., 4., 3.), v(0., 4., 3.)],
+        [v(0., 0., 0.), v(6., 0., 0.), v(6., 4., 0.), v(0., 4., 0.)],
+        [v(0., 0., 3.), v(0., 4., 3.), v(6., 4., 3.), v(6., 0., 3.)],
+    ];
+    for q in quads {
+        b.begin_surface();
+        b.quad(q[0], q[1], q[2], q[3], m);
+    }
+    let mesh = b.build();
+    let _ = size;
+    let mut table = SurfaceTable::build(&mesh);
+    let base = table.base_overlay;
+    let (mn, mx) = (Vec3::new(2.0, 1.5, 0.0), Vec3::new(3.0, 2.5, 0.8));
+    table.append_box(mn, mx, &Material::WOOD_PANEL);
+
+    let src = Vec3::new(1.0, 2.0, 1.5);
+    let lis = Vec3::new(4.0, 2.0, 1.6);
+    // top face is the 6th appended (x min/max, y min/max, z min/MAX)
+    let top = base + 5;
+    let r = mesh_record(&mesh, &table, &[top], 0, src, lis, &[], &mut buf_for())
+        .expect("table-top bounce must solve");
+    // mirror across z = 0.8: image (1, 2, 0.1)
+    let img = Vec3::new(1.0, 2.0, 2.0 * 0.8 - 1.5);
+    let want = (img - lis).length() / 343.0;
+    assert!(
+        (r.delay_s - want).abs() < 1e-5,
+        "delay {} vs exact {}",
+        r.delay_s,
+        want
+    );
+    assert!(r.gains[1] > 1e-4, "audible bounce: {:?}", r.gains);
+    assert!(r.dir[2] < -0.1, "arrives from below the ear line: {:?}", r.dir);
+
+    // a chain aimed OFF the rect must refuse (listener far to the side)
+    let off = mesh_record(
+        &mesh,
+        &table,
+        &[top],
+        0,
+        src,
+        Vec3::new(1.2, 0.3, 1.6),
+        &[],
+        &mut buf_for(),
+    );
+    assert!(off.is_none(), "reflection point off the table must not validate");
+
+    // discovery over the box finds the top-face chain
+    let mut chains = Vec::new();
+    for rot in 0..4 {
+        mesh_chains(&mesh, &[(mn, mx)], base, lis, 4096, rot, &mut chains);
+    }
+    assert!(
+        chains.iter().any(|(c, o)| *o >= 1 && c[..*o as usize].contains(&top)),
+        "discovery must bounce off the table top"
+    );
+    println!("table-top bounce: delay {:.4} ms exact, gains {:?}", r.delay_s * 1000.0, r.gains);
+}
+
+fn buf_for() -> Vec<omg_core::mesh::SegHit> {
+    Vec::new()
 }
