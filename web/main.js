@@ -588,7 +588,7 @@ scene.background = new THREE.Color(0x10141d);
 // assets/sky/LICENSE.txt): equirect starfield whose horizon dissolves
 // into the fog color, so geometry melts into the same mist the sky
 // rises from. Assigned on load; the flat color covers the first frames.
-new THREE.TextureLoader().load('../assets/sky/night.png', (sky) => {
+new THREE.TextureLoader().load('../assets/sky/night.jpg', (sky) => {
   sky.mapping = THREE.EquirectangularReflectionMapping;
   sky.colorSpace = THREE.SRGBColorSpace;
   scene.background = sky;

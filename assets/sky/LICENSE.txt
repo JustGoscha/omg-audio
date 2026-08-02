@@ -1,8 +1,9 @@
 assets/sky — sources and licenses
 
-night.png
-  Tone-mapped from "Satara Night" by Greg Zaal (Poly Haven),
-  https://polyhaven.com/a/satara_night
+night.jpg
+  Tone-mapped from "Rogland Clear Night" by Dimitrios Savva & Jarod
+  Guest (Poly Haven), https://polyhaven.com/a/rogland_clear_night
   License: CC0 (Poly Haven publishes all assets as CC0).
-  Conversion: tools/hdr_to_sky.py (RGBE decode, sky-median exposure,
-  horizon dissolve into the scene fog, blue night grade).
+  Conversion: tools/hdr_to_sky.py from the 4k HDR (RGBE decode,
+  sky-median exposure at 0.042, horizon dissolve into the scene fog,
+  gentle blue grade), JPEG-encoded via sips at quality 88.

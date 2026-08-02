@@ -15,8 +15,8 @@ import zlib
 
 SRC, DST = sys.argv[1], sys.argv[2]
 FOG = (0x1a / 255, 0x22 / 255, 0x33 / 255)  # match scene fog (linear-ish)
-HORIZON = 0.405   # v where the photo content starts to dissolve
-BLEND_END = 0.50  # fully fog below this
+HORIZON = 0.455   # v where the photo content starts to dissolve
+BLEND_END = 0.52  # fully fog below this
 data = open(SRC, 'rb').read()
 
 pos = 0
@@ -64,10 +64,10 @@ for i in range(0, W * int(H * 0.45), 397):
 lums.sort()
 # expose the sky BACKGROUND (median) to a gentle glow; stars saturate
 # on their own. A percentile-of-star target just amplifies sensor noise.
-k = 0.09 / max(lums[len(lums) // 2], 1e-6)
+k = 0.042 / max(lums[len(lums) // 2], 1e-6)
 print('sky exposure k =', round(k, 2))
 # subtle night grade: cool the warm sensor gray toward blue
-TINT = (0.82, 0.93, 1.22)
+TINT = (0.88, 0.95, 1.12)
 
 inv_g = 1 / 2.05
 lut = {}
