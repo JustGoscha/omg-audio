@@ -874,6 +874,34 @@ struct Voice {
     pos: usize,
 }
 
+/// A NEAR-FIELD one-shot, rendered straight into the ear buffers and
+/// bypassing propagation entirely. HRTFs are far-field measurements
+/// (≥ 1 m); inside that radius the inverse-distance law ACROSS THE
+/// HEAD dominates anything the grid can express: a whisper 6 cm off
+/// the left ear is ~14 dB louder there than at the right ear before
+/// head shadow, and the shadow then removes most of a whisper's
+/// sibilant band on top — which is why a whisper into one ear is
+/// near-inaudible at the other. Model: per-ear 1/r with the far ear's
+/// path measured around the head, a fixed ITD delay, and a one-pole
+/// shadow lowpass. Room send is omitted on purpose — at whisper level
+/// the reflections sit far below audibility.
+struct NearVoice {
+    buf: usize,
+    pos: usize,
+    right: bool,
+    near_g: f32,
+    far_g: f32,
+    /// far-ear head-shadow one-pole coefficient + state
+    lp_k: f32,
+    lp: f32,
+    /// far-ear ITD ring (~0.65 ms around the head)
+    dl: [f32; 64],
+    dpos: usize,
+    itd: usize,
+    /// declick ramp, samples remaining
+    fade: usize,
+}
+
 struct EngCtx {
     renderers: Vec<Renderer>,
     sources: Vec<SourceState>,
@@ -891,6 +919,7 @@ struct EngCtx {
     fx_bufs: Vec<Vec<f32>>,
     fx_stage: Option<&'static mut [f32]>,
     voices: Vec<Voice>,
+    near_voices: Vec<NearVoice>,
     ambient_stage: Option<&'static mut [f32]>,
     ambience: omg_dsp::ambience::Ambience,
     rain: omg_dsp::rain::Rain,
@@ -927,6 +956,7 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         fx_bufs: Vec::new(),
         fx_stage: None,
         voices: Vec::new(),
+        near_voices: Vec::new(),
         ambient_stage: None,
         ambience: omg_dsp::ambience::Ambience::new(sample_rate),
         rain: omg_dsp::rain::Rain::new(sample_rate),
@@ -1044,6 +1074,38 @@ pub extern "C" fn eng_fx_play(src: u32, kind: u32) {
 pub extern "C" fn eng_fx_stop(src: u32, kind: u32) {
     let ctx = eng();
     ctx.voices.retain(|v| !(v.src == src as usize && v.buf == kind as usize));
+}
+
+/// Near-field play: an fx-bank buffer whispered `dist_m` from one ear
+/// (`right != 0` = right ear). `gain` is the near-ear amplitude at the
+/// reference 6 cm; the far ear derives from the around-the-head path.
+#[no_mangle]
+pub extern "C" fn eng_whisper_play(kind: u32, right: u32, dist_m: f32, gain: f32) {
+    let ctx = eng();
+    if (kind as usize) >= ctx.fx_bufs.len() || ctx.near_voices.len() >= 4 {
+        return;
+    }
+    let d = dist_m.clamp(0.02, 0.6);
+    // amplitudes normalized so gain IS the near-ear level at 6 cm;
+    // the head detour adds ~0.25 m of path for the far ear
+    let near_g = gain * 0.06 / d;
+    let far_g = gain * 0.06 / (d + 0.25);
+    let sr = ctx.sample_rate;
+    ctx.near_voices.push(NearVoice {
+        buf: kind as usize,
+        pos: 0,
+        right: right != 0,
+        near_g,
+        far_g,
+        // shadow corner ~700 Hz: the whisper's sibilance (2–8 kHz)
+        // dies crossing the head, the low murmur survives
+        lp_k: (-2.0 * core::f32::consts::PI * 700.0 / sr).exp(),
+        lp: 0.0,
+        dl: [0.0; 64],
+        dpos: 0,
+        itd: ((0.00065 * sr) as usize).clamp(1, 63),
+        fade: 256,
+    });
 }
 
 #[no_mangle]
@@ -1305,13 +1367,42 @@ pub extern "C" fn eng_process(n: u32) {
             acc.1 += m2 as f64;
             acc.2 += 1;
         }
-        let (l, r) = match &mut ctx.out {
+        let (mut l, mut r) = match &mut ctx.out {
             Some(o) => o.process(&bus, pl, pr),
             None => (pl.tanh(), pr.tanh()),
         };
+        // near-field ear stage — POST-AGC on purpose: a whisper's whole
+        // identity is its absolute closeness; the scene's loudness
+        // governor must not ride its level up or down
+        for v in &mut ctx.near_voices {
+            let src = &ctx.fx_bufs[v.buf];
+            if v.pos >= src.len() {
+                continue;
+            }
+            let mut x = src[v.pos];
+            v.pos += 1;
+            if v.fade > 0 {
+                x *= 1.0 - v.fade as f32 / 256.0;
+                v.fade -= 1;
+            }
+            let near = x * v.near_g;
+            v.dl[v.dpos & 63] = x;
+            let far_x = v.dl[(v.dpos + 64 - v.itd) & 63];
+            v.dpos += 1;
+            v.lp = v.lp * v.lp_k + far_x * (1.0 - v.lp_k);
+            let far = v.lp * v.far_g;
+            if v.right {
+                r += near;
+                l += far;
+            } else {
+                l += near;
+                r += far;
+            }
+        }
         let mg = ctx.master.tick();
         ctx.out_l[i] = (l * mg).clamp(-1.0, 1.0);
         ctx.out_r[i] = (r * mg).clamp(-1.0, 1.0);
     }
     ctx.voices.retain(|v| v.pos < ctx.fx_bufs[v.buf].len());
+    ctx.near_voices.retain(|v| v.pos < ctx.fx_bufs[v.buf].len());
 }

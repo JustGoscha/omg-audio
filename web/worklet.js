@@ -132,6 +132,9 @@ class OmgProcessor extends AudioWorkletProcessor {
     } else if (m.type === 'fx' && this.ready) {
       if (m.action === 'play') this.w.eng_fx_play(m.src, m.kind);
       else this.w.eng_fx_stop(m.src, m.kind);
+    } else if (m.type === 'whisper' && this.ready) {
+      // near-field ear voice: bypasses propagation (see eng_whisper_play)
+      this.w.eng_whisper_play(m.kind, m.right ? 1 : 0, m.dist, m.gain);
     } else if (m.type === 'ceilfloor' && this.ready) {
       // manual quality pin: the governor may shed below this ladder index
       // but never recover above it (0 = unpinned, full ladder)

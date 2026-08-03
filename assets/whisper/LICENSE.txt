@@ -1,0 +1,12 @@
+Whisper recordings — CC0 (public domain)
+
+whisper_0.mp3  "Whisper #1" — bigsoundbank.com/whisper-1-s3255.html
+whisper_1.mp3  "Whisper #2" — bigsoundbank.com/whisper-2-s3256.html
+
+Author: Joseph SARDIN, BigSoundBank.com. License stated on each file
+page and bigsoundbank.com/droits.html: CC0 — free and royalty-free,
+no attribution required, commercial use allowed. Verified 2026-08-03.
+Male whispered speech, mono 48 kHz studio recordings (Sennheiser ME66
+/ SoundDevices MixPre-3). Trimmed and level-shaped at load time by
+web/main.js; played through the engine's near-field ear stage
+(eng_whisper_play), not the room propagation path.

@@ -1400,7 +1400,7 @@ async function startAudio() {
     return r.arrayBuffer();
   };
   statusEl.textContent = 'loading…';
-  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxW, fxT, fxB, ambRaw, dropsRaw, mot0, mot1, mot2, mot3] =
+  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxT, fxB, ambRaw, dropsRaw, mot0, mot1, mot2, mot3] =
     await Promise.all([
     fetchBuf('omg_web.wasm'),
     fetchBuf('omg_web.wasm'),
@@ -1411,7 +1411,6 @@ async function startAudio() {
     fetchBuf('../assets/club48.ogg'),
     fetchBuf('../assets/flute48.ogg'),
     fetchBuf('../assets/radio48.ogg'),
-    fetchBuf('../assets/fx_whistle.ogg'),
     fetchBuf('../assets/fx_thump.ogg'),
     fetchBuf('../assets/fx_boom.ogg'),
     fetchBuf('../assets/night-nature48.ogg'),
@@ -1439,15 +1438,40 @@ async function startAudio() {
     for (let i = 0; i < ch.length; i++) out[i] = ch[i] * g;
     return out;
   };
+  // Ball flight woosh — synthesized in-repo (band-passed noise, a swell
+  // that dies as the ball slows). Replaces the whistle+explosion pair:
+  // the throw is a soft woosh, the rest is just the bounces.
+  const makeWoosh = (sr) => {
+    const n = Math.floor(sr * 5.0);
+    const out = new Float32Array(n);
+    let lp = 0;
+    let lp2 = 0;
+    const wob = Math.random() * 6.28;
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      // center drifts 520 → 260 Hz with a slow flutter
+      const f = 260 + 260 * Math.exp(-t * 0.8) * (1 + 0.18 * Math.sin(wob + t * 4.7));
+      const k = 1 - Math.exp(-2 * Math.PI * f / sr);
+      const x = Math.random() * 2 - 1;
+      lp += k * (x - lp);
+      lp2 += k * (lp - lp2);
+      const env = Math.min(1, t * 7) * Math.exp(-t * 0.55);
+      out[i] = (lp - lp2) * env; // band-ish: LP minus its own LP
+    }
+    let p = 1e-6;
+    for (let i = 0; i < n; i++) p = Math.max(p, Math.abs(out[i]));
+    for (let i = 0; i < n; i++) out[i] *= 0.12 / p;
+    return out;
+  };
   const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops, m0, m1, m2, m3, ambience] = await Promise.all([
     decodeMono(ariaRaw),
     decodeMono(aliceRaw),
     decodeMono(clubRaw),
     decodeMono(fluteRaw),
     decodeMono(radioRaw),
-    decodeMono(fxW, 0.18), // whistle: background-y
-    decodeMono(fxT, 0.55),
-    decodeMono(fxB, 1.9), // boom: BIG (AGC + tanh keep it safe)
+    Promise.resolve(makeWoosh(audio.sampleRate)), // fx 0: the ball woosh
+    decodeMono(fxT, 0.4), // bounce thump, kept modest
+    decodeMono(fxB, 1.9), // boom: retired from the ball, kept in the bank
     decodeMono(dropsRaw), // recorded splat bank (pre-normalized slices)
     decodeMono(mot0),
     decodeMono(mot1),
@@ -1511,6 +1535,22 @@ async function startAudio() {
     for (let i = 0; i < f; i++) out[out.length - 1 - i] *= i / f;
     return out;
   };
+  // Whispers (CC0, BigSoundBank — assets/whisper/LICENSE.txt): played
+  // centimeters from one ear through the engine's NEAR-FIELD stage
+  // (eng_whisper_play), not the room path — at that range the head's
+  // own distance law and shadow decide what each ear hears. Leading
+  // silence trimmed; one short passage per event.
+  const decodeWhisper = async (buf) => {
+    const raw = await decodeMono(buf, 0.5);
+    let a = 0;
+    while (a < raw.length && Math.abs(raw[a]) < 0.02) a++;
+    a = Math.max(0, a - 480);
+    return trimTail(raw.slice(a), 7, 1.5);
+  };
+  const [whis0, whis1] = await Promise.all([
+    fetchBuf('../assets/whisper/whisper_0.mp3').then(decodeWhisper),
+    fetchBuf('../assets/whisper/whisper_1.mp3').then(decodeWhisper),
+  ]);
   const [owl0, owl1, owl2, bellBig, bellSmall] = await Promise.all([
     fetchBuf('../assets/birds/owl_0.wav').then((b) => decodeMono(b, 0.5)),
     fetchBuf('../assets/birds/owl_1.wav').then((b) => decodeMono(b, 0.5)),
@@ -1543,12 +1583,14 @@ async function startAudio() {
                 silents[3].buffer, silents[4].buffer, silents[5].buffer, // balls
                 m0.buffer, m1.buffer, silents[6].buffer],                // cars + feet
       fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
-           owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer],
+           owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
+           whis0.buffer, whis1.buffer],
       ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,
      radio.buffer, ...silents.map((b) => b.buffer),
      whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
      owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
+     whis0.buffer, whis1.buffer,
      ambience.buffer, drops.buffer],
   );
   await new Promise((res, rej) => {
@@ -1849,7 +1891,7 @@ function setupControls() {
   };
 
   if (!isTouch) {
-    hintEl.textContent = 'click: capture mouse · WASD walk · Shift run · Space jump · C crouch · click throw · E door · B bells · R rain';
+    hintEl.textContent = 'click: capture mouse · WASD walk · Shift run · Space jump · C crouch · click throw · E door · B bells · V whisper · R rain';
     glCanvas.addEventListener('click', () => {
       if (document.pointerLockElement !== glCanvas) glCanvas.requestPointerLock();
       else throwBall();
@@ -1865,6 +1907,7 @@ function setupControls() {
       else if (e.code === 'KeyE') toggleNearestDoor();
       else if (e.code === 'KeyQ') cycleQuality();
       else if (e.code === 'KeyB') ringBells();
+      else if (e.code === 'KeyV') whisperNow();
       else state.keys.add(e.code);
     });
     addEventListener('keyup', (e) => state.keys.delete(e.code));
@@ -1992,9 +2035,9 @@ function throwBall() {
     slot,
     x: state.pose.x + ch * 0.4, y: state.pose.y + sh * 0.4, z: EYE + (state.pose.z || 0) + (state.airZ || 0) - 0.7 * (state.crouch || 0),
     vx: ch * cp * speed, vy: sh * cp * speed, vz: sp * speed + 2.5,
-    landedAt: 0, boomAt: 0, mesh, light,
+    landedAt: 0, fadeAt: 0, mesh, light,
   });
-  state.fx(8 + slot, 0, 'play'); // whistle
+  state.fx(8 + slot, 0, 'play'); // flight woosh
 }
 
 function roomHeightAt(x, y) {
@@ -2011,13 +2054,12 @@ function updateProjectiles(dt, now) {
 function updateProjectile(p, dt, now) {
   const fx = (kind, action = 'play') => state.fx(8 + p.slot, kind, action);
 
-  if (p.boomAt) {
-    // explosion flash decays, then the source goes silent and disappears
-    const k = (now - p.boomAt) / 1000;
-    p.light.intensity = Math.max(0, 60 * (1 - k / 0.5));
-    p.mesh.scale.setScalar(1 + k * 14);
-    p.mesh.material.opacity = Math.max(0, 1 - k / 0.6);
-    if (k > 2.4) {
+  if (p.fadeAt) {
+    // the ball just goes to sleep: glow and body ease out, no blast
+    const k = (now - p.fadeAt) / 1000;
+    p.light.intensity = Math.max(0, 3 * (1 - k / 0.9));
+    p.mesh.material.opacity = Math.max(0, 1 - k / 1.2);
+    if (k > 1.4) {
       scene.remove(p.mesh);
       scene.remove(p.light);
       state.projs = state.projs.filter((q) => q !== p);
@@ -2066,12 +2108,11 @@ function updateProjectile(p, dt, now) {
   }
   p.z = nz;
 
-  if (p.landedAt && now - p.landedAt > 3000 && !p.boomAt) {
-    p.boomAt = now;
+  if (p.landedAt && now - p.landedAt > 3000 && !p.fadeAt) {
+    p.fadeAt = now;
     fx(0, 'stop');
-    fx(2, 'play');
     p.mesh.material = new THREE.MeshBasicMaterial({
-      color: 0xffb46a, transparent: true, opacity: 1,
+      color: 0xfff1a8, transparent: true, opacity: 1,
     });
   }
 
@@ -2211,17 +2252,33 @@ function strideStep(d) {
 }
 
 // -------------------------------------------------- wildlife & carillon
-// fx-bank indices: 0 whistle, 1 thump, 2 boom, 3..22 steps,
-// 23..25 owls, 26 big peal, 27 small peal.
+// fx-bank indices: 0 woosh, 1 thump, 2 boom (unused), 3..22 steps,
+// 23..25 owls, 26 big peal, 27 small peal, 28..29 whispers.
 const wild = {
   owl1: 8 + Math.random() * 12,
   owl2: 16 + Math.random() * 16,
   bells: 10 + Math.random() * 15,
+  whisper: 45 + Math.random() * 60,
 };
 function ringBells() {
   if (!state.fx) return;
   wild.bells = performance.now() / 1000 + 30 + Math.random() * 90;
   state.fx(7, Math.random() < 0.75 ? 26 : 27);
+}
+// A voice whispers a few centimeters from one ear (V triggers it on
+// demand). Rendered by the near-field ear stage: the far ear gets the
+// around-the-head distance law plus head shadow, so it hears almost
+// nothing — which is exactly what makes it feel AT the ear.
+function whisperNow() {
+  if (!state.node) return;
+  wild.whisper = performance.now() / 1000 + 90 + Math.random() * 150;
+  state.node.port.postMessage({
+    type: 'whisper',
+    kind: 28 + ((Math.random() * 2) | 0),
+    right: Math.random() < 0.5,
+    dist: 0.05 + Math.random() * 0.07,
+    gain: 0.55 + Math.random() * 0.25,
+  });
 }
 function updateWildlife(t) {
   if (!state.fx || !state.running) return;
@@ -2238,6 +2295,9 @@ function updateWildlife(t) {
     // "randomly sometimes, 30 s – 2 min": one peal per event, the big
     // bell three times out of four; B rings it on demand
     ringBells();
+  }
+  if (s > wild.whisper) {
+    whisperNow();
   }
 }
 
