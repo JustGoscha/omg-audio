@@ -5,8 +5,9 @@
 pub mod layout;
 
 use layout::{
-    decode_echogram, flatten_mesh, GpuMeshJob, GpuPanel, GpuTraceJob, BINS_LEN, DIRS_LEN,
-    MAX_PANELS,
+    decode_echogram, flatten_mesh, flatten_surfaces, GpuMeshJob, GpuPanel, GpuSolveJob,
+    GpuSolveRec, GpuSolveSrc, GpuTraceJob, BINS_LEN, DIRS_LEN, MAX_PANELS, MAX_SOLVE_CHAINS,
+    MAX_SOLVE_EXTRAS, MAX_SOLVE_SOURCES,
 };
 use omg_core::material::Material;
 use omg_core::mesh::Mesh;
@@ -194,6 +195,20 @@ pub struct GpuMeshTracer {
     disc_read: wgpu::Buffer,
     disc_bind: wgpu::BindGroup,
     disc_n_boxes: u32,
+    // K4 (C7a): the batched (source × chain) solve over the same BVH,
+    // built only when a SurfaceTable is supplied at construction
+    solve: Option<SolveState>,
+}
+
+struct SolveState {
+    pipeline: wgpu::ComputePipeline,
+    job: wgpu::Buffer,
+    chains: wgpu::Buffer,
+    srcs: wgpu::Buffer,
+    extras: wgpu::Buffer,
+    recs: wgpu::Buffer,
+    read: wgpu::Buffer,
+    bind: wgpu::BindGroup,
 }
 
 /// Chain slots in the discovery output list (must match
@@ -209,10 +224,25 @@ impl GpuMeshTracer {
     /// off, ids `base + box·6 + face` where base is the mesh's surface
     /// count — must match the SurfaceTable the caller solves against.
     pub fn new(mesh: &Mesh, boxes: &[(Vec3, Vec3)]) -> Option<Self> {
-        pollster::block_on(Self::new_async(mesh, boxes))
+        pollster::block_on(Self::new_async(mesh, boxes, None))
     }
 
-    async fn new_async(mesh: &Mesh, boxes: &[(Vec3, Vec3)]) -> Option<Self> {
+    /// Also builds the K4 batched-solve pipeline against `table` (the
+    /// SurfaceTable the CPU side solves with — authored planes plus
+    /// overlay faces, in the same id order).
+    pub fn with_solve(
+        mesh: &Mesh,
+        boxes: &[(Vec3, Vec3)],
+        table: &omg_core::pt_mesh::SurfaceTable,
+    ) -> Option<Self> {
+        pollster::block_on(Self::new_async(mesh, boxes, Some(table)))
+    }
+
+    async fn new_async(
+        mesh: &Mesh,
+        boxes: &[(Vec3, Vec3)],
+        table: Option<&omg_core::pt_mesh::SurfaceTable>,
+    ) -> Option<Self> {
         let instance = wgpu::Instance::default();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -374,6 +404,83 @@ impl GpuMeshTracer {
         });
         let disc_n_boxes = boxes.len() as u32;
 
+        // K4 (C7a): batched solve pipeline over the same nodes/prims/mats
+        let solve = table.map(|table| {
+            let surfs = flatten_surfaces(table);
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("solve_mesh"),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("../shaders/solve_mesh.wgsl").into(),
+                ),
+            });
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("solve_mesh"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("solve"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            let surfs_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("solve-surfs"),
+                contents: bytemuck::cast_slice(&surfs),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+            let job = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("solve-job"),
+                size: core::mem::size_of::<GpuSolveJob>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let dyn_buf = |label: &str, bytes: usize| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size: bytes as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            };
+            let chains = dyn_buf("solve-chains", MAX_SOLVE_CHAINS * 8);
+            let srcs = dyn_buf(
+                "solve-srcs",
+                MAX_SOLVE_SOURCES * core::mem::size_of::<GpuSolveSrc>(),
+            );
+            let extras = dyn_buf(
+                "solve-extras",
+                MAX_SOLVE_EXTRAS * core::mem::size_of::<layout::GpuExtra>(),
+            );
+            let recs_bytes =
+                MAX_SOLVE_SOURCES * MAX_SOLVE_CHAINS * core::mem::size_of::<GpuSolveRec>();
+            let recs = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("solve-recs"),
+                size: recs_bytes as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let read = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("solve-read"),
+                size: recs_bytes as u64,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("solve_mesh"),
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: job.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: nodes_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: prims_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: mats_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 4, resource: surfs_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: chains.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 6, resource: srcs.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 7, resource: extras.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 8, resource: recs.as_entire_binding() },
+                ],
+            });
+            SolveState { pipeline, job, chains, srcs, extras, recs, read, bind }
+        });
+
         Some(Self {
             device,
             queue,
@@ -392,7 +499,113 @@ impl GpuMeshTracer {
             disc_read,
             disc_bind,
             disc_n_boxes,
+            solve,
         })
+    }
+
+    /// K4 (C7a): solve every (source × chain) pair in one dispatch.
+    /// `out[si * chains.len() + ci]` gets the pair's record or None.
+    /// Returns false (untouched `out`) when the solve pipeline wasn't
+    /// built or a cap is exceeded — the caller's CPU path takes over.
+    pub fn solve_batch(
+        &self,
+        sources: &[(u16, Vec3)],
+        chains: &[omg_core::pt_mesh::MChain],
+        listener: Vec3,
+        extras: &[omg_core::pt::Aabb],
+        out: &mut Vec<Option<omg_core::pt_mesh::MeshRecord>>,
+    ) -> bool {
+        let Some(s) = &self.solve else { return false };
+        // a clamped input would silently change the physics (missing
+        // occluders, missing chains) — refuse instead, CPU covers it
+        if sources.is_empty()
+            || sources.len() > MAX_SOLVE_SOURCES
+            || chains.is_empty()
+            || chains.len() > MAX_SOLVE_CHAINS
+            || extras.len() > MAX_SOLVE_EXTRAS
+        {
+            return false;
+        }
+        let job = GpuSolveJob {
+            n_sources: sources.len() as u32,
+            n_chains: chains.len() as u32,
+            n_extras: extras.len() as u32,
+            _p0: 0,
+            listener: [listener.x, listener.y, listener.z],
+            _p1: 0,
+        };
+        self.queue.write_buffer(&s.job, 0, bytemuck::bytes_of(&job));
+        let cw: Vec<u32> = chains
+            .iter()
+            .flat_map(|(c, order)| {
+                [
+                    (c[0] as u32) | ((c[1] as u32) << 16),
+                    (c[2] as u32) | ((*order as u32) << 16),
+                ]
+            })
+            .collect();
+        self.queue.write_buffer(&s.chains, 0, bytemuck::cast_slice(&cw));
+        let sw: Vec<GpuSolveSrc> = sources
+            .iter()
+            .map(|(id, p)| GpuSolveSrc { pos: [p.x, p.y, p.z], id: *id as u32 })
+            .collect();
+        self.queue.write_buffer(&s.srcs, 0, bytemuck::cast_slice(&sw));
+        if !extras.is_empty() {
+            let xw: Vec<layout::GpuExtra> = extras
+                .iter()
+                .map(|x| layout::GpuExtra {
+                    bmin: [x.min.x, x.min.y, x.min.z],
+                    _p0: 0,
+                    bmax: [x.max.x, x.max.y, x.max.z],
+                    _p1: 0,
+                    trans: x.transmission,
+                    _p2: 0,
+                })
+                .collect();
+            self.queue.write_buffer(&s.extras, 0, bytemuck::cast_slice(&xw));
+        }
+
+        let n_pairs = sources.len() * chains.len();
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("solve") });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("solve"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&s.pipeline);
+            pass.set_bind_group(0, &s.bind, &[]);
+            pass.dispatch_workgroups((n_pairs as u32).div_ceil(64), 1, 1);
+        }
+        let bytes = (n_pairs * core::mem::size_of::<GpuSolveRec>()) as u64;
+        enc.copy_buffer_to_buffer(&s.recs, 0, &s.read, 0, bytes);
+        self.queue.submit([enc.finish()]);
+        s.read
+            .slice(..bytes)
+            .map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        {
+            let view = s.read.slice(..bytes).get_mapped_range().expect("mapped recs");
+            let recs: &[GpuSolveRec] = bytemuck::cast_slice(&view);
+            out.clear();
+            out.reserve(n_pairs);
+            for (si, &(id, _)) in sources.iter().enumerate() {
+                for (ci, &(chain, order)) in chains.iter().enumerate() {
+                    let r = &recs[si * chains.len() + ci];
+                    out.push((r.valid != 0).then(|| omg_core::pt_mesh::MeshRecord {
+                        source: id,
+                        chain,
+                        order,
+                        delay_s: r.delay,
+                        dir: r.dir,
+                        gains: r.gains,
+                    }));
+                }
+            }
+        }
+        s.read.unmap();
+        true
     }
 
     /// One synchronous discovery dispatch: the listener fan over the
@@ -548,6 +761,12 @@ pub struct GpuWorldDiscovery {
     base: u16,
 }
 
+/// The batched solve (K4) as the world-solve provider — same device,
+/// same BVH, same SurfaceTable ids as the CPU side.
+pub struct GpuWorldSolve {
+    tracer: std::sync::Arc<GpuMeshTracer>,
+}
+
 const WORLD_RAY_MULT: u32 = 8;
 const WORLD_RAY_CAP: u32 = 8192;
 
@@ -571,6 +790,42 @@ impl GpuWorldLateBackend {
             Self { tracer: tracer.clone(), seed: 0x5EED_C6D1 },
             GpuWorldDiscovery { tracer, base },
         ))
+    }
+
+    /// All three world backends (K2 trace, K3 discovery, K4 batched
+    /// solve) over one device and one BVH upload. `furn` are the
+    /// significant furniture boxes WITH materials, in the same order
+    /// the CPU side appends them to its SurfaceTable — id congruence
+    /// between the two tables is what makes the batch replayable.
+    pub fn with_discovery_and_solve(
+        mesh: &Mesh,
+        furn: &[(Vec3, Vec3, Material)],
+    ) -> Option<(Self, GpuWorldDiscovery, GpuWorldSolve)> {
+        let mut table = omg_core::pt_mesh::SurfaceTable::build(mesh);
+        for (mn, mx, m) in furn {
+            table.append_box(*mn, *mx, m);
+        }
+        let base = table.base_overlay;
+        let boxes: Vec<(Vec3, Vec3)> = furn.iter().map(|(mn, mx, _)| (*mn, *mx)).collect();
+        let tracer = std::sync::Arc::new(GpuMeshTracer::with_solve(mesh, &boxes, &table)?);
+        Some((
+            Self { tracer: tracer.clone(), seed: 0x5EED_C6D1 },
+            GpuWorldDiscovery { tracer: tracer.clone(), base },
+            GpuWorldSolve { tracer },
+        ))
+    }
+}
+
+impl omg_scene::early_world::WorldSolve for GpuWorldSolve {
+    fn solve_batch(
+        &mut self,
+        sources: &[(u16, Vec3)],
+        chains: &[omg_core::pt_mesh::MChain],
+        listener: Vec3,
+        extras: &[omg_core::pt::Aabb],
+        out: &mut Vec<Option<omg_core::pt_mesh::MeshRecord>>,
+    ) -> bool {
+        self.tracer.solve_batch(sources, chains, listener, extras, out)
     }
 }
 

@@ -581,8 +581,26 @@ impl Mesh {
         }
         out.sort_by(|x, y| x.t.total_cmp(&y.t));
         // Same-t dedup: a crossing on the shared edge/diagonal of coplanar
-        // triangles is ONE physical surface, not two.
-        out.dedup_by(|next, kept| (next.t - kept.t).abs() < 1e-4 / len.max(1.0));
+        // triangles is ONE physical surface, not two. Within a cluster the
+        // LOWEST surface id wins — adjacent rooms author a shared wall
+        // twice with different materials, and the two triangles' float t
+        // order flips with sub-ulp ray noise (and between CPU and GPU),
+        // so "smallest t" would make the paid material nondeterministic.
+        let tol = 1e-4 / len.max(1.0);
+        let mut w = 0usize;
+        for i in 0..out.len() {
+            if w > 0 && (out[i].t - out[w - 1].t).abs() < tol {
+                if self.tri_surface(out[i].tri) < self.tri_surface(out[w - 1].tri) {
+                    // keep the cluster's anchor t, take the winner's identity
+                    out[w - 1].tri = out[i].tri;
+                    out[w - 1].material = out[i].material;
+                }
+            } else {
+                out[w] = out[i];
+                w += 1;
+            }
+        }
+        out.truncate(w);
     }
 }
 

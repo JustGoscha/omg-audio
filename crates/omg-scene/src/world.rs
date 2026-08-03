@@ -404,6 +404,31 @@ impl WorldSim {
                     }
                 }
             }
+            // C7a: one batched (source × chain) dispatch replaces the
+            // per-source exact solves — solve_source replays from it.
+            // The skip rules mirror the render loop's own (muted,
+            // inactive dynamics, LOD-quiet off-beat); a source the
+            // batch misses just takes the CPU solve as before.
+            let n_static = self.defs.len() - walkthrough::DYN_SLOTS;
+            let mut batch_srcs: Vec<(u16, Vec3)> = Vec::new();
+            for si in 0..self.defs.len() {
+                let def = &self.defs[si];
+                if self.muted[si] || (si >= n_static && !self.dynamic_active[si - n_static]) {
+                    continue;
+                }
+                if self.last_level[si] < LOD_QUIET && (self.tick_no + si as u64) % 4 != 0 {
+                    continue;
+                }
+                let n_em = if def.emitters.len() > 1 { def.emitters.len() } else { 1 };
+                for ei in 0..n_em {
+                    let (ex, ey) = if n_em > 1 { def.emitters[ei] } else { def.pos };
+                    batch_srcs.push(((si * 8 + ei) as u16, Vec3::new(ex, ey, self.src_z[si])));
+                }
+            }
+            self.early_world
+                .as_mut()
+                .unwrap()
+                .batch_solve(&batch_srcs, eye, &self.extras_buf);
         }
         let mut blocks = Vec::with_capacity(self.defs.len());
         let mut routes = Vec::with_capacity(self.defs.len());

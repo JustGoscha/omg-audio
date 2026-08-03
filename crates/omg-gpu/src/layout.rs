@@ -155,6 +155,105 @@ pub struct GpuMeshJob {
     pub _p3: u32,
 }
 
+// ------------------------------------------ C7a: batched solve (K4)
+
+/// Bump on ANY change to the solve-kernel structs here or in
+/// solve_mesh.wgsl.
+pub const SOLVE_LAYOUT_VERSION: u32 = 1;
+/// Per-dispatch caps — sources beyond the cap fall back to the CPU
+/// solve per source; the chain cap sits above the sim's MAX_CHAINS.
+pub const MAX_SOLVE_SOURCES: usize = 128;
+pub const MAX_SOLVE_CHAINS: usize = 400;
+pub const MAX_SOLVE_EXTRAS: usize = 256;
+
+/// One authored plane / overlay face of the SurfaceTable. WGSL: n @0,
+/// d @12, refl @16, has_rect @28, trans @32, rmin @48, rmax @64 — 80 B.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuSurface {
+    pub n: [f32; 3],
+    pub d: f32,
+    pub refl: [f32; 3],
+    pub has_rect: u32,
+    pub trans: [f32; 3],
+    pub _p0: u32,
+    pub rmin: [f32; 3],
+    pub _p1: u32,
+    pub rmax: [f32; 3],
+    pub _p2: u32,
+}
+
+/// The solve job uniform. WGSL: n_sources @0, n_chains @4, n_extras @8,
+/// listener @16 — 32 B.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuSolveJob {
+    pub n_sources: u32,
+    pub n_chains: u32,
+    pub n_extras: u32,
+    pub _p0: u32,
+    pub listener: [f32; 3],
+    pub _p1: u32,
+}
+
+/// One source in the batch: world position + the caller's source key.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuSolveSrc {
+    pub pos: [f32; 3],
+    pub id: u32,
+}
+
+/// A transient blocker box with per-band transmission (door leaves,
+/// panes, furniture) — pt::Aabb for the kernel. 48 B.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuExtra {
+    pub bmin: [f32; 3],
+    pub _p0: u32,
+    pub bmax: [f32; 3],
+    pub _p1: u32,
+    pub trans: [f32; 3],
+    pub _p2: u32,
+}
+
+/// One solved record slot, (source-major) pair order. 32 B.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuSolveRec {
+    pub dir: [f32; 3],
+    pub delay: f32,
+    pub gains: [f32; 3],
+    pub valid: u32,
+}
+
+/// Flatten a SurfaceTable (authored planes + rect-bounded overlay
+/// faces) into the solve kernel's surfaces buffer.
+pub fn flatten_surfaces(table: &omg_core::pt_mesh::SurfaceTable) -> Vec<GpuSurface> {
+    table
+        .surfaces
+        .iter()
+        .map(|s| {
+            let (rmin, rmax) = s.rect.unwrap_or((
+                omg_core::vec3::Vec3::new(0.0, 0.0, 0.0),
+                omg_core::vec3::Vec3::new(0.0, 0.0, 0.0),
+            ));
+            GpuSurface {
+                n: [s.n.x, s.n.y, s.n.z],
+                d: s.d,
+                refl: s.refl,
+                has_rect: s.rect.is_some() as u32,
+                trans: s.trans,
+                _p0: 0,
+                rmin: [rmin.x, rmin.y, rmin.z],
+                _p1: 0,
+                rmax: [rmax.x, rmax.y, rmax.z],
+                _p2: 0,
+            }
+        })
+        .collect()
+}
+
 /// Flatten a mesh's BVH + materials into the kernel's buffers.
 pub fn flatten_mesh(
     mesh: &omg_core::mesh::Mesh,
@@ -240,5 +339,24 @@ mod tests {
         assert_eq!(core::mem::offset_of!(GpuMeshJob, source), 16);
         assert_eq!(core::mem::offset_of!(GpuMeshJob, listener), 32);
         assert_eq!(core::mem::offset_of!(GpuMeshJob, energy), 48);
+    }
+
+    #[test]
+    fn solve_layout_sizes() {
+        assert_eq!(core::mem::size_of::<GpuSurface>(), 80);
+        assert_eq!(core::mem::offset_of!(GpuSurface, refl), 16);
+        assert_eq!(core::mem::offset_of!(GpuSurface, has_rect), 28);
+        assert_eq!(core::mem::offset_of!(GpuSurface, trans), 32);
+        assert_eq!(core::mem::offset_of!(GpuSurface, rmin), 48);
+        assert_eq!(core::mem::offset_of!(GpuSurface, rmax), 64);
+        assert_eq!(core::mem::size_of::<GpuSolveJob>(), 32);
+        assert_eq!(core::mem::offset_of!(GpuSolveJob, listener), 16);
+        assert_eq!(core::mem::size_of::<GpuSolveSrc>(), 16);
+        assert_eq!(core::mem::size_of::<GpuExtra>(), 48);
+        assert_eq!(core::mem::offset_of!(GpuExtra, bmax), 16);
+        assert_eq!(core::mem::offset_of!(GpuExtra, trans), 32);
+        assert_eq!(core::mem::size_of::<GpuSolveRec>(), 32);
+        assert_eq!(core::mem::offset_of!(GpuSolveRec, gains), 16);
+        assert_eq!(core::mem::offset_of!(GpuSolveRec, valid), 28);
     }
 }

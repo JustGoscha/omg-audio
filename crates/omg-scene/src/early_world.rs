@@ -35,6 +35,32 @@ pub fn clear_world_discovery() {
     *DISCOVERY.lock().unwrap() = None;
 }
 
+/// C7a: a batched (source × chain) solve provider (the K4 kernel). One
+/// call per tick solves EVERY pair against the same chain list;
+/// `out[si * chains.len() + ci]` holds the pair's record or None. A
+/// `false` return (or missing sources beyond a device cap) falls back
+/// to the per-source CPU solve — physics never depends on the GPU.
+pub trait WorldSolve: Send {
+    fn solve_batch(
+        &mut self,
+        sources: &[(u16, Vec3)],
+        chains: &[MChain],
+        listener: Vec3,
+        extras: &[Aabb],
+        out: &mut Vec<Option<MeshRecord>>,
+    ) -> bool;
+}
+
+static SOLVER: Mutex<Option<Box<dyn WorldSolve>>> = Mutex::new(None);
+
+pub fn set_world_solver(s: Box<dyn WorldSolve>) {
+    *SOLVER.lock().unwrap() = Some(s);
+}
+
+pub fn clear_world_solver() {
+    *SOLVER.lock().unwrap() = None;
+}
+
 /// Ticks a pending async provider may stay silent before the CPU fan
 /// backstops it (chains TTL over 200 ticks; this is far inside that).
 const PROVIDER_GRACE: u32 = 20;
@@ -69,6 +95,12 @@ pub struct WorldEarly {
     /// True when the last discovery came from a registered provider —
     /// telemetry for the UI's early cell.
     pub gpu_discovery: bool,
+    /// C7a: this tick's batched solve results, keyed by source id —
+    /// `solve_source` replays from here instead of solving on the CPU.
+    batch: HashMap<u16, Vec<MeshRecord>>,
+    batch_out: Vec<Option<MeshRecord>>,
+    /// True when the current tick's records came from the batch solver.
+    pub gpu_solve: bool,
     /// Debug-ray capture: enabled by the first consumer call, filled
     /// during solves as [src_idx, n_verts, xyz × n]… in world coords.
     pub debug_on: bool,
@@ -95,14 +127,76 @@ impl WorldEarly {
             verts_buf: Vec::new(),
             pending: 0,
             gpu_discovery: false,
+            batch: HashMap::new(),
+            batch_out: Vec::new(),
+            gpu_solve: false,
             debug_on: false,
             debug_buf: Vec::new(),
         }
     }
 
+    /// The chain list a batched solve (and the CPU replay order) uses:
+    /// the direct path first, then the cached chains in sorted order,
+    /// overlay-face chains gated by the furniture switch — exactly the
+    /// order `solve_source`'s CPU path walks.
+    fn chain_list(&self, out: &mut Vec<MChain>) {
+        out.clear();
+        out.push(([omg_core::pt_mesh::NO_SURF; omg_core::pt_mesh::M_MAX_ORDER], 0));
+        let furn_ok = crate::quality::furniture_on();
+        let mut cs: Vec<MChain> = self.chains.keys().copied().collect();
+        cs.sort();
+        for (chain, order) in cs {
+            if !furn_ok
+                && chain[..order as usize]
+                    .iter()
+                    .any(|&sid| sid >= self.table.base_overlay)
+            {
+                continue;
+            }
+            out.push((chain, order));
+        }
+    }
+
+    /// C7a: one batched solve for the whole tick's source set. Fills
+    /// the per-source replay cache; sources the provider didn't cover
+    /// (no provider, over its cap, failed dispatch) simply miss the
+    /// cache and take the CPU path in `solve_source`.
+    pub fn batch_solve(&mut self, sources: &[(u16, Vec3)], listener: Vec3, extras: &[Aabb]) {
+        self.batch.clear();
+        self.gpu_solve = false;
+        if sources.is_empty() {
+            return;
+        }
+        let mut guard = SOLVER.lock().unwrap();
+        let Some(solver) = guard.as_mut() else { return };
+        let mut list = Vec::new();
+        self.chain_list(&mut list);
+        self.batch_out.clear();
+        if !solver.solve_batch(sources, &list, listener, extras, &mut self.batch_out) {
+            return;
+        }
+        let nch = list.len();
+        if self.batch_out.len() < sources.len() * nch {
+            return;
+        }
+        for (si, &(id, _)) in sources.iter().enumerate() {
+            let recs: Vec<MeshRecord> = self.batch_out[si * nch..(si + 1) * nch]
+                .iter()
+                .flatten()
+                .copied()
+                .collect();
+            self.batch.insert(id, recs);
+        }
+        self.gpu_solve = true;
+    }
+
     /// Once per tick: run the listener fan (the registered GPU provider
     /// when present, the CPU fan otherwise), refresh the shared TTL table.
     pub fn begin_tick(&mut self, mesh: &Mesh, listener: Vec3) {
+        // last tick's batched records must never leak into this tick
+        // (sources move) — batch_solve refills after discovery
+        self.batch.clear();
+        self.gpu_solve = false;
         self.scratch.clear();
         let (provided, have_provider) = {
             let mut guard = DISCOVERY.lock().unwrap();
@@ -175,32 +269,48 @@ impl WorldEarly {
         out: &mut Vec<MeshRecord>,
     ) {
         out.clear();
-        if let Some(r) = mesh_record(mesh, &self.table, &[], source, src, listener, extras, &mut self.seg_buf) {
-            out.push(r);
-        }
-        // deterministic order (HashMap iteration is not): sort chains so
-        // the dedupe winner is stable across ticks
-        self.scratch.clear();
-        self.scratch.extend(self.chains.keys().copied());
-        self.scratch.sort();
-        let furn_ok = crate::quality::furniture_on();
-        for &(chain, order) in &self.scratch {
-            let c = &chain[..order as usize];
-            // furniture switch off: overlay-face chains stay cached but
-            // emit nothing (identical to how occluded seeds behave)
-            if !furn_ok && c.iter().any(|&sid| sid >= self.table.base_overlay) {
-                continue;
-            }
-            let Some(r) = mesh_record(mesh, &self.table, c, source, src, listener, extras, &mut self.seg_buf)
-            else {
-                continue;
-            };
-            let dup = out.iter().any(|q| {
+        let dup_of = |out: &[MeshRecord], r: &MeshRecord| {
+            out.iter().any(|q| {
                 (q.delay_s - r.delay_s).abs() < 1e-4
                     && q.dir[0] * r.dir[0] + q.dir[1] * r.dir[1] + q.dir[2] * r.dir[2] > 0.999
-            });
-            if !dup {
+            })
+        };
+        if let Some(recs) = self.batch.get(&source) {
+            // C7a replay: the batch already solved this source against
+            // the same chain list in the same order — only the
+            // geometric dedupe (chain records only) remains CPU-side.
+            for r in recs {
+                if r.order == 0 || !dup_of(out, r) {
+                    out.push(*r);
+                }
+            }
+        } else {
+            if let Some(r) =
+                mesh_record(mesh, &self.table, &[], source, src, listener, extras, &mut self.seg_buf)
+            {
                 out.push(r);
+            }
+            // deterministic order (HashMap iteration is not): sort chains so
+            // the dedupe winner is stable across ticks
+            self.scratch.clear();
+            self.scratch.extend(self.chains.keys().copied());
+            self.scratch.sort();
+            let furn_ok = crate::quality::furniture_on();
+            for &(chain, order) in &self.scratch {
+                let c = &chain[..order as usize];
+                // furniture switch off: overlay-face chains stay cached but
+                // emit nothing (identical to how occluded seeds behave)
+                if !furn_ok && c.iter().any(|&sid| sid >= self.table.base_overlay) {
+                    continue;
+                }
+                let Some(r) =
+                    mesh_record(mesh, &self.table, c, source, src, listener, extras, &mut self.seg_buf)
+                else {
+                    continue;
+                };
+                if !dup_of(out, &r) {
+                    out.push(r);
+                }
             }
         }
         if self.debug_on && self.debug_buf.len() < DEBUG_CAP {
