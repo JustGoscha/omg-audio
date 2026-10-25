@@ -1,6 +1,14 @@
 //! Native wgpu host for the GPU trace kernels (GPU_PLAN.md Track A).
 //! Phase 1: synchronous single-job dispatch, validated against the
 //! Phase 0 goldens; the pipelined LateBackend ring is Phase 2.
+//!
+//! Feature `legacy` (default): the demo's v2 backend seams
+//! (`omg_scene::{early, early_world, late}`). Without it this crate needs
+//! only omg-core: the engine's v3 walker (`GpuV3Walker`) implements
+//! `omg_core::v3::walker::V3Walker`.
+
+// without the demo seams some v2 helpers have no caller
+#![cfg_attr(not(feature = "legacy"), allow(dead_code, unused_imports))]
 
 pub mod layout;
 pub mod v3;
@@ -819,6 +827,7 @@ impl GpuWorldLateBackend {
     }
 }
 
+#[cfg(feature = "legacy")]
 impl omg_scene::early_world::WorldSolve for GpuWorldSolve {
     fn solve_batch(
         &mut self,
@@ -832,6 +841,7 @@ impl omg_scene::early_world::WorldSolve for GpuWorldSolve {
     }
 }
 
+#[cfg(feature = "legacy")]
 impl omg_scene::early_world::WorldDiscovery for GpuWorldDiscovery {
     fn discover(
         &mut self,
@@ -845,6 +855,7 @@ impl omg_scene::early_world::WorldDiscovery for GpuWorldDiscovery {
     }
 }
 
+#[cfg(feature = "legacy")]
 impl omg_scene::late::WorldLateBackend for GpuWorldLateBackend {
     fn trace_world(
         &mut self,
@@ -1032,6 +1043,7 @@ pub fn decode_chain_bitmap(words: &[u32; 9], out: &mut Vec<omg_core::pt::Chain>)
     }
 }
 
+#[cfg(feature = "legacy")]
 impl omg_scene::early::EarlyDiscovery for GpuEarlyDiscovery {
     fn discover(
         &mut self,
@@ -1051,6 +1063,7 @@ impl omg_scene::early::EarlyDiscovery for GpuEarlyDiscovery {
     }
 }
 
+#[cfg(feature = "legacy")]
 impl omg_scene::late::LateBackend for GpuLateBackend {
     fn trace(
         &mut self,

@@ -139,7 +139,8 @@ struct Mat {
     absorption: vec3<f32>,
     scattering: f32,
     transmission: vec3<f32>,
-    _p: u32,
+    // > 0: authored wall thickness (Mesh::material_thickness), else inferred
+    thickness: f32,
 }
 
 @group(0) @binding(0) var<uniform> job: Job;
@@ -438,6 +439,9 @@ fn mesh_transmission(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
         if (i + 1u < w && seg_mat[i + 1u] == m) {
             thickness = max((seg_t[i + 1u] - seg_t[i]) * len, 0.01);
             i += 1u;
+        }
+        if (mats[m].thickness > 0.0) {
+            thickness = mats[m].thickness;
         }
         let kk = min(REF_THICKNESS_M / max(thickness, 0.02), 2.0);
         g = g * min(mats[m].transmission * kk, vec3<f32>(0.9));

@@ -8,6 +8,7 @@ members = [
     "crates/omg-web",
     "crates/omg-godot",
     "crates/omg-gpu",
+    "crates/omg-audio",
 ]
 
 [profile.release]

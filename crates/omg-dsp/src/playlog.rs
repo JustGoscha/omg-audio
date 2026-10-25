@@ -27,7 +27,12 @@ struct LoopSeg {
     /// Emission time this loop took over (its phase origin);
     /// −∞ for a source's first loop, which has always been playing.
     start: f64,
+    gain: f32,
+    rate: f32,
 }
+
+/// Loop segments kept preallocated (a few hand-overs within one horizon).
+const LOOPS_RESERVED: usize = 4;
 
 struct Shot {
     kind: u32,
@@ -57,12 +62,51 @@ impl PlayLog {
         Self::default()
     }
 
+    /// A log with its event storage reserved up front: `play` and loop
+    /// hand-overs then never allocate (real-time callers).
+    pub fn preallocated() -> Self {
+        Self { loops: Vec::with_capacity(LOOPS_RESERVED), shots: Vec::with_capacity(MAX_SHOTS) }
+    }
+
     /// Loop `clip` from emission time `now` on. A source's first loop has
     /// always been playing, so a far source's bed is there from the start
     /// instead of arriving one travel time late.
     pub fn set_loop(&mut self, clip: Clip, now: f64) {
+        self.set_loop_with(clip, now, 1.0, 1.0);
+    }
+
+    /// `set_loop` at its own level and playback rate.
+    pub fn set_loop_with(&mut self, clip: Clip, now: f64, gain: f32, rate: f32) {
         let start = if self.loops.is_empty() { f64::NEG_INFINITY } else { now };
-        self.loops.push(LoopSeg { clip, start });
+        let rate = if rate > 0.0 { rate } else { 1.0 };
+        self.loops.push(LoopSeg { clip, start, gain, rate });
+    }
+
+    /// End the loop at emission time `now` (paths still carrying what it
+    /// emitted before play it out). `silence` is an empty clip the caller
+    /// keeps around, so stopping never allocates.
+    pub fn stop_loop(&mut self, now: f64, silence: Clip) {
+        if self.loops.last().is_some_and(|l| !l.clip.is_empty()) {
+            self.loops.push(LoopSeg { clip: silence, start: now, gain: 0.0, rate: 1.0 });
+        }
+    }
+
+    /// Last emission time anything on record still sounds: +∞ while a
+    /// loop plays, −∞ when nothing was ever played. A renderer whose
+    /// paths and reverb have all moved past this has nothing left to say.
+    pub fn sounds_until(&self) -> f64 {
+        if self.loops.last().is_some_and(|l| !l.clip.is_empty() && l.gain != 0.0) {
+            return f64::INFINITY;
+        }
+        // a stopped loop sounds up to its stop
+        let mut end = f64::NEG_INFINITY;
+        if self.loops.len() > 1 {
+            end = self.loops[self.loops.len() - 1].start;
+        }
+        for s in &self.shots {
+            end = end.max(s.end());
+        }
+        end
     }
 
     /// Start a one-shot at emission time `now`. False when the log is full.
@@ -107,7 +151,11 @@ impl PlayLog {
         };
         if let Some(seg) = seg {
             let origin = if seg.start.is_finite() { seg.start } else { 0.0 };
-            x += loop_sample(&seg.clip, t - origin);
+            x += if seg.rate == 1.0 {
+                loop_sample(&seg.clip, t - origin)
+            } else {
+                loop_sample(&seg.clip, (t - origin) * seg.rate as f64)
+            } * seg.gain;
         }
         for s in &self.shots {
             if t >= s.start && t < s.stop {
@@ -211,6 +259,22 @@ mod tests {
         assert_eq!(log.at(1001.0), 8.0);
         log.forget_before(1000.0);
         assert_eq!(log.loops.len(), 1);
+    }
+
+    #[test]
+    fn loops_take_gain_rate_and_stop() {
+        let mut log = PlayLog::preallocated();
+        assert_eq!(log.sounds_until(), f64::NEG_INFINITY);
+        log.set_loop_with(clip(&[1.0, 2.0, 3.0, 4.0]), 0.0, 0.5, 2.0);
+        assert_eq!(log.at(0.0), 0.5);
+        assert_eq!(log.at(1.0), 1.5, "rate 2 skips a sample");
+        assert_eq!(log.sounds_until(), f64::INFINITY);
+        log.stop_loop(10.0, clip(&[]));
+        assert_eq!(log.at(9.0), 1.5, "before the stop: still looping (18 mod 4 = 2)");
+        assert_eq!(log.at(10.0), 0.0);
+        assert_eq!(log.sounds_until(), 10.0);
+        log.play(0, clip(&[1.0; 5]), 20.0, 1.0, 1.0);
+        assert_eq!(log.sounds_until(), 25.0);
     }
 
     #[test]

@@ -988,6 +988,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "omg-audio"
+version = "0.1.0"
+dependencies = [
+ "omg-core",
+ "omg-dsp",
+ "omg-gpu",
+]
+
+[[package]]
 name = "omg-core"
 version = "0.1.0"
 

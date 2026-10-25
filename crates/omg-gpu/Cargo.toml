@@ -5,9 +5,15 @@ edition = "2021"
 
 [dependencies]
 omg-core = { path = "../omg-core" }
-omg-scene = { path = "../omg-scene" }
+omg-scene = { path = "../omg-scene", optional = true }
 wgpu = "30.0.0"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 
+[features]
+# the demo's v2 backend seams (omg_scene); the v3 walker needs only omg-core
+default = ["legacy"]
+legacy = ["dep:omg-scene"]
+
 [dev-dependencies]
+omg-scene = { path = "../omg-scene" }
