@@ -345,7 +345,7 @@ impl WorldSim {
         lz: f32,
         yaw: f32,
     ) -> (Vec<ParamBlock>, TickInfo) {
-        let bs = blended_state_for(&self.rooms, lx, ly, lz, yaw);
+        let bs = blended_state_for(&self.rooms, &self.doors, lx, ly, lz, yaw);
         self.tick_blended(bs)
     }
 

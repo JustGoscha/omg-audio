@@ -851,17 +851,24 @@ pub struct BlendedState {
 pub fn blended_state_at(rooms: &[RoomDef], t: f32) -> BlendedState {
     let st = state_at(rooms, t);
     let (lx, ly) = st.listener_world;
-    blended_state_for(rooms, lx, ly, EYE_HEIGHT, st.yaw)
+    blended_state_for(rooms, &doors(), lx, ly, EYE_HEIGHT, st.yaw)
 }
 
 /// Blend state for an arbitrary listener pose (interactive/web input).
-/// `lz` is the EYE height in world coordinates (feet + 1.6).
-pub fn blended_state_for(rooms: &[RoomDef], lx: f32, ly: f32, lz: f32, yaw: f32) -> BlendedState {
+/// `lz` is the EYE height in world coordinates (feet + 1.6). `all_doors`
+/// is the scene's door list (the blend anchors on its non-glass doors).
+pub fn blended_state_for(
+    rooms: &[RoomDef],
+    all_doors: &[Door],
+    lx: f32,
+    ly: f32,
+    lz: f32,
+    yaw: f32,
+) -> BlendedState {
     let raw = (lx, ly, lz);
     let primary = state_in_room(rooms, room_of_z(rooms, lx, ly, lz), lx, ly, lz, yaw);
     let (lx, ly) = primary.listener_world;
 
-    let all_doors = doors();
     let mut nearest: Option<(usize, f32)> = None;
     for (i, d) in all_doors.iter().enumerate() {
         if d.glass {
@@ -939,6 +946,17 @@ impl Routed {
     }
 }
 
+/// Room-index space of the door graph: every room any door names, plus
+/// both endpoints — the BFS tables are sized from the graph it walks,
+/// not from the demo's room list, so any scene's rooms/doors route.
+fn graph_size(a: usize, b: usize, all_doors: &[Door]) -> usize {
+    all_doors
+        .iter()
+        .map(|d| d.rooms.0.max(d.rooms.1))
+        .fold(a.max(b), usize::max)
+        + 1
+}
+
 pub fn route_source(
     src: &SourceDef,
     lis_room: usize,
@@ -958,7 +976,7 @@ pub fn route_source(
     }
 
     // BFS over the door graph from the source's room to the listener's.
-    let n_rooms = rooms().len();
+    let n_rooms = graph_size(src.room, lis_room, all_doors);
     let mut prev: Vec<Option<usize>> = vec![None; n_rooms]; // door index used
     let mut visited = vec![false; n_rooms];
     let mut queue = std::collections::VecDeque::new();
@@ -1007,7 +1025,7 @@ pub fn door_chain(src_room: usize, lis_room: usize, all_doors: &[Door]) -> Vec<u
     if src_room == lis_room {
         return Vec::new();
     }
-    let n_rooms = rooms().len();
+    let n_rooms = graph_size(src_room, lis_room, all_doors);
     let mut prev: Vec<Option<usize>> = vec![None; n_rooms];
     let mut visited = vec![false; n_rooms];
     let mut queue = std::collections::VecDeque::new();

@@ -12,6 +12,7 @@ pub mod fdn;
 pub mod filter;
 pub mod hrtf;
 pub mod level;
+pub mod near;
 pub mod output;
 pub mod rain;
 pub mod renderer;

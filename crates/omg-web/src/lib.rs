@@ -874,32 +874,14 @@ struct Voice {
     pos: usize,
 }
 
-/// A NEAR-FIELD one-shot, rendered straight into the ear buffers and
-/// bypassing propagation entirely. HRTFs are far-field measurements
-/// (≥ 1 m); inside that radius the inverse-distance law ACROSS THE
-/// HEAD dominates anything the grid can express: a whisper 6 cm off
-/// the left ear is ~14 dB louder there than at the right ear before
-/// head shadow, and the shadow then removes most of a whisper's
-/// sibilant band on top — which is why a whisper into one ear is
-/// near-inaudible at the other. Model: per-ear 1/r with the far ear's
-/// path measured around the head, a fixed ITD delay, and a one-pole
-/// shadow lowpass. Room send is omitted on purpose — at whisper level
-/// the reflections sit far below audibility.
-struct NearVoice {
+/// A NEAR-FIELD one-shot (a whisper at the ear): an fx-bank buffer fed
+/// through `omg_dsp::near::NearVoice`, rendered straight into the ear
+/// buffers and bypassing propagation entirely (see that module for the
+/// model: per-ear 1/r around the head, ITD, head-shadow lowpass).
+struct NearPlay {
     buf: usize,
     pos: usize,
-    right: bool,
-    near_g: f32,
-    far_g: f32,
-    /// far-ear head-shadow one-pole coefficient + state
-    lp_k: f32,
-    lp: f32,
-    /// far-ear ITD ring (~0.65 ms around the head)
-    dl: [f32; 64],
-    dpos: usize,
-    itd: usize,
-    /// declick ramp, samples remaining
-    fade: usize,
+    ear: omg_dsp::near::NearVoice,
 }
 
 struct EngCtx {
@@ -919,7 +901,7 @@ struct EngCtx {
     fx_bufs: Vec<Vec<f32>>,
     fx_stage: Option<&'static mut [f32]>,
     voices: Vec<Voice>,
-    near_voices: Vec<NearVoice>,
+    near_voices: Vec<NearPlay>,
     ambient_stage: Option<&'static mut [f32]>,
     ambience: omg_dsp::ambience::Ambience,
     rain: omg_dsp::rain::Rain,
@@ -1082,29 +1064,13 @@ pub extern "C" fn eng_fx_stop(src: u32, kind: u32) {
 #[no_mangle]
 pub extern "C" fn eng_whisper_play(kind: u32, right: u32, dist_m: f32, gain: f32) {
     let ctx = eng();
-    if (kind as usize) >= ctx.fx_bufs.len() || ctx.near_voices.len() >= 4 {
+    if (kind as usize) >= ctx.fx_bufs.len() || ctx.near_voices.len() >= omg_dsp::near::MAX_VOICES {
         return;
     }
-    let d = dist_m.clamp(0.02, 0.6);
-    // amplitudes normalized so gain IS the near-ear level at 6 cm;
-    // the head detour adds ~0.25 m of path for the far ear
-    let near_g = gain * 0.06 / d;
-    let far_g = gain * 0.06 / (d + 0.25);
-    let sr = ctx.sample_rate;
-    ctx.near_voices.push(NearVoice {
+    ctx.near_voices.push(NearPlay {
         buf: kind as usize,
         pos: 0,
-        right: right != 0,
-        near_g,
-        far_g,
-        // shadow corner ~700 Hz: the whisper's sibilance (2–8 kHz)
-        // dies crossing the head, the low murmur survives
-        lp_k: (-2.0 * core::f32::consts::PI * 700.0 / sr).exp(),
-        lp: 0.0,
-        dl: [0.0; 64],
-        dpos: 0,
-        itd: ((0.00065 * sr) as usize).clamp(1, 63),
-        fade: 256,
+        ear: omg_dsp::near::NearVoice::new(ctx.sample_rate, right != 0, dist_m, gain),
     });
 }
 
@@ -1379,25 +1345,10 @@ pub extern "C" fn eng_process(n: u32) {
             if v.pos >= src.len() {
                 continue;
             }
-            let mut x = src[v.pos];
+            let (a, b) = v.ear.process(src[v.pos]);
             v.pos += 1;
-            if v.fade > 0 {
-                x *= 1.0 - v.fade as f32 / 256.0;
-                v.fade -= 1;
-            }
-            let near = x * v.near_g;
-            v.dl[v.dpos & 63] = x;
-            let far_x = v.dl[(v.dpos + 64 - v.itd) & 63];
-            v.dpos += 1;
-            v.lp = v.lp * v.lp_k + far_x * (1.0 - v.lp_k);
-            let far = v.lp * v.far_g;
-            if v.right {
-                r += near;
-                l += far;
-            } else {
-                l += near;
-                r += far;
-            }
+            l += a;
+            r += b;
         }
         let mg = ctx.master.tick();
         ctx.out_l[i] = (l * mg).clamp(-1.0, 1.0);
@@ -1431,5 +1382,595 @@ mod tests {
         let flat = unsafe { core::slice::from_raw_parts(sim_params_ptr(feet_src as u32), len) };
         let pb = omg_core::params::ParamBlock::read_flat(flat);
         assert!(!pb.taps.is_empty(), "feet source (slot {feet_slot}) got no taps: the bridge dropped it");
+    }
+
+    // ------------------------------------------------------- engine side
+
+    /// ENG is one global: every engine test holds this lock for its whole
+    /// body (eng_init leaks a few small buffers per call — fine in tests).
+    static ENG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn eng_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENG_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Deterministic xorshift noise in [-1, 1).
+    fn noise(n: usize, seed: u32) -> Vec<f32> {
+        let mut s = seed.max(1);
+        (0..n)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 17;
+                s ^= s << 5;
+                (s as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    fn fx_load(data: &[f32]) {
+        let p = eng_fx_alloc(data.len() as u32);
+        unsafe { core::slice::from_raw_parts_mut(p, data.len()) }.copy_from_slice(data);
+        eng_fx_commit();
+    }
+
+    fn out_lr(n: usize) -> (Vec<f32>, Vec<f32>) {
+        unsafe {
+            (
+                core::slice::from_raw_parts(eng_out_l(), n).to_vec(),
+                core::slice::from_raw_parts(eng_out_r(), n).to_vec(),
+            )
+        }
+    }
+
+    fn fnv(xs: &[f32]) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for x in xs {
+            for b in x.to_bits().to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        h
+    }
+
+    const SR: f32 = 48_000.0;
+    /// Meter channels: NSRC sources + ambience + rain, (peak, rms) each.
+    const NMETER: usize = NSRC + 2;
+
+    fn source_with(i: u32, data: &[f32]) {
+        let p = eng_source_alloc(i, data.len() as u32);
+        unsafe { core::slice::from_raw_parts_mut(p, data.len()) }.copy_from_slice(data);
+    }
+
+    /// Route source `src` through ONE unit-ish tap: direct path, 0 s delay
+    /// (the delay line clamps to 1 sample), flat band gains `g`, no reverb.
+    /// Without an HRIR grid the tap lands on the SH bus, so its W channel
+    /// (= the source's channel meter) carries exactly x·fader·g.
+    fn route_tap(src: u32, g: f32) {
+        let pb = ParamBlock {
+            taps: vec![omg_core::params::Tap { key: 1, delay_s: 0.0, dir: [1.0, 0.0, 0.0], gains: [g; 3] }],
+            reverb: Default::default(),
+            remote: None,
+            version: 1,
+        };
+        let mut flat = Vec::new();
+        pb.write_flat(&mut flat);
+        unsafe { core::slice::from_raw_parts_mut(eng_param_buf_ptr(), flat.len()) }
+            .copy_from_slice(&flat);
+        eng_set_params(src, flat.len() as u32);
+    }
+
+    fn meters() -> Vec<(f32, f32)> {
+        let m = unsafe { core::slice::from_raw_parts(eng_meters_commit(), 2 * NMETER) };
+        (0..NMETER).map(|c| (m[2 * c], m[2 * c + 1])).collect()
+    }
+
+    /// Render `n` samples in ≤ 512-sample blocks; returns (l, r).
+    fn render(n: usize) -> (Vec<f32>, Vec<f32>) {
+        let (mut l, mut r) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        let mut left = n;
+        while left > 0 {
+            let b = left.min(512);
+            eng_process(b as u32);
+            let (bl, br) = out_lr(b);
+            l.extend(bl);
+            r.extend(br);
+            left -= b;
+        }
+        (l, r)
+    }
+
+    /// Per-sample peak meter of channel `ch` (one-sample blocks).
+    fn probe(ch: usize, n: usize) -> Vec<f32> {
+        meters();
+        (0..n)
+            .map(|_| {
+                eng_process(1);
+                meters()[ch].0
+            })
+            .collect()
+    }
+
+    fn max_step(xs: &[f32]) -> f32 {
+        xs.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max)
+    }
+
+    fn whisper_bufs() -> (Vec<f32>, Vec<f32>) {
+        let a: Vec<f32> = noise(4800, 7)
+            .iter()
+            .enumerate()
+            .map(|(k, x)| 0.15 * x + 0.1 * (k as f32 * 0.07).sin())
+            .collect();
+        let b: Vec<f32> = noise(1000, 99).iter().map(|x| 0.2 * x).collect();
+        (a, b)
+    }
+
+    /// A fixed whisper scenario through the whole engine (no sources, no
+    /// output stage ⇒ the ear buffers carry ONLY the near-field stage):
+    /// both ears, clamped distances, overlapping voices, the 4-voice cap,
+    /// voices ending mid-block and a new one starting after. Returns
+    /// interleaved [l, r] for 6000 samples.
+    fn render_whisper_scenario() -> Vec<f32> {
+        eng_init(SR);
+        let (a, b) = whisper_bufs();
+        fx_load(&a);
+        fx_load(&b);
+        eng_whisper_play(0, 0, 0.06, 0.5);
+        eng_whisper_play(1, 1, 0.2, 0.8);
+        eng_whisper_play(0, 1, 0.01, 0.1); // clamps to 0.02 m
+        eng_whisper_play(1, 0, 1.0, 1.0); // clamps to 0.6 m
+        eng_whisper_play(0, 0, 0.1, 1.0); // 5th: rejected by the cap
+        eng_whisper_play(7, 0, 0.1, 1.0); // unknown kind: ignored
+        let mut out = Vec::with_capacity(12_000);
+        for blk in 0..44 {
+            if blk == 20 {
+                eng_whisper_play(1, 1, 0.3, 0.6); // after the short voices end
+            }
+            eng_process(128);
+            let (l, r) = out_lr(128);
+            for k in 0..128 {
+                out.push(l[k]);
+                out.push(r[k]);
+            }
+        }
+        eng_process(0);
+        let tail = 6000 - 44 * 128;
+        eng_process(tail as u32);
+        let (l, r) = out_lr(tail);
+        for k in 0..tail {
+            out.push(l[k]);
+            out.push(r[k]);
+        }
+        out
+    }
+
+    /// VERBATIM copy of the near-field stage as it lived inline in this
+    /// file before it moved to `omg_dsp::near` — the reference the
+    /// extraction is held to, sample for sample.
+    struct LegacyNear {
+        buf: usize,
+        pos: usize,
+        right: bool,
+        near_g: f32,
+        far_g: f32,
+        lp_k: f32,
+        lp: f32,
+        dl: [f32; 64],
+        dpos: usize,
+        itd: usize,
+        fade: usize,
+    }
+
+    struct Legacy {
+        bufs: Vec<Vec<f32>>,
+        voices: Vec<LegacyNear>,
+        out: Vec<f32>,
+    }
+
+    impl Legacy {
+        fn play(&mut self, kind: u32, right: u32, dist_m: f32, gain: f32) {
+            if (kind as usize) >= self.bufs.len() || self.voices.len() >= 4 {
+                return;
+            }
+            let d = dist_m.clamp(0.02, 0.6);
+            let near_g = gain * 0.06 / d;
+            let far_g = gain * 0.06 / (d + 0.25);
+            let sr = SR;
+            self.voices.push(LegacyNear {
+                buf: kind as usize,
+                pos: 0,
+                right: right != 0,
+                near_g,
+                far_g,
+                lp_k: (-2.0 * core::f32::consts::PI * 700.0 / sr).exp(),
+                lp: 0.0,
+                dl: [0.0; 64],
+                dpos: 0,
+                itd: ((0.00065 * sr) as usize).clamp(1, 63),
+                fade: 256,
+            });
+        }
+
+        fn process(&mut self, n: usize) {
+            for _ in 0..n {
+                let (mut l, mut r) = (0.0f32.tanh(), 0.0f32.tanh());
+                for v in &mut self.voices {
+                    let src = &self.bufs[v.buf];
+                    if v.pos >= src.len() {
+                        continue;
+                    }
+                    let mut x = src[v.pos];
+                    v.pos += 1;
+                    if v.fade > 0 {
+                        x *= 1.0 - v.fade as f32 / 256.0;
+                        v.fade -= 1;
+                    }
+                    let near = x * v.near_g;
+                    v.dl[v.dpos & 63] = x;
+                    let far_x = v.dl[(v.dpos + 64 - v.itd) & 63];
+                    v.dpos += 1;
+                    v.lp = v.lp * v.lp_k + far_x * (1.0 - v.lp_k);
+                    let far = v.lp * v.far_g;
+                    if v.right {
+                        r += near;
+                        l += far;
+                    } else {
+                        l += near;
+                        r += far;
+                    }
+                }
+                let mg = 1.0f32;
+                self.out.push((l * mg).clamp(-1.0, 1.0));
+                self.out.push((r * mg).clamp(-1.0, 1.0));
+            }
+            let bufs = &self.bufs;
+            self.voices.retain(|v| v.pos < bufs[v.buf].len());
+        }
+    }
+
+    /// The NearVoice extraction is bit-identical to the inline code it
+    /// replaced (verified once against a captured dump of the old build,
+    /// fnv 0xa478dab20be6f914 on aarch64-darwin; held here against the
+    /// verbatim legacy model so it stays platform-independent).
+    #[test]
+    fn whisper_stage_is_bit_identical_to_the_pre_extraction_code() {
+        let _g = eng_lock();
+        let got = render_whisper_scenario();
+        let (a, b) = whisper_bufs();
+        let mut lg = Legacy { bufs: vec![a, b], voices: Vec::new(), out: Vec::new() };
+        lg.play(0, 0, 0.06, 0.5);
+        lg.play(1, 1, 0.2, 0.8);
+        lg.play(0, 1, 0.01, 0.1);
+        lg.play(1, 0, 1.0, 1.0);
+        lg.play(0, 0, 0.1, 1.0);
+        lg.play(7, 0, 0.1, 1.0);
+        for blk in 0..44 {
+            if blk == 20 {
+                lg.play(1, 1, 0.3, 0.6);
+            }
+            lg.process(128);
+        }
+        lg.process(6000 - 44 * 128);
+        assert_eq!(got.len(), lg.out.len());
+        assert!(got.iter().any(|x| x.abs() > 0.05), "scenario must be audible");
+        for (k, (g, w)) in got.iter().zip(&lg.out).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "sample {} ear {}: {g} vs {w}", k / 2, k % 2);
+        }
+        if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+            assert_eq!(fnv(&got), 0xa478_dab2_0be6_f914);
+        }
+    }
+
+    /// (a) FX one-shots: a voice sums into ITS source's signal only, at
+    /// unit gain; overlapping voices add; stop removes it at once; a voice
+    /// lasts exactly its buffer; the 24-voice cap holds; unknown kinds are
+    /// ignored.
+    #[test]
+    fn fx_voices_mix_into_their_source_stop_end_and_cap() {
+        let _g = eng_lock();
+        eng_init(SR);
+        source_with(0, &[]);
+        source_with(1, &[]);
+        route_tap(0, 1.0);
+        route_tap(1, 1.0);
+        let amp = 0.01f32;
+        fx_load(&vec![amp; 4000]); // kind 0
+        fx_load(&vec![amp; 300]); // kind 1
+        render(SR as usize); // tap gains glide in (τ 50 ms)
+        meters();
+        render(1024);
+        let m = meters();
+        assert_eq!((m[0].0, m[1].0), (0.0, 0.0), "silent before play");
+
+        // one voice → source 0 only; W meter = √2·|x|
+        eng_fx_play(0, 0);
+        render(1024);
+        let m = meters();
+        let unit = 2f32.sqrt() * amp;
+        assert!((m[0].0 / unit - 1.0).abs() < 5e-4, "src0 peak {} want {unit}", m[0].0);
+        assert_eq!(m[1].0, 0.0, "voice leaked into source 1");
+        // 1-sample tap latency: 1023 of 1024 samples carry the voice
+        let want_rms = unit * (1023.0f32 / 1024.0).sqrt();
+        assert!((m[0].1 / want_rms - 1.0).abs() < 5e-4, "rms {} want {want_rms}", m[0].1);
+
+        // a second voice on the same source adds
+        eng_fx_play(0, 0);
+        render(256);
+        let _ = meters();
+        render(256);
+        assert!((meters()[0].0 / (2.0 * unit) - 1.0).abs() < 5e-4, "two voices sum");
+
+        // stop removes both voices of (src 0, kind 0) at once
+        eng_fx_stop(0, 0);
+        assert!(eng().voices.is_empty());
+        render(8); // flush the 1-sample tap latency
+        meters();
+        render(1024);
+        assert_eq!(meters()[0].0, 0.0, "stopped voice still sounding");
+
+        // a voice lasts exactly its buffer, then is dropped
+        eng_fx_play(0, 1);
+        render(1024);
+        assert!(eng().voices.is_empty(), "finished voice not retired");
+        let m = meters();
+        let played = m[0].1 * m[0].1 * 1024.0 / (unit * unit);
+        assert!((played - 300.0).abs() < 0.3, "voice lasted {played} samples, buffer is 300");
+
+        // unknown kind: ignored
+        eng_fx_play(0, 9);
+        assert!(eng().voices.is_empty());
+
+        // cap: 30 plays → 24 voices → 24× the level, not 30×
+        for _ in 0..30 {
+            eng_fx_play(0, 0);
+        }
+        assert_eq!(eng().voices.len(), 24);
+        render(64);
+        meters();
+        render(512);
+        let m = meters();
+        assert!((m[0].0 / (24.0 * unit) - 1.0).abs() < 5e-4, "capped level {}", m[0].0 / unit);
+    }
+
+    /// BUG: a voice played on a source index that has no allocated source
+    /// is never advanced (only allocated sources tick their voices), so it
+    /// never reaches its buffer end and holds one of the 24 slots forever.
+    #[test]
+    #[ignore = "BUG: eng_fx_play on an unallocated source leaks a voice slot forever"]
+    fn fx_voice_on_unallocated_source_does_not_leak() {
+        let _g = eng_lock();
+        eng_init(SR);
+        source_with(0, &[]);
+        fx_load(&[0.1; 100]);
+        eng_fx_play(5, 0); // no source 5
+        render(1024);
+        assert!(eng().voices.is_empty(), "voice on a missing source never retires");
+    }
+
+    /// (b) Mixer: source faders and master glide (τ 20 ms, no step), clamp
+    /// to their ranges, and a muted, faded source is skipped entirely
+    /// while its stream and one-shots keep time.
+    #[test]
+    fn mixer_faders_ramp_clamp_and_mute_skips() {
+        let _g = eng_lock();
+        eng_init(SR);
+        let dc = 0.1f32;
+        source_with(0, &vec![dc; 4800]);
+        route_tap(0, 1.0);
+        fx_load(&vec![0.05; 300]);
+        render(SR as usize);
+        // unity fader: W meter = √2·dc (the f32 tap-gain smoother parks
+        // ~1e-4 short of its target — inaudible, so normalize by the
+        // measured steady level from here on)
+        let unit = probe(0, 8)[7];
+        assert!((unit / (2f32.sqrt() * dc) - 1.0).abs() < 5e-4, "unity fader {unit}");
+        let lvl = |p: &[f32]| p.iter().map(|x| x / unit).collect::<Vec<f32>>();
+
+        // 1.0 → 0.25: one-pole glide, never a step
+        eng_set_mixer(0, 0.25);
+        let p = lvl(&probe(0, 9600));
+        assert!(max_step(&p) < 2e-3, "fader step {}", max_step(&p));
+        // p[k] carries the fader of sample k−1 (1-sample tap latency)
+        let tau = (0.02 * SR) as usize;
+        let at_tau = 0.25 + 0.75 * (-1.0f32).exp();
+        assert!((p[tau + 1] - at_tau).abs() < 2e-3, "after 1 τ: {} want {at_tau}", p[tau + 1]);
+        assert!((p[9599] - 0.25).abs() < 1e-3, "settled at {}", p[9599]);
+
+        // ranges: 0…256, out-of-range index ignored
+        eng_set_mixer(0, 1000.0);
+        assert_eq!(eng().mixer[0].target_val(), 256.0);
+        eng_set_mixer(0, -1.0);
+        assert_eq!(eng().mixer[0].target_val(), 0.0);
+        eng_set_mixer(NSRC as u32 + 5, 1.0);
+
+        // mute: the fade-out is rendered (no cut) ...
+        eng_set_mixer(0, 0.0);
+        let p = lvl(&probe(0, 480));
+        assert!(p[1] > 0.2 && max_step(&p) < 2e-3, "mute must fade, not cut");
+        // ... and once faded below −80 dB the source is skipped entirely
+        render(SR as usize / 2);
+        assert!(eng().mixer[0].current() < 1e-4);
+        let pos0 = eng().sources[0].pos;
+        eng().meter_acc[0] = (0.0, 0.0, 0);
+        eng_fx_play(0, 0);
+        render(1000);
+        assert_eq!(eng().meter_acc[0].2, 0, "muted+faded source was still rendered");
+        assert_eq!(meters()[0], (0.0, 0.0));
+        // stream and one-shot kept time while skipped
+        assert_eq!(eng().sources[0].pos, (pos0 + 1000) % 4800, "loop lost its place");
+        assert!(eng().voices.is_empty(), "one-shot did not tick while muted");
+
+        // unmute glides back up
+        eng_set_mixer(0, 1.0);
+        let p = lvl(&probe(0, 9600));
+        assert!(max_step(&p) < 2e-3, "unmute step {}", max_step(&p));
+        assert!((p[9599] - 1.0).abs() < 1e-3);
+    }
+
+    /// (b) Master: glides (no step) and clamps to 0…4. Driven by a DC
+    /// whisper, which lands in the ear buffers at a known level.
+    #[test]
+    fn master_glides_and_clamps() {
+        let _g = eng_lock();
+        eng_init(SR);
+        fx_load(&vec![1.0; 200_000]);
+        eng_whisper_play(0, 0, 0.06, 0.1); // near (left) ear: 0.1
+        render(1024);
+        let (l, _) = render(16);
+        assert!((l[15] - 0.1).abs() < 1e-6, "whisper level {}", l[15]);
+
+        eng_set_master(2.0);
+        let (l, _) = render(9600);
+        assert!(max_step(&l) < 0.1 / 900.0, "master step {}", max_step(&l));
+        let tau = (0.02 * SR) as usize;
+        let at_tau = 0.1 * (2.0 - (-1.0f32).exp());
+        assert!((l[tau - 1] - at_tau).abs() < 2e-4, "after 1 τ {} want {at_tau}", l[tau - 1]);
+        assert!((l[9599] - 0.2).abs() < 1e-5);
+
+        eng_set_master(10.0); // clamps to 4
+        let (l, _) = render(19_200);
+        // (an f32 one-pole parks ~τ·ulp/2 short of its target: 3e-5 rel.)
+        assert!((l[19_199] - 0.4).abs() < 2e-5 * 4.0 * 0.1 * 10.0, "master 10 → {}", l[19_199]);
+        eng_set_master(-3.0); // clamps to 0
+        let (l, r) = render(19_200);
+        assert!(l[19_199].abs() < 1e-6 && r[19_199].abs() < 1e-6);
+    }
+
+    /// (d) The final hard clamp: after the master, every output sample is
+    /// within ±1, overs are pinned exactly to ±1, and signal below 1 passes
+    /// untouched.
+    #[test]
+    fn final_hard_clamp_after_master() {
+        let _g = eng_lock();
+        eng_init(SR);
+        fx_load(&vec![1.0; 4000]); // kind 0: +DC
+        fx_load(&vec![-1.0; 4000]); // kind 1: −DC
+        fx_load(&noise(4000, 5)); // kind 2: noise
+        // near ear 3.0 → pinned; far ear 3·0.06/0.31 ≈ 0.58 → untouched
+        eng_whisper_play(0, 0, 0.06, 3.0);
+        render(1024);
+        let (l, r) = render(64);
+        assert!(l.iter().all(|&x| x == 1.0), "over not pinned to +1");
+        let far = 3.0 * 0.06 / 0.31;
+        assert!(r.iter().all(|&x| (x - far).abs() < 1e-5), "under-1 ear altered: {}", r[0]);
+        render(4000);
+        eng_whisper_play(1, 1, 0.06, 3.0);
+        render(1024);
+        let (_, r) = render(64);
+        assert!(r.iter().all(|&x| x == -1.0), "over not pinned to −1");
+        render(4000);
+        // the clamp sits AFTER the master: 0.3 × 4 = 1.2 → 1
+        eng_set_master(4.0);
+        render(19_200);
+        eng_whisper_play(0, 0, 0.06, 0.3);
+        render(1024);
+        let (l, r) = render(64);
+        assert!(l.iter().all(|&x| x == 1.0), "post-master over not clamped: {}", l[0]);
+        assert!(r.iter().all(|&x| (x - 4.0 * 0.3 * 0.06 / 0.31).abs() < 1e-5));
+        render(4000);
+        // loud noise: nothing escapes ±1, and the clamp is engaged
+        eng_whisper_play(2, 0, 0.02, 4.0);
+        eng_whisper_play(2, 1, 0.02, 4.0);
+        let (l, r) = render(4000);
+        assert!(l.iter().chain(&r).all(|x| x.abs() <= 1.0 && x.is_finite()));
+        assert!(l.iter().filter(|x| x.abs() == 1.0).count() > 1000);
+    }
+
+    /// (c) Level meters: a known sine on a unit tap reads peak √2·A and
+    /// RMS A (the W-channel calibration, 0.5·(l²+r²) + 2·dw²), scales with
+    /// the fader, and a commit resets the accumulators.
+    #[test]
+    fn meters_report_peak_and_rms_of_a_known_signal() {
+        let _g = eng_lock();
+        eng_init(SR);
+        let a = 0.2f32;
+        // 1 kHz, exactly 48 samples per cycle, 100 cycles per loop
+        let sine: Vec<f32> =
+            (0..4800).map(|k| a * (core::f32::consts::TAU * k as f32 / 48.0).sin()).collect();
+        source_with(0, &sine);
+        source_with(1, &[]);
+        route_tap(0, 1.0);
+        route_tap(1, 1.0);
+        render(SR as usize);
+        meters();
+        render(4800);
+        let m = meters();
+        let (peak, rms) = m[0];
+        assert!((peak / (2f32.sqrt() * a) - 1.0).abs() < 5e-4, "peak {peak}");
+        assert!((rms / a - 1.0).abs() < 5e-4, "rms {rms} want {a}");
+        assert_eq!(m[1], (0.0, 0.0), "silent source reads silent");
+        // a commit resets: nothing rendered since ⇒ zeros
+        assert_eq!(meters()[0], (0.0, 0.0));
+        // meters are post-fader: −6 dB fader ⇒ half the reading
+        eng_set_mixer(0, 0.5);
+        render(SR as usize / 2);
+        meters();
+        render(4800);
+        let (peak, rms) = meters()[0];
+        assert!((peak / (2f32.sqrt() * a * 0.5) - 1.0).abs() < 1e-3, "faded peak {peak}");
+        assert!((rms / (a * 0.5) - 1.0).abs() < 1e-3, "faded rms {rms}");
+    }
+
+    /// (e) Whispers ride POST-AGC: with a loud scene driving the ear
+    /// adaptation deep into cut, a whisper still adds its exact near-field
+    /// level to the ears (not level × AGC), and it does not move the AGC.
+    #[test]
+    fn whisper_is_post_agc() {
+        let _g = eng_lock();
+        let spk = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/hrir_dodeca20.bin"))
+            .expect("speaker HRIRs");
+        let run = |whisper: bool| {
+            eng_init(SR);
+            let p = eng_hrir_speakers_alloc(spk.len() as u32);
+            unsafe { core::slice::from_raw_parts_mut(p, spk.len()) }.copy_from_slice(&spk);
+            eng_hrir_speakers_done();
+            source_with(0, &noise(48_000, 21));
+            route_tap(0, 1.0);
+            eng_set_mixer(0, 16.0);
+            fx_load(&vec![1.0; 20_000]);
+            render(2 * SR as usize);
+            if whisper {
+                eng_whisper_play(0, 0, 0.06, 0.1);
+            }
+            let out = render(4800);
+            (out, eng_agc_gain())
+        };
+        let ((bl, br), agc_b) = run(false);
+        let ((wl, wr), agc_w) = run(true);
+        assert!(agc_b < 0.3, "scene must drive the AGC into cut: {agc_b}");
+        assert_eq!(agc_b.to_bits(), agc_w.to_bits(), "whisper moved the AGC");
+        let far = 0.1 * 0.06 / 0.31;
+        let mut checked = 0;
+        for k in 1024..4800 {
+            if bl[k].abs() > 0.85 || br[k].abs() > 0.85 {
+                continue; // keep clear of the final clamp
+            }
+            assert!((wl[k] - bl[k] - 0.1).abs() < 1e-5, "near ear Δ {} at {k}", wl[k] - bl[k]);
+            assert!((wr[k] - br[k] - far).abs() < 1e-5, "far ear Δ {} at {k}", wr[k] - br[k]);
+            checked += 1;
+        }
+        assert!(checked > 3000, "only {checked} samples clear of the clamp");
+    }
+
+    /// (e) At most 4 whispers sound at once; the rest are dropped, and the
+    /// ears carry exactly the sum of the 4 admitted voices.
+    #[test]
+    fn whisper_voice_cap_is_four() {
+        let _g = eng_lock();
+        eng_init(SR);
+        fx_load(&vec![1.0; 10_000]);
+        for _ in 0..6 {
+            eng_whisper_play(0, 0, 0.06, 0.01);
+        }
+        assert_eq!(eng().near_voices.len(), omg_dsp::near::MAX_VOICES);
+        assert_eq!(omg_dsp::near::MAX_VOICES, 4);
+        eng_whisper_play(3, 0, 0.06, 0.01); // unknown kind
+        assert_eq!(eng().near_voices.len(), 4);
+        render(1024);
+        let (l, _) = render(16);
+        assert!((l[15] - 0.04).abs() < 1e-6, "4 voices × 0.01 → {}", l[15]);
+        render(10_000);
+        assert!(eng().near_voices.is_empty(), "finished whispers not retired");
+        eng_whisper_play(0, 1, 0.06, 0.01); // slots free again
+        assert_eq!(eng().near_voices.len(), 1);
     }
 }
