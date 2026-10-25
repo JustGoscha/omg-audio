@@ -1548,13 +1548,13 @@ async function startAudio() {
     return trimTail(raw.slice(a), 7, 1.5);
   };
   const [whis0, whis1] = await Promise.all([
-    fetchBuf('../assets/whisper/whisper_0.mp3').then(decodeWhisper),
-    fetchBuf('../assets/whisper/whisper_1.mp3').then(decodeWhisper),
+    fetchBuf('../assets/whisper/whisper_0.ogg').then(decodeWhisper),
+    fetchBuf('../assets/whisper/whisper_1.ogg').then(decodeWhisper),
   ]);
   const [owl0, owl1, owl2, bellBig, bellSmall] = await Promise.all([
-    fetchBuf('../assets/birds/owl_0.wav').then((b) => decodeMono(b, 0.5)),
-    fetchBuf('../assets/birds/owl_1.wav').then((b) => decodeMono(b, 0.5)),
-    fetchBuf('../assets/birds/owl_2.wav').then((b) => decodeMono(b, 0.5)),
+    fetchBuf('../assets/birds/owl_0.ogg').then((b) => decodeMono(b, 0.5)),
+    fetchBuf('../assets/birds/owl_1.ogg').then((b) => decodeMono(b, 0.5)),
+    fetchBuf('../assets/birds/owl_2.ogg').then((b) => decodeMono(b, 0.5)),
     fetchBuf('../assets/birds/bell_big.ogg').then((b) => decodeMono(b, 0.6)).then((r) => trimTail(r, 16)),
     fetchBuf('../assets/birds/bell_small.ogg').then((b) => decodeMono(b, 0.5)).then((r) => trimTail(r, 10)),
   ]);

@@ -10,7 +10,7 @@ bell_small.ogg
   https://commons.wikimedia.org/wiki/File:Zajeci_zvony_kostel_2025.ogg
   License: CC0 (public domain dedication)
 
-owl_0.wav, owl_1.wav, owl_2.wav
+owl_0.ogg, owl_1.ogg, owl_2.ogg
   Synthesized in-repo (tawny-owl-style call, deterministic; see git
   history for the generator). No CC0 owl RECORDING could be found on
   Wikimedia Commons at the time of writing — the available recordings
