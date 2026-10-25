@@ -93,6 +93,8 @@ impl SpatialEngine {
         }
     }
 
+    /// An empty buffer silences the slot and stops rendering it (any
+    /// reverb tail is cut).
     pub fn set_source_samples(&mut self, i: usize, mut samples: Vec<f32>) {
         omg_dsp::level::normalize_rms(&mut samples, omg_dsp::level::REF_CLIP_RMS);
         if let Some(s) = self.sources.get_mut(i) {
@@ -151,13 +153,15 @@ impl SpatialEngine {
             let mut pl = 0.0f32;
             let mut pr = 0.0f32;
             for (ren, (data, pos)) in self.renderers.iter_mut().zip(self.sources.iter_mut()) {
-                let x = if data.is_empty() {
-                    0.0
-                } else {
-                    let s = data[*pos];
-                    *pos = (*pos + 1) % data.len();
-                    s
-                };
+                // A slot that was never given samples has silent input and
+                // zero state, so its output is exactly zero: skip it rather
+                // than run taps, HRIRs and FDNs for nothing (all 10 slots at
+                // full cost is slower than real time).
+                if data.is_empty() {
+                    continue;
+                }
+                let x = data[*pos];
+                *pos = (*pos + 1) % data.len();
                 let (a, b) = ren.process(x, &mut bus);
                 pl += a;
                 pr += b;
