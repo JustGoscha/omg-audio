@@ -87,7 +87,8 @@ field is *computed*, not authored:
   a night-nature ambience, openable doors, simulated rain, a mixer panel
   with per-channel meters, HUD meters + spectrogram. The world: a square
   with a club, an old two-storey house, a great hall with a piano room, a
-  stone cathedral far to the north (a flute inside it, its nave's reverb
+  stone cathedral far to the north (a barrel-vaulted nave under a steep
+  gable roof, traced as real geometry; a flute inside it, its reverb
   audible through the portal), and an underground bunker with a little
   radio — earth is modeled, so the bunker is sealed except its stair
   shaft.

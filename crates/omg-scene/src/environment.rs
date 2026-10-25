@@ -15,7 +15,7 @@
 //! outside opening (the Corridor) receives its share through the rooms
 //! that do — automatically, because that is what the balance says.
 
-use crate::walkthrough::{Door, RoomDef};
+use crate::walkthrough::{Door, Roof, RoomDef};
 use omg_core::NBANDS;
 
 /// Coupling area below which a conduit is dropped as numerical noise.
@@ -61,12 +61,13 @@ impl AcousticsGraph {
             let footprint = (r.max.0 - r.min.0) * (r.max.1 - r.min.1);
             let (z0, z1) = (r.floor_z, r.floor_z + r.height);
 
-            // absorption: all six interior surfaces
+            // absorption: all six interior surfaces (a vault's developed
+            // area and its end-wall lunettes included)
             for b in 0..NBANDS {
-                let mut a = footprint * (r.walls[4].absorption[b] + r.walls[5].absorption[b]);
-                let spans = [r.max.1 - r.min.1, r.max.1 - r.min.1, r.max.0 - r.min.0, r.max.0 - r.min.0];
-                for (wi, span) in spans.iter().enumerate() {
-                    a += span * r.height * r.walls[wi].absorption[b];
+                let mut a = footprint * r.walls[4].absorption[b]
+                    + r.ceiling_area() * r.walls[5].absorption[b];
+                for wi in 0..4 {
+                    a += r.wall_area(wi) * r.walls[wi].absorption[b];
                 }
                 absorb[ri][b] = a;
             }
@@ -80,7 +81,7 @@ impl AcousticsGraph {
             ];
             for (wi, plane, lo, hi, axis, sign) in sides {
                 let t_own = r.walls[wi].transmission_at(r.wall_thickness);
-                let total = (hi - lo) * r.height;
+                let total = r.wall_area(wi); // a gable's lunette included
                 let mut covered = 0.0f32;
                 for (ni, n) in rooms.iter().enumerate() {
                     if ni == ri || n.outdoor {
@@ -161,10 +162,13 @@ impl AcousticsGraph {
             let sky = if z1 > 0.05 { (footprint - covered).max(0.0) } else { 0.0 };
             roof_sky[ri] = sky / footprint;
             if sky > MIN_AREA {
+                // a nave's vault and gable roof are two shells, the
+                // sealed attic between them
+                let shells = if r.roof == Roof::Flat { 1 } else { 2 };
                 conduits.push(Conduit {
                     rooms: (ri, outside),
                     area: sky,
-                    trans2: core::array::from_fn(|b| t_ceil[b] * t_ceil[b]),
+                    trans2: core::array::from_fn(|b| (t_ceil[b] * t_ceil[b]).powi(shells)),
                 });
             }
         }

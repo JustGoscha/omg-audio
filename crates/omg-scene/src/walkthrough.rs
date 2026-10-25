@@ -14,9 +14,9 @@ use omg_core::material::Material;
 
 /// Cathedral stone: acoustically hard, but arcades, columns and rounded
 /// arches break flat-wall specularity — the path tracer sees that as a
-/// high scattering fraction (denser, smoother tail), which is the honest
-/// shoebox-level stand-in for curved geometry until the mesh migration
-/// makes arches traceable surfaces.
+/// high scattering fraction (denser, smoother tail). The barrel vault
+/// itself is real traced geometry (`Roof::Nave`); the scattering stands
+/// in for the arcades, capitals and ribs the mesh does not model.
 const ORNATE_STONE: Material = Material {
     absorption: [0.015, 0.03, 0.06],
     scattering: 0.35,
@@ -40,6 +40,151 @@ pub struct RoomDef {
     pub wall_thickness: f32,
     /// Outdoor region: no walls, no reverb — direct + ground reflection only.
     pub outdoor: bool,
+    /// What closes the room on top (a slab, or a vaulted nave under a
+    /// gable roof). `height` is always where the walls stop being the
+    /// interior boundary: the slab, or the vault's springing line.
+    pub roof: Roof,
+}
+
+/// What closes a room on top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Roof {
+    /// A flat slab at `floor_z + height`; the walls run on as a parapet
+    /// band up to `barrier_height`.
+    Flat,
+    /// A church nave. Inside: a round (semicircular) barrel vault that
+    /// springs from the side walls at `floor_z + height` and spans the
+    /// room across its ridge, built from `facets` flat strips — the
+    /// inscribed half-polygon, which the tracer and the renderer both
+    /// draw. Outside: a steep gable roof from the eaves at world z `eave`
+    /// up to the ridge at `barrier_height`. The side walls rise to the
+    /// eaves, the end walls to the gable apex; the space between vault
+    /// and roof is a sealed attic. `ridge_axis`: 0 = the ridge runs
+    /// along x (gables on the x-walls), 1 = along y (gables on the
+    /// y-walls).
+    Nave { ridge_axis: usize, eave: f32, facets: usize },
+}
+
+impl RoomDef {
+    /// Extent across the ridge (lo, hi), then along it (lo, hi).
+    pub fn nave_spans(&self, ridge_axis: usize) -> ((f32, f32), (f32, f32)) {
+        if ridge_axis == 1 {
+            ((self.min.0, self.max.0), (self.min.1, self.max.1))
+        } else {
+            ((self.min.1, self.max.1), (self.min.0, self.max.0))
+        }
+    }
+
+    /// The vault's cross-section, springing line to springing line, as
+    /// `(across, world z)` corners of the inscribed half-polygon. Empty
+    /// for a flat roof.
+    pub fn vault_profile(&self) -> Vec<(f32, f32)> {
+        let Roof::Nave { ridge_axis, facets, .. } = self.roof else { return Vec::new() };
+        let ((lo, hi), _) = self.nave_spans(ridge_axis);
+        let (mid, r) = (0.5 * (lo + hi), 0.5 * (hi - lo));
+        let zs = self.floor_z + self.height;
+        let n = facets.max(2);
+        (0..=n)
+            .map(|k| match k {
+                // springing lines exact (they sit on the wall planes)
+                0 => (lo, zs),
+                k if k == n => (hi, zs),
+                _ => {
+                    let th = core::f32::consts::PI * (1.0 - k as f32 / n as f32);
+                    (mid + r * th.cos(), zs + r * th.sin())
+                }
+            })
+            .collect()
+    }
+
+    /// Cross-section area of the vault above its springing line (m²).
+    fn vault_section(&self) -> f32 {
+        let p = self.vault_profile();
+        let zs = self.floor_z + self.height;
+        // shoelace, closed back along the springing line
+        let mut a = 0.0f32;
+        for k in 0..p.len() {
+            let (x0, z0) = p[k];
+            let (x1, z1) = p[(k + 1) % p.len()];
+            a += x0 * (z1 - zs) - x1 * (z0 - zs);
+        }
+        0.5 * a.abs()
+    }
+
+    /// World z of the outside roof line above plan point (x, y): what a
+    /// sound passing over the building there must clear. A flat roof:
+    /// the parapet top everywhere. A nave: the eaves over the side walls,
+    /// rising linearly to the ridge (on the end walls, the gable outline).
+    pub fn roof_line_at(&self, x: f32, y: f32) -> f32 {
+        let flat = self.barrier_height.max(self.floor_z + self.height);
+        let Roof::Nave { ridge_axis, eave, .. } = self.roof else { return flat };
+        let ((lo, hi), _) = self.nave_spans(ridge_axis);
+        let a = if ridge_axis == 1 { x } else { y };
+        let half = 0.5 * (hi - lo);
+        let f = (1.0 - (a - 0.5 * (lo + hi)).abs() / half.max(1e-3)).clamp(0.0, 1.0);
+        eave + (self.barrier_height - eave) * f
+    }
+
+    /// World z of the highest interior point: the slab, or the vault crown.
+    pub fn interior_top(&self) -> f32 {
+        self.vault_profile().iter().fold(self.floor_z + self.height, |m, p| m.max(p.1))
+    }
+
+    /// Interior air volume (m³): the box up to the springing line plus
+    /// the vault above it.
+    pub fn volume(&self) -> f32 {
+        let mut v = (self.max.0 - self.min.0) * (self.max.1 - self.min.1) * self.height;
+        if let Roof::Nave { ridge_axis, .. } = self.roof {
+            let (_, (a0, a1)) = self.nave_spans(ridge_axis);
+            v += self.vault_section() * (a1 - a0);
+        }
+        v
+    }
+
+    /// Interior ceiling area (m²): the slab, or the vault's developed
+    /// surface (the half-polygon's perimeter × the nave's length).
+    pub fn ceiling_area(&self) -> f32 {
+        let slab = (self.max.0 - self.min.0) * (self.max.1 - self.min.1);
+        let Roof::Nave { ridge_axis, .. } = self.roof else { return slab };
+        let p = self.vault_profile();
+        let arc: f32 = p
+            .windows(2)
+            .map(|s| ((s[1].0 - s[0].0).powi(2) + (s[1].1 - s[0].1).powi(2)).sqrt())
+            .sum();
+        let (_, (a0, a1)) = self.nave_spans(ridge_axis);
+        arc * (a1 - a0)
+    }
+
+    /// Interior area of side wall `wi` (walls[] order: x-min, x-max,
+    /// y-min, y-max): up to the springing line, plus the vault's lunette
+    /// on a nave's end walls.
+    pub fn wall_area(&self, wi: usize) -> f32 {
+        let span = if wi < 2 { self.max.1 - self.min.1 } else { self.max.0 - self.min.0 };
+        let mut a = span * self.height;
+        if let Roof::Nave { ridge_axis, .. } = self.roof {
+            // walls 0/1 stand in x-planes; the end walls are the planes
+            // across the ridge
+            if (if wi < 2 { 0 } else { 1 }) == ridge_axis {
+                a += self.vault_section();
+            }
+        }
+        a
+    }
+
+    /// Height of the box with this room's footprint and volume: the
+    /// legacy shoebox engines' stand-in for a vaulted room (equal volume,
+    /// so their reverb tracks the real room's size). `height` for a slab.
+    pub fn box_height(&self) -> f32 {
+        self.volume() / ((self.max.0 - self.min.0) * (self.max.1 - self.min.1)).max(1e-6)
+    }
+
+    /// The legacy engines' shoebox for this room (see `box_height`).
+    pub fn shoebox(&self) -> Shoebox {
+        Shoebox::new(
+            Vec3::new(self.max.0 - self.min.0, self.max.1 - self.min.1, self.box_height()),
+            self.walls,
+        )
+    }
 }
 
 pub fn rooms() -> Vec<RoomDef> {
@@ -61,6 +206,7 @@ pub fn rooms() -> Vec<RoomDef> {
             ],
             wall_thickness: 0.24,
             outdoor: false,
+            roof: Roof::Flat,
         },
         RoomDef {
             name: "Corridor",
@@ -72,6 +218,7 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.20,
             outdoor: false,
+            roof: Roof::Flat,
         },
         RoomDef {
             name: "Great Hall",
@@ -83,6 +230,7 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.30,
             outdoor: false,
+            roof: Roof::Flat,
         },
         RoomDef {
             name: "Entrance",
@@ -94,6 +242,7 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.20,
             outdoor: false,
+            roof: Roof::Flat,
         },
         RoomDef {
             name: "Club",
@@ -105,6 +254,7 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.35,
             outdoor: false,
+            roof: Roof::Flat,
         },
         RoomDef {
             name: "Old House",
@@ -116,6 +266,7 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::BRICK; 6],
             wall_thickness: 0.25,
             outdoor: false,
+            roof: Roof::Flat,
         },
         // Solid street furniture on the square: modeled as thin
         // non-enterable rooms so they occlude, reflect (facades) and
@@ -130,6 +281,7 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.25,
             outdoor: false,
+            roof: Roof::Flat,
         },
         RoomDef {
             name: "Kiosk",
@@ -141,6 +293,7 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::WOOD_PANEL; 6],
             wall_thickness: 0.1,
             outdoor: false,
+            roof: Roof::Flat,
         },
         RoomDef {
             name: "Old House Upper",
@@ -152,19 +305,26 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::BRICK; 6],
             wall_thickness: 0.25,
             outdoor: false,
+            roof: Roof::Flat,
         },
         // A stone cathedral, far north across the field: a vast nave
         // whose reverb should read as its size long before you reach it.
+        // Romanesque section: 15 m walls carry a round barrel vault
+        // (crown 23 m) under a steep 50° gable roof (eaves 19 m, ridge
+        // 28.5 m) running north from the portal gable. The vault is real
+        // geometry — +41% air volume over the old flat 15 m ceiling, so
+        // the traced tail rings longer, as a church should.
         RoomDef {
             name: "Cathedral",
             min: (0.0, 52.0),
             max: (16.0, 74.0),
-            height: 15.0,
-            barrier_height: 16.5,
+            height: 15.0, // the vault's springing line
+            barrier_height: 28.5, // the ridge
             floor_z: 0.0,
             walls: [ORNATE_STONE; 6],
             wall_thickness: 0.5,
             outdoor: false,
+            roof: Roof::Nave { ridge_axis: 1, eave: 19.0, facets: 8 },
         },
         // An underground bunker beneath the east field, reached by a
         // stair shaft. Earth, not air, is what surrounds it — the
@@ -179,6 +339,7 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.4,
             outdoor: false,
+            roof: Roof::Flat,
         },
         // A brick bell tower ~300 m north across the field. This is its
         // SHAFT: solid, doorless brick up to 24 m. The bells hang above it
@@ -195,6 +356,7 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::BRICK; 6],
             wall_thickness: 0.4,
             outdoor: false,
+            roof: Roof::Flat,
         },
         // The bunker's way in: a concrete blockhouse over a stair shaft.
         // One room from the bunker floor (-3 m) to the blockhouse roof
@@ -213,6 +375,7 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::CONCRETE; 6],
             wall_thickness: 0.3,
             outdoor: false,
+            roof: Roof::Flat,
         },
         // Outside must come LAST: enclosed rooms overlap its rectangle and
         // room_of matches in order. It surrounds all buildings.
@@ -226,6 +389,7 @@ pub fn rooms() -> Vec<RoomDef> {
             walls: [Material::GRASS; 6],
             wall_thickness: 0.15,
             outdoor: true,
+            roof: Roof::Flat,
         },
     ]
 }
@@ -448,7 +612,7 @@ pub struct SourceDef {
     pub room: usize,
     /// Linear gain applied to everything this source produces.
     pub gain: f32,
-    /// WORLD z of the emitter (a rooftop owl sits at 17 m; a room
+    /// WORLD z of the emitter (a rooftop owl sits at 24 m; a room
     /// source at floor_z + SRC_HEIGHT). Dynamic slots override per tick.
     pub z: f32,
     /// Same-room emitter positions playing the identical, sample-locked
@@ -514,7 +678,9 @@ pub fn sources() -> [SourceDef; 14] {
             pos: (4.0, 53.0),
             room: OUTSIDE,
             gain: 1.6,
-            z: 17.0,
+            // on the west roof pitch a meter behind the portal gable,
+            // half a meter above the slates (roof line 23.75 m at x = 4)
+            z: 24.25,
             emitters: &[(4.0, 53.0)],
         },
         SourceDef {
@@ -774,7 +940,7 @@ pub fn room_of_z(rooms: &[RoomDef], x: f32, y: f32, z: f32) -> usize {
             && y >= r.min.1
             && y <= r.max.1
             && z >= r.floor_z - 0.3
-            && z <= r.floor_z + r.height + 0.9
+            && z <= r.interior_top() + 0.9
         {
             return i;
         }
@@ -838,13 +1004,12 @@ pub struct WalkState {
 fn state_in_room(rooms: &[RoomDef], room: usize, lx: f32, ly: f32, lz: f32, yaw: f32) -> WalkState {
     let r = &rooms[room];
     let (lx, ly) = clamp_into(r, lx, ly);
-    let size = Vec3::new(r.max.0 - r.min.0, r.max.1 - r.min.1, r.height);
-    let local_z = (lz - r.floor_z).clamp(0.2, r.height - 0.2);
+    let local_z = (lz - r.floor_z).clamp(0.2, r.box_height() - 0.2);
     WalkState {
         listener_world: (lx, ly),
         yaw,
         room,
-        shoebox: Shoebox::new(size, r.walls),
+        shoebox: r.shoebox(),
         listener_local: Vec3::new(lx - r.min.0, ly - r.min.1, local_z),
     }
 }
@@ -1262,9 +1427,12 @@ fn path_transmission(
                 continue;
             }
             // over the roof line or under the floor: this wall isn't hit
+            // (the line where it crosses: eaves on a nave's side walls,
+            // the gable outline on its end walls)
             if let Some((za, zb)) = z {
                 let zt = za + t * (zb - za);
-                if zt > r.barrier_height.max(r.floor_z + r.height) || zt < r.floor_z {
+                let (px, py) = if axis == 0 { (plane, along) } else { (along, plane) };
+                if zt > r.roof_line_at(px, py) || zt < r.floor_z {
                     continue;
                 }
             }

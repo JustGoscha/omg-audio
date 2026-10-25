@@ -7,7 +7,7 @@
 use omg_core::material::Material;
 use omg_core::params::Tap;
 use omg_core::NBANDS;
-use omg_scene::walkthrough::{Door, RoomDef, SourceDef};
+use omg_scene::walkthrough::{Door, Roof, RoomDef, SourceDef};
 
 /// An enclosed box room at ground level (floor_z 0), uniform walls.
 pub fn room(min: (f32, f32), max: (f32, f32), height: f32, mat: Material) -> RoomDef {
@@ -21,6 +21,7 @@ pub fn room(min: (f32, f32), max: (f32, f32), height: f32, mat: Material) -> Roo
         walls: [mat; 6],
         wall_thickness: 0.2,
         outdoor: false,
+        roof: Roof::Flat,
     }
 }
 
@@ -42,6 +43,7 @@ pub fn outdoor(min: (f32, f32), max: (f32, f32), ground: Material) -> RoomDef {
         walls: [ground; 6],
         wall_thickness: 0.15,
         outdoor: true,
+        roof: Roof::Flat,
     }
 }
 
