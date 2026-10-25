@@ -1958,8 +1958,8 @@ async function startAudio() {
     node.port.postMessage({ type: 'env', env }, [env]);
   };
 
-  state.fx = (src, kind, action = 'play') =>
-    node.port.postMessage({ type: 'fx', src, kind, action });
+  state.fx = (src, kind, action = 'play', gain, rate) =>
+    node.port.postMessage({ type: 'fx', src, kind, action, gain, rate });
   setInterval(() => {
     // face-tracked head translation: a small world-space offset of the
     // listening position (lean left → ears move left). A lean must never
@@ -2379,7 +2379,12 @@ function strideStep(d) {
   let v = (Math.random() * 5) | 0;
   if (v === lastVariant) v = (v + 1) % 5; // never the same step twice
   lastVariant = v;
-  state.fx(13, 3 + STEP_SURFACES.indexOf(surf) * 5 + v);
+  // very subtle per-step variation on top of the 5 recordings: ±1.5 dB
+  // level, ±3% playback rate (≈ a third of a semitone) — no two
+  // footfalls identical, none noticeably different
+  const gain = 10 ** ((Math.random() * 3 - 1.5) / 20);
+  const rate = 0.97 + Math.random() * 0.06;
+  state.fx(13, 3 + STEP_SURFACES.indexOf(surf) * 5 + v, 'play', gain, rate);
 }
 
 // -------------------------------------------------- wildlife & carillon

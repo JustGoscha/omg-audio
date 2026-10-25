@@ -147,7 +147,13 @@ class OmgProcessor extends AudioWorkletProcessor {
       else if (m.target === 'master') this.w.eng_set_master(m.gain);
       else for (const i of m.srcs) this.w.eng_set_mixer(i, m.gain);
     } else if (m.type === 'fx' && this.ready) {
-      if (m.action === 'play') this.w.eng_fx_play(m.src, m.kind);
+      if (m.action === 'play') {
+        if ((m.gain != null || m.rate != null) && this.w.eng_fx_play_var) {
+          this.w.eng_fx_play_var(m.src, m.kind, m.gain ?? 1, m.rate ?? 1);
+        } else {
+          this.w.eng_fx_play(m.src, m.kind);
+        }
+      }
       else this.w.eng_fx_stop(m.src, m.kind);
     } else if (m.type === 'whisper' && this.ready) {
       // near-field ear voice: bypasses propagation (see eng_whisper_play)

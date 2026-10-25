@@ -872,6 +872,36 @@ struct Voice {
     src: usize,
     buf: usize,
     pos: usize,
+    /// Per-voice level and playback rate (1, 1 = the buffer as recorded:
+    /// sample-identical to plain playback). `phase` is the fractional
+    /// read position between `pos` and `pos + 1`.
+    gain: f32,
+    rate: f32,
+    phase: f32,
+}
+
+impl Voice {
+    fn plain(src: usize, buf: usize) -> Self {
+        Self { src, buf, pos: 0, gain: 1.0, rate: 1.0, phase: 0.0 }
+    }
+
+    /// Current sample (linear interpolation; exact at phase 0).
+    fn sample(&self, b: &[f32]) -> f32 {
+        let a = b[self.pos];
+        if self.phase == 0.0 {
+            return a * self.gain;
+        }
+        let c = b.get(self.pos + 1).copied().unwrap_or(0.0);
+        (a + (c - a) * self.phase) * self.gain
+    }
+
+    fn advance(&mut self) {
+        self.phase += self.rate;
+        while self.phase >= 1.0 {
+            self.phase -= 1.0;
+            self.pos += 1;
+        }
+    }
 }
 
 /// A NEAR-FIELD one-shot (a whisper at the ear): an fx-bank buffer fed
@@ -1066,9 +1096,20 @@ pub extern "C" fn eng_fx_commit() {
 
 #[no_mangle]
 pub extern "C" fn eng_fx_play(src: u32, kind: u32) {
+    eng_fx_play_var(src, kind, 1.0, 1.0);
+}
+
+/// One-shot with its own level and playback rate (rate 1.03 = 3% faster
+/// and a third of a semitone higher) — natural variation for repeated
+/// sounds like footsteps.
+#[no_mangle]
+pub extern "C" fn eng_fx_play_var(src: u32, kind: u32, gain: f32, rate: f32) {
     let ctx = eng();
     if (kind as usize) < ctx.fx_bufs.len() && ctx.voices.len() < 24 {
-        ctx.voices.push(Voice { src: src as usize, buf: kind as usize, pos: 0 });
+        let mut v = Voice::plain(src as usize, kind as usize);
+        v.gain = gain.clamp(0.0, 4.0);
+        v.rate = rate.clamp(0.5, 2.0);
+        ctx.voices.push(v);
     }
 }
 
@@ -1378,7 +1419,7 @@ pub extern "C" fn eng_process(n: u32) {
                 }
                 for v in &mut ctx.voices {
                     if v.src == si && v.pos < ctx.fx_bufs[v.buf].len() {
-                        v.pos += 1;
+                        v.advance();
                     }
                 }
                 continue;
@@ -1392,8 +1433,8 @@ pub extern "C" fn eng_process(n: u32) {
             };
             for v in &mut ctx.voices {
                 if v.src == si && v.pos < ctx.fx_bufs[v.buf].len() {
-                    x += ctx.fx_bufs[v.buf][v.pos];
-                    v.pos += 1;
+                    x += v.sample(&ctx.fx_bufs[v.buf]);
+                    v.advance();
                 }
             }
             let w0 = bus[0];
@@ -1767,6 +1808,38 @@ mod tests {
     /// unit gain; overlapping voices add; stop removes it at once; a voice
     /// lasts exactly its buffer; the 24-voice cap holds; unknown kinds are
     /// ignored.
+    #[test]
+    fn fx_voice_level_and_rate_vary_per_play() {
+        // eng_fx_play_var: level scales the voice, rate shortens or
+        // stretches it — the per-step variation of footsteps
+        let _g = eng_lock();
+        eng_init(SR);
+        source_with(0, &[]);
+        route_tap(0, 1.0);
+        let amp = 0.01f32;
+        fx_load(&vec![amp; 3000]); // kind 0
+        render(SR as usize);
+        meters();
+        eng_fx_play_var(0, 0, 0.5, 1.0);
+        render(1024);
+        let unit = 2f32.sqrt() * amp;
+        let peak = meters()[0].0;
+        assert!((peak / (0.5 * unit) - 1.0).abs() < 1e-3, "gain 0.5: peak {peak} want {}", 0.5 * unit);
+        eng_fx_stop(0, 0);
+        // rate 1.5: 3000 samples play out in ~2000
+        eng_fx_play_var(0, 0, 1.0, 1.5);
+        render(1990);
+        assert_eq!(eng().voices.len(), 1, "still playing at 1990 samples");
+        render(20);
+        assert!(eng().voices.is_empty(), "a 1.5x voice ends after ~2000 samples");
+        // rate 1.0 / gain 1.0 is plain playback
+        eng_fx_play_var(0, 0, 1.0, 1.0);
+        render(2999);
+        assert_eq!(eng().voices.len(), 1);
+        render(1);
+        assert!(eng().voices.is_empty());
+    }
+
     #[test]
     fn fx_voices_mix_into_their_source_stop_end_and_cap() {
         let _g = eng_lock();
