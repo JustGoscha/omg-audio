@@ -50,7 +50,7 @@ fn module_switches_shape_the_field_and_restore() {
     assert!(back > 0.85 * base, "re-enabling must restore: {back} vs {base}");
 
     // --- furniture: the piano heard through the living room's
-    // bookshelf divider (local 5.4–5.8 × 0.4–3.4, 2.2 m tall)
+    // bookshelf divider (local 5.4–5.8 × 0.08–3.4, 2.2 m tall)
     const PIANO: usize = 0;
     let occluded = read(&mut w, 6.8, 1.5, PIANO);
     quality::set_module(1, false);

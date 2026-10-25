@@ -626,6 +626,8 @@ pub const CLUB_SPEAKERS: [(f32, f32); 4] =
 
 pub fn sources() -> [SourceDef; 14] {
     [
+        // the living room's grand piano: the sound rises off its
+        // soundboard, half a meter above the case
         SourceDef {
             name: "music",
             z: 1.5,
@@ -662,7 +664,8 @@ pub fn sources() -> [SourceDef; 14] {
         },
         SourceDef {
             name: "radio",
-            z: -1.5, // bunker floor −3 m + source height
+            // on the bunker's table: floor −3 m + table 0.75 m + the set
+            z: -2.1,
             pos: (37.5, 12.5),
             room: BUNKER,
             // a little transistor radio, not a hi-fi
@@ -719,106 +722,597 @@ pub fn sources() -> [SourceDef; 14] {
 
 pub const DYN_SLOTS: usize = 6;
 
-/// Furniture (PT-early C5): solid boxes inside rooms, ROOM-LOCAL
-/// coordinates. The traced early engine shadows sources behind them
-/// (segment-validated chains + knife-edge bends); the ISM backend
-/// cannot see them — that difference IS the demo. Keep the demo-side
-/// mirror (web/main.js FURNITURE) in sync.
-pub fn furniture(room: usize) -> &'static [omg_core::pt::Aabb] {
-    use omg_core::pt::Aabb;
-    use omg_core::vec3::Vec3;
-    const fn boxy(
-        x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32, t: [f32; 3],
-    ) -> Aabb {
-        Aabb { min: Vec3 { x: x0, y: y0, z: z0 }, max: Vec3 { x: x1, y: y1, z: z1 }, transmission: t }
+// ------------------------------------------------------------ interiors
+//
+// The interior layout is authored HERE, once: one table per room of
+// `Piece`s (kind, centre, size, yaw, material) in `layout`. Everything
+// else derives from it — the tracer's boxes (`furniture` /
+// `furniture_mats`), the exported `assets/demo/layout.json` the web demo
+// and the Godot demo build their visuals and colliders from
+// (`layout_json`; regenerate with `cargo run -p omg-scene --example
+// export_layout` — the `demo_layout` test fails while the committed
+// file is stale), and the layout gate (`tests/demo_layout.rs`: no
+// overlaps, wall rules, door clearance, walkable paths from every door
+// to every source).
+
+/// What a furniture piece IS: its look in the frontends, its wall rule
+/// in the layout gate, and its JSON `kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Sofa,
+    Armchair,
+    CoffeeTable,
+    SideTable,
+    Rug,
+    FloorLamp,
+    /// An upright piano (back against a wall, keyboard in front).
+    Piano,
+    /// A grand piano, free-standing; its front is the keyboard.
+    GrandPiano,
+    PianoBench,
+    Bookshelf,
+    /// A free-standing double-sided bookcase dividing a room; one end
+    /// against a wall.
+    Divider,
+    Sideboard,
+    Desk,
+    Chair,
+    Table,
+    Tv,
+    TvStand,
+    Bed,
+    Nightstand,
+    Wardrobe,
+    Dresser,
+    BunkBed,
+    KitchenCounter,
+    Fridge,
+    /// A row of joined seats (seminar seating), one box.
+    SeatRow,
+    Lectern,
+    Whiteboard,
+    Bar,
+    BackBar,
+    Stool,
+    /// A high-backed booth bench.
+    Booth,
+    Stage,
+    DjBooth,
+    /// A PA stack's sub cabinet; the emitting top box sits above it.
+    Speaker,
+    Pew,
+    Altar,
+    Pillar,
+    Crate,
+    Shelf,
+    Locker,
+    Bench,
+    CoatRack,
+}
+
+/// How a piece must stand relative to the room's walls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WallRule {
+    Free,
+    /// Its back (the side opposite its facing) stands against a wall:
+    /// beds (headboard), bookshelves, sideboards, wardrobes, wall TVs.
+    Back,
+    /// Some face touches a wall (a divider's end, a booth, a stage).
+    Any,
+}
+
+impl Kind {
+    pub const fn name(self) -> &'static str {
+        use Kind::*;
+        match self {
+            Sofa => "sofa",
+            Armchair => "armchair",
+            CoffeeTable => "coffee_table",
+            SideTable => "side_table",
+            Rug => "rug",
+            FloorLamp => "floor_lamp",
+            Piano => "piano",
+            GrandPiano => "grand_piano",
+            PianoBench => "piano_bench",
+            Bookshelf => "bookshelf",
+            Divider => "divider",
+            Sideboard => "sideboard",
+            Desk => "desk",
+            Chair => "chair",
+            Table => "table",
+            Tv => "tv",
+            TvStand => "tv_stand",
+            Bed => "bed",
+            Nightstand => "nightstand",
+            Wardrobe => "wardrobe",
+            Dresser => "dresser",
+            BunkBed => "bunk_bed",
+            KitchenCounter => "kitchen_counter",
+            Fridge => "fridge",
+            SeatRow => "seat_row",
+            Lectern => "lectern",
+            Whiteboard => "whiteboard",
+            Bar => "bar",
+            BackBar => "back_bar",
+            Stool => "stool",
+            Booth => "booth",
+            Stage => "stage",
+            DjBooth => "dj_booth",
+            Speaker => "speaker",
+            Pew => "pew",
+            Altar => "altar",
+            Pillar => "pillar",
+            Crate => "crate",
+            Shelf => "shelf",
+            Locker => "locker",
+            Bench => "bench",
+            CoatRack => "coat_rack",
+        }
     }
-    // per-band amplitude THROUGH a piece: soft things pass muffled
-    // bass, stone passes nothing
-    const STONE: [f32; 3] = [0.02, 0.002, 0.0];
-    const SOFT: [f32; 3] = [0.5, 0.25, 0.1];   // sofa, bed, pillows
-    const WOOD: [f32; 3] = [0.5, 0.3, 0.15];   // thin tables, chairs
-    const CABINET: [f32; 3] = [0.3, 0.1, 0.03]; // solid casework, bar
-    const BOOKS: [f32; 3] = [0.15, 0.04, 0.01]; // packed bookshelf
-    const PANEL: [f32; 3] = [0.4, 0.2, 0.08];  // whiteboard, TV
-    // Cathedral nave (16 x 22 x 15 local): two colonnades of three
-    // stone pillars; the flute stands mid-nave at local (8, 14).
-    static CATHEDRAL_F: [omg_core::pt::Aabb; 6] = [
-        boxy(3.75, 4.75, 0.0, 5.25, 6.25, 9.0, STONE),
-        boxy(3.75, 10.25, 0.0, 5.25, 11.75, 9.0, STONE),
-        boxy(3.75, 15.75, 0.0, 5.25, 17.25, 9.0, STONE),
-        boxy(10.75, 4.75, 0.0, 12.25, 6.25, 9.0, STONE),
-        boxy(10.75, 10.25, 0.0, 12.25, 11.75, 9.0, STONE),
-        boxy(10.75, 15.75, 0.0, 12.25, 17.25, 9.0, STONE),
+
+    pub const fn wall_rule(self) -> WallRule {
+        use Kind::*;
+        match self {
+            Piano | Bookshelf | Sideboard | Desk | Tv | TvStand | Bed | Nightstand | Wardrobe
+            | Dresser | KitchenCounter | Fridge | Whiteboard | BackBar | Shelf | Locker
+            | CoatRack => WallRule::Back,
+            Divider | BunkBed | Booth | Stage => WallRule::Any,
+            _ => WallRule::Free,
+        }
+    }
+
+    /// Lies flat on the floor (rugs): walkable, may lie under anything.
+    pub const fn flat(self) -> bool {
+        matches!(self, Kind::Rug)
+    }
+
+    /// Takes part in the acoustics (`furniture`). Rugs and lamps are
+    /// decor: a 1 cm rug box would only tax every floor bounce.
+    pub const fn acoustic(self) -> bool {
+        !matches!(self, Kind::Rug | Kind::FloorLamp)
+    }
+
+    /// Base colour for the frontends (0xRRGGBB).
+    pub const fn color(self) -> u32 {
+        use Kind::*;
+        match self {
+            Sofa | Armchair => 0x5a4636,
+            Booth => 0x6a2236,
+            Rug => 0x6a3a32,
+            CoffeeTable | SideTable | Table | Desk | Nightstand | PianoBench | Chair | Stool
+            | Bench => 0x4a3626,
+            FloorLamp => 0xd8c8a0,
+            Piano | GrandPiano => 0x15130f,
+            Bookshelf | Divider | Shelf => 0x5a4530,
+            Sideboard | Dresser | Wardrobe | TvStand => 0x4a3626,
+            Tv => 0x14161c,
+            Bed | BunkBed => 0x707a8a,
+            KitchenCounter => 0x4a4038,
+            Fridge => 0xb8bcc0,
+            SeatRow => 0x35404f,
+            Lectern => 0x5a4530,
+            Whiteboard => 0xd8d8d0,
+            Bar | BackBar => 0x3a2a1e,
+            Stage => 0x1e1a22,
+            DjBooth => 0x2a2630,
+            Speaker => 0x111114,
+            Pew => 0x3e2c1e,
+            Altar => 0x3a3a44,
+            Pillar => 0x4c4c58,
+            Crate => 0x5a5236,
+            Locker => 0x48523e,
+            CoatRack => 0x3a2a1e,
+        }
+    }
+}
+
+/// Acoustic material class of a piece.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FurnMat {
+    Stone,
+    /// Upholstery, mattresses, cushions.
+    Soft,
+    /// Thin tables, chairs, benches.
+    Wood,
+    /// Solid casework: cabinets, counters, the bar, the piano case.
+    Cabinet,
+    /// A packed bookshelf.
+    Books,
+    /// Whiteboards, TVs.
+    Panel,
+}
+
+impl FurnMat {
+    pub const fn name(self) -> &'static str {
+        match self {
+            FurnMat::Stone => "stone",
+            FurnMat::Soft => "soft",
+            FurnMat::Wood => "wood",
+            FurnMat::Cabinet => "cabinet",
+            FurnMat::Books => "books",
+            FurnMat::Panel => "panel",
+        }
+    }
+
+    /// Full acoustic identity: transmission is the per-band amplitude
+    /// THROUGH the piece (soft things pass muffled bass, stone passes
+    /// nothing); absorption/scattering are what the late tracer bounces
+    /// with and the early solver reflects with — a sofa eats the tail,
+    /// a bookshelf diffuses it, a table top slaps back.
+    pub const fn material(self) -> Material {
+        match self {
+            FurnMat::Stone => Material {
+                absorption: [0.02, 0.03, 0.04],
+                scattering: 0.30,
+                transmission: [0.02, 0.002, 0.0],
+            },
+            FurnMat::Soft => Material {
+                absorption: [0.35, 0.60, 0.70],
+                scattering: 0.65,
+                transmission: [0.5, 0.25, 0.1],
+            },
+            FurnMat::Wood => Material {
+                absorption: [0.10, 0.10, 0.12],
+                scattering: 0.40,
+                transmission: [0.5, 0.3, 0.15],
+            },
+            FurnMat::Cabinet => Material {
+                absorption: [0.12, 0.14, 0.18],
+                scattering: 0.35,
+                transmission: [0.3, 0.1, 0.03],
+            },
+            FurnMat::Books => Material {
+                absorption: [0.25, 0.42, 0.55],
+                scattering: 0.80,
+                transmission: [0.15, 0.04, 0.01],
+            },
+            FurnMat::Panel => Material {
+                absorption: [0.18, 0.10, 0.06],
+                scattering: 0.15,
+                transmission: [0.4, 0.2, 0.08],
+            },
+        }
+    }
+}
+
+/// One piece of furniture, ROOM-LOCAL.
+#[derive(Clone, Copy, Debug)]
+pub struct Piece {
+    pub kind: Kind,
+    /// Footprint centre in room-local plan coordinates (m).
+    pub c: (f32, f32),
+    /// Own-frame size (m): width (side to side), depth (back to front),
+    /// height.
+    pub size: (f32, f32, f32),
+    /// Which way the piece faces (its front: where you sit, the screen,
+    /// the keyboard, a bed's foot), degrees counter-clockwise from +y:
+    /// 0 = +y (north), 90 = −x (west), 180 = −y (south), 270 = +x
+    /// (east). Multiples of 90 only — the tracer's boxes are axis-aligned.
+    pub yaw: i32,
+    /// Bottom above the room's floor (wall-mounted panels, the DJ deck
+    /// on the stage); 0 for anything standing on the floor.
+    pub z0: f32,
+    pub mat: FurnMat,
+}
+
+impl Piece {
+    /// Unit plan vector the piece faces.
+    pub fn facing(&self) -> (f32, f32) {
+        match self.yaw.rem_euclid(360) {
+            0 => (0.0, 1.0),
+            90 => (-1.0, 0.0),
+            180 => (0.0, -1.0),
+            _ => (1.0, 0.0),
+        }
+    }
+
+    /// Half extents along x and y.
+    pub fn half_xy(&self) -> (f32, f32) {
+        if self.yaw.rem_euclid(180) == 0 {
+            (0.5 * self.size.0, 0.5 * self.size.1)
+        } else {
+            (0.5 * self.size.1, 0.5 * self.size.0)
+        }
+    }
+
+    /// Room-local box (min, max), z from the room's floor.
+    pub fn local_box(&self) -> ([f32; 3], [f32; 3]) {
+        let (hx, hy) = self.half_xy();
+        (
+            [self.c.0 - hx, self.c.1 - hy, self.z0],
+            [self.c.0 + hx, self.c.1 + hy, self.z0 + self.size.2],
+        )
+    }
+
+    /// The tracer's box (room-local) with the material's transmission.
+    pub fn aabb(&self) -> omg_core::pt::Aabb {
+        let (a, b) = self.local_box();
+        omg_core::pt::Aabb {
+            min: Vec3::new(a[0], a[1], a[2]),
+            max: Vec3::new(b[0], b[1], b[2]),
+            transmission: self.mat.material().transmission,
+        }
+    }
+}
+
+/// A floor-standing piece: kind, centre (x, y), size (w, d, h), yaw, material.
+#[allow(clippy::too_many_arguments)]
+const fn pc(kind: Kind, x: f32, y: f32, w: f32, d: f32, h: f32, yaw: i32, mat: FurnMat) -> Piece {
+    Piece { kind, c: (x, y), size: (w, d, h), yaw, z0: 0.0, mat }
+}
+
+/// A raised piece (wall-mounted, or standing on something): as `pc`,
+/// its bottom `z0` above the floor.
+#[allow(clippy::too_many_arguments)]
+const fn up(
+    kind: Kind, x: f32, y: f32, w: f32, d: f32, h: f32, yaw: i32, z0: f32, mat: FurnMat,
+) -> Piece {
+    Piece { kind, c: (x, y), size: (w, d, h), yaw, z0, mat }
+}
+
+// Facings for `Piece::yaw`.
+const FACE_N: i32 = 0;
+const FACE_W: i32 = 90;
+const FACE_S: i32 = 180;
+const FACE_E: i32 = 270;
+
+/// Number of entries in `rooms()`.
+pub const ROOM_COUNT: usize = OUTSIDE + 1;
+
+/// The interior layout of `room`, ROOM-LOCAL — one table per room.
+/// Wall-hugging pieces keep 8 cm off the wall plane (the frontends draw
+/// 15 cm walls centred on it).
+pub fn layout(room: usize) -> &'static [Piece] {
+    use FurnMat::*;
+    use Kind::*;
+    const N: i32 = FACE_N;
+    const W: i32 = FACE_W;
+    const S: i32 = FACE_S;
+    const E: i32 = FACE_E;
+    // Living Room (8 × 6 × 2.7): a music room in two zones split by a
+    // ceiling-high double-sided bookcase standing out from the south
+    // wall. WEST: the grand piano free-standing in the middle of its
+    // half (the music source rises from its soundboard), keyboard and
+    // bench to the south so the pianist faces north with the open
+    // curved side toward the listeners; the music library against the
+    // west wall behind it; a conversation group facing the piano from
+    // the east — sofa backed onto the bookcase, coffee table on a rug,
+    // an armchair closing the group from the south with a reading lamp;
+    // a sideboard against the north wall beside the door. EAST: a
+    // reading nook behind the bookcase (armchair facing the books, side
+    // table, lamp) and a desk against the east wall. Stand in the nook
+    // and the piano goes into the bookcase's shadow.
+    static LIVING_L: &[Piece] = &[
+        pc(GrandPiano, 2.0, 3.0, 1.5, 1.9, 1.0, S, Cabinet),
+        pc(PianoBench, 2.0, 1.75, 0.8, 0.36, 0.5, N, Wood),
+        pc(Bookshelf, 0.255, 3.0, 2.0, 0.35, 2.0, E, Books),
+        pc(Sofa, 4.9, 3.0, 2.1, 0.9, 0.85, W, Soft),
+        pc(CoffeeTable, 3.85, 3.0, 1.0, 0.5, 0.42, W, Wood),
+        pc(Rug, 3.9, 3.0, 2.6, 2.0, 0.01, W, Soft),
+        pc(Armchair, 3.85, 1.25, 0.85, 0.85, 0.9, N, Soft),
+        pc(FloorLamp, 4.75, 1.0, 0.3, 0.3, 1.6, N, Wood),
+        pc(Sideboard, 1.6, 5.695, 1.8, 0.45, 0.8, S, Cabinet),
+        pc(Divider, 5.6, 1.74, 3.32, 0.4, 2.2, W, Books),
+        pc(Armchair, 7.475, 1.55, 0.85, 0.85, 0.9, W, Soft),
+        pc(SideTable, 7.5, 0.7, 0.45, 0.45, 0.55, W, Wood),
+        pc(FloorLamp, 7.6, 2.35, 0.3, 0.3, 1.6, W, Wood),
+        pc(Desk, 7.61, 4.4, 1.4, 0.62, 0.75, W, Wood),
+        pc(Chair, 6.95, 4.4, 0.45, 0.45, 0.9, E, Wood),
     ];
-    // Club (10 x 12 local): the bar counter along the west wall.
-    static CLUB_F: [omg_core::pt::Aabb; 1] = [boxy(1.0, 3.0, 0.0, 2.0, 7.5, 1.1, CABINET)];
-    // Living room (8 x 6 x 2.7 local), piano at (2, 3): a real living
-    // room — sofa + coffee table + armchair around the piano, sideboard
-    // on the south wall, and a ceiling-high bookshelf dividing the east
-    // end: stand behind it and the piano goes into shadow.
-    static LIVING_F: [omg_core::pt::Aabb; 5] = [
-        boxy(2.0, 4.4, 0.0, 4.2, 5.3, 0.75, SOFT),    // sofa
-        boxy(2.5, 3.3, 0.0, 3.7, 3.9, 0.45, WOOD),    // coffee table
-        boxy(4.9, 4.3, 0.0, 5.7, 5.1, 0.75, SOFT),    // armchair
-        boxy(0.3, 0.2, 0.0, 2.3, 0.7, 0.9, CABINET),  // sideboard
-        boxy(5.4, 0.4, 0.0, 5.8, 3.4, 2.2, BOOKS),    // bookshelf divider
+    // Great Hall (14 × 10 × 7) as a seminar room. The front is the east
+    // wall: the whiteboard on it, the presenter's desk beside it, and the
+    // narrator behind a lectern at local (10.5, 6.5) facing west. The
+    // audience sits in three rows of table + seat row facing her, in two
+    // blocks either side of a central aisle on her axis (y = 6.5); a
+    // refreshment sideboard by the south wall; both doors open onto
+    // free floor.
+    static HALL_L: &[Piece] = &[
+        pc(Table, 7.8, 5.0, 1.6, 0.6, 0.74, E, Wood),
+        pc(Table, 7.8, 8.0, 1.6, 0.6, 0.74, E, Wood),
+        pc(Table, 6.1, 5.0, 1.6, 0.6, 0.74, E, Wood),
+        pc(Table, 6.1, 8.0, 1.6, 0.6, 0.74, E, Wood),
+        pc(Table, 4.4, 5.0, 1.6, 0.6, 0.74, E, Wood),
+        pc(Table, 4.4, 8.0, 1.6, 0.6, 0.74, E, Wood),
+        pc(SeatRow, 7.175, 5.0, 1.6, 0.45, 0.85, E, Wood),
+        pc(SeatRow, 7.175, 8.0, 1.6, 0.45, 0.85, E, Wood),
+        pc(SeatRow, 5.475, 5.0, 1.6, 0.45, 0.85, E, Wood),
+        pc(SeatRow, 5.475, 8.0, 1.6, 0.45, 0.85, E, Wood),
+        pc(SeatRow, 3.775, 5.0, 1.6, 0.45, 0.85, E, Wood),
+        pc(SeatRow, 3.775, 8.0, 1.6, 0.45, 0.85, E, Wood),
+        pc(Lectern, 9.75, 6.5, 0.6, 0.5, 1.15, W, Cabinet),
+        up(Whiteboard, 13.86, 6.5, 3.0, 0.12, 1.2, W, 0.9, Panel),
+        pc(Desk, 13.56, 3.0, 1.6, 0.72, 0.75, W, Wood),
+        pc(Chair, 12.9, 3.0, 0.45, 0.45, 0.9, E, Wood),
+        pc(Sideboard, 9.5, 0.33, 1.8, 0.5, 0.9, N, Cabinet),
     ];
-    // Great Hall (14 x 10 x 7 local) as a seminar room. The narrator
-    // stands at local (10.5, 6.5) behind a lectern; two columns of
-    // three tables with a chair each face her, and a tall whiteboard
-    // stands by the east wall — step behind it and she shadows.
-    static HALL_F: [omg_core::pt::Aabb; 14] = [
-        boxy(1.8, 1.6, 0.0, 3.6, 2.3, 0.74, WOOD),
-        boxy(1.8, 4.4, 0.0, 3.6, 5.1, 0.74, WOOD),
-        boxy(1.8, 7.2, 0.0, 3.6, 7.9, 0.74, WOOD),
-        boxy(4.6, 1.6, 0.0, 6.4, 2.3, 0.74, WOOD),
-        boxy(4.6, 4.4, 0.0, 6.4, 5.1, 0.74, WOOD),
-        boxy(4.6, 7.2, 0.0, 6.4, 7.9, 0.74, WOOD),
-        boxy(1.2, 1.7, 0.0, 1.65, 2.15, 0.45, WOOD), // chairs
-        boxy(1.2, 4.5, 0.0, 1.65, 4.95, 0.45, WOOD),
-        boxy(1.2, 7.3, 0.0, 1.65, 7.75, 0.45, WOOD),
-        boxy(4.0, 1.7, 0.0, 4.45, 2.15, 0.45, WOOD),
-        boxy(4.0, 4.5, 0.0, 4.45, 4.95, 0.45, WOOD),
-        boxy(4.0, 7.3, 0.0, 4.45, 7.75, 0.45, WOOD),
-        boxy(10.2, 5.9, 0.0, 10.8, 6.3, 1.2, CABINET),  // lectern
-        boxy(12.0, 2.5, 0.0, 12.3, 5.5, 2.2, PANEL),  // whiteboard
+    // Entrance (2 × 6): the club's sound-lock — a bench at the south
+    // end, coats on a wall rack at the north end, the door axis free.
+    static ENTRANCE_L: &[Piece] = &[
+        pc(Bench, 1.0, 0.29, 1.4, 0.42, 0.45, N, Wood),
+        pc(CoatRack, 1.0, 5.77, 1.0, 0.3, 1.8, S, Wood),
     ];
-    // Old House ground floor (7 x 7 local): couch + TV, an open
-    // kitchen along the east wall, pillows on the floor.
-    static HOUSE_F: [omg_core::pt::Aabb; 7] = [
-        boxy(1.0, 2.0, 0.0, 3.2, 2.9, 0.75, SOFT),    // couch
-        boxy(1.6, 3.4, 0.0, 2.6, 4.0, 0.4, WOOD),     // coffee table
-        boxy(0.3, 4.4, 0.4, 0.55, 5.9, 1.4, PANEL),   // TV on the west wall
-        boxy(4.4, 0.3, 0.0, 6.7, 0.95, 0.95, CABINET), // kitchen counter
-        boxy(6.0, 1.3, 0.0, 6.7, 2.0, 1.9, CABINET),  // fridge
-        boxy(2.2, 4.8, 0.0, 2.8, 5.4, 0.25, SOFT),    // floor pillow
-        boxy(3.4, 5.2, 0.0, 4.0, 5.8, 0.25, SOFT),    // floor pillow
+    // Club (10 × 12 × 4.5). The stage along the south wall with the DJ
+    // deck on it, flanked by the two main PA stacks; two fill stacks in
+    // the north corners (the club source's four emitters stand on these
+    // sub cabinets). The bar runs along the west wall north of the door
+    // (back bar against the wall, stools facing it); two booths against
+    // the east wall either side of the window; the dance floor in the
+    // middle stays clear.
+    static CLUB_L: &[Piece] = &[
+        pc(Stage, 5.0, 1.19, 5.2, 2.22, 0.5, N, Cabinet),
+        up(DjBooth, 5.0, 1.0, 1.6, 0.6, 1.0, N, 0.5, Cabinet),
+        pc(Speaker, 1.5, 1.5, 0.7, 0.7, 1.2, N, Cabinet),
+        pc(Speaker, 8.5, 1.5, 0.7, 0.7, 1.2, N, Cabinet),
+        pc(Speaker, 1.5, 10.5, 0.7, 0.7, 1.2, S, Cabinet),
+        pc(Speaker, 8.5, 10.5, 0.7, 0.7, 1.2, S, Cabinet),
+        pc(BackBar, 0.29, 8.0, 2.8, 0.42, 2.0, E, Cabinet),
+        pc(Bar, 1.5, 8.0, 2.8, 0.6, 1.1, E, Cabinet),
+        pc(Stool, 2.2, 7.0, 0.4, 0.4, 0.75, W, Wood),
+        pc(Stool, 2.2, 7.7, 0.4, 0.4, 0.75, W, Wood),
+        pc(Stool, 2.2, 8.4, 0.4, 0.4, 0.75, W, Wood),
+        pc(Stool, 2.2, 9.1, 0.4, 0.4, 0.75, W, Wood),
+        pc(Booth, 9.26, 2.65, 1.32, 0.5, 1.1, N, Soft),
+        pc(Table, 9.36, 3.25, 1.12, 0.6, 0.75, N, Wood),
+        pc(Booth, 9.26, 3.85, 1.32, 0.5, 1.1, S, Soft),
+        pc(Booth, 9.26, 8.25, 1.32, 0.5, 1.1, N, Soft),
+        pc(Table, 9.36, 8.85, 1.12, 0.6, 0.75, N, Wood),
+        pc(Booth, 9.26, 9.45, 1.32, 0.5, 1.1, S, Soft),
     ];
-    // Old House upper floor (local z above its own floor): bed + a
-    // big wall TV + dresser + a pillow nest.
-    static HOUSE_UP_F: [omg_core::pt::Aabb; 4] = [
-        boxy(0.8, 0.8, 0.0, 2.6, 2.8, 0.6, SOFT),     // bed
-        boxy(0.25, 3.6, 0.8, 0.45, 5.6, 2.0, PANEL),  // big TV, west wall
-        boxy(5.8, 0.4, 0.0, 6.6, 2.0, 1.0, CABINET),  // dresser
-        boxy(4.6, 4.6, 0.0, 5.2, 5.2, 0.25, SOFT),    // pillow nest
+    // Old House ground floor (7 × 7 × 2.8), open plan. The stairs run up
+    // the west wall (kept clear). Kitchen along the south wall (counter,
+    // fridge in the corner), the dining table in front of it with four
+    // chairs; the living corner in the north-east: sofa facing a TV on
+    // the east wall across a coffee table and rug.
+    static HOUSE_L: &[Piece] = &[
+        pc(KitchenCounter, 4.8, 0.38, 2.8, 0.6, 0.9, N, Cabinet),
+        pc(Fridge, 6.57, 0.42, 0.7, 0.68, 1.9, N, Cabinet),
+        pc(Table, 4.7, 2.6, 1.4, 0.8, 0.75, N, Wood),
+        pc(Chair, 4.35, 1.85, 0.42, 0.42, 0.9, N, Wood),
+        pc(Chair, 5.05, 1.85, 0.42, 0.42, 0.9, N, Wood),
+        pc(Chair, 4.35, 3.35, 0.42, 0.42, 0.9, S, Wood),
+        pc(Chair, 5.05, 3.35, 0.42, 0.42, 0.9, S, Wood),
+        pc(Sofa, 3.85, 5.1, 2.1, 0.9, 0.85, E, Soft),
+        pc(CoffeeTable, 5.0, 5.1, 1.0, 0.55, 0.42, E, Wood),
+        pc(Rug, 5.0, 5.1, 2.4, 2.4, 0.01, E, Soft),
+        pc(TvStand, 6.695, 5.1, 1.6, 0.45, 0.5, W, Cabinet),
+        up(Tv, 6.86, 5.1, 1.3, 0.1, 0.75, W, 0.95, Panel),
+        pc(FloorLamp, 3.6, 6.45, 0.3, 0.3, 1.6, E, Wood),
+    ];
+    // Old House upper floor (7 × 7 × 2.6; the stairwell opens along the
+    // west wall, kept clear): a bedroom. The bed's headboard against the
+    // south wall with a nightstand each side, a dresser beside them, the
+    // wardrobe on the east wall, a writing desk under the north window
+    // with its chair, a rug at the foot of the bed.
+    static HOUSE_UP_L: &[Piece] = &[
+        pc(Bed, 4.4, 1.13, 1.6, 2.1, 0.9, N, Soft),
+        pc(Nightstand, 3.3, 0.28, 0.45, 0.4, 0.55, N, Wood),
+        pc(Nightstand, 5.5, 0.28, 0.45, 0.4, 0.55, N, Wood),
+        pc(Dresser, 2.4, 0.33, 1.0, 0.5, 0.9, N, Cabinet),
+        pc(Wardrobe, 6.62, 3.6, 1.8, 0.6, 2.1, W, Cabinet),
+        pc(Desk, 5.3, 6.62, 1.3, 0.6, 0.75, S, Wood),
+        pc(Chair, 5.3, 5.95, 0.45, 0.45, 0.9, N, Wood),
+        pc(Rug, 4.4, 2.8, 2.0, 1.0, 0.01, N, Soft),
+    ];
+    // Cathedral nave (16 × 22 × 15). Two arcades of six stone columns
+    // (x = 4 and 12); pews in two blocks either side of the central
+    // aisle on the portal's axis, all facing the altar at the north end;
+    // the flautist plays in the open chancel between the front pews and
+    // the altar.
+    static CATHEDRAL_L: &[Piece] = &[
+        pc(Pillar, 4.0, 3.0, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pillar, 4.0, 6.2, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pillar, 4.0, 9.4, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pillar, 4.0, 12.6, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pillar, 4.0, 15.8, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pillar, 4.0, 19.0, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pillar, 12.0, 3.0, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pillar, 12.0, 6.2, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pillar, 12.0, 9.4, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pillar, 12.0, 12.6, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pillar, 12.0, 15.8, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pillar, 12.0, 19.0, 0.9, 0.9, 8.5, N, Stone),
+        pc(Pew, 6.05, 5.5, 2.3, 0.6, 0.95, N, Wood),
+        pc(Pew, 9.95, 5.5, 2.3, 0.6, 0.95, N, Wood),
+        pc(Pew, 6.05, 6.5, 2.3, 0.6, 0.95, N, Wood),
+        pc(Pew, 9.95, 6.5, 2.3, 0.6, 0.95, N, Wood),
+        pc(Pew, 6.05, 7.5, 2.3, 0.6, 0.95, N, Wood),
+        pc(Pew, 9.95, 7.5, 2.3, 0.6, 0.95, N, Wood),
+        pc(Pew, 6.05, 8.5, 2.3, 0.6, 0.95, N, Wood),
+        pc(Pew, 9.95, 8.5, 2.3, 0.6, 0.95, N, Wood),
+        pc(Pew, 6.05, 9.5, 2.3, 0.6, 0.95, N, Wood),
+        pc(Pew, 9.95, 9.5, 2.3, 0.6, 0.95, N, Wood),
+        pc(Altar, 8.0, 17.0, 2.4, 1.2, 1.1, S, Stone),
+    ];
+    // Bunker (6 × 8 × 2.2, below grade): a shelter. The radio stands on
+    // a table near the north end with a chair either side; two bunks
+    // along the east wall, supply shelving on the north wall, crates in
+    // the north-east corner, a locker by the west wall; the hatch from
+    // the stair (south-west) opens onto free floor.
+    static BUNKER_L: &[Piece] = &[
+        pc(Table, 3.5, 6.5, 1.2, 0.8, 0.75, N, Wood),
+        pc(Chair, 2.6, 6.5, 0.42, 0.42, 0.9, E, Wood),
+        pc(Chair, 4.4, 6.5, 0.42, 0.42, 0.9, W, Wood),
+        pc(BunkBed, 5.5, 2.6, 2.0, 0.84, 1.6, W, Soft),
+        pc(BunkBed, 5.5, 4.7, 2.0, 0.84, 1.6, W, Soft),
+        pc(Shelf, 1.4, 7.67, 1.8, 0.5, 1.9, S, Cabinet),
+        pc(Crate, 5.4, 7.45, 0.9, 0.9, 0.8, S, Wood),
+        pc(Crate, 5.45, 6.55, 0.7, 0.7, 0.6, S, Wood),
+        pc(Locker, 0.33, 3.6, 1.2, 0.5, 1.9, E, Cabinet),
     ];
     match room {
-        CATHEDRAL => &CATHEDRAL_F,
-        CLUB => &CLUB_F,
-        LIVING => &LIVING_F,
-        HALL => &HALL_F,
-        HOUSE => &HOUSE_F,
-        HOUSE_UP => &HOUSE_UP_F,
+        LIVING => LIVING_L,
+        HALL => HALL_L,
+        ENTRANCE => ENTRANCE_L,
+        CLUB => CLUB_L,
+        HOUSE => HOUSE_L,
+        HOUSE_UP => HOUSE_UP_L,
+        CATHEDRAL => CATHEDRAL_L,
+        BUNKER => BUNKER_L,
         _ => &[],
     }
 }
 
-/// Full acoustic identity of each furniture piece, PARALLEL to
-/// `furniture(room)` row for row (a gate asserts the lengths match).
-/// Transmission repeats the boxy tables; absorption/scattering are what
-/// the late tracer bounces with and what the early solver reflects
-/// with — a sofa eats the tail, a bookshelf diffuses it, a table top
-/// slaps back.
+/// A floor region of a room that furniture must leave free
+/// (ROOM-LOCAL): stairs and stairwells, the dance floor, the chancel.
+#[derive(Clone, Copy, Debug)]
+pub struct ClearZone {
+    pub name: &'static str,
+    pub min: (f32, f32),
+    pub max: (f32, f32),
+}
+
+pub fn keep_clear(room: usize) -> &'static [ClearZone] {
+    const fn z(name: &'static str, x0: f32, y0: f32, x1: f32, y1: f32) -> ClearZone {
+        ClearZone { name, min: (x0, y0), max: (x1, y1) }
+    }
+    static LIVING_Z: &[ClearZone] = &[z("pianist", 1.5, 0.9, 2.5, 1.55)];
+    static HOUSE_Z: &[ClearZone] = &[z("stairs", 0.0, 0.0, 1.75, 7.0)];
+    static HOUSE_UP_Z: &[ClearZone] = &[z("stairwell", 0.0, 0.0, 1.75, 7.0)];
+    static CLUB_Z: &[ClearZone] = &[z("dance floor", 2.8, 3.0, 7.6, 9.0)];
+    static CATHEDRAL_Z: &[ClearZone] = &[z("chancel", 5.0, 11.0, 11.0, 15.5)];
+    match room {
+        LIVING => LIVING_Z,
+        HOUSE => HOUSE_Z,
+        HOUSE_UP => HOUSE_UP_Z,
+        CLUB => CLUB_Z,
+        CATHEDRAL => CATHEDRAL_Z,
+        _ => &[],
+    }
+}
+
+/// Named floor spots (ROOM-LOCAL) a walker must be able to reach from
+/// every door: the room's open centre ("hub") and room-specific ones
+/// (the foot of the stairs, the bar). Handy as spawn / camera points.
+pub fn spots(room: usize) -> &'static [(&'static str, (f32, f32))] {
+    match room {
+        LIVING => &[("hub", (3.2, 4.7)), ("nook", (6.4, 1.6))],
+        CORRIDOR => &[("hub", (0.8, 4.0))],
+        HALL => &[("hub", (9.0, 3.0)), ("aisle", (5.0, 6.5))],
+        ENTRANCE => &[("hub", (1.0, 3.0))],
+        CLUB => &[("hub", (5.0, 6.0)), ("bar", (3.0, 8.0))],
+        HOUSE => &[("hub", (2.6, 3.5)), ("stair foot", (1.9, 1.0)), ("kitchen", (4.8, 1.15))],
+        HOUSE_UP => &[("hub", (3.5, 4.2)), ("landing", (1.2, 5.6))],
+        CATHEDRAL => &[("hub", (8.0, 12.0))],
+        BUNKER => &[("hub", (2.5, 4.0))],
+        _ => &[],
+    }
+}
+
+/// The tracer's furniture boxes (PT-early C5), ROOM-LOCAL, derived from
+/// `layout` (acoustic pieces only). The traced early engine shadows
+/// sources behind them (segment-validated chains + knife-edge bends);
+/// the ISM backend cannot see them — that difference IS the demo.
+pub fn furniture(room: usize) -> &'static [omg_core::pt::Aabb] {
+    static T: std::sync::OnceLock<Vec<Vec<omg_core::pt::Aabb>>> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        (0..ROOM_COUNT)
+            .map(|r| layout(r).iter().filter(|p| p.kind.acoustic()).map(Piece::aabb).collect())
+            .collect()
+    })
+    .get(room)
+    .map_or(&[], |v| v.as_slice())
+}
+
 /// Pieces below this volume (m³) don't get specular reflector faces or
 /// late-field panels — a chair shadows the early field (extras) but
 /// doesn't bend a decay curve or slap back audibly, and every reflector
@@ -826,59 +1320,139 @@ pub fn furniture(room: usize) -> &'static [omg_core::pt::Aabb] {
 /// overlay, the late panels, and both discovery kernels' box lists.
 pub const FURN_REFLECTOR_MIN_VOL: f32 = 0.25;
 
-pub fn furniture_mats(room: usize) -> &'static [omg_core::material::Material] {
-    use omg_core::material::Material;
-    const STONE_M: Material = Material {
-        absorption: [0.02, 0.03, 0.04],
-        scattering: 0.30,
-        transmission: [0.02, 0.002, 0.0],
-    };
-    const SOFT_M: Material = Material {
-        absorption: [0.35, 0.60, 0.70],
-        scattering: 0.65,
-        transmission: [0.5, 0.25, 0.1],
-    };
-    const WOOD_M: Material = Material {
-        absorption: [0.10, 0.10, 0.12],
-        scattering: 0.40,
-        transmission: [0.5, 0.3, 0.15],
-    };
-    const CABINET_M: Material = Material {
-        absorption: [0.12, 0.14, 0.18],
-        scattering: 0.35,
-        transmission: [0.3, 0.1, 0.03],
-    };
-    const BOOKS_M: Material = Material {
-        absorption: [0.25, 0.42, 0.55],
-        scattering: 0.80,
-        transmission: [0.15, 0.04, 0.01],
-    };
-    const PANEL_M: Material = Material {
-        absorption: [0.18, 0.10, 0.06],
-        scattering: 0.15,
-        transmission: [0.4, 0.2, 0.08],
-    };
-    static CATHEDRAL_M: [Material; 6] = [STONE_M; 6];
-    static CLUB_M: [Material; 1] = [CABINET_M];
-    static LIVING_M: [Material; 5] = [SOFT_M, WOOD_M, SOFT_M, CABINET_M, BOOKS_M];
-    static HALL_M: [Material; 14] = [
-        WOOD_M, WOOD_M, WOOD_M, WOOD_M, WOOD_M, WOOD_M, // tables
-        WOOD_M, WOOD_M, WOOD_M, WOOD_M, WOOD_M, WOOD_M, // chairs
-        CABINET_M, // lectern
-        PANEL_M,   // whiteboard
-    ];
-    static HOUSE_M: [Material; 7] =
-        [SOFT_M, WOOD_M, PANEL_M, CABINET_M, CABINET_M, SOFT_M, SOFT_M];
-    static HOUSE_UP_M: [Material; 4] = [SOFT_M, PANEL_M, CABINET_M, SOFT_M];
-    match room {
-        CATHEDRAL => &CATHEDRAL_M,
-        CLUB => &CLUB_M,
-        LIVING => &LIVING_M,
-        HALL => &HALL_M,
-        HOUSE => &HOUSE_M,
-        HOUSE_UP => &HOUSE_UP_M,
-        _ => &[],
+/// Full acoustic identity of each furniture box, PARALLEL to
+/// `furniture(room)` row for row.
+pub fn furniture_mats(room: usize) -> &'static [Material] {
+    static T: std::sync::OnceLock<Vec<Vec<Material>>> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        (0..ROOM_COUNT)
+            .map(|r| {
+                layout(r).iter().filter(|p| p.kind.acoustic()).map(|p| p.mat.material()).collect()
+            })
+            .collect()
+    })
+    .get(room)
+    .map_or(&[], |v| v.as_slice())
+}
+
+/// The interior layout as JSON (`assets/demo/layout.json`): plain
+/// arrays/objects, meters, WORLD coordinates, z up (as in this file),
+/// yaw in degrees. Shape:
+///
+/// ```text
+/// { "version", "units", "up", "yaw_convention",
+///   "rooms": [ { "index", "name", "min":[x,y], "max":[x,y], "floor_z",
+///                "height", "keep_clear":[{ "name", "min", "max" }],
+///                "spots":[{ "name", "pos":[x,y] }],
+///                "furniture":[ { "kind", "pos":[cx,cy,z_bottom],
+///                    "size":[w,d,h], "yaw", "facing":[fx,fy],
+///                    "min":[x,y,z], "max":[x,y,z], "material",
+///                    "acoustic", "color":"#rrggbb" } ] } ],
+///   "sources": [ { "index", "name", "room", "pos":[x,y,z],
+///                  "emitters":[[x,y], …] } ] }
+/// ```
+///
+/// Rooms without furniture, keep-clear zones or spots are left out.
+pub fn layout_json() -> String {
+    fn n(v: f32) -> String {
+        let mut s = format!("{:.3}", v);
+        if s.contains('.') {
+            while s.ends_with('0') {
+                s.pop();
+            }
+            if s.ends_with('.') {
+                s.pop();
+            }
+        }
+        if s == "-0" {
+            s = "0".into();
+        }
+        s
     }
+    fn arr(v: &[f32]) -> String {
+        format!("[{}]", v.iter().map(|&x| n(x)).collect::<Vec<_>>().join(", "))
+    }
+    let rooms = rooms();
+    let mut o = String::new();
+    o.push_str("{\n");
+    o.push_str("  \"version\": 1,\n");
+    o.push_str("  \"generated_by\": \"omg-scene walkthrough::layout_json (cargo run -p omg-scene --example export_layout)\",\n");
+    o.push_str("  \"units\": \"meters\",\n");
+    o.push_str("  \"up\": \"z\",\n");
+    o.push_str("  \"yaw_convention\": \"degrees counter-clockwise from +y seen from above: 0 = the piece's front faces +y, 90 = -x, 180 = -y, 270 = +x. size = [width, depth, height] in the piece's own frame; pos = [centre x, centre y, bottom z]; min/max = the world AABB\",\n");
+    o.push_str("  \"rooms\": [\n");
+    let listed: Vec<usize> = (0..rooms.len())
+        .filter(|&i| !layout(i).is_empty() || !keep_clear(i).is_empty() || !spots(i).is_empty())
+        .collect();
+    for (k, &ri) in listed.iter().enumerate() {
+        let r = &rooms[ri];
+        let (ox, oy, oz) = (r.min.0, r.min.1, r.floor_z);
+        o.push_str("    {\n");
+        o.push_str(&format!("      \"index\": {ri},\n"));
+        o.push_str(&format!("      \"name\": \"{}\",\n", r.name));
+        o.push_str(&format!("      \"min\": {},\n", arr(&[r.min.0, r.min.1])));
+        o.push_str(&format!("      \"max\": {},\n", arr(&[r.max.0, r.max.1])));
+        o.push_str(&format!("      \"floor_z\": {},\n", n(r.floor_z)));
+        o.push_str(&format!("      \"height\": {},\n", n(r.height)));
+        let zones: Vec<String> = keep_clear(ri)
+            .iter()
+            .map(|z| {
+                format!(
+                    "{{ \"name\": \"{}\", \"min\": {}, \"max\": {} }}",
+                    z.name,
+                    arr(&[z.min.0 + ox, z.min.1 + oy]),
+                    arr(&[z.max.0 + ox, z.max.1 + oy])
+                )
+            })
+            .collect();
+        o.push_str(&format!("      \"keep_clear\": [{}],\n", zones.join(", ")));
+        let sp: Vec<String> = spots(ri)
+            .iter()
+            .map(|(name, p)| {
+                format!("{{ \"name\": \"{}\", \"pos\": {} }}", name, arr(&[p.0 + ox, p.1 + oy]))
+            })
+            .collect();
+        o.push_str(&format!("      \"spots\": [{}],\n", sp.join(", ")));
+        o.push_str("      \"furniture\": [");
+        let pieces = layout(ri);
+        for (j, p) in pieces.iter().enumerate() {
+            let (a, b) = p.local_box();
+            let f = p.facing();
+            o.push_str(if j == 0 { "\n" } else { ",\n" });
+            o.push_str(&format!(
+                "        {{ \"kind\": \"{}\", \"pos\": {}, \"size\": {}, \"yaw\": {}, \"facing\": {}, \"min\": {}, \"max\": {}, \"material\": \"{}\", \"acoustic\": {}, \"color\": \"#{:06x}\" }}",
+                p.kind.name(),
+                arr(&[p.c.0 + ox, p.c.1 + oy, p.z0 + oz]),
+                arr(&[p.size.0, p.size.1, p.size.2]),
+                p.yaw.rem_euclid(360),
+                arr(&[f.0, f.1]),
+                arr(&[a[0] + ox, a[1] + oy, a[2] + oz]),
+                arr(&[b[0] + ox, b[1] + oy, b[2] + oz]),
+                p.mat.name(),
+                p.kind.acoustic(),
+                p.kind.color(),
+            ));
+        }
+        o.push_str(if pieces.is_empty() { "]\n" } else { "\n      ]\n" });
+        o.push_str(if k + 1 == listed.len() { "    }\n" } else { "    },\n" });
+    }
+    o.push_str("  ],\n");
+    o.push_str("  \"sources\": [\n");
+    let srcs = sources();
+    let n_static = srcs.len() - DYN_SLOTS;
+    for (i, s) in srcs.iter().take(n_static).enumerate() {
+        let em: Vec<String> = s.emitters.iter().map(|e| arr(&[e.0, e.1])).collect();
+        o.push_str(&format!(
+            "    {{ \"index\": {i}, \"name\": \"{}\", \"room\": {}, \"pos\": {}, \"emitters\": [{}] }}{}\n",
+            s.name,
+            s.room,
+            arr(&[s.pos.0, s.pos.1, s.z]),
+            em.join(", "),
+            if i + 1 == n_static { "" } else { "," }
+        ));
+    }
+    o.push_str("  ]\n}\n");
+    o
 }
 
 /// (time s, x, y) — piecewise-linear listener path.
@@ -892,9 +1466,9 @@ const WAYPOINTS: [(f32, f32, f32); 20] = [
     (16.0, 4.0, 7.0),
     (24.0, 4.0, 13.2),
     (27.0, 4.0, 15.5),
-    (33.0, 7.0, 18.5),
-    (39.0, 10.0, 20.0),
-    (43.0, 10.3, 20.4),
+    (33.0, 9.0, 17.5),
+    (39.0, 9.2, 19.6),
+    (43.0, 9.3, 20.0),
     (48.0, 8.5, 22.0),
     (52.0, 7.0, 23.5),
     (58.0, 7.0, 28.5),
