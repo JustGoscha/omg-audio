@@ -1404,9 +1404,14 @@ function buildWorld() {
     if (r.solid || r.upper || r.virtual) continue;
     const w = r.max[0] - r.min[0];
     const d = r.max[1] - r.min[1];
+    // outdoor ground is also pushed back in DEPTH (polygon offset): a
+    // few cm of height alone stop separating the stacked ground layers
+    // past ~100 m, and they flickered
     const floor = new THREE.Mesh(
       new THREE.PlaneGeometry(w, d),
-      new THREE.MeshLambertMaterial({ color: r.floor }),
+      new THREE.MeshLambertMaterial(r.outdoor
+        ? { color: r.floor, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }
+        : { color: r.floor }),
     );
     floor.rotation.x = -Math.PI / 2;
     // outdoor ground sits below room floors (they overlap: z-fighting)
@@ -1426,10 +1431,13 @@ function buildWorld() {
   // the world's edge must never be visible: an effectively infinite
   // ground skirt below everything, fog carries it to the horizon
   {
+    // drawn first and never written to depth: it is under everything,
+    // so it can't fight the ground layers above it, however far away
     const skirt = new THREE.Mesh(
       new THREE.PlaneGeometry(60000, 60000), // fly 10+ km out and back
-      new THREE.MeshBasicMaterial({ color: 0x141f18 }),
+      new THREE.MeshBasicMaterial({ color: 0x141f18, depthWrite: false }),
     );
+    skirt.renderOrder = -2;
     skirt.rotation.x = -Math.PI / 2;
     skirt.position.copy(v3(10, 40, -0.06));
     scene.add(skirt);
@@ -2658,20 +2666,18 @@ const wild = {
   owl1: 8 + Math.random() * 12,
   owl2: 16 + Math.random() * 16,
   bells: 10 + Math.random() * 15,
-  whisper: 45 + Math.random() * 60,
 };
 function ringBells() {
   if (!state.fx) return;
   wild.bells = performance.now() / 1000 + 30 + Math.random() * 90;
   state.fx(7, Math.random() < 0.75 ? 26 : 27);
 }
-// A voice whispers a few centimeters from one ear (V triggers it on
-// demand). Rendered by the near-field ear stage: the far ear gets the
+// A voice whispers a few centimeters from one ear — only when V is
+// pressed, never on its own. Rendered by the near-field ear stage: the far ear gets the
 // around-the-head distance law plus head shadow, so it hears almost
 // nothing — which is exactly what makes it feel AT the ear.
 function whisperNow() {
   if (!state.node) return;
-  wild.whisper = performance.now() / 1000 + 90 + Math.random() * 150;
   state.node.port.postMessage({
     type: 'whisper',
     kind: 28 + ((Math.random() * 2) | 0),
@@ -2695,9 +2701,6 @@ function updateWildlife(t) {
     // "randomly sometimes, 30 s – 2 min": one peal per event, the big
     // bell three times out of four; B rings it on demand
     ringBells();
-  }
-  if (s > wild.whisper) {
-    whisperNow();
   }
 }
 
