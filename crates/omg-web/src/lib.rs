@@ -802,7 +802,7 @@ pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
         // animated leaf position — the swing sweeps the filters
         ctx.world.set_door(i, ctx.door_in[i]);
     }
-    for slot in 0..5 {
+    for slot in 0..omg_scene::walkthrough::DYN_SLOTS {
         let o = slot * 4;
         ctx.world.set_dynamic(
             slot,
@@ -1405,4 +1405,31 @@ pub extern "C" fn eng_process(n: u32) {
     }
     ctx.voices.retain(|v| v.pos < ctx.fx_bufs[v.buf].len());
     ctx.near_voices.retain(|v| v.pos < ctx.fx_bufs[v.buf].len());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every dynamic slot JS can write must reach the sim. The feet ride
+    /// the LAST slot (5); a bridge that only forwarded slots 0..5 left
+    /// source 13 with an empty param block, so every footstep fx voice
+    /// mixed into it rendered silence.
+    #[test]
+    fn every_dynamic_slot_reaches_the_sim() {
+        sim_setup();
+        let n = omg_scene::walkthrough::DYN_SLOTS;
+        let feet_slot = n - 1;
+        let feet_src = NSRC - 1;
+        let (lx, ly) = (3.0, 3.0);
+        let dy = unsafe { core::slice::from_raw_parts_mut(sim_dyn_ptr(), n * 4) };
+        dy[feet_slot * 4..feet_slot * 4 + 4].copy_from_slice(&[lx, ly, 0.2, 1.0]);
+        for _ in 0..4 {
+            sim_tick(lx, ly, 1.6, 0.0);
+        }
+        let len = sim_params_len(feet_src as u32) as usize;
+        let flat = unsafe { core::slice::from_raw_parts(sim_params_ptr(feet_src as u32), len) };
+        let pb = omg_core::params::ParamBlock::read_flat(flat);
+        assert!(!pb.taps.is_empty(), "feet source (slot {feet_slot}) got no taps: the bridge dropped it");
+    }
 }

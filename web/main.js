@@ -2218,7 +2218,7 @@ function movePose(t) {
 
 // ------------------------------------------------------------ footsteps
 // Distance-driven, not time-driven: every ~stride of actual horizontal
-// travel lands one step at the feet source (dyn slot 5, source 10),
+// travel lands one step at the feet source (dyn slot 5, source 13),
 // which sits at ground level under the body — the engine gives each
 // step the room's own acoustics for free. Surface from the room map.
 const STEP_SURFACES = ['wood', 'carpet', 'concrete', 'grass'];
