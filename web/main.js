@@ -2034,7 +2034,7 @@ function setupControls() {
   };
 
   if (!isTouch) {
-    hintEl.textContent = 'click: capture mouse · WASD walk · Shift run · Space jump · C crouch · click throw · E door · B bells · V whisper · R rain';
+    hintEl.textContent = 'click: capture mouse · WASD walk · Shift run · Space jump · C crouch · F fly · click throw · E door · B bells · V whisper · R rain';
     glCanvas.addEventListener('click', () => {
       if (document.pointerLockElement !== glCanvas) glCanvas.requestPointerLock();
       else throwBall();
@@ -2045,7 +2045,8 @@ function setupControls() {
       state.pitch = Math.max(-1.4, Math.min(1.4, state.pitch - e.movementY * 0.0025));
     });
     addEventListener('keydown', (e) => {
-      if (e.code === 'Space') { e.preventDefault(); state.wantJump = true; }
+      if (e.code === 'Space') { e.preventDefault(); state.wantJump = true; state.keys.add(e.code); }
+      else if (e.code === 'KeyF') toggleFly();
       else if (e.code === 'KeyR') cycleRain();
       else if (e.code === 'KeyE') toggleNearestDoor();
       else if (e.code === 'KeyQ') cycleQuality();
@@ -2285,9 +2286,80 @@ function floorHeightAt(x, y, curZ) {
   return 0;
 }
 
+// fly (F): no gravity, no walls. W flies where you look, Space climbs,
+// C / Ctrl sinks. Height is kept as airZ over the floor, so F again
+// simply drops you: the ordinary jump fall, landing thud included.
+const FLY_SPEED = 8.0;
+function toggleFly() {
+  state.fly = !state.fly;
+  state.vz = 0;
+  hintEl.textContent = state.fly
+    ? 'flying · W where you look · Space up · C down · Shift faster · F to land'
+    : 'landing';
+}
+
+function flyPose(dt) {
+  state.crouch = Math.max(0, (state.crouch || 0) - dt * 8);
+  state.wantJump = false;
+  const { f, r } = moveInput();
+  const climb = (state.keys.has('Space') ? 1 : 0)
+    - (state.keys.has('KeyC') || state.keys.has('ControlLeft') ? 1 : 0);
+  if (!f && !r && !climb) return;
+  const step = (FLY_SPEED + sprintBoost(dt)) * dt;
+  const ch = Math.cos(state.heading);
+  const sh = Math.sin(state.heading);
+  const cp = Math.cos(state.pitch);
+  const sp = Math.sin(state.pitch);
+  const x = state.pose.x + (ch * cp * f + sh * r) * step;
+  const y = state.pose.y + (sh * cp * f - ch * r) * step;
+  const feet = Math.min(400, (state.pose.z || 0) + (state.airZ || 0) + (sp * f + climb) * step);
+  const floor = floorHeightAt(x, y, feet);
+  state.pose.x = x;
+  state.pose.y = y;
+  state.pose.z = floor;
+  state.airZ = Math.max(0, feet - floor);
+}
+
+// WASD / arrows / thumb stick → forward and strafe-right, magnitude ≤ 1.
+function moveInput() {
+  let fwd = 0;
+  let strafe = 0;
+  if (state.keys.has('KeyW') || state.keys.has('ArrowUp')) fwd += 1;
+  if (state.keys.has('KeyS') || state.keys.has('ArrowDown')) fwd -= 1;
+  if (state.keys.has('KeyD') || state.keys.has('ArrowRight')) strafe += 1;
+  if (state.keys.has('KeyA') || state.keys.has('ArrowLeft')) strafe -= 1;
+  if (state.joy) {
+    const mag = Math.hypot(state.joy.dx, state.joy.dy);
+    if (mag > 8) {
+      const k = Math.min(mag, 80) / 80;
+      fwd += (-state.joy.dy / Math.max(mag, 1)) * k;
+      strafe += (state.joy.dx / Math.max(mag, 1)) * k;
+    }
+  }
+  const mag = Math.hypot(fwd, strafe);
+  if (!mag) return { f: 0, r: 0 };
+  const len = Math.min(mag, 1);
+  return { f: (fwd / mag) * len, r: (strafe / mag) * len };
+}
+
+// sprint builds: Shift gives the old 1.8× immediately, then keeps
+// accelerating at 1 m/s² for as long as it's held — the belfry is a
+// quarter kilometer away, after all. Release bleeds off quickly.
+function sprintBoost(dt) {
+  const shifting = state.keys.has('ShiftLeft') || state.keys.has('ShiftRight');
+  if (shifting) {
+    state.sprintV = Math.min((state.sprintV ?? 0) < WALK_SPEED * 0.8
+      ? WALK_SPEED * 0.8 : state.sprintV + 1.0 * dt, 27);
+  } else {
+    state.sprintV = Math.max(0, (state.sprintV || 0) - 30 * dt);
+  }
+  return state.sprintV;
+}
+
 function movePose(t) {
   const dt = Math.min((t - lastT) / 1000, 0.05);
   lastT = t;
+  if (state.fly) { flyPose(dt); return; }
   // crouch (hold C / Ctrl): ears sink ~0.7 m — behind the club bar or
   // the sofa that puts your head in the traced engine's shadow
   const wantCrouch = state.keys.has('KeyC') || state.keys.has('ControlLeft') ? 1 : 0;
@@ -2309,41 +2381,11 @@ function movePose(t) {
   // follow the floor (stairs are a ramp; snap gently)
   const target = floorHeightAt(state.pose.x, state.pose.y, state.pose.z || 0);
   state.pose.z = (state.pose.z || 0) + (target - (state.pose.z || 0)) * Math.min(1, dt * 10);
-  let fwd = 0;
-  let strafe = 0;
-
-  if (state.keys.has('KeyW') || state.keys.has('ArrowUp')) fwd += 1;
-  if (state.keys.has('KeyS') || state.keys.has('ArrowDown')) fwd -= 1;
-  if (state.keys.has('KeyD') || state.keys.has('ArrowRight')) strafe += 1;
-  if (state.keys.has('KeyA') || state.keys.has('ArrowLeft')) strafe -= 1;
-
-  if (state.joy) {
-    const mag = Math.hypot(state.joy.dx, state.joy.dy);
-    if (mag > 8) {
-      const k = Math.min(mag, 80) / 80;
-      fwd += (-state.joy.dy / Math.max(mag, 1)) * k;
-      strafe += (state.joy.dx / Math.max(mag, 1)) * k;
-    }
-  }
-  if (!fwd && !strafe) return;
-
-  // forward = along heading, strafe-right = heading − 90°
-  const mag = Math.hypot(fwd, strafe);
-  const len = Math.min(mag, 1);
-  const f = (fwd / mag) * len;
-  const r = (strafe / mag) * len;
+  const { f, r } = moveInput();
+  if (!f && !r) return;
   const ch = Math.cos(state.heading);
   const sh = Math.sin(state.heading);
-  // sprint builds: Shift gives the old 1.8× immediately, then keeps
-  // accelerating at 1 m/s² for as long as it's held — the belfry is a
-  // quarter kilometer away, after all. Release bleeds off quickly.
-  const shifting = state.keys.has('ShiftLeft') || state.keys.has('ShiftRight');
-  if (shifting) {
-    state.sprintV = Math.min((state.sprintV ?? 0) < WALK_SPEED * 0.8
-      ? WALK_SPEED * 0.8 : state.sprintV + 1.0 * dt, 27);
-  } else {
-    state.sprintV = Math.max(0, (state.sprintV || 0) - 30 * dt);
-  }
+  sprintBoost(dt);
   const step = (WALK_SPEED + (state.sprintV || 0)) * dt * (1 - 0.45 * (state.crouch || 0));
   const nx = state.pose.x + (ch * f + sh * r) * step;
   const ny = state.pose.y + (sh * f - ch * r) * step;
