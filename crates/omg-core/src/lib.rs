@@ -13,6 +13,7 @@ pub mod pt_mesh;
 pub mod rng;
 pub mod scene;
 pub mod tracer;
+pub mod v3;
 pub mod vec3;
 
 pub const SPEED_OF_SOUND: f32 = 343.0;

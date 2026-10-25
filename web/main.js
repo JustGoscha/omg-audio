@@ -447,7 +447,11 @@ function buildQuality() {
       { name: 'traced',
         tip: 'World-mesh path tracing (C6): one listener context over the whole map — doorways are just holes the solved paths thread, walls pay mass law, furniture shadows. No portal code anywhere.',
         set: () => state.setEarly?.(1),
-        active: () => !!state.earlyMode },
+        active: () => state.earlyMode === 1 || state.earlyMode === 2 },
+      { name: 'v3',
+        tip: 'Engine v3 (ENGINE_V3.md): one tracer for everything. Rays from your ears bounce through the world; every surface they hit connects to the sources it can see, through whatever walls are in the way. Early AND late, indoors and out, from one mechanism. No diffraction yet.',
+        set: () => state.setEarly?.(3),
+        active: () => state.earlyMode === 3 },
     ]);
 
   mkSwitch('compute',
@@ -1811,7 +1815,7 @@ async function startAudio() {
     state.setDebugRays = (on) => worker.postMessage({ type: 'debug', on });
     state.setEarly = (mode) => {
       state.earlyMode = mode;
-      try { localStorage.setItem('omg-early-v2', mode ? 'traced' : 'ism'); } catch (_) {}
+      try { localStorage.setItem('omg-early-v2', ['ism', 'traced', 'traced', 'v3'][mode] || 'traced'); } catch (_) {}
       worker.postMessage({ type: 'early', mode });
     };
     state.setMute = (srcs, on) => worker.postMessage({ type: 'mute', srcs, on });
@@ -1830,7 +1834,8 @@ async function startAudio() {
       try { stored = localStorage.getItem('omg-early-v2'); } catch (_) {}
       const pick = p === 'traced' || p === 'pt' ? 1
         : p === 'ism' ? 0
-          : stored === 'ism' ? 0 : 1;
+          : p === 'v3' ? 3
+            : stored === 'ism' ? 0 : stored === 'v3' ? 3 : 1;
       state.earlyMode = pick;
       if (pick) worker.postMessage({ type: 'early', mode: pick });
       // remembered module switches (default on)

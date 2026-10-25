@@ -84,31 +84,7 @@ impl AutoPaths {
     /// Surface crossings are paired (entry, exit) so wall thickness — and
     /// with it the mass law — comes from the actual geometry.
     pub fn transmission(&mut self, mesh: &Mesh, a: Vec3, b: Vec3) -> [f32; NBANDS] {
-        mesh.segment_hits(a, b, &mut self.hits);
-        let len = (b - a).length();
-        let mut g = [1.0f32; NBANDS];
-        let mut i = 0;
-        while i < self.hits.len() {
-            let enter = self.hits[i];
-            let mat = mesh.materials[enter.material as usize];
-            // Exit face: next crossing of the SAME material — the far side
-            // of this wall. An unpaired crossing (thin shell, segment ends
-            // inside) falls back to a nominal thickness.
-            let thickness = if i + 1 < self.hits.len()
-                && self.hits[i + 1].material == enter.material
-            {
-                i += 1;
-                ((self.hits[i].t - enter.t) * len).max(0.01)
-            } else {
-                0.1
-            };
-            let tr = mat.transmission_at(thickness);
-            for band in 0..NBANDS {
-                g[band] *= tr[band];
-            }
-            i += 1;
-        }
-        g
+        segment_transmission(mesh, a, b, &mut self.hits)
     }
 
     /// Find propagation paths src → lis: the direct segment plus, when it
@@ -501,6 +477,36 @@ impl AutoPaths {
         }
         Some(FoundPath { points, length, gains, key: 90_000 })
     }
+}
+
+/// Per-band amplitude of the straight segment a→b through the mesh.
+/// Surface crossings are paired (entry, exit) so wall thickness — and
+/// with it the mass law — comes from the actual geometry. `hits` is
+/// scratch space.
+pub fn segment_transmission(mesh: &Mesh, a: Vec3, b: Vec3, hits: &mut Vec<crate::mesh::SegHit>) -> [f32; NBANDS] {
+    mesh.segment_hits(a, b, hits);
+    let len = (b - a).length();
+    let mut g = [1.0f32; NBANDS];
+    let mut i = 0;
+    while i < hits.len() {
+        let enter = hits[i];
+        let mat = mesh.materials[enter.material as usize];
+        // Exit face: next crossing of the SAME material — the far side
+        // of this wall. An unpaired crossing (thin shell, segment ends
+        // inside) falls back to a nominal thickness.
+        let thickness = if i + 1 < hits.len() && hits[i + 1].material == enter.material {
+            i += 1;
+            ((hits[i].t - enter.t) * len).max(0.01)
+        } else {
+            0.1
+        };
+        let tr = mat.transmission_at(thickness);
+        for band in 0..NBANDS {
+            g[band] *= tr[band];
+        }
+        i += 1;
+    }
+    g
 }
 
 /// Deepest diffraction loss (amplitude) a bent path of total length

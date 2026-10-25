@@ -64,6 +64,8 @@ pub struct WorldSim {
     /// C6c: the one world listener context (`early = traced`) — a shared
     /// chain cache over the dome's world mesh; portals dissolve.
     early_world: Option<WorldEarly>,
+    /// Engine v3 listener tracer (early = 3), with its per-source EMA.
+    v3_tracer: Option<omg_core::v3::Tracer>,
     /// Furniture in world coordinates (authored per-room, lifted once).
     furniture_world: Vec<Aabb>,
     /// The same pieces with their FULL material (absorption, scattering,
@@ -197,6 +199,7 @@ impl WorldSim {
             dome,
             auto,
             paths_buf: Vec::new(),
+            v3_tracer: None,
             early_world: None,
             furniture_world: {
                 let mut f = Vec::new();
@@ -438,6 +441,13 @@ impl WorldSim {
                 .unwrap()
                 .batch_solve(&batch_srcs, eye, &self.extras_buf);
         }
+        // ---- Engine v3: ONE listener trace serves every source ----
+        let v3 = crate::quality::early_v3();
+        let mut v3_blocks: Vec<Option<ParamBlock>> = vec![None; self.defs.len()];
+        if v3 {
+            self.v3_blocks(st, eye, &mut v3_blocks);
+        }
+
         let mut blocks = Vec::with_capacity(self.defs.len());
         let mut routes = Vec::with_capacity(self.defs.len());
         let mut rt60_mid = 0.0f32;
@@ -468,6 +478,36 @@ impl WorldSim {
                 continue;
             }
             let src_z = self.src_z[si];
+
+            if let Some(mut pb) = v3_blocks[si].take() {
+                let route = vec![def.pos, st.listener_world];
+                let g = def.gain;
+                for t in &mut pb.taps {
+                    for b in 0..NBANDS {
+                        t.gains[b] *= g;
+                    }
+                }
+                for b in 0..NBANDS {
+                    pb.reverb.level[b] *= g;
+                }
+                if let Some(r) = &mut pb.remote {
+                    for b in 0..NBANDS {
+                        r.send[b] *= g;
+                    }
+                }
+                pb.version = self.tick_no;
+                self.last_level[si] = pb.taps.iter().map(|t| t.gains[1]).sum::<f32>()
+                    + pb.remote.as_ref().map_or(0.0, |r| r.send[1]);
+                if self.last_level[si] >= rt60_vote {
+                    rt60_vote = self.last_level[si];
+                    rt60_mid = pb.reverb.rt60[1];
+                }
+                self.last_blocks[si] = pb.clone();
+                self.last_routes[si] = route.clone();
+                blocks.push(pb);
+                routes.push(route);
+                continue;
+            }
 
             // Bend floor (outdoors): for every point this source's energy
             // exits through (door-chain exit, each window, or the source
@@ -1132,6 +1172,98 @@ impl WorldSim {
             env: self.environment(&bs),
         };
         (blocks, info)
+    }
+
+    /// Engine v3 (ENGINE_V3.md): rays from the listener, next-event
+    /// estimation at every bounce, distance-scaled source spheres, the
+    /// exact direct segment. Door leaves, panes and large furniture are
+    /// overlay boxes with their real transmission. Fills `out[si]` with a
+    /// unit-gain block for every audible source (rig emitters power-split).
+    fn v3_blocks(&mut self, st: &walkthrough::WalkState, eye: Vec3, out: &mut [Option<ParamBlock>]) {
+        use omg_core::v3::{Budget, Source, Tracer, World};
+        // overlay boxes: closed/ajar door leaves and panes, big furniture
+        self.late_panels.clear();
+        for d in &self.doors {
+            if let Some(b) = aperture_box(d) {
+                let base = if d.glass { Material::CONCRETE } else { Material::WOOD_PANEL };
+                let m = Material { transmission: b.transmission, ..base };
+                self.late_panels.push((b.min, b.max, m));
+            }
+        }
+        if crate::quality::furniture_on() {
+            for (mn, mx, m) in &self.furn_full {
+                let d = *mx - *mn;
+                if d.x * d.y * d.z > walkthrough::FURN_REFLECTOR_MIN_VOL {
+                    self.late_panels.push((*mn, *mx, *m));
+                }
+            }
+        }
+        let n_static = self.defs.len() - walkthrough::DYN_SLOTS;
+        let mut srcs: Vec<Source> = Vec::new();
+        let mut owner: Vec<(usize, usize, usize)> = Vec::new();
+        for si in 0..self.defs.len() {
+            if self.muted[si] || (si >= n_static && !self.dynamic_active[si - n_static]) {
+                continue;
+            }
+            let def = &self.defs[si];
+            let n_em = def.emitters.len().max(1);
+            for ei in 0..n_em {
+                let (ex, ey) = if def.emitters.len() > 1 { def.emitters[ei] } else { def.pos };
+                let g = def.gain / (n_em as f32).sqrt();
+                srcs.push(Source { id: (si * 8 + ei) as u32, pos: Vec3::new(ex, ey, self.src_z[si]), weight: g * g });
+                owner.push((si, ei, n_em));
+            }
+        }
+        let tier = crate::quality::tier();
+        let budget = Budget { rays: tier.v3_rays(), bounces: tier.v3_bounces(), k: 0.06, ema: 0.35, nee: 4 };
+        let tracer = self.v3_tracer.get_or_insert_with(|| Tracer::new(0x0e3_5eed));
+        let world = World { mesh: &self.dome.mesh, panels: &self.late_panels };
+        let fields = tracer.trace(&world, eye, &srcs, budget);
+
+        let (sin, cos) = st.yaw.sin_cos();
+        let rot = |d: [f32; 3]| [cos * d[0] + sin * d[1], -sin * d[0] + cos * d[1], d[2]];
+        // energy sums per source (reverb levels add as powers)
+        let mut wet2 = vec![[0.0f32; NBANDS]; out.len()];
+        let mut rem2 = vec![[0.0f32; NBANDS]; out.len()];
+        let mut rem_dir = vec![[0.0f32; 3]; out.len()];
+        for (&(si, ei, n_em), f) in owner.iter().zip(fields) {
+            let pb = out[si].get_or_insert_with(ParamBlock::default);
+            let w = 1.0 / (n_em as f32).sqrt();
+            for t in f.taps {
+                pb.taps.push(Tap {
+                    key: t.key + ei as u32 * 32768,
+                    delay_s: t.delay_s,
+                    dir: rot(t.dir),
+                    gains: core::array::from_fn(|b| t.gains[b] * w),
+                });
+            }
+            pb.reverb.rt60 = f.reverb.rt60;
+            // a one-sided late field plays from where it comes (the
+            // doorway, the lit facade); the rest feeds the diffuse FDN
+            let a = f.aniso.clamp(0.0, 0.9);
+            let e = 1.0 / n_em as f32;
+            for b in 0..NBANDS {
+                let l2 = f.reverb.level[b] * f.reverb.level[b] * e;
+                wet2[si][b] += l2 * (1.0 - a);
+                rem2[si][b] += l2 * a;
+            }
+            for k in 0..3 {
+                rem_dir[si][k] += f.late_dir[k] * a;
+            }
+        }
+        for si in 0..out.len() {
+            let Some(pb) = out[si].as_mut() else { continue };
+            pb.reverb.level = core::array::from_fn(|b| wet2[si][b].sqrt());
+            if rem2[si][1] > 1e-10 {
+                let d = rem_dir[si];
+                let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-9);
+                pb.remote = Some(RemoteReverb {
+                    rt60: pb.reverb.rt60,
+                    send: core::array::from_fn(|b| rem2[si][b].sqrt()),
+                    sh: omg_dsp::ambi::encode_gains(rot([d[0] / l, d[1] / l, d[2] / l])),
+                });
+            }
+        }
     }
 
     /// The classic per-room early machinery (`early = ism`): portal

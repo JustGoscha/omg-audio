@@ -65,12 +65,21 @@ const GPU_RAY_CAP: u32 = 32768;
 /// seeded deterministically inside discovery).
 static EARLY: AtomicU32 = AtomicU32::new(0);
 
+/// Early-field engine: 0 = ism, 1 = traced (v2), 2 = hybrid (reserved,
+/// runs traced), 3 = v3 — the one listener tracer (ENGINE_V3.md), which
+/// replaces early AND late, routing, bends and blending for every source.
 pub fn set_early(mode: u32) {
-    EARLY.store(mode.min(2), Ordering::Relaxed);
+    EARLY.store(mode.min(3), Ordering::Relaxed);
 }
 
+/// The v2 world-mesh early pipeline (traced or hybrid).
 pub fn early_traced() -> bool {
-    EARLY.load(Ordering::Relaxed) != 0
+    matches!(EARLY.load(Ordering::Relaxed), 1 | 2)
+}
+
+/// Engine v3: one listener trace per tick serves every source.
+pub fn early_v3() -> bool {
+    EARLY.load(Ordering::Relaxed) == 3
 }
 
 pub fn early() -> u32 {
@@ -182,6 +191,24 @@ impl Tier {
     /// analytic box, and the world.rs budget is ONE trace per tick, so
     /// the ray count is small and the EMA carries the variance. CPU
     /// only for now — the GPU multiplier deliberately does not apply.
+    /// Engine v3: rays from the listener per tick, and bounces per ray
+    /// (ENGINE_V3.md). The EMA across ticks carries the variance.
+    pub fn v3_rays(self) -> u32 {
+        match self {
+            Tier::High => 2048,
+            Tier::Med => 1024,
+            Tier::Low => 512,
+        }
+    }
+
+    pub fn v3_bounces(self) -> u32 {
+        match self {
+            Tier::High => 6,
+            Tier::Med => 4,
+            Tier::Low => 3,
+        }
+    }
+
     pub fn world_rays(self) -> u32 {
         match self {
             Tier::High => 512,
