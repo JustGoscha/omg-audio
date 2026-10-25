@@ -221,10 +221,13 @@ func _walk(route: Array, max_s: float) -> bool:
 
 func _walks() -> String:
 	await _teleport(3.0, 3.0)
-	if not await _walk([Vector2(4.55, 3.0), Vector2(4.55, 5.5), Vector2(4, 6.6), Vector2(4, 13), Vector2(4, 15.5)], 10.0):
+	# via the living room's open hub (layout.json spot) to the north door
+	if not await _walk([Vector2(3.2, 4.7), Vector2(4.0, 5.5), Vector2(4, 6.6), Vector2(4, 13), Vector2(4, 15.5)], 10.0):
 		return "could not walk from the living room through the corridor into the hall: stuck at %s" % player.plan()
 	await _teleport(26.5, 24.5)
-	if not await _walk([Vector2(26.5, 22.6), Vector2(29.0, 22.4), Vector2(29.2, 17.5), Vector2(25.9, 17.45),
+	# in at the north door, down the free strip west of the sofa (layout
+	# hub) to the stair foot, up the stairs, onto the upper floor
+	if not await _walk([Vector2(26.5, 22.6), Vector2(26.6, 19.5), Vector2(25.9, 17.0),
 			Vector2(24.85, 16.6), Vector2(24.85, 21.7), Vector2(27.5, 22.0)], 20.0) \
 			or player.plan().z < 2.8:
 		return "could not climb the Old House stairs: at %s" % player.plan()
