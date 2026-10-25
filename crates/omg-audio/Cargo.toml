@@ -1,0 +1,20 @@
+[package]
+name = "omg-audio"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Geometric game audio: put your level's triangles and materials in, get spatial audio out."
+
+[features]
+default = ["threaded"]
+# `threaded::Engine`: a sim thread + latest-frame handoff + command ring
+# (native only; on wasm the host runs Simulation in a worker and Mixer in
+# an AudioWorklet itself).
+threaded = []
+# `Compute::Gpu`: the v3 ray walk on the GPU through wgpu (omg-gpu).
+gpu = ["dep:omg-gpu"]
+
+[dependencies]
+omg-core = { path = "../omg-core" }
+omg-dsp = { path = "../omg-dsp" }
+omg-gpu = { path = "../omg-gpu", default-features = false, optional = true }
