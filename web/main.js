@@ -41,46 +41,20 @@ const DOORS = [
   { pos: [8, 52], axis: 1, hw: 1.2, h: 3.5 }, // cathedral portal (grand)
   { pos: [31.4, 7], axis: 0, hw: 0.7, h: 2.0, steel: true }, // bunker blast door
 ];
-// Furniture (PT-early C5): world-coord mirror of walkthrough.rs
-// furniture() — solid boxes the traced early engine shadows sources
-// behind. [min x,y,z, max x,y,z, color]
-const FURNITURE = [
-  // cathedral colonnades (+0,+52), 9 m stone pillars
-  [3.75, 56.75, 0, 5.25, 58.25, 9, 0x3d3d49], [3.75, 62.25, 0, 5.25, 63.75, 9, 0x3d3d49],
-  [3.75, 67.75, 0, 5.25, 69.25, 9, 0x3d3d49],
-  [10.75, 56.75, 0, 12.25, 58.25, 9, 0x3d3d49], [10.75, 62.25, 0, 12.25, 63.75, 9, 0x3d3d49],
-  [10.75, 67.75, 0, 12.25, 69.25, 9, 0x3d3d49],
-  // club bar counter (+22,+26)
-  [23, 29, 0, 24, 33.5, 1.1, 0x3a2a1e],
-  // living room: sofa, coffee table, armchair, sideboard, bookshelf
-  [2, 4.4, 0, 4.2, 5.3, 0.75, 0x584032],
-  [2.5, 3.3, 0, 3.7, 3.9, 0.45, 0x4a3626],
-  [4.9, 4.3, 0, 5.7, 5.1, 0.75, 0x584032],
-  [0.3, 0.2, 0, 2.3, 0.7, 0.9, 0x4a3626],
-  [5.4, 0.4, 0, 5.8, 3.4, 2.2, 0x5a4530],
-  // great hall seminar (+0,+14): tables, chairs, lectern, whiteboard
-  [1.8, 15.6, 0, 3.6, 16.3, 0.74, 0x4a3b2e], [1.8, 18.4, 0, 3.6, 19.1, 0.74, 0x4a3b2e],
-  [1.8, 21.2, 0, 3.6, 21.9, 0.74, 0x4a3b2e], [4.6, 15.6, 0, 6.4, 16.3, 0.74, 0x4a3b2e],
-  [4.6, 18.4, 0, 6.4, 19.1, 0.74, 0x4a3b2e], [4.6, 21.2, 0, 6.4, 21.9, 0.74, 0x4a3b2e],
-  [1.2, 15.7, 0, 1.65, 16.15, 0.45, 0x35404f], [1.2, 18.5, 0, 1.65, 18.95, 0.45, 0x35404f],
-  [1.2, 21.3, 0, 1.65, 21.75, 0.45, 0x35404f], [4.0, 15.7, 0, 4.45, 16.15, 0.45, 0x35404f],
-  [4.0, 18.5, 0, 4.45, 18.95, 0.45, 0x35404f], [4.0, 21.3, 0, 4.45, 21.75, 0.45, 0x35404f],
-  [10.2, 19.9, 0, 10.8, 20.3, 1.2, 0x5a4530],
-  [12.0, 16.5, 0, 12.3, 19.5, 2.2, 0xd8d8d0],
-  // old house ground (+24,+16): couch, table, TV, kitchen, fridge, pillows
-  [25.0, 18.0, 0, 27.2, 18.9, 0.75, 0x584032],
-  [25.6, 19.4, 0, 26.6, 20.0, 0.4, 0x4a3626],
-  [24.3, 20.4, 0.4, 24.55, 21.9, 1.4, 0x14161c],
-  [28.4, 16.3, 0, 30.7, 16.95, 0.95, 0x4a4038],
-  [30.0, 17.3, 0, 30.7, 18.0, 1.9, 0xb8bcc0],
-  [26.2, 20.8, 0, 26.8, 21.4, 0.25, 0x6a4a5a],
-  [27.4, 21.2, 0, 28.0, 21.8, 0.25, 0x4a5a6a],
-  // old house upper (+24,+16, floor at z=3): bed, big TV, dresser, pillows
-  [24.8, 16.8, 3.0, 26.6, 18.8, 3.6, 0x707a8a],
-  [24.25, 19.6, 3.8, 24.45, 21.6, 5.0, 0x14161c],
-  [29.8, 16.4, 3.0, 30.6, 18.0, 4.0, 0x4a3626],
-  [28.6, 20.6, 3.0, 29.2, 21.2, 3.25, 0x6a5a4a],
-];
+// Interior layout (furniture, cathedral columns, keep-clear zones,
+// source spots): exported from crates/omg-scene/src/walkthrough.rs
+// `layout()` — the very boxes the traced early engine shadows sources
+// behind — as assets/demo/layout.json (`cargo run -p omg-scene
+// --example export_layout`). World coords, z up, yaw in degrees CCW
+// from +y. Visuals and walk colliders both build from it.
+const LAYOUT = await fetch('../assets/demo/layout.json')
+  .then((r) => (r.ok ? r.json() : null))
+  .catch(() => null);
+if (!LAYOUT) console.warn('layout.json missing: interiors stay empty');
+const PIECES = LAYOUT ? LAYOUT.rooms.flatMap((r) => r.furniture) : [];
+// walk colliders: [min x,y,z, max x,y,z] of everything a walker bumps
+// into (rugs lie flat)
+const FURNITURE = PIECES.filter((p) => p.kind !== 'rug').map((p) => [...p.min, ...p.max]);
 const DOOR_HALF = 0.55;
 const DOOR_H = 2.1;
 // windows: glass — visible, not walkable; direct sound passes lightly damped
@@ -97,11 +71,20 @@ const SOURCES = [
   { name: 'club', pos: [27, 32], color: 0xff5a9e,
     emitters: [[23.5, 27.5], [30.5, 27.5], [23.5, 36.5], [30.5, 36.5]] },
   { name: 'flute', pos: [8, 66], color: 0x9ad2ff },
-  { name: 'radio', pos: [37.5, 12.5], z: -2.2, color: 0xd2b06e },
+  { name: 'radio', pos: [37.5, 12.5], z: -2.1, color: 0xd2b06e },
   { name: 'owl', pos: [4, 53], z: 24.25, color: 0xcfd8e6 }, // on the nave roof
   { name: 'owl', pos: [27.5, 19.5], z: 5.6, color: 0xcfd8e6 },
   { name: 'bells', pos: [10, 321], z: 25.5, color: 0xf0d890 },
 ];
+// the room sources stand where the layout puts them (the piano, the
+// lectern, the bunker table …); index-aligned with the sim's sources()
+for (const ls of LAYOUT?.sources ?? []) {
+  const src = SOURCES[ls.index];
+  if (!src || ls.index > 4) continue; // owls/bells keep their roof perches
+  src.pos = [ls.pos[0], ls.pos[1]];
+  if (src.emitters) src.emitters = ls.emitters;
+  else src.z = ls.pos[2];
+}
 const MARGIN = 0.35;
 const EYE = 1.6;
 
@@ -110,8 +93,8 @@ const state = {
   cars: [],
   fx: null,
   meters: { l: 0, r: 0, agc: 1, tts: 0, pts: 0, hist: [] },
-  pose: { x: 3, y: 3 },
-  heading: Math.PI / 2, // world math angle; π/2 = facing +y (into the scene)
+  pose: { x: 3.2, y: 4.7 }, // the living room's "hub" spot (layout.json)
+  heading: 1.3 * Math.PI, // world math angle; π/2 = facing +y — here: toward the piano
   pitch: 0,
   keys: new Set(),
   joy: null,
@@ -1131,9 +1114,12 @@ function buildCathedralShell() {
 function buildCathedralInterior() {
   const stone = new THREE.MeshLambertMaterial({ color: 0x4c4c58 });
   const stoneD = new THREE.MeshLambertMaterial({ color: 0x3a3a44 });
-  const rows = [4.0, 12.0];
-  const ys = [];
-  for (let y = 55.0; y <= 71.01; y += 3.2) ys.push(y);
+  // the arcades' columns are the layout's pillars (the tracer's boxes)
+  const pillars = PIECES.filter((p) => p.kind === 'pillar'
+    && p.pos[1] > CATH.min[1] && p.pos[1] < CATH.max[1]);
+  const rows = [...new Set(pillars.map((p) => p.pos[0]))];
+  const ysOf = (x) => pillars.filter((p) => p.pos[0] === x).map((p) => p.pos[1]).sort((a, b) => a - b);
+  const ys = rows.length ? ysOf(rows[0]) : [];
 
   // checkered stone floor (replaces the flat color inside the nave)
   const fc = document.createElement('canvas');
@@ -1159,6 +1145,7 @@ function buildCathedralInterior() {
   const colGeo = new THREE.CylinderGeometry(0.45, 0.52, 8.0, 10);
   const capGeo = new THREE.BoxGeometry(1.3, 0.5, 1.3);
   for (const x of rows) {
+    const ys = ysOf(x);
     for (const y of ys) {
       const c = new THREE.Mesh(colGeo, stone);
       c.position.copy(v3(x, y, 4.0));
@@ -1223,16 +1210,7 @@ function buildCathedralInterior() {
     panel.rotation.y = ang + Math.PI / 2;
     scene.add(panel);
   }
-  const altar = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.1, 1.2), stoneD);
-  altar.position.copy(v3(8, 70.5, 0.55));
-  scene.add(altar);
-  const cloth = new THREE.Mesh(
-    new THREE.BoxGeometry(2.5, 0.06, 1.3),
-    new THREE.MeshLambertMaterial({ color: 0x7a1f2b }),
-  );
-  cloth.position.copy(v3(8, 70.5, 1.13));
-  scene.add(cloth);
-  COLLIDERS.push({ axis: 1, plane: 70.5, lo: 6.8, hi: 9.2, h: 1.2 });
+  // (the altar, pews and columns' collision come from the layout)
   // portal surround
   const pArch = new THREE.Mesh(new THREE.TorusGeometry(1.35, 0.25, 8, 14, Math.PI), stoneD);
   pArch.position.copy(v3(8, 52, 3.5));
@@ -1411,6 +1389,322 @@ function openColliderGap(axis, plane, at, hw = DOOR_HALF, dh = DOOR_H) {
   }
 }
 
+// ------------------------------------------------------------- furniture
+//
+// One low-poly model per layout `kind`, built from boxes in the piece's
+// own frame — u across (+u = its right), v toward its front, z up, origin
+// at the footprint centre on the floor — inside its layout AABB, then
+// turned by its yaw (CCW from +y = three.js rotation about Y).
+const furnMats = new Map();
+function furnMat(color, glow = false) {
+  const key = color + (glow ? 'g' : '');
+  let m = furnMats.get(key);
+  if (!m) {
+    m = glow ? new THREE.MeshBasicMaterial({ color }) : new THREE.MeshLambertMaterial({ color });
+    furnMats.set(key, m);
+  }
+  return m;
+}
+const shade = (hex, f) => new THREE.Color(hex).multiplyScalar(f).getHex();
+// deterministic "random" for book spines etc.
+const hash01 = (a, b) => {
+  const x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+  return x - Math.floor(x);
+};
+const BOOK_COLORS = [0x7a2e2a, 0x2f4a6a, 0x5a6a3a, 0x8a6a3a, 0x3a3a4a, 0x6a4a6a, 0xa08a5a];
+
+function buildPiece(p) {
+  const [w, d, h] = p.size;
+  const col = parseInt(p.color.slice(1), 16);
+  const W = w / 2;
+  const D = d / 2;
+  const g = new THREE.Group();
+  g.position.copy(v3(p.pos[0], p.pos[1], p.pos[2]));
+  g.rotation.y = (p.yaw * Math.PI) / 180;
+  const part = (u0, v0, z0, u1, v1, z1, c = col, glow = false) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(u1 - u0, z1 - z0, v1 - v0), furnMat(c, glow));
+    m.position.set((u0 + u1) / 2, (z0 + z1) / 2, -(v0 + v1) / 2);
+    g.add(m);
+  };
+  const legs = (top, t = 0.05, c = shade(col, 0.8), inset = 0) => {
+    for (const su of [-1, 1]) {
+      for (const sv of [-1, 1]) {
+        const u = su * (W - inset - t / 2);
+        const v = sv * (D - inset - t / 2);
+        part(u - t / 2, v - t / 2, 0, u + t / 2, v + t / 2, top, c);
+      }
+    }
+  };
+  // a cabinet: body, top slab, door fronts on its face
+  const cabinet = (doors, top = shade(col, 1.25), front = shade(col, 1.12)) => {
+    part(-W, -D, 0, W, D - 0.012, h - 0.03);
+    part(-W, -D, h - 0.03, W, D, h, top);
+    const dw = (2 * W) / doors;
+    for (let i = 0; i < doors; i++) {
+      const u0 = -W + i * dw;
+      part(u0 + 0.012, D - 0.012, 0.06, u0 + dw - 0.012, D, h - 0.06, front);
+      const hu = i % 2 ? u0 + 0.06 : u0 + dw - 0.06; // handles meet in the middle
+      part(hu - 0.012, D - 0.002, h * 0.55, hu + 0.012, D, h * 0.55 + 0.12, 0x9a9a92);
+    }
+  };
+  // shelving: sides, boards, and rows of books/boxes; `back` closes one side
+  const shelving = (levels, back, items = BOOK_COLORS) => {
+    part(-W, -D, 0, -W + 0.03, D, h);
+    part(W - 0.03, -D, 0, W, D, h);
+    part(-W + 0.03, -D, h - 0.03, W - 0.03, D, h);
+    part(-W + 0.03, -D, 0, W - 0.03, D, 0.08);
+    if (back) part(-W + 0.03, -D, 0.08, W - 0.03, -D + 0.02, h - 0.03, shade(col, 0.7));
+    const pitch = (h - 0.11) / levels;
+    for (let k = 0; k < levels; k++) {
+      const z = 0.08 + k * pitch;
+      if (k > 0) part(-W + 0.03, -D, z - 0.02, W - 0.03, D, z);
+      let u = -W + 0.05;
+      let n = 0;
+      while (u < W - 0.1) {
+        const bw = Math.min(W - 0.05 - u, 0.12 + 0.3 * hash01(k + p.pos[0], n + p.pos[1]));
+        const bh = pitch * (0.55 + 0.35 * hash01(n + p.pos[1], k));
+        if (hash01(n, k + p.pos[0]) > 0.12) {
+          const c = items[Math.floor(hash01(k * 7 + n, p.pos[0]) * items.length)];
+          part(u, back ? -D + 0.03 : -D + 0.02, z, u + bw, D - 0.03, z + bh, c);
+        }
+        u += bw + 0.01;
+        n++;
+      }
+    }
+  };
+  // a seat: cushion block, back rest along its rear, optional arms
+  const seat = (seatH, backT, armW, cushion = shade(col, 1.18)) => {
+    part(-W, -D, 0, W, D, seatH - 0.1);
+    part(-W + armW, -D + backT, seatH - 0.1, W - armW, D, seatH, cushion);
+    part(-W, -D, seatH - 0.1, W, -D + backT, h);
+    if (armW > 0) {
+      part(-W, -D + backT, seatH - 0.1, -W + armW, D, seatH + 0.2);
+      part(W - armW, -D + backT, seatH - 0.1, W, D, seatH + 0.2);
+    }
+  };
+  const chair = (u0, u1) => {
+    const cw = (u1 - u0) / 2;
+    const cu = (u0 + u1) / 2;
+    for (const su of [-1, 1]) {
+      for (const sv of [-1, 1]) {
+        const u = cu + su * (cw - 0.03);
+        const v = sv * (D - 0.03);
+        part(u - 0.02, v - 0.02, 0, u + 0.02, v + 0.02, 0.42, shade(col, 0.75));
+      }
+    }
+    part(u0, -D, 0.42, u1, D, 0.47);
+    part(u0, -D, 0.47, u1, -D + 0.05, h);
+  };
+  switch (p.kind) {
+    case 'sofa':
+      seat(0.45, 0.25, 0.2);
+      break;
+    case 'armchair':
+      seat(0.45, 0.22, 0.16);
+      break;
+    case 'booth':
+      seat(0.47, 0.14, 0);
+      break;
+    case 'rug':
+      // the room floors lie 2 cm up: float the rug just above them
+      part(-W, -D, 0.025, W, D, 0.035);
+      part(-W + 0.12, -D + 0.12, 0.035, W - 0.12, D - 0.12, 0.038, shade(col, 1.3));
+      break;
+    case 'coffee_table':
+    case 'side_table':
+    case 'table':
+      part(-W, -D, h - 0.04, W, D, h, shade(col, 1.15));
+      legs(h - 0.04, 0.05, shade(col, 0.8), 0.04);
+      break;
+    case 'desk':
+      part(-W, -D, h - 0.04, W, D, h, shade(col, 1.15));
+      part(W - 0.42, -D + 0.02, 0, W - 0.02, D - 0.02, h - 0.04); // drawer pedestal
+      part(W - 0.4, D - 0.02, 0.45, W - 0.04, D, h - 0.08, shade(col, 1.1));
+      part(-W + 0.02, -D + 0.02, 0, -W + 0.06, D - 0.02, h - 0.04, shade(col, 0.8));
+      break;
+    case 'grand_piano': {
+      // keyboard at the front (+v), the pianist faces the tail; the
+      // straight bass side on the pianist's left (+u), the curve on the
+      // right, stepped in toward the tail
+      const lid = 0x221f1a;
+      part(-W, D - 0.75, 0.6, W, D - 0.26, h - 0.02); // case, front section
+      part(-W + 0.32, D - 1.3, 0.6, W, D - 0.75, h - 0.02);
+      part(-W + 0.72, -D, 0.6, W, D - 1.3, h - 0.02); // tail
+      part(-W, D - 0.75, h - 0.02, W, D - 0.26, h, lid);
+      part(-W + 0.32, D - 1.3, h - 0.02, W, D - 0.75, h, lid);
+      part(-W + 0.72, -D, h - 0.02, W, D - 1.3, h, lid);
+      part(-W, D - 0.26, 0.6, W, D, 0.7); // key bed
+      part(-W + 0.07, D - 0.24, 0.7, W - 0.07, D - 0.02, 0.73, 0xece6d6); // keys
+      part(-W, D - 0.26, 0.7, -W + 0.07, D, 0.82); // cheek blocks
+      part(W - 0.07, D - 0.26, 0.7, W, D, 0.82);
+      part(-W + 0.3, D - 0.36, h - 0.02, W - 0.3, D - 0.3, h, 0x2a2620); // music desk
+      for (const [u, v] of [[-W + 0.1, D - 0.2], [W - 0.1, D - 0.2], [W - 0.2, -D + 0.15]]) {
+        part(u - 0.06, v - 0.06, 0, u + 0.06, v + 0.06, 0.6, lid); // legs
+      }
+      part(-0.05, D - 0.75, 0.03, 0.05, D - 0.55, 0.6, lid); // pedal lyre
+      part(-0.12, D - 0.6, 0.02, 0.12, D - 0.5, 0.06, 0xb89a50);
+      break;
+    }
+    case 'piano_bench':
+    case 'bench':
+      part(-W, -D, h - 0.06, W, D, h, p.kind === 'piano_bench' ? 0x1a1814 : shade(col, 1.15));
+      legs(h - 0.06, 0.05, p.kind === 'piano_bench' ? 0x15130f : shade(col, 0.8), 0.03);
+      break;
+    case 'chair':
+      chair(-W, W);
+      break;
+    case 'seat_row': {
+      const n = Math.max(1, Math.round(w / 0.55));
+      const cw = w / n;
+      for (let i = 0; i < n; i++) chair(-W + i * cw + 0.04, -W + (i + 1) * cw - 0.04);
+      break;
+    }
+    case 'stool':
+      part(-0.03, -0.03, 0, 0.03, 0.03, h - 0.05, 0x77777a);
+      part(-W + 0.06, -D + 0.06, 0, W - 0.06, D - 0.06, 0.03, 0x55555a);
+      part(-W, -D, h - 0.05, W, D, h, 0x6a2236);
+      break;
+    case 'floor_lamp':
+      part(-W + 0.03, -D + 0.03, 0, W - 0.03, D - 0.03, 0.03, 0x2a2a2a);
+      part(-0.015, -0.015, 0.03, 0.015, 0.015, h - 0.3, 0x2a2a2a);
+      part(-W, -D, h - 0.32, W, D, h, 0xf2dca0, true);
+      break;
+    case 'piano':
+      part(-W, -D, 0, W, -D + 0.42, h); // case
+      part(-W, -D, h - 0.03, W, -D + 0.44, h, 0x221f1a); // lid
+      part(-W, -D + 0.42, 0.62, W, D, 0.74); // key bed
+      part(-W + 0.06, -D + 0.42, 0.74, W - 0.06, D - 0.04, 0.77, 0xece6d6); // keys
+      part(-W, -D + 0.42, 0.74, -W + 0.06, D, 0.86);
+      part(W - 0.06, -D + 0.42, 0.74, W, D, 0.86);
+      part(-W + 0.02, D - 0.07, 0, -W + 0.08, D - 0.01, 0.62); // toe blocks
+      part(W - 0.08, D - 0.07, 0, W - 0.02, D - 0.01, 0.62);
+      part(-W + 0.1, -D + 0.42, 0.95, W - 0.1, -D + 0.46, 1.1, 0x2a2620); // music desk
+      break;
+    case 'bookshelf':
+      shelving(Math.max(2, Math.round(h / 0.36)), true);
+      break;
+    case 'divider':
+      shelving(Math.max(2, Math.round(h / 0.36)), false);
+      break;
+    case 'shelf':
+      shelving(4, true, [0x6a6a4a, 0x8a7a5a, 0x4a5a4a, 0x9a9a8a, 0x5a4a3a]);
+      break;
+    case 'sideboard':
+      cabinet(Math.max(2, Math.round(w / 0.45)));
+      break;
+    case 'dresser':
+      cabinet(2);
+      for (const z of [0.35, 0.6]) part(-W + 0.02, D - 0.004, z, W - 0.02, D, z + 0.01, shade(col, 0.7));
+      break;
+    case 'nightstand':
+      cabinet(1);
+      break;
+    case 'tv_stand':
+      cabinet(3, shade(col, 1.25), 0x222226);
+      break;
+    case 'wardrobe':
+      cabinet(2);
+      break;
+    case 'locker':
+      cabinet(Math.max(2, Math.round(w / 0.4)), shade(col, 1.2), shade(col, 1.1));
+      break;
+    case 'kitchen_counter':
+      cabinet(Math.max(2, Math.round(w / 0.6)), 0x9a948a, 0x6a5e50);
+      part(-0.3, -D + 0.08, h - 0.005, 0.3, D - 0.12, h, 0x8a9aa0); // sink
+      break;
+    case 'fridge':
+      part(-W, -D, 0, W, D - 0.01, h);
+      part(-W + 0.01, D - 0.01, 0.02, W - 0.01, D, h * 0.62, 0xc8ccd0);
+      part(-W + 0.01, D - 0.01, h * 0.63, W - 0.01, D, h - 0.02, 0xc8ccd0);
+      part(W - 0.1, D - 0.003, h * 0.4, W - 0.07, D, h * 0.58, 0x7a7e82);
+      break;
+    case 'back_bar':
+      cabinet(Math.max(2, Math.round(w / 0.6)), 0x6a4a2a);
+      break;
+    case 'bar':
+      part(-W, -D, 0, W, D - 0.06, h - 0.05);
+      part(-W, D - 0.06, 0.1, W, D, h - 0.1, shade(col, 1.3));
+      part(-W, -D, h - 0.05, W, D, h, 0x6a4a2a);
+      part(-W, D - 0.05, 0.12, W, D, 0.15, 0xffaa3c, true); // under-glow strip
+      break;
+    case 'tv':
+    case 'whiteboard': {
+      const face = p.kind === 'tv' ? 0x0c1220 : 0xf2f2ec;
+      part(-W, -D, 0, W, D - 0.01, h, p.kind === 'tv' ? col : 0x8a8a90);
+      part(-W + 0.03, D - 0.01, 0.03, W - 0.03, D, h - 0.03, face, p.kind === 'tv');
+      break;
+    }
+    case 'bed':
+      part(-W, -D, 0, W, D, 0.3); // frame
+      part(-W, -D, 0, W, -D + 0.08, h); // headboard
+      part(-W + 0.03, -D + 0.08, 0.3, W - 0.03, D - 0.03, 0.5, 0xe0ddd2); // mattress
+      part(-W + 0.02, -D + 0.6, 0.5, W - 0.02, D - 0.02, 0.56, 0x4a5a7a); // duvet
+      part(-W + 0.1, -D + 0.12, 0.5, -0.04, -D + 0.5, 0.62, 0xf0eee6); // pillows
+      part(0.04, -D + 0.12, 0.5, W - 0.1, -D + 0.5, 0.62, 0xf0eee6);
+      break;
+    case 'bunk_bed': {
+      for (const su of [-1, 1]) {
+        for (const sv of [-1, 1]) part(su * W - (su > 0 ? 0.05 : 0), sv * D - (sv > 0 ? 0.05 : 0), 0, su * W + (su > 0 ? 0 : 0.05), sv * D + (sv > 0 ? 0 : 0.05), h, 0x4a4e48);
+      }
+      for (const z of [0.25, 1.05]) {
+        part(-W + 0.05, -D, z, W - 0.05, D, z + 0.06, 0x4a4e48);
+        part(-W + 0.06, -D + 0.04, z + 0.06, W - 0.06, D - 0.04, z + 0.2, 0x6a7058); // army blanket
+      }
+      break;
+    }
+    case 'lectern':
+      part(-W + 0.1, -D + 0.08, 0, W - 0.1, D - 0.1, h - 0.15);
+      part(-W, -D, h - 0.15, W, D, h, shade(col, 1.2));
+      break;
+    case 'stage':
+      part(-W, -D, 0, W, D, h);
+      part(-W, D - 0.02, h - 0.04, W, D, h, 0x8a5aff, true); // nosing light
+      break;
+    case 'dj_booth':
+      part(-W, -D, 0, W, D, h - 0.05);
+      part(-W, -D, h - 0.05, W, D, h, 0x33333f);
+      part(-W + 0.1, D - 0.01, h * 0.35, W - 0.1, D, h * 0.45, 0xff5a9e, true);
+      break;
+    case 'speaker':
+      part(-W, -D, 0, W, D - 0.01, h);
+      part(-W + 0.06, D - 0.01, 0.08, W - 0.06, D, h - 0.08, 0x222228);
+      break;
+    case 'pew':
+      part(-W + 0.06, -D + 0.05, 0.4, W - 0.06, D, 0.46); // seat
+      part(-W + 0.06, -D, 0.46, W - 0.06, -D + 0.06, h - 0.05); // back
+      part(-W, -D, 0, -W + 0.06, D, h); // ends
+      part(W - 0.06, -D, 0, W, D, h);
+      part(-W + 0.06, -D + 0.1, 0.12, W - 0.06, -D + 0.16, 0.18); // kneeler rail
+      break;
+    case 'altar':
+      part(-W + 0.06, -D + 0.06, 0, W - 0.06, D - 0.06, h - 0.1);
+      part(-W, -D, h - 0.1, W, D, h - 0.04, shade(col, 1.2));
+      part(-W + 0.02, -D + 0.02, h - 0.04, W - 0.02, D - 0.02, h, 0x7a1f2b); // cloth
+      part(-W * 0.5, D - 0.06, h * 0.3, W * 0.5, D - 0.02, h - 0.04, 0x7a1f2b); // frontal
+      break;
+    case 'crate':
+      part(-W + 0.03, -D + 0.03, 0, W - 0.03, D - 0.03, h);
+      for (const su of [-1, 1]) {
+        for (const sv of [-1, 1]) part(su > 0 ? W - 0.05 : -W, sv > 0 ? D - 0.05 : -D, 0, su > 0 ? W : -W + 0.05, sv > 0 ? D : -D + 0.05, h, shade(col, 0.7));
+      }
+      break;
+    case 'coat_rack': {
+      part(-W, -D, 1.45, W, -D + 0.03, 1.6, shade(col, 1.2)); // hook board
+      part(-W, -D, h - 0.04, W, D, h); // hat shelf
+      const coats = [0x2a3a4a, 0x5a3a2a, 0x3a4a3a];
+      coats.forEach((c, i) => {
+        const u = -W + ((i + 0.5) * w) / coats.length;
+        const cw = Math.min(0.17, w / coats.length / 2 - 0.01);
+        part(u - cw, -D + 0.04, 0.85, u + cw, -D + 0.26, 1.5, c);
+      });
+      break;
+    }
+    default:
+      part(-W, -D, 0, W, D, h);
+  }
+  return g;
+}
+
 function buildWorld() {
   // floors + ceilings
   for (const r of ROOMS) {
@@ -1509,13 +1803,8 @@ function buildWorld() {
   pit.position.copy(v3(33.25, 7, 0.015));
   scene.add(pit);
   // furniture: the traced early engine's occluders, made visible
-  for (const f of FURNITURE) {
-    const box = new THREE.Mesh(
-      new THREE.BoxGeometry(f[3] - f[0], f[5] - f[2], f[4] - f[1]),
-      new THREE.MeshLambertMaterial({ color: f[6] }),
-    );
-    box.position.copy(v3((f[0] + f[3]) / 2, (f[1] + f[4]) / 2, (f[2] + f[5]) / 2));
-    scene.add(box);
+  for (const p of PIECES) {
+    if (p.kind !== 'pillar') scene.add(buildPiece(p)); // columns: buildCathedralInterior
   }
   // stairs down the shaft (walkable height stays the smooth ramp)
   const stepMat = new THREE.MeshLambertMaterial({ color: 0x40453f });
@@ -1646,7 +1935,7 @@ function buildWorld() {
       new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true }),
     );
     sprite.scale.set(1.6, 0.4, 1);
-    sprite.position.copy(v3(src.pos[0], src.pos[1], 2.15));
+    sprite.position.copy(v3(src.pos[0], src.pos[1], src.z < 0 ? src.z + 0.65 : 2.15));
     scene.add(sprite);
   }
 }
