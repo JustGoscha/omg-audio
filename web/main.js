@@ -1200,14 +1200,16 @@ function buildCathedralInterior() {
   ridge.position.copy(v3(8, 63, CATH.h + 7.75));
   scene.add(ridge);
 
-  // apse: a faceted alcove at the north end with the altar
+  // apse: a faceted alcove at the north end — five facets on a shallow
+  // half-ellipse, clear of the layout's altar (local y 19, back at 71.6)
+  const apse = (phi) => [8 + 4.2 * Math.cos(phi), 74 - 2.0 * Math.sin(phi)];
   for (let k = 0; k < 5; k++) {
-    const ang = Math.PI * (0.15 + (0.7 * k) / 4);
-    const px = 8 + 4.2 * Math.cos(ang);
-    const py = 74 - 3.4 * Math.abs(Math.sin(ang));
-    const panel = new THREE.Mesh(new THREE.BoxGeometry(2.4, 12, 0.3), stone);
-    panel.position.copy(v3(px, py, 6));
-    panel.rotation.y = ang + Math.PI / 2;
+    const [x0, y0] = apse(Math.PI * (0.0625 + 0.175 * k));
+    const [x1, y1] = apse(Math.PI * (0.0625 + 0.175 * (k + 1)));
+    const len = Math.hypot(x1 - x0, y1 - y0) + 0.12;
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(len, 12, 0.3), stone);
+    panel.position.copy(v3((x0 + x1) / 2, (y0 + y1) / 2, 6));
+    panel.rotation.y = Math.atan2(y1 - y0, x1 - x0);
     scene.add(panel);
   }
   // (the altar, pews and columns' collision come from the layout)
@@ -1627,8 +1629,22 @@ function buildPiece(p) {
       part(-W, -D, h - 0.05, W, D, h, 0x6a4a2a);
       part(-W, D - 0.05, 0.12, W, D, 0.15, 0xffaa3c, true); // under-glow strip
       break;
-    case 'tv':
-    case 'whiteboard': {
+    case 'whiteboard':
+      if (d > 0.2) {
+        // a flip chart on an easel: the board at the front, a back leg
+        const b0 = h - 1.0;
+        const steel = 0x4a4a50;
+        part(-W, D - 0.06, b0, W, D - 0.03, h, 0x8a8a90);
+        part(-W + 0.03, D - 0.03, b0 + 0.03, W - 0.03, D - 0.005, h - 0.06, 0xf8f8f2);
+        part(-W, D - 0.07, h - 0.06, W, D, h, steel); // clamp
+        part(-W, D - 0.1, b0 - 0.02, W, D - 0.03, b0, steel); // pen tray
+        for (const u of [-W, W - 0.04]) part(u, D - 0.08, 0, u + 0.04, D - 0.04, b0, steel);
+        part(-0.02, -D, 0, 0.02, -D + 0.04, b0 + 0.05, steel);
+        part(-0.02, -D, b0 + 0.02, 0.02, D - 0.06, b0 + 0.05, steel);
+        break;
+      }
+    // falls through: a wall board
+    case 'tv': {
       const face = p.kind === 'tv' ? 0x0c1220 : 0xf2f2ec;
       part(-W, -D, 0, W, D - 0.01, h, p.kind === 'tv' ? col : 0x8a8a90);
       part(-W + 0.03, D - 0.01, 0.03, W - 0.03, D, h - 0.03, face, p.kind === 'tv');
@@ -1688,6 +1704,41 @@ function buildPiece(p) {
         for (const sv of [-1, 1]) part(su > 0 ? W - 0.05 : -W, sv > 0 ? D - 0.05 : -D, 0, su > 0 ? W : -W + 0.05, sv > 0 ? D : -D + 0.05, h, shade(col, 0.7));
       }
       break;
+    case 'table_lamp':
+      part(-W * 0.6, -D * 0.6, 0, W * 0.6, D * 0.6, 0.03, 0xa08a50);
+      part(-0.012, -0.012, 0.03, 0.012, 0.012, h * 0.55, 0xa08a50);
+      part(-W, -D, h * 0.5, W, D, h, 0xf2dca0, true);
+      break;
+    case 'candle_stand':
+      part(-W, -D, 0, W, D, 0.05);
+      part(-0.025, -0.025, 0.05, 0.025, 0.025, h - 0.3);
+      part(-W * 0.6, -D * 0.6, h - 0.3, W * 0.6, D * 0.6, h - 0.27);
+      part(-0.035, -0.035, h - 0.27, 0.035, 0.035, h - 0.05, 0xf0ead8);
+      part(-0.015, -0.015, h - 0.05, 0.015, 0.015, h, 0xffb04a, true);
+      break;
+    case 'font': {
+      // pedestal, then a square basin with water in it
+      part(-W, -D, 0, W, D, 0.1, shade(col, 0.85));
+      part(-W * 0.45, -D * 0.45, 0.1, W * 0.45, D * 0.45, h - 0.35);
+      part(-W, -D, h - 0.35, W, D, h - 0.3, shade(col, 1.1));
+      part(-W, -D, h - 0.3, W, -D + 0.06, h, shade(col, 1.1));
+      part(-W, D - 0.06, h - 0.3, W, D, h, shade(col, 1.1));
+      part(-W, -D + 0.06, h - 0.3, -W + 0.06, D - 0.06, h, shade(col, 1.1));
+      part(W - 0.06, -D + 0.06, h - 0.3, W, D - 0.06, h, shade(col, 1.1));
+      part(-W + 0.06, -D + 0.06, h - 0.3, W - 0.06, D - 0.06, h - 0.08, 0x4a6a8a);
+      break;
+    }
+    case 'barrel': {
+      // an octagonal drum from two crossed boxes, with hoops
+      const r = W - 0.012;
+      part(-r, -r * 0.6, 0, r, r * 0.6, h);
+      part(-r * 0.6, -r, 0, r * 0.6, r, h);
+      for (const z of [0.12, h * 0.5, h - 0.16]) {
+        part(-W, -r * 0.6, z, W, r * 0.6, z + 0.03, shade(col, 0.7));
+        part(-r * 0.6, -D, z, r * 0.6, D, z + 0.03, shade(col, 0.7));
+      }
+      break;
+    }
     case 'coat_rack': {
       part(-W, -D, 1.45, W, -D + 0.03, 1.6, shade(col, 1.2)); // hook board
       part(-W, -D, h - 0.04, W, D, h); // hat shelf

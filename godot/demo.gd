@@ -144,22 +144,23 @@ func _print_fps() -> void:
 #   Godot --path godot -- --shots <dir> [--labels]
 # For every room and the town square: <room>_plan.png (orthographic, top
 # down, cut just below the ceiling so the room reads like a floor plan)
-# and <room>_view1.png / _view2.png (eye level from the main doorway
-# looking in), at full resolution, brightly lit; then quits. --labels
+# and <room>_view1.png / _view2.png (eye level, standing on the room's
+# free floor and looking at its focal point), at full resolution, brightly lit; then quits. --labels
 # names the furniture kinds and sound sources in the pictures.
 #
 # room → [plan rect (x0, y0, x1, y1), cut height (world z), floor z,
 #         views: [[eye (x, y, z), heading°, pitch°], …]]
+# heading: degrees CCW from east (0 = +x, 90 = north, -90 = south).
 const SHOT_ROOMS := {
-	"living_room": [Rect2(0, 0, 8, 6), 2.6, 0.0, [[Vector3(4, 5.5, 1.6), -90.0, -12.0], [Vector3(7.6, 5.6, 1.6), 215.0, -15.0]]],
+	"living_room": [Rect2(0, 0, 8, 6), 2.6, 0.0, [[Vector3(4, 5.5, 1.6), -90.0, -12.0], [Vector3(6.4, 5.6, 1.6), 210.0, -15.0]]],
 	"corridor": [Rect2(3.2, 6, 1.6, 8), 2.3, 0.0, [[Vector3(4, 6.4, 1.6), 90.0, -5.0]]],
-	"great_hall": [Rect2(0, 14, 14, 10), 6.9, 0.0, [[Vector3(4, 14.5, 1.6), 55.0, -8.0], [Vector3(7, 23.5, 1.6), -90.0, -10.0]]],
-	"entrance": [Rect2(20, 28, 2, 6), 2.5, 0.0, [[Vector3(20.4, 31, 1.6), 0.0, -10.0]]],
-	"club": [Rect2(22, 26, 10, 12), 4.4, 0.0, [[Vector3(22.5, 31, 1.6), 0.0, -8.0], [Vector3(31.5, 37.5, 1.6), 220.0, -12.0]]],
+	"great_hall": [Rect2(0, 14, 14, 10), 6.9, 0.0, [[Vector3(4, 14.5, 1.6), 50.0, -8.0], [Vector3(1.0, 23.3, 1.7), -13.0, -10.0]]],
+	"entrance": [Rect2(20, 28, 2, 6), 2.5, 0.0, [[Vector3(21.0, 28.7, 1.6), 90.0, -14.0]]],
+	"club": [Rect2(22, 26, 10, 12), 4.4, 0.0, [[Vector3(22.6, 31, 1.6), -35.0, -8.0], [Vector3(31.5, 37.5, 1.6), 220.0, -12.0]]],
 	"old_house": [Rect2(24, 16, 7, 7), 2.7, 0.0, [[Vector3(26.5, 22.6, 1.6), -90.0, -12.0], [Vector3(30.6, 22.6, 1.6), 220.0, -15.0]]],
 	"old_house_upper": [Rect2(24, 16, 7, 7), 5.5, 3.0, [[Vector3(25.0, 22.4, 4.6), -40.0, -15.0], [Vector3(30.6, 22.6, 4.6), 220.0, -15.0]]],
-	"cathedral": [Rect2(0, 52, 16, 22), 14.5, 0.0, [[Vector3(8, 52.6, 1.7), 90.0, 8.0], [Vector3(8, 72.5, 1.7), -90.0, 5.0]]],
-	"bunker": [Rect2(34, 6, 6, 8), -0.9, -3.0, [[Vector3(34.4, 7.2, -1.4), 30.0, -10.0], [Vector3(39.6, 13.6, -1.4), 220.0, -12.0]]],
+	"cathedral": [Rect2(0, 52, 16, 22), 14.5, 0.0, [[Vector3(8, 52.6, 1.7), 90.0, 8.0], [Vector3(6.6, 53.2, 1.7), 85.5, -2.0]]],
+	"bunker": [Rect2(34, 6, 6, 8), -0.9, -3.0, [[Vector3(34.6, 7.2, -1.4), 55.0, -10.0], [Vector3(38.5, 6.6, -1.4), 100.0, -12.0]]],
 	"bunker_stair": [Rect2(31.4, 6, 2.6, 2), 2.3, -3.0, [[Vector3(31.0, 7, 1.6), 0.0, -35.0]]],
 	"kiosk": [Rect2(14.5, 34, 2, 2), 3.5, 0.0, [[Vector3(11.5, 32.5, 1.6), 30.0, 0.0]]],
 	"belfry": [Rect2(7, 318, 6, 6), 26.5, 24.2, [[Vector3(18, 305, 1.7), 115.0, 22.0], [Vector3(12.8, 323.8, 25.8), 225.0, -10.0]]],

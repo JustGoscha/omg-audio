@@ -522,13 +522,16 @@ func _cathedral_interior() -> void:
 			var p0 := Vector2(8 + r * cos(a0), SPRING + r * sin(a0))
 			var p1 := Vector2(8 + r * cos(a1), SPRING + r * sin(a1))
 			geo.prism_xz([p0, p1, p1 + (Vector2(8, SPRING) - p1).normalized() * 0.3, p0 + (Vector2(8, SPRING) - p0).normalized() * 0.3], yy - 0.18, yy + 0.18, stone)
-	# apse panels, altar, candles
+	# apse panels (five facets on a shallow half-ellipse behind the
+	# altar, which stands at local y 19 — keep them clear of it), altar,
+	# candles
+	var apse := func(phi: float) -> Vector2: return Vector2(8 + 4.2 * cos(phi), 73.7 - 1.75 * sin(phi))
 	for k in 5:
-		var ang := PI * (0.15 + 0.7 * k / 4.0)
-		var px := 8 + 4.2 * cos(ang)
-		var py := 73.7 - 3.0 * absf(sin(ang))
-		var xf := Transform3D(Basis(Vector3.UP, ang + PI / 2), v(px, py, 6))
-		stone.box_xf(xf, Vector3(2.4, 12, 0.3))
+		var p0: Vector2 = apse.call(PI * (0.0625 + 0.175 * k))
+		var p1: Vector2 = apse.call(PI * (0.0625 + 0.175 * (k + 1)))
+		var m := (p0 + p1) * 0.5
+		var xf := Transform3D(Basis(Vector3.UP, (p1 - p0).angle()), v(m.x, m.y, 6))
+		stone.box_xf(xf, Vector3(p0.distance_to(p1) + 0.12, 12, 0.3))
 	# the altar itself comes from layout.json when present (furniture);
 	# its cloth and candles sit on whichever altar is there
 	var ay := 70.5
@@ -921,11 +924,12 @@ func _piece(it: Dictionary) -> void:
 	var h := size.z
 	var wood := DemoMats.planks(Color(0.75, 0.55, 0.4))
 	var dark := DemoMats.planks(Color(0.45, 0.32, 0.24))
+	# own frame: +y is the piece's FRONT (seat side, screen, book spines)
 	match kind:
 		"sofa", "chair", "armchair":
 			var fab := DemoMats.fabric(Color(0.42, 0.18, 0.16))
 			_part(node, -hx, -hy, 0.0, hx, hy, 0.42, fab)
-			_part(node, -hx, hy - 0.22, 0.42, hx, hy, h, fab)
+			_part(node, -hx, -hy, 0.42, hx, -hy + 0.22, h, fab)
 			_part(node, -hx, -hy, 0.42, -hx + 0.18, hy, 0.62, fab)
 			_part(node, hx - 0.18, -hy, 0.42, hx, hy, 0.62, fab)
 		"bed":
@@ -946,7 +950,7 @@ func _piece(it: Dictionary) -> void:
 			var spines := [Color(0.5, 0.15, 0.12), Color(0.15, 0.3, 0.5), Color(0.6, 0.5, 0.2), Color(0.2, 0.4, 0.25), Color(0.4, 0.2, 0.4)]
 			var rng := RandomNumberGenerator.new()
 			rng.seed = 11
-			# spines along the long side, on the −x / −y face
+			# spines along the long side, on the front (+y) face
 			var long_x := size.x >= size.y
 			for shelf in int(h / 0.42):
 				var z := 0.1 + shelf * 0.42
@@ -957,20 +961,30 @@ func _piece(it: Dictionary) -> void:
 					var bh := rng.randf_range(0.22, 0.32)
 					var m := DemoMats.plain(spines[rng.randi() % spines.size()], 0.8)
 					if long_x:
-						_part(decor, a, -hy - 0.02, z, a + w, -hy + 0.01, z + bh, m, false)
+						_part(decor, a, hy - 0.01, z, a + w, hy + 0.02, z + bh, m, false)
 					else:
-						_part(decor, -hx - 0.02, a, z, -hx + 0.01, a + w, z + bh, m, false)
+						_part(decor, hx - 0.01, a, z, hx + 0.02, a + w, z + bh, m, false)
 					a += w + 0.004
 		"tv":
 			_part(node, -hx, -hy, 0.0, hx, hy, h, DemoMats.plain(Color(0.03, 0.03, 0.04), 0.3))
 			var glow := DemoMats.glow(Color(0.25, 0.4, 0.7), 0.6)
-			if size.x < size.y:
-				var f := hx + 0.004 if mn.x < 25.0 else -hx - 0.004
-				_part(decor, f - 0.003, -hy + 0.05, 0.05, f + 0.003, hy - 0.05, h - 0.05, glow, false)
-			else:
-				_part(decor, -hx + 0.05, -hy - 0.007, 0.05, hx - 0.05, -hy - 0.001, h - 0.05, glow, false)
+			_part(decor, -hx + 0.05, hy + 0.001, 0.05, hx - 0.05, hy + 0.007, h - 0.05, glow, false)
 		"whiteboard":
-			_part(node, -hx, -hy, 0.0, hx, hy, h, DemoMats.plain(Color(0.92, 0.93, 0.92), 0.25))
+			var paper := DemoMats.plain(Color(0.95, 0.95, 0.93), 0.25)
+			if size.y > 0.2:
+				# a flip chart on an easel: board at the front, a back leg
+				var steel := DemoMats.metal(Color(0.3, 0.3, 0.32))
+				var b0 := h - 1.0
+				_part(node, -hx, hy - 0.06, b0, hx, hy - 0.03, h, DemoMats.plain(Color(0.55, 0.55, 0.58), 0.6))
+				_part(decor, -hx + 0.03, hy - 0.03, b0 + 0.03, hx - 0.03, hy - 0.005, h - 0.06, paper, false)
+				_part(decor, -hx, hy - 0.07, h - 0.06, hx, hy, h, steel, false)
+				_part(decor, -hx, hy - 0.1, b0 - 0.02, hx, hy - 0.03, b0, steel, false)
+				for lx in [-hx, hx - 0.04]:
+					_part(node, lx, hy - 0.08, 0.0, lx + 0.04, hy - 0.04, b0, steel)
+				_part(node, -0.02, -hy, 0.0, 0.02, -hy + 0.04, b0 + 0.05, steel)
+				_part(decor, -0.02, -hy, b0 + 0.02, 0.02, hy - 0.06, b0 + 0.05, steel, false)
+			else:
+				_part(node, -hx, -hy, 0.0, hx, hy, h, paper)
 		"fridge":
 			_part(node, -hx, -hy, 0.0, hx, hy, h, DemoMats.plain(Color(0.85, 0.87, 0.88), 0.3, 0.3))
 		"pillow":
@@ -978,12 +992,47 @@ func _piece(it: Dictionary) -> void:
 		"lectern":
 			_part(node, -hx, -hy, 0.0, hx, hy, h, dark)
 			_part(decor, -hx - 0.05, -hy - 0.05, h, hx + 0.05, hy + 0.05, h + 0.05, dark, false)
+		"rug":
+			# the room floors lie 2 cm up: float the rug just above them
+			_part(decor, -hx, -hy, 0.025, hx, hy, 0.035, DemoMats.carpet(Color(0.42, 0.2, 0.17)), false)
+			_part(decor, -hx + 0.12, -hy + 0.12, 0.035, hx - 0.12, hy - 0.12, 0.038, DemoMats.carpet(Color(0.55, 0.3, 0.24)), false)
+		"table_lamp":
+			var brass := DemoMats.metal(Color(0.7, 0.58, 0.32))
+			_part(node, -hx * 0.6, -hy * 0.6, 0.0, hx * 0.6, hy * 0.6, 0.03, brass)
+			_part(decor, -0.012, -0.012, 0.03, 0.012, 0.012, h * 0.55, brass, false)
+			_part(decor, -hx, -hy, h * 0.5, hx, hy, h, DemoMats.glow(Color(1.0, 0.86, 0.6), 1.5), false)
+		"candle_stand":
+			var brass := DemoMats.metal(Color(0.62, 0.5, 0.26))
+			_part(node, -hx, -hy, 0.0, hx, hy, 0.05, brass)
+			_part(node, -0.025, -0.025, 0.05, 0.025, 0.025, h - 0.3, brass)
+			_part(decor, -hx * 0.6, -hy * 0.6, h - 0.3, hx * 0.6, hy * 0.6, h - 0.27, brass, false)
+			_part(decor, -0.035, -0.035, h - 0.27, 0.035, 0.035, h - 0.05, DemoMats.plain(Color(0.95, 0.92, 0.85), 0.6), false)
+			_part(decor, -0.015, -0.015, h - 0.05, 0.015, 0.015, h, DemoMats.glow(Color(1.0, 0.7, 0.3), 6.0), false)
+		"font":
+			var st := DemoMats.sandstone(1.0, Color(0.72, 0.7, 0.68))
+			_part(node, -hx, -hy, 0.0, hx, hy, 0.1, st)
+			_part(node, -hx * 0.45, -hy * 0.45, 0.1, hx * 0.45, hy * 0.45, h - 0.35, st)
+			_part(node, -hx, -hy, h - 0.35, hx, hy, h - 0.3, st)
+			_part(node, -hx, -hy, h - 0.3, hx, -hy + 0.06, h, st)
+			_part(node, -hx, hy - 0.06, h - 0.3, hx, hy, h, st)
+			_part(node, -hx, -hy + 0.06, h - 0.3, -hx + 0.06, hy - 0.06, h, st)
+			_part(node, hx - 0.06, -hy + 0.06, h - 0.3, hx, hy - 0.06, h, st)
+			_part(decor, -hx + 0.06, -hy + 0.06, h - 0.3, hx - 0.06, hy - 0.06, h - 0.08, DemoMats.plain(Color(0.3, 0.42, 0.55), 0.1), false)
+		"barrel":
+			var drum := DemoMats.plain(Color(0.24, 0.35, 0.23), 0.5, 0.4)
+			# an octagonal drum from two crossed boxes, with hoops
+			var r := hx - 0.012
+			_part(node, -r, -r * 0.6, 0.0, r, r * 0.6, h, drum)
+			_part(node, -r * 0.6, -r, 0.0, r * 0.6, r, h, drum)
+			var hoop := DemoMats.plain(Color(0.16, 0.22, 0.15), 0.5, 0.4)
+			for hz in [0.12, h * 0.5, h - 0.16]:
+				_part(decor, -hx, -r * 0.6, hz, hx, r * 0.6, hz + 0.03, hoop, false)
+				_part(decor, -r * 0.6, -hx, hz, r * 0.6, hx, hz + 0.03, hoop, false)
 		_: # cabinet, sideboard, kitchen, bar, dresser, crate, …
 			_part(node, -hx, -hy, 0.0, hx, hy, h, dark)
 
 func _props() -> void:
-	# a rug in the living room (carpet), a piano-black hi-fi for the music
-	geo.B(DemoMats.carpet(Color(0.35, 0.12, 0.1)), "auto", false).box(1.6, 2.6, 0.02, 5.0, 5.4, 0.035)
+	# a piano-black hi-fi for the music (the rugs come from the layout)
 	var hifi := geo.B(DemoMats.plain(Color(0.04, 0.04, 0.05), 0.2, 0.1), "", true, false, "hi-fi: the music source sits in it")
 	hifi.box(1.75, 2.75, 0.0, 2.25, 3.25, 1.05)
 	geo.B(DemoMats.plain(Color(0.15, 0.15, 0.16), 0.5), "", false).box(1.9, 3.26, 0.75, 2.1, 3.27, 0.95)

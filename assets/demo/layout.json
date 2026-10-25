@@ -12,24 +12,25 @@
       "max": [8, 6],
       "floor_z": 0,
       "height": 2.7,
-      "keep_clear": [{ "name": "pianist", "min": [1.5, 0.9], "max": [2.5, 1.55] }],
+      "keep_clear": [{ "name": "pianist", "min": [1.5, 0.9], "max": [2.5, 1.4] }],
       "spots": [{ "name": "hub", "pos": [3.2, 4.7] }, { "name": "nook", "pos": [6.4, 1.6] }],
       "furniture": [
         { "kind": "grand_piano", "pos": [2, 3, 0], "size": [1.5, 1.9, 1], "yaw": 180, "facing": [0, -1], "min": [1.25, 2.05, 0], "max": [2.75, 3.95, 1], "material": "cabinet", "acoustic": true, "color": "#15130f" },
-        { "kind": "piano_bench", "pos": [2, 1.75, 0], "size": [0.8, 0.36, 0.5], "yaw": 0, "facing": [0, 1], "min": [1.6, 1.57, 0], "max": [2.4, 1.93, 0.5], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "piano_bench", "pos": [2, 1.6, 0], "size": [0.8, 0.36, 0.5], "yaw": 0, "facing": [0, 1], "min": [1.6, 1.42, 0], "max": [2.4, 1.78, 0.5], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "bookshelf", "pos": [0.255, 3, 0], "size": [2, 0.35, 2], "yaw": 270, "facing": [1, 0], "min": [0.08, 2, 0], "max": [0.43, 4, 2], "material": "books", "acoustic": true, "color": "#5a4530" },
         { "kind": "sofa", "pos": [4.9, 3, 0], "size": [2.1, 0.9, 0.85], "yaw": 90, "facing": [-1, 0], "min": [4.45, 1.95, 0], "max": [5.35, 4.05, 0.85], "material": "soft", "acoustic": true, "color": "#5a4636" },
         { "kind": "coffee_table", "pos": [3.85, 3, 0], "size": [1, 0.5, 0.42], "yaw": 90, "facing": [-1, 0], "min": [3.6, 2.5, 0], "max": [4.1, 3.5, 0.42], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "rug", "pos": [3.9, 3, 0], "size": [2.6, 2, 0.01], "yaw": 90, "facing": [-1, 0], "min": [2.9, 1.7, 0], "max": [4.9, 4.3, 0.01], "material": "soft", "acoustic": false, "color": "#6a3a32" },
-        { "kind": "armchair", "pos": [3.85, 1.25, 0], "size": [0.85, 0.85, 0.9], "yaw": 0, "facing": [0, 1], "min": [3.425, 0.825, 0], "max": [4.275, 1.675, 0.9], "material": "soft", "acoustic": true, "color": "#5a4636" },
+        { "kind": "armchair", "pos": [3.85, 1.45, 0], "size": [0.85, 0.85, 0.9], "yaw": 0, "facing": [0, 1], "min": [3.425, 1.025, 0], "max": [4.275, 1.875, 0.9], "material": "soft", "acoustic": true, "color": "#5a4636" },
         { "kind": "floor_lamp", "pos": [4.75, 1, 0], "size": [0.3, 0.3, 1.6], "yaw": 0, "facing": [0, 1], "min": [4.6, 0.85, 0], "max": [4.9, 1.15, 1.6], "material": "wood", "acoustic": false, "color": "#d8c8a0" },
         { "kind": "sideboard", "pos": [1.6, 5.695, 0], "size": [1.8, 0.45, 0.8], "yaw": 180, "facing": [0, -1], "min": [0.7, 5.47, 0], "max": [2.5, 5.92, 0.8], "material": "cabinet", "acoustic": true, "color": "#4a3626" },
-        { "kind": "divider", "pos": [5.6, 1.74, 0], "size": [3.32, 0.4, 2.2], "yaw": 90, "facing": [-1, 0], "min": [5.4, 0.08, 0], "max": [5.8, 3.4, 2.2], "material": "books", "acoustic": true, "color": "#5a4530" },
+        { "kind": "divider", "pos": [5.6, 2.09, 0], "size": [4.02, 0.4, 2.2], "yaw": 90, "facing": [-1, 0], "min": [5.4, 0.08, 0], "max": [5.8, 4.1, 2.2], "material": "books", "acoustic": true, "color": "#5a4530" },
         { "kind": "armchair", "pos": [7.475, 1.55, 0], "size": [0.85, 0.85, 0.9], "yaw": 90, "facing": [-1, 0], "min": [7.05, 1.125, 0], "max": [7.9, 1.975, 0.9], "material": "soft", "acoustic": true, "color": "#5a4636" },
         { "kind": "side_table", "pos": [7.5, 0.7, 0], "size": [0.45, 0.45, 0.55], "yaw": 90, "facing": [-1, 0], "min": [7.275, 0.475, 0], "max": [7.725, 0.925, 0.55], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "floor_lamp", "pos": [7.6, 2.35, 0], "size": [0.3, 0.3, 1.6], "yaw": 90, "facing": [-1, 0], "min": [7.45, 2.2, 0], "max": [7.75, 2.5, 1.6], "material": "wood", "acoustic": false, "color": "#d8c8a0" },
-        { "kind": "desk", "pos": [7.61, 4.4, 0], "size": [1.4, 0.62, 0.75], "yaw": 90, "facing": [-1, 0], "min": [7.3, 3.7, 0], "max": [7.92, 5.1, 0.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "chair", "pos": [6.95, 4.4, 0], "size": [0.45, 0.45, 0.9], "yaw": 270, "facing": [1, 0], "min": [6.725, 4.175, 0], "max": [7.175, 4.625, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" }
+        { "kind": "desk", "pos": [7.61, 4.95, 0], "size": [1.4, 0.62, 0.75], "yaw": 90, "facing": [-1, 0], "min": [7.3, 4.25, 0], "max": [7.92, 5.65, 0.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "chair", "pos": [6.95, 4.95, 0], "size": [0.45, 0.45, 0.9], "yaw": 270, "facing": [1, 0], "min": [6.725, 4.725, 0], "max": [7.175, 5.175, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "table_lamp", "pos": [7.65, 5.3, 0.75], "size": [0.2, 0.2, 0.4], "yaw": 90, "facing": [-1, 0], "min": [7.55, 5.2, 0.75], "max": [7.75, 5.4, 1.15], "material": "wood", "acoustic": false, "color": "#d8c8a0" }
       ]
     },
     {
@@ -55,20 +56,21 @@
       "furniture": [
         { "kind": "table", "pos": [7.8, 19, 0], "size": [1.6, 0.6, 0.74], "yaw": 270, "facing": [1, 0], "min": [7.5, 18.2, 0], "max": [8.1, 19.8, 0.74], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "table", "pos": [7.8, 22, 0], "size": [1.6, 0.6, 0.74], "yaw": 270, "facing": [1, 0], "min": [7.5, 21.2, 0], "max": [8.1, 22.8, 0.74], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "table", "pos": [6.1, 19, 0], "size": [1.6, 0.6, 0.74], "yaw": 270, "facing": [1, 0], "min": [5.8, 18.2, 0], "max": [6.4, 19.8, 0.74], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "table", "pos": [6.1, 22, 0], "size": [1.6, 0.6, 0.74], "yaw": 270, "facing": [1, 0], "min": [5.8, 21.2, 0], "max": [6.4, 22.8, 0.74], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "table", "pos": [4.4, 19, 0], "size": [1.6, 0.6, 0.74], "yaw": 270, "facing": [1, 0], "min": [4.1, 18.2, 0], "max": [4.7, 19.8, 0.74], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "table", "pos": [4.4, 22, 0], "size": [1.6, 0.6, 0.74], "yaw": 270, "facing": [1, 0], "min": [4.1, 21.2, 0], "max": [4.7, 22.8, 0.74], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "table", "pos": [5.8, 19, 0], "size": [1.6, 0.6, 0.74], "yaw": 270, "facing": [1, 0], "min": [5.5, 18.2, 0], "max": [6.1, 19.8, 0.74], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "table", "pos": [5.8, 22, 0], "size": [1.6, 0.6, 0.74], "yaw": 270, "facing": [1, 0], "min": [5.5, 21.2, 0], "max": [6.1, 22.8, 0.74], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "table", "pos": [3.85, 19, 0], "size": [1.6, 0.6, 0.74], "yaw": 270, "facing": [1, 0], "min": [3.55, 18.2, 0], "max": [4.15, 19.8, 0.74], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "table", "pos": [3.85, 22, 0], "size": [1.6, 0.6, 0.74], "yaw": 270, "facing": [1, 0], "min": [3.55, 21.2, 0], "max": [4.15, 22.8, 0.74], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "seat_row", "pos": [7.175, 19, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [6.95, 18.2, 0], "max": [7.4, 19.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
         { "kind": "seat_row", "pos": [7.175, 22, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [6.95, 21.2, 0], "max": [7.4, 22.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
-        { "kind": "seat_row", "pos": [5.475, 19, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [5.25, 18.2, 0], "max": [5.7, 19.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
-        { "kind": "seat_row", "pos": [5.475, 22, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [5.25, 21.2, 0], "max": [5.7, 22.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
-        { "kind": "seat_row", "pos": [3.775, 19, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [3.55, 18.2, 0], "max": [4, 19.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
-        { "kind": "seat_row", "pos": [3.775, 22, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [3.55, 21.2, 0], "max": [4, 22.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
+        { "kind": "seat_row", "pos": [5.175, 19, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [4.95, 18.2, 0], "max": [5.4, 19.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
+        { "kind": "seat_row", "pos": [5.175, 22, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [4.95, 21.2, 0], "max": [5.4, 22.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
+        { "kind": "seat_row", "pos": [3.225, 19, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [3, 18.2, 0], "max": [3.45, 19.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
+        { "kind": "seat_row", "pos": [3.225, 22, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [3, 21.2, 0], "max": [3.45, 22.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
         { "kind": "lectern", "pos": [9.75, 20.5, 0], "size": [0.6, 0.5, 1.15], "yaw": 90, "facing": [-1, 0], "min": [9.5, 20.2, 0], "max": [10, 20.8, 1.15], "material": "cabinet", "acoustic": true, "color": "#5a4530" },
         { "kind": "whiteboard", "pos": [13.86, 20.5, 0.9], "size": [3, 0.12, 1.2], "yaw": 90, "facing": [-1, 0], "min": [13.8, 19, 0.9], "max": [13.92, 22, 2.1], "material": "panel", "acoustic": true, "color": "#d8d8d0" },
-        { "kind": "desk", "pos": [13.56, 17, 0], "size": [1.6, 0.72, 0.75], "yaw": 90, "facing": [-1, 0], "min": [13.2, 16.2, 0], "max": [13.92, 17.8, 0.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "chair", "pos": [12.9, 17, 0], "size": [0.45, 0.45, 0.9], "yaw": 270, "facing": [1, 0], "min": [12.675, 16.775, 0], "max": [13.125, 17.225, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "whiteboard", "pos": [13.72, 23.2, 0], "size": [0.7, 0.4, 1.7], "yaw": 90, "facing": [-1, 0], "min": [13.52, 22.85, 0], "max": [13.92, 23.55, 1.7], "material": "panel", "acoustic": true, "color": "#d8d8d0" },
+        { "kind": "desk", "pos": [12.9, 17, 0], "size": [1.6, 0.72, 0.75], "yaw": 270, "facing": [1, 0], "min": [12.54, 16.2, 0], "max": [13.26, 17.8, 0.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "chair", "pos": [13.5, 17, 0], "size": [0.45, 0.45, 0.9], "yaw": 90, "facing": [-1, 0], "min": [13.275, 16.775, 0], "max": [13.725, 17.225, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "sideboard", "pos": [9.5, 14.33, 0], "size": [1.8, 0.5, 0.9], "yaw": 0, "facing": [0, 1], "min": [8.6, 14.08, 0], "max": [10.4, 14.58, 0.9], "material": "cabinet", "acoustic": true, "color": "#4a3626" }
       ]
     },
@@ -83,7 +85,8 @@
       "spots": [{ "name": "hub", "pos": [21, 31] }],
       "furniture": [
         { "kind": "bench", "pos": [21, 28.29, 0], "size": [1.4, 0.42, 0.45], "yaw": 0, "facing": [0, 1], "min": [20.3, 28.08, 0], "max": [21.7, 28.5, 0.45], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "coat_rack", "pos": [21, 33.77, 0], "size": [1, 0.3, 1.8], "yaw": 180, "facing": [0, -1], "min": [20.5, 33.62, 0], "max": [21.5, 33.92, 1.8], "material": "wood", "acoustic": true, "color": "#3a2a1e" }
+        { "kind": "coat_rack", "pos": [21, 33.77, 0], "size": [1, 0.3, 1.8], "yaw": 180, "facing": [0, -1], "min": [20.5, 33.62, 0], "max": [21.5, 33.92, 1.8], "material": "wood", "acoustic": true, "color": "#3a2a1e" },
+        { "kind": "rug", "pos": [21, 31, 0], "size": [1, 0.6, 0.01], "yaw": 90, "facing": [-1, 0], "min": [20.7, 30.5, 0], "max": [21.3, 31.5, 0.01], "material": "soft", "acoustic": false, "color": "#6a3a32" }
       ]
     },
     {
@@ -97,7 +100,7 @@
       "spots": [{ "name": "hub", "pos": [27, 32] }, { "name": "bar", "pos": [25, 34] }],
       "furniture": [
         { "kind": "stage", "pos": [27, 27.19, 0], "size": [5.2, 2.22, 0.5], "yaw": 0, "facing": [0, 1], "min": [24.4, 26.08, 0], "max": [29.6, 28.3, 0.5], "material": "cabinet", "acoustic": true, "color": "#1e1a22" },
-        { "kind": "dj_booth", "pos": [27, 27, 0.5], "size": [1.6, 0.6, 1], "yaw": 0, "facing": [0, 1], "min": [26.2, 26.7, 0.5], "max": [27.8, 27.3, 1.5], "material": "cabinet", "acoustic": true, "color": "#2a2630" },
+        { "kind": "dj_booth", "pos": [27, 27.25, 0.5], "size": [1.6, 0.6, 1], "yaw": 0, "facing": [0, 1], "min": [26.2, 26.95, 0.5], "max": [27.8, 27.55, 1.5], "material": "cabinet", "acoustic": true, "color": "#2a2630" },
         { "kind": "speaker", "pos": [23.5, 27.5, 0], "size": [0.7, 0.7, 1.2], "yaw": 0, "facing": [0, 1], "min": [23.15, 27.15, 0], "max": [23.85, 27.85, 1.2], "material": "cabinet", "acoustic": true, "color": "#111114" },
         { "kind": "speaker", "pos": [30.5, 27.5, 0], "size": [0.7, 0.7, 1.2], "yaw": 0, "facing": [0, 1], "min": [30.15, 27.15, 0], "max": [30.85, 27.85, 1.2], "material": "cabinet", "acoustic": true, "color": "#111114" },
         { "kind": "speaker", "pos": [23.5, 36.5, 0], "size": [0.7, 0.7, 1.2], "yaw": 180, "facing": [0, -1], "min": [23.15, 36.15, 0], "max": [23.85, 36.85, 1.2], "material": "cabinet", "acoustic": true, "color": "#111114" },
@@ -108,6 +111,7 @@
         { "kind": "stool", "pos": [24.2, 33.7, 0], "size": [0.4, 0.4, 0.75], "yaw": 90, "facing": [-1, 0], "min": [24, 33.5, 0], "max": [24.4, 33.9, 0.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "stool", "pos": [24.2, 34.4, 0], "size": [0.4, 0.4, 0.75], "yaw": 90, "facing": [-1, 0], "min": [24, 34.2, 0], "max": [24.4, 34.6, 0.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "stool", "pos": [24.2, 35.1, 0], "size": [0.4, 0.4, 0.75], "yaw": 90, "facing": [-1, 0], "min": [24, 34.9, 0], "max": [24.4, 35.3, 0.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "table", "pos": [23.3, 29.2, 0], "size": [0.6, 0.6, 1.05], "yaw": 0, "facing": [0, 1], "min": [23, 28.9, 0], "max": [23.6, 29.5, 1.05], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "booth", "pos": [31.26, 28.65, 0], "size": [1.32, 0.5, 1.1], "yaw": 0, "facing": [0, 1], "min": [30.6, 28.4, 0], "max": [31.92, 28.9, 1.1], "material": "soft", "acoustic": true, "color": "#6a2236" },
         { "kind": "table", "pos": [31.36, 29.25, 0], "size": [1.12, 0.6, 0.75], "yaw": 0, "facing": [0, 1], "min": [30.8, 28.95, 0], "max": [31.92, 29.55, 0.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "booth", "pos": [31.26, 29.85, 0], "size": [1.32, 0.5, 1.1], "yaw": 180, "facing": [0, -1], "min": [30.6, 29.6, 0], "max": [31.92, 30.1, 1.1], "material": "soft", "acoustic": true, "color": "#6a2236" },
@@ -128,11 +132,11 @@
       "furniture": [
         { "kind": "kitchen_counter", "pos": [28.8, 16.38, 0], "size": [2.8, 0.6, 0.9], "yaw": 0, "facing": [0, 1], "min": [27.4, 16.08, 0], "max": [30.2, 16.68, 0.9], "material": "cabinet", "acoustic": true, "color": "#4a4038" },
         { "kind": "fridge", "pos": [30.57, 16.42, 0], "size": [0.7, 0.68, 1.9], "yaw": 0, "facing": [0, 1], "min": [30.22, 16.08, 0], "max": [30.92, 16.76, 1.9], "material": "cabinet", "acoustic": true, "color": "#b8bcc0" },
-        { "kind": "table", "pos": [28.7, 18.6, 0], "size": [1.4, 0.8, 0.75], "yaw": 0, "facing": [0, 1], "min": [28, 18.2, 0], "max": [29.4, 19, 0.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "chair", "pos": [28.35, 17.85, 0], "size": [0.42, 0.42, 0.9], "yaw": 0, "facing": [0, 1], "min": [28.14, 17.64, 0], "max": [28.56, 18.06, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "chair", "pos": [29.05, 17.85, 0], "size": [0.42, 0.42, 0.9], "yaw": 0, "facing": [0, 1], "min": [28.84, 17.64, 0], "max": [29.26, 18.06, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "chair", "pos": [28.35, 19.35, 0], "size": [0.42, 0.42, 0.9], "yaw": 180, "facing": [0, -1], "min": [28.14, 19.14, 0], "max": [28.56, 19.56, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "chair", "pos": [29.05, 19.35, 0], "size": [0.42, 0.42, 0.9], "yaw": 180, "facing": [0, -1], "min": [28.84, 19.14, 0], "max": [29.26, 19.56, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "table", "pos": [29.1, 18.4, 0], "size": [1.4, 0.8, 0.75], "yaw": 90, "facing": [-1, 0], "min": [28.7, 17.7, 0], "max": [29.5, 19.1, 0.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "chair", "pos": [28.3, 18.05, 0], "size": [0.42, 0.42, 0.9], "yaw": 270, "facing": [1, 0], "min": [28.09, 17.84, 0], "max": [28.51, 18.26, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "chair", "pos": [28.3, 18.75, 0], "size": [0.42, 0.42, 0.9], "yaw": 270, "facing": [1, 0], "min": [28.09, 18.54, 0], "max": [28.51, 18.96, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "chair", "pos": [29.9, 18.05, 0], "size": [0.42, 0.42, 0.9], "yaw": 90, "facing": [-1, 0], "min": [29.69, 17.84, 0], "max": [30.11, 18.26, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
+        { "kind": "chair", "pos": [29.9, 18.75, 0], "size": [0.42, 0.42, 0.9], "yaw": 90, "facing": [-1, 0], "min": [29.69, 18.54, 0], "max": [30.11, 18.96, 0.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "sofa", "pos": [27.85, 21.1, 0], "size": [2.1, 0.9, 0.85], "yaw": 270, "facing": [1, 0], "min": [27.4, 20.05, 0], "max": [28.3, 22.15, 0.85], "material": "soft", "acoustic": true, "color": "#5a4636" },
         { "kind": "coffee_table", "pos": [29, 21.1, 0], "size": [1, 0.55, 0.42], "yaw": 270, "facing": [1, 0], "min": [28.725, 20.6, 0], "max": [29.275, 21.6, 0.42], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "rug", "pos": [29, 21.1, 0], "size": [2.4, 2.4, 0.01], "yaw": 270, "facing": [1, 0], "min": [27.8, 19.9, 0], "max": [30.2, 22.3, 0.01], "material": "soft", "acoustic": false, "color": "#6a3a32" },
@@ -154,7 +158,9 @@
         { "kind": "bed", "pos": [28.4, 17.13, 3], "size": [1.6, 2.1, 0.9], "yaw": 0, "facing": [0, 1], "min": [27.6, 16.08, 3], "max": [29.2, 18.18, 3.9], "material": "soft", "acoustic": true, "color": "#707a8a" },
         { "kind": "nightstand", "pos": [27.3, 16.28, 3], "size": [0.45, 0.4, 0.55], "yaw": 0, "facing": [0, 1], "min": [27.075, 16.08, 3], "max": [27.525, 16.48, 3.55], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "nightstand", "pos": [29.5, 16.28, 3], "size": [0.45, 0.4, 0.55], "yaw": 0, "facing": [0, 1], "min": [29.275, 16.08, 3], "max": [29.725, 16.48, 3.55], "material": "wood", "acoustic": true, "color": "#4a3626" },
-        { "kind": "dresser", "pos": [26.4, 16.33, 3], "size": [1, 0.5, 0.9], "yaw": 0, "facing": [0, 1], "min": [25.9, 16.08, 3], "max": [26.9, 16.58, 3.9], "material": "cabinet", "acoustic": true, "color": "#4a3626" },
+        { "kind": "table_lamp", "pos": [27.3, 16.28, 3.55], "size": [0.2, 0.2, 0.35], "yaw": 0, "facing": [0, 1], "min": [27.2, 16.18, 3.55], "max": [27.4, 16.38, 3.9], "material": "wood", "acoustic": false, "color": "#d8c8a0" },
+        { "kind": "table_lamp", "pos": [29.5, 16.28, 3.55], "size": [0.2, 0.2, 0.35], "yaw": 0, "facing": [0, 1], "min": [29.4, 16.18, 3.55], "max": [29.6, 16.38, 3.9], "material": "wood", "acoustic": false, "color": "#d8c8a0" },
+        { "kind": "dresser", "pos": [26.425, 16.33, 3], "size": [0.9, 0.5, 0.9], "yaw": 0, "facing": [0, 1], "min": [25.975, 16.08, 3], "max": [26.875, 16.58, 3.9], "material": "cabinet", "acoustic": true, "color": "#4a3626" },
         { "kind": "wardrobe", "pos": [30.62, 19.6, 3], "size": [1.8, 0.6, 2.1], "yaw": 90, "facing": [-1, 0], "min": [30.32, 18.7, 3], "max": [30.92, 20.5, 5.1], "material": "cabinet", "acoustic": true, "color": "#4a3626" },
         { "kind": "desk", "pos": [29.3, 22.62, 3], "size": [1.3, 0.6, 0.75], "yaw": 180, "facing": [0, -1], "min": [28.65, 22.32, 3], "max": [29.95, 22.92, 3.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
         { "kind": "chair", "pos": [29.3, 21.95, 3], "size": [0.45, 0.45, 0.9], "yaw": 0, "facing": [0, 1], "min": [29.075, 21.725, 3], "max": [29.525, 22.175, 3.9], "material": "wood", "acoustic": true, "color": "#4a3626" },
@@ -193,7 +199,10 @@
         { "kind": "pew", "pos": [9.95, 60.5, 0], "size": [2.3, 0.6, 0.95], "yaw": 0, "facing": [0, 1], "min": [8.8, 60.2, 0], "max": [11.1, 60.8, 0.95], "material": "wood", "acoustic": true, "color": "#3e2c1e" },
         { "kind": "pew", "pos": [6.05, 61.5, 0], "size": [2.3, 0.6, 0.95], "yaw": 0, "facing": [0, 1], "min": [4.9, 61.2, 0], "max": [7.2, 61.8, 0.95], "material": "wood", "acoustic": true, "color": "#3e2c1e" },
         { "kind": "pew", "pos": [9.95, 61.5, 0], "size": [2.3, 0.6, 0.95], "yaw": 0, "facing": [0, 1], "min": [8.8, 61.2, 0], "max": [11.1, 61.8, 0.95], "material": "wood", "acoustic": true, "color": "#3e2c1e" },
-        { "kind": "altar", "pos": [8, 69, 0], "size": [2.4, 1.2, 1.1], "yaw": 180, "facing": [0, -1], "min": [6.8, 68.4, 0], "max": [9.2, 69.6, 1.1], "material": "stone", "acoustic": true, "color": "#3a3a44" }
+        { "kind": "altar", "pos": [8, 71, 0], "size": [2.4, 1.2, 1.1], "yaw": 180, "facing": [0, -1], "min": [6.8, 70.4, 0], "max": [9.2, 71.6, 1.1], "material": "stone", "acoustic": true, "color": "#3a3a44" },
+        { "kind": "candle_stand", "pos": [6.2, 70.2, 0], "size": [0.3, 0.3, 1.2], "yaw": 180, "facing": [0, -1], "min": [6.05, 70.05, 0], "max": [6.35, 70.35, 1.2], "material": "wood", "acoustic": false, "color": "#8a7040" },
+        { "kind": "candle_stand", "pos": [9.8, 70.2, 0], "size": [0.3, 0.3, 1.2], "yaw": 180, "facing": [0, -1], "min": [9.65, 70.05, 0], "max": [9.95, 70.35, 1.2], "material": "wood", "acoustic": false, "color": "#8a7040" },
+        { "kind": "font", "pos": [6.3, 54.5, 0], "size": [0.6, 0.6, 0.9], "yaw": 0, "facing": [0, 1], "min": [6, 54.2, 0], "max": [6.6, 54.8, 0.9], "material": "stone", "acoustic": true, "color": "#8a8a90" }
       ]
     },
     {
@@ -213,7 +222,8 @@
         { "kind": "bunk_bed", "pos": [39.5, 10.7, -3], "size": [2, 0.84, 1.6], "yaw": 90, "facing": [-1, 0], "min": [39.08, 9.7, -3], "max": [39.92, 11.7, -1.4], "material": "soft", "acoustic": true, "color": "#707a8a" },
         { "kind": "shelf", "pos": [35.4, 13.67, -3], "size": [1.8, 0.5, 1.9], "yaw": 180, "facing": [0, -1], "min": [34.5, 13.42, -3], "max": [36.3, 13.92, -1.1], "material": "cabinet", "acoustic": true, "color": "#5a4530" },
         { "kind": "crate", "pos": [39.4, 13.45, -3], "size": [0.9, 0.9, 0.8], "yaw": 180, "facing": [0, -1], "min": [38.95, 13, -3], "max": [39.85, 13.9, -2.2], "material": "wood", "acoustic": true, "color": "#5a5236" },
-        { "kind": "crate", "pos": [39.45, 12.55, -3], "size": [0.7, 0.7, 0.6], "yaw": 180, "facing": [0, -1], "min": [39.1, 12.2, -3], "max": [39.8, 12.9, -2.4], "material": "wood", "acoustic": true, "color": "#5a5236" },
+        { "kind": "crate", "pos": [39.4, 13.45, -2.2], "size": [0.7, 0.7, 0.6], "yaw": 180, "facing": [0, -1], "min": [39.05, 13.1, -2.2], "max": [39.75, 13.8, -1.6], "material": "wood", "acoustic": true, "color": "#5a5236" },
+        { "kind": "barrel", "pos": [36.6, 13.55, -3], "size": [0.5, 0.5, 0.9], "yaw": 0, "facing": [0, 1], "min": [36.35, 13.3, -3], "max": [36.85, 13.8, -2.1], "material": "cabinet", "acoustic": true, "color": "#3e5a3a" },
         { "kind": "locker", "pos": [34.33, 9.6, -3], "size": [1.2, 0.5, 1.9], "yaw": 270, "facing": [1, 0], "min": [34.08, 9, -3], "max": [34.58, 10.2, -1.1], "material": "cabinet", "acoustic": true, "color": "#48523e" }
       ]
     }

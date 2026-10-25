@@ -788,6 +788,14 @@ pub enum Kind {
     Locker,
     Bench,
     CoatRack,
+    /// A small lamp standing on a desk or nightstand (decor).
+    TableLamp,
+    /// A floor-standing church candlestick (decor).
+    CandleStand,
+    /// A stone baptismal font.
+    Font,
+    /// A water barrel / drum.
+    Barrel,
 }
 
 /// How a piece must stand relative to the room's walls.
@@ -847,15 +855,21 @@ impl Kind {
             Locker => "locker",
             Bench => "bench",
             CoatRack => "coat_rack",
+            TableLamp => "table_lamp",
+            CandleStand => "candle_stand",
+            Font => "font",
+            Barrel => "barrel",
         }
     }
 
     pub const fn wall_rule(self) -> WallRule {
         use Kind::*;
         match self {
-            Piano | Bookshelf | Sideboard | Desk | Tv | TvStand | Bed | Nightstand | Wardrobe
-            | Dresser | KitchenCounter | Fridge | Whiteboard | BackBar | Shelf | Locker
-            | CoatRack => WallRule::Back,
+            // (desks may stand free: the seminar presenter's faces the room)
+            Piano | Bookshelf | Sideboard | Tv | TvStand | Bed | Nightstand | Wardrobe | Dresser
+            | KitchenCounter | Fridge | Whiteboard | BackBar | Shelf | Locker | CoatRack => {
+                WallRule::Back
+            }
             Divider | BunkBed | Booth | Stage => WallRule::Any,
             _ => WallRule::Free,
         }
@@ -866,10 +880,11 @@ impl Kind {
         matches!(self, Kind::Rug)
     }
 
-    /// Takes part in the acoustics (`furniture`). Rugs and lamps are
-    /// decor: a 1 cm rug box would only tax every floor bounce.
+    /// Takes part in the acoustics (`furniture`). Rugs, lamps and
+    /// candlesticks are decor: a 1 cm rug box would only tax every floor
+    /// bounce.
     pub const fn acoustic(self) -> bool {
-        !matches!(self, Kind::Rug | Kind::FloorLamp)
+        !matches!(self, Kind::Rug | Kind::FloorLamp | Kind::TableLamp | Kind::CandleStand)
     }
 
     /// Base colour for the frontends (0xRRGGBB).
@@ -881,7 +896,10 @@ impl Kind {
             Rug => 0x6a3a32,
             CoffeeTable | SideTable | Table | Desk | Nightstand | PianoBench | Chair | Stool
             | Bench => 0x4a3626,
-            FloorLamp => 0xd8c8a0,
+            FloorLamp | TableLamp => 0xd8c8a0,
+            CandleStand => 0x8a7040,
+            Font => 0x8a8a90,
+            Barrel => 0x3e5a3a,
             Piano | GrandPiano => 0x15130f,
             Bookshelf | Divider | Shelf => 0x5a4530,
             Sideboard | Dresser | Wardrobe | TvStand => 0x4a3626,
@@ -1084,63 +1102,71 @@ pub fn layout(room: usize) -> &'static [Piece] {
     // and the piano goes into the bookcase's shadow.
     static LIVING_L: &[Piece] = &[
         pc(GrandPiano, 2.0, 3.0, 1.5, 1.9, 1.0, S, Cabinet),
-        pc(PianoBench, 2.0, 1.75, 0.8, 0.36, 0.5, N, Wood),
+        pc(PianoBench, 2.0, 1.6, 0.8, 0.36, 0.5, N, Wood),
         pc(Bookshelf, 0.255, 3.0, 2.0, 0.35, 2.0, E, Books),
         pc(Sofa, 4.9, 3.0, 2.1, 0.9, 0.85, W, Soft),
         pc(CoffeeTable, 3.85, 3.0, 1.0, 0.5, 0.42, W, Wood),
         pc(Rug, 3.9, 3.0, 2.6, 2.0, 0.01, W, Soft),
-        pc(Armchair, 3.85, 1.25, 0.85, 0.85, 0.9, N, Soft),
+        pc(Armchair, 3.85, 1.45, 0.85, 0.85, 0.9, N, Soft),
         pc(FloorLamp, 4.75, 1.0, 0.3, 0.3, 1.6, N, Wood),
         pc(Sideboard, 1.6, 5.695, 1.8, 0.45, 0.8, S, Cabinet),
-        pc(Divider, 5.6, 1.74, 3.32, 0.4, 2.2, W, Books),
+        pc(Divider, 5.6, 2.09, 4.02, 0.4, 2.2, W, Books),
         pc(Armchair, 7.475, 1.55, 0.85, 0.85, 0.9, W, Soft),
         pc(SideTable, 7.5, 0.7, 0.45, 0.45, 0.55, W, Wood),
         pc(FloorLamp, 7.6, 2.35, 0.3, 0.3, 1.6, W, Wood),
-        pc(Desk, 7.61, 4.4, 1.4, 0.62, 0.75, W, Wood),
-        pc(Chair, 6.95, 4.4, 0.45, 0.45, 0.9, E, Wood),
+        pc(Desk, 7.61, 4.95, 1.4, 0.62, 0.75, W, Wood),
+        pc(Chair, 6.95, 4.95, 0.45, 0.45, 0.9, E, Wood),
+        up(TableLamp, 7.65, 5.3, 0.2, 0.2, 0.4, W, 0.75, Wood),
     ];
     // Great Hall (14 × 10 × 7) as a seminar room. The front is the east
-    // wall: the whiteboard on it, the presenter's desk beside it, and the
-    // narrator behind a lectern at local (10.5, 6.5) facing west. The
-    // audience sits in three rows of table + seat row facing her, in two
+    // wall: the whiteboard on it with a flip chart beside it, the
+    // presenter's desk free-standing in front of the wall (she sits
+    // behind it facing the room), and the narrator behind a lectern at
+    // local (10.5, 6.5) facing west. The audience sits in three rows of
+    // table + seat row (front row fixed, then 2.0 and 1.95 m pitch — the
+    // back row's seats end at x = 3.0: 5 cm further west put a 15 dB
+    // step into the walk past the north door outside) facing her, in two
     // blocks either side of a central aisle on her axis (y = 6.5); a
     // refreshment sideboard by the south wall; both doors open onto
     // free floor.
     static HALL_L: &[Piece] = &[
         pc(Table, 7.8, 5.0, 1.6, 0.6, 0.74, E, Wood),
         pc(Table, 7.8, 8.0, 1.6, 0.6, 0.74, E, Wood),
-        pc(Table, 6.1, 5.0, 1.6, 0.6, 0.74, E, Wood),
-        pc(Table, 6.1, 8.0, 1.6, 0.6, 0.74, E, Wood),
-        pc(Table, 4.4, 5.0, 1.6, 0.6, 0.74, E, Wood),
-        pc(Table, 4.4, 8.0, 1.6, 0.6, 0.74, E, Wood),
+        pc(Table, 5.8, 5.0, 1.6, 0.6, 0.74, E, Wood),
+        pc(Table, 5.8, 8.0, 1.6, 0.6, 0.74, E, Wood),
+        pc(Table, 3.85, 5.0, 1.6, 0.6, 0.74, E, Wood),
+        pc(Table, 3.85, 8.0, 1.6, 0.6, 0.74, E, Wood),
         pc(SeatRow, 7.175, 5.0, 1.6, 0.45, 0.85, E, Wood),
         pc(SeatRow, 7.175, 8.0, 1.6, 0.45, 0.85, E, Wood),
-        pc(SeatRow, 5.475, 5.0, 1.6, 0.45, 0.85, E, Wood),
-        pc(SeatRow, 5.475, 8.0, 1.6, 0.45, 0.85, E, Wood),
-        pc(SeatRow, 3.775, 5.0, 1.6, 0.45, 0.85, E, Wood),
-        pc(SeatRow, 3.775, 8.0, 1.6, 0.45, 0.85, E, Wood),
+        pc(SeatRow, 5.175, 5.0, 1.6, 0.45, 0.85, E, Wood),
+        pc(SeatRow, 5.175, 8.0, 1.6, 0.45, 0.85, E, Wood),
+        pc(SeatRow, 3.225, 5.0, 1.6, 0.45, 0.85, E, Wood),
+        pc(SeatRow, 3.225, 8.0, 1.6, 0.45, 0.85, E, Wood),
         pc(Lectern, 9.75, 6.5, 0.6, 0.5, 1.15, W, Cabinet),
         up(Whiteboard, 13.86, 6.5, 3.0, 0.12, 1.2, W, 0.9, Panel),
-        pc(Desk, 13.56, 3.0, 1.6, 0.72, 0.75, W, Wood),
-        pc(Chair, 12.9, 3.0, 0.45, 0.45, 0.9, E, Wood),
+        pc(Whiteboard, 13.72, 9.2, 0.7, 0.4, 1.7, W, Panel),
+        pc(Desk, 12.9, 3.0, 1.6, 0.72, 0.75, E, Wood),
+        pc(Chair, 13.5, 3.0, 0.45, 0.45, 0.9, W, Wood),
         pc(Sideboard, 9.5, 0.33, 1.8, 0.5, 0.9, N, Cabinet),
     ];
     // Entrance (2 × 6): the club's sound-lock — a bench at the south
-    // end, coats on a wall rack at the north end, the door axis free.
+    // end, coats on a wall rack at the north end, the door axis free
+    // but for a doormat between the two doors.
     static ENTRANCE_L: &[Piece] = &[
         pc(Bench, 1.0, 0.29, 1.4, 0.42, 0.45, N, Wood),
         pc(CoatRack, 1.0, 5.77, 1.0, 0.3, 1.8, S, Wood),
+        pc(Rug, 1.0, 3.0, 1.0, 0.6, 0.01, W, Soft),
     ];
     // Club (10 × 12 × 4.5). The stage along the south wall with the DJ
     // deck on it, flanked by the two main PA stacks; two fill stacks in
     // the north corners (the club source's four emitters stand on these
     // sub cabinets). The bar runs along the west wall north of the door
     // (back bar against the wall, stools facing it); two booths against
-    // the east wall either side of the window; the dance floor in the
-    // middle stays clear.
+    // the east wall either side of the window; a high table by the
+    // south-west speaker; the dance floor in the middle stays clear.
     static CLUB_L: &[Piece] = &[
         pc(Stage, 5.0, 1.19, 5.2, 2.22, 0.5, N, Cabinet),
-        up(DjBooth, 5.0, 1.0, 1.6, 0.6, 1.0, N, 0.5, Cabinet),
+        up(DjBooth, 5.0, 1.25, 1.6, 0.6, 1.0, N, 0.5, Cabinet),
         pc(Speaker, 1.5, 1.5, 0.7, 0.7, 1.2, N, Cabinet),
         pc(Speaker, 8.5, 1.5, 0.7, 0.7, 1.2, N, Cabinet),
         pc(Speaker, 1.5, 10.5, 0.7, 0.7, 1.2, S, Cabinet),
@@ -1151,6 +1177,7 @@ pub fn layout(room: usize) -> &'static [Piece] {
         pc(Stool, 2.2, 7.7, 0.4, 0.4, 0.75, W, Wood),
         pc(Stool, 2.2, 8.4, 0.4, 0.4, 0.75, W, Wood),
         pc(Stool, 2.2, 9.1, 0.4, 0.4, 0.75, W, Wood),
+        pc(Table, 1.3, 3.2, 0.6, 0.6, 1.05, N, Wood),
         pc(Booth, 9.26, 2.65, 1.32, 0.5, 1.1, N, Soft),
         pc(Table, 9.36, 3.25, 1.12, 0.6, 0.75, N, Wood),
         pc(Booth, 9.26, 3.85, 1.32, 0.5, 1.1, S, Soft),
@@ -1160,17 +1187,17 @@ pub fn layout(room: usize) -> &'static [Piece] {
     ];
     // Old House ground floor (7 × 7 × 2.8), open plan. The stairs run up
     // the west wall (kept clear). Kitchen along the south wall (counter,
-    // fridge in the corner), the dining table in front of it with four
-    // chairs; the living corner in the north-east: sofa facing a TV on
+    // fridge in the corner), the dining table in front of it turned
+    // east–west, two chairs either side; the living corner in the north-east: sofa facing a TV on
     // the east wall across a coffee table and rug.
     static HOUSE_L: &[Piece] = &[
         pc(KitchenCounter, 4.8, 0.38, 2.8, 0.6, 0.9, N, Cabinet),
         pc(Fridge, 6.57, 0.42, 0.7, 0.68, 1.9, N, Cabinet),
-        pc(Table, 4.7, 2.6, 1.4, 0.8, 0.75, N, Wood),
-        pc(Chair, 4.35, 1.85, 0.42, 0.42, 0.9, N, Wood),
-        pc(Chair, 5.05, 1.85, 0.42, 0.42, 0.9, N, Wood),
-        pc(Chair, 4.35, 3.35, 0.42, 0.42, 0.9, S, Wood),
-        pc(Chair, 5.05, 3.35, 0.42, 0.42, 0.9, S, Wood),
+        pc(Table, 5.1, 2.4, 1.4, 0.8, 0.75, W, Wood),
+        pc(Chair, 4.3, 2.05, 0.42, 0.42, 0.9, E, Wood),
+        pc(Chair, 4.3, 2.75, 0.42, 0.42, 0.9, E, Wood),
+        pc(Chair, 5.9, 2.05, 0.42, 0.42, 0.9, W, Wood),
+        pc(Chair, 5.9, 2.75, 0.42, 0.42, 0.9, W, Wood),
         pc(Sofa, 3.85, 5.1, 2.1, 0.9, 0.85, E, Soft),
         pc(CoffeeTable, 5.0, 5.1, 1.0, 0.55, 0.42, E, Wood),
         pc(Rug, 5.0, 5.1, 2.4, 2.4, 0.01, E, Soft),
@@ -1180,14 +1207,17 @@ pub fn layout(room: usize) -> &'static [Piece] {
     ];
     // Old House upper floor (7 × 7 × 2.6; the stairwell opens along the
     // west wall, kept clear): a bedroom. The bed's headboard against the
-    // south wall with a nightstand each side, a dresser beside them, the
+    // south wall with a nightstand (and lamp) each side, a dresser beside
+    // them, the
     // wardrobe on the east wall, a writing desk under the north window
     // with its chair, a rug at the foot of the bed.
     static HOUSE_UP_L: &[Piece] = &[
         pc(Bed, 4.4, 1.13, 1.6, 2.1, 0.9, N, Soft),
         pc(Nightstand, 3.3, 0.28, 0.45, 0.4, 0.55, N, Wood),
         pc(Nightstand, 5.5, 0.28, 0.45, 0.4, 0.55, N, Wood),
-        pc(Dresser, 2.4, 0.33, 1.0, 0.5, 0.9, N, Cabinet),
+        up(TableLamp, 3.3, 0.28, 0.2, 0.2, 0.35, N, 0.55, Wood),
+        up(TableLamp, 5.5, 0.28, 0.2, 0.2, 0.35, N, 0.55, Wood),
+        pc(Dresser, 2.425, 0.33, 0.9, 0.5, 0.9, N, Cabinet),
         pc(Wardrobe, 6.62, 3.6, 1.8, 0.6, 2.1, W, Cabinet),
         pc(Desk, 5.3, 6.62, 1.3, 0.6, 0.75, S, Wood),
         pc(Chair, 5.3, 5.95, 0.45, 0.45, 0.9, N, Wood),
@@ -1195,9 +1225,10 @@ pub fn layout(room: usize) -> &'static [Piece] {
     ];
     // Cathedral nave (16 × 22 × 15). Two arcades of six stone columns
     // (x = 4 and 12); pews in two blocks either side of the central
-    // aisle on the portal's axis, all facing the altar at the north end;
-    // the flautist plays in the open chancel between the front pews and
-    // the altar.
+    // aisle on the portal's axis, all facing the altar in the apse at the
+    // north end between two candle stands; a font inside the portal; the
+    // flautist plays in the open chancel between the front pews and the
+    // altar.
     static CATHEDRAL_L: &[Piece] = &[
         pc(Pillar, 4.0, 3.0, 0.9, 0.9, 8.5, N, Stone),
         pc(Pillar, 4.0, 6.2, 0.9, 0.9, 8.5, N, Stone),
@@ -1221,12 +1252,16 @@ pub fn layout(room: usize) -> &'static [Piece] {
         pc(Pew, 9.95, 8.5, 2.3, 0.6, 0.95, N, Wood),
         pc(Pew, 6.05, 9.5, 2.3, 0.6, 0.95, N, Wood),
         pc(Pew, 9.95, 9.5, 2.3, 0.6, 0.95, N, Wood),
-        pc(Altar, 8.0, 17.0, 2.4, 1.2, 1.1, S, Stone),
+        pc(Altar, 8.0, 19.0, 2.4, 1.2, 1.1, S, Stone),
+        pc(CandleStand, 6.2, 18.2, 0.3, 0.3, 1.2, S, Wood),
+        pc(CandleStand, 9.8, 18.2, 0.3, 0.3, 1.2, S, Wood),
+        pc(Font, 6.3, 2.5, 0.6, 0.6, 0.9, N, Stone),
     ];
     // Bunker (6 × 8 × 2.2, below grade): a shelter. The radio stands on
     // a table near the north end with a chair either side; two bunks
-    // along the east wall, supply shelving on the north wall, crates in
-    // the north-east corner, a locker by the west wall; the hatch from
+    // along the east wall, supply shelving on the north wall with a water
+    // barrel beside it, two crates stacked in the north-east corner, a
+    // locker by the west wall; the hatch from
     // the stair (south-west) opens onto free floor.
     static BUNKER_L: &[Piece] = &[
         pc(Table, 3.5, 6.5, 1.2, 0.8, 0.75, N, Wood),
@@ -1236,7 +1271,8 @@ pub fn layout(room: usize) -> &'static [Piece] {
         pc(BunkBed, 5.5, 4.7, 2.0, 0.84, 1.6, W, Soft),
         pc(Shelf, 1.4, 7.67, 1.8, 0.5, 1.9, S, Cabinet),
         pc(Crate, 5.4, 7.45, 0.9, 0.9, 0.8, S, Wood),
-        pc(Crate, 5.45, 6.55, 0.7, 0.7, 0.6, S, Wood),
+        up(Crate, 5.4, 7.45, 0.7, 0.7, 0.6, S, 0.8, Wood),
+        pc(Barrel, 2.6, 7.55, 0.5, 0.5, 0.9, N, Cabinet),
         pc(Locker, 0.33, 3.6, 1.2, 0.5, 1.9, E, Cabinet),
     ];
     match room {
@@ -1265,7 +1301,7 @@ pub fn keep_clear(room: usize) -> &'static [ClearZone] {
     const fn z(name: &'static str, x0: f32, y0: f32, x1: f32, y1: f32) -> ClearZone {
         ClearZone { name, min: (x0, y0), max: (x1, y1) }
     }
-    static LIVING_Z: &[ClearZone] = &[z("pianist", 1.5, 0.9, 2.5, 1.55)];
+    static LIVING_Z: &[ClearZone] = &[z("pianist", 1.5, 0.9, 2.5, 1.4)];
     static HOUSE_Z: &[ClearZone] = &[z("stairs", 0.0, 0.0, 1.75, 7.0)];
     static HOUSE_UP_Z: &[ClearZone] = &[z("stairwell", 0.0, 0.0, 1.75, 7.0)];
     static CLUB_Z: &[ClearZone] = &[z("dance floor", 2.8, 3.0, 7.6, 9.0)];
