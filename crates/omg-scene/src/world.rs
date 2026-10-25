@@ -286,6 +286,25 @@ impl WorldSim {
     /// [src_idx, n_verts, x,y,z × n]…, capped. Consumes each Sim's
     /// last-traced geometry so rooms you left stop emitting.
     pub fn debug_rays(&mut self, out: &mut Vec<f32>) {
+        if crate::quality::early_v3() {
+            // v3: the strongest traced paths of the last tick, ears →
+            // bounces → the real source position. The first call
+            // switches capture on.
+            if let Some(t) = &mut self.v3_tracer {
+                t.debug = true;
+                for (id, _, verts) in t.debug_paths.drain(..) {
+                    if out.len() + 2 + verts.len() * 3 > 6000 {
+                        break;
+                    }
+                    out.push((id / 8) as f32);
+                    out.push(verts.len() as f32);
+                    for v in verts {
+                        out.extend_from_slice(&[v.x, v.y, v.z]);
+                    }
+                }
+            }
+            return;
+        }
         if crate::quality::early_traced() {
             // C6c: polylines come from the world solver, already in world
             // coordinates. The first call switches capture on; each tick

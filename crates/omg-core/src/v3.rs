@@ -200,6 +200,33 @@ pub struct Tracer {
     cells: Vec<Vec3>,
     state: HashMap<u32, SourceState>,
     hits: Vec<SegHit>,
+    /// Capture the strongest paths of each tick for the debug view.
+    pub debug: bool,
+    /// Last tick's strongest paths: (source id, mid energy, polyline
+    /// ears → bounces → source), strongest first.
+    pub debug_paths: Vec<(u32, f32, Vec<Vec3>)>,
+}
+
+/// Paths kept per tick for the debug view.
+const DEBUG_PATHS: usize = 64;
+
+/// Keep `path` if it is among the strongest DEBUG_PATHS so far.
+fn keep_path(list: &mut Vec<(u32, f32, Vec<Vec3>)>, id: u32, e: f32, verts: &[Vec3], end: Vec3) {
+    if list.len() >= DEBUG_PATHS {
+        let (mi, me) = list
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, p.1))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        if e <= me {
+            return;
+        }
+        list.swap_remove(mi);
+    }
+    let mut v = verts.to_vec();
+    v.push(end);
+    list.push((id, e, v));
 }
 
 impl Tracer {
@@ -209,6 +236,8 @@ impl Tracer {
             cells: fibonacci_sphere(N_CELLS),
             state: HashMap::new(),
             hits: Vec::new(),
+            debug: false,
+            debug_paths: Vec::new(),
         }
     }
 
@@ -237,6 +266,10 @@ impl Tracer {
             })
             .collect();
 
+        let debug = self.debug;
+        let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
+        let mut verts: Vec<Vec3> = Vec::new();
+
         // 1. direct: one exact segment per source
         let mut direct: Vec<Option<Tap>> = Vec::with_capacity(sources.len());
         for s in sources {
@@ -245,6 +278,10 @@ impl Tracer {
             let t = world.transmission(listener, s.pos, &mut self.hits);
             let air = air_attenuation(d);
             let gains: [f32; NBANDS] = core::array::from_fn(|b| t[b] * air[b] / d);
+            if debug && gains[1] > 1e-7 {
+                // direct paths always show, ranked like the rest
+                keep_path(&mut dbg, s.id, gains[1] * gains[1], &[listener], s.pos);
+            }
             direct.push(if gains.iter().any(|&g| g > 1e-7) {
                 let dir = to * (1.0 / to.length().max(1e-6));
                 Some(Tap { key: KEY_DIRECT, delay_s: d / SPEED_OF_SOUND, dir: [dir.x, dir.y, dir.z], gains })
@@ -282,6 +319,10 @@ impl Tracer {
             // (only then do sphere hits count — NEE covered diffuse ones)
             let mut refl = 0u32;
             let mut specular = false;
+            if debug {
+                verts.clear();
+                verts.push(listener);
+            }
             for _seg in 0..segments {
                 let hit = world.raycast(origin, dir);
                 let t_hit = hit.as_ref().map_or(f32::MAX, |h| h.t);
@@ -307,12 +348,18 @@ impl Tracer {
                         let w = 4.0 * inv_n / (budget.k * budget.k * l_s * l_s);
                         let e: [f32; NBANDS] =
                             core::array::from_fn(|b| thr[b] * t[b] * t[b] * air[b] * air[b] * w);
+                        if debug {
+                            keep_path(&mut dbg, s.id, e[1], &verts, s.pos);
+                        }
                         deposit(&mut accs[si], &self.cells, e, l_s / SPEED_OF_SOUND, first);
                     }
                 }
 
                 let Some(hit) = hit else { break };
                 let p = origin + dir * t_hit;
+                if debug {
+                    verts.push(p);
+                }
                 length += t_hit;
                 if length / SPEED_OF_SOUND > MAX_TIME {
                     break;
@@ -367,6 +414,9 @@ impl Tracer {
                         let e: [f32; NBANDS] = core::array::from_fn(|b| {
                             thr[b] * keep[b] * t[b] * t[b] * air[b] * air[b] * w
                         });
+                        if debug {
+                            keep_path(&mut dbg, s.id, e[1], &verts, s.pos);
+                        }
                         deposit(&mut accs[si], &self.cells, e, (length + r) / SPEED_OF_SOUND, first);
                     }
                 }
@@ -404,6 +454,11 @@ impl Tracer {
                 origin = p + normal * EPS;
             }
         }
+        }
+
+        if debug {
+            dbg.sort_by(|a, b| b.1.total_cmp(&a.1));
+            self.debug_paths = dbg;
         }
 
         // 5. smooth over ticks and build each source's field
