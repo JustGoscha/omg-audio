@@ -45,6 +45,53 @@ pub fn knife_edge_bands(detour_m: f32) -> [f32; NBANDS] {
     core::array::from_fn(|b| knife_edge_amp(detour_m, BAND_CENTER_HZ[b]))
 }
 
+/// Barrier attenuation of a WHOLE multi-edge string (over a roof line,
+/// around a building's side), ISO 9613-2 §7.4, as per-band amplitudes:
+///
+///   Dz = 10·lg(3 + (C2/λ)·C3·z·Kmet)    capped at 20 dB (one edge) /
+///                                        25 dB (two or more edges)
+///
+/// with z the string's extra length over the blocked straight line,
+/// C2 = 20, C3 = 1 for one edge or [1 + (5λ/e)²] / [1/3 + (5λ/e)²] for
+/// several (e = span between the first and last edge), and the
+/// meteorological factor Kmet = exp(−√(dss·dsr·d / 2z) / 2000) for paths
+/// over the top (1 for lateral paths). Chaining knife edges vertex by
+/// vertex charges ≥ 5 dB for EVERY grazing corner of a string that runs
+/// along a face; the standard prices the string once, by its total
+/// detour, so a thick building costs a little more than a thin wall —
+/// not 5 dB per corner.
+///
+/// `dss`: source → first edge, `dsr`: last edge → receiver, `d`: direct
+/// source → receiver distance (all meters).
+pub fn iso9613_barrier_bands(
+    z: f32,
+    edges: usize,
+    e: f32,
+    dss: f32,
+    dsr: f32,
+    d: f32,
+    lateral: bool,
+) -> [f32; NBANDS] {
+    let z = z.max(0.0);
+    let kmet = if lateral || z <= 0.0 {
+        1.0
+    } else {
+        (-(dss * dsr * d / (2.0 * z)).sqrt() / 2000.0).exp()
+    };
+    let cap = if edges >= 2 { 25.0 } else { 20.0 };
+    core::array::from_fn(|b| {
+        let lambda = SPEED_OF_SOUND / BAND_CENTER_HZ[b];
+        let c3 = if edges >= 2 {
+            let q = (5.0 * lambda / e.max(1e-3)).powi(2);
+            (1.0 + q) / (1.0 / 3.0 + q)
+        } else {
+            1.0
+        };
+        let dz = (10.0 * (3.0 + 20.0 / lambda * c3 * z * kmet).log10()).min(cap);
+        10f32.powf(-dz / 20.0)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

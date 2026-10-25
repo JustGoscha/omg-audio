@@ -180,9 +180,11 @@ pub fn rooms() -> Vec<RoomDef> {
             wall_thickness: 0.4,
             outdoor: false,
         },
-        // A brick bell tower ~250 m north across the field: doorless
-        // (nobody enters), but its shaft occludes, reflects and lets the
-        // bells above it ring over the roof line.
+        // A brick bell tower ~300 m north across the field. This is its
+        // SHAFT: solid, doorless brick up to 24 m. The bells hang above it
+        // in the open belfry stage (arches on all four sides, spire on
+        // top), so they ring out over the town; the shaft only occludes,
+        // reflects and shadows what would have to pass through it.
         RoomDef {
             name: "Belfry",
             min: (7.0, 318.0),
@@ -506,9 +508,11 @@ pub fn sources() -> [SourceDef; 14] {
             pos: (10.0, 321.0),
             room: OUTSIDE,
             // a real bell peals ~100 dB at the tower; 250 m of air and
-            // spreading make it the distant Sunday sound, bass carrying
+            // spreading make it the distant Sunday sound, bass carrying.
+            // Hung mid-stage in the open arches, above the 24 m shaft
+            // (stage 24–27 m): open air on every side, not inside brick.
             gain: 30.0,
-            z: 22.5,
+            z: 25.5,
             emitters: &[(10.0, 321.0)],
         },
         // Dynamic slots: thrown projectiles + passing cars (positions
@@ -1169,7 +1173,39 @@ pub fn straight_path_transmission(
     a: (f32, f32),
     b: (f32, f32),
 ) -> [f32; NBANDS] {
+    path_transmission(rooms, all_doors, a, b, None, false)
+}
+
+/// Height-aware `straight_path_transmission`: `a` and `b` carry world z,
+/// and a wall is only paid where the straight segment actually passes
+/// through it — a ray crossing a wall plane above the building's top
+/// (or below an upper storey's floor) goes over (or under) it for free.
+/// This is what lets a bell hung ABOVE a solid tower shaft ring out
+/// over it, while a source standing behind a house is still shadowed.
+///
+/// `open_end`: skip a crossing at the very end of the segment. Use it
+/// when `b` is a point ON an aperture (a doorway the route continues
+/// through) — that aperture is priced by the route itself.
+pub fn straight_path_transmission_z(
+    rooms: &[RoomDef],
+    all_doors: &[Door],
+    a: (f32, f32, f32),
+    b: (f32, f32, f32),
+    open_end: bool,
+) -> [f32; NBANDS] {
+    path_transmission(rooms, all_doors, (a.0, a.1), (b.0, b.1), Some((a.2, b.2)), open_end)
+}
+
+fn path_transmission(
+    rooms: &[RoomDef],
+    all_doors: &[Door],
+    a: (f32, f32),
+    b: (f32, f32),
+    z: Option<(f32, f32)>,
+    open_end: bool,
+) -> [f32; NBANDS] {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = (dx * dx + dy * dy).sqrt();
     // (t, per-band amplitude) of each boundary crossing
     let mut crossings: Vec<(f32, [f32; NBANDS])> = Vec::new();
 
@@ -1195,9 +1231,20 @@ pub fn straight_path_transmission(
             if !(1e-4..=1.0).contains(&t) {
                 continue;
             }
+            // the aperture `b` sits on is the route's to price, not ours
+            if open_end && (1.0 - t) * len < 0.05 {
+                continue;
+            }
             let along = if axis == 0 { a.1 + t * dy } else { a.0 + t * dx };
             if along < lo || along > hi {
                 continue;
+            }
+            // over the roof line or under the floor: this wall isn't hit
+            if let Some((za, zb)) = z {
+                let zt = za + t * (zb - za);
+                if zt > r.barrier_height.max(r.floor_z + r.height) || zt < r.floor_z {
+                    continue;
+                }
             }
             // Through a door aperture on this plane? Free passage.
             let hit_aperture = all_doors.iter().find(|d| {

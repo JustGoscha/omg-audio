@@ -88,6 +88,11 @@ pub struct WorldSim {
     /// (exit, listener-cell) results are reused and refreshed round-robin
     /// — same philosophy as the trace gate (staleness bounded, no bias).
     bend_cache: std::collections::HashMap<(i32, i32), ([f32; NBANDS], (i32, i32))>,
+    /// Source → first-aperture leg bends, keyed (source, aperture point
+    /// in decimeters) → (source position in meters, factor).
+    leg_cache: std::collections::HashMap<(usize, i32, i32), ((i32, i32), [f32; NBANDS])>,
+    /// Fresh leg-bend searches left this tick.
+    leg_budget: u32,
     /// Per-source LOD: last produced block/route and its total level —
     /// inaudible sources refresh at 5 Hz instead of 20 (perceptually
     /// unimportant work goes first).
@@ -225,6 +230,8 @@ impl WorldSim {
             rooms,
             doors,
             bend_cache: std::collections::HashMap::new(),
+            leg_cache: std::collections::HashMap::new(),
+            leg_budget: 0,
             last_blocks: defs.iter().map(|_| ParamBlock::default()).collect(),
             last_routes: defs.iter().map(|_| Vec::new()).collect(),
             last_level: defs.iter().map(|_| f32::MAX).collect(),
@@ -351,6 +358,7 @@ impl WorldSim {
 
     fn tick_blended(&mut self, bs: BlendedState) -> (Vec<ParamBlock>, TickInfo) {
         self.tick_no += 1;
+        self.leg_budget = 4;
         let st = &bs.primary;
         // C6c: `early = traced` renders every source through ONE world
         // listener context — chains over the world mesh, discovered once
@@ -520,8 +528,21 @@ impl WorldSim {
                             _ => {
                                 bend_budget -= 1;
                                 let mut e = [0.0f32; NBANDS];
+                                // the emitter's TRUE height: the source's own
+                                // when it radiates in the open, the opening's
+                                // center when energy exits through an aperture
+                                let ez = if p == def.pos {
+                                    src_z
+                                } else {
+                                    self.doors
+                                        .iter()
+                                        .find(|d| {
+                                            (d.pos.0 - p.0).abs() < 0.1 && (d.pos.1 - p.1).abs() < 0.1
+                                        })
+                                        .map_or(0.5 * (src_z + walkthrough::EYE_HEIGHT), |d| d.zc)
+                                };
                                 for q in &probes {
-                                    let f = self.bend_factor(*q, st.listener_world, src_z);
+                                    let f = self.bend_factor_3d(*q, ez, st.listener_world, walkthrough::EYE_HEIGHT);
                                     for b in 0..NBANDS {
                                         e[b] += f[b] * f[b];
                                     }
@@ -642,6 +663,14 @@ impl WorldSim {
                         taps: true,
                     };
                     self.auto.find(&self.dome.mesh, src0, eye, budget, &mut self.paths_buf);
+                    // the sideways string around the footprints: the
+                    // bends the edge search cannot chain (a deep building
+                    // wrapped along its side face, then another corner)
+                    if self.paths_buf.first().is_some_and(|d| d.gains[1] < 0.25) {
+                        if let Some(side) = self.lateral_path(src0, eye) {
+                            self.paths_buf.push(side);
+                        }
+                    }
                     // The dominant edge plus a half-strength runner-up:
                     // one tap alone cliffs to silence whenever the edge
                     // ranking misses at the next cell (the club-door
@@ -1117,6 +1146,35 @@ impl WorldSim {
         floor_of: &dyn Fn((f32, f32)) -> [f32; NBANDS],
     ) -> (ParamBlock, Vec<(f32, f32)>) {
         let st = &bs.primary;
+        // Source → first aperture leg of a door-routed path. The route
+        // prices the apertures and the doorway → listener stretch; the
+        // stretch from the source to its first aperture must pay
+        // whatever stands in the way too (a tower around a bell, a house
+        // between a street and the door you hear it through) — the
+        // same straight-ray walls an outdoor listener pays, floored at
+        // the best bend around them.
+        let mut legs: Vec<((f32, f32), [f32; NBANDS])> = Vec::new();
+        {
+            let mut states = vec![st];
+            if let Some((ref ost, _)) = bs.other {
+                states.push(ost);
+            }
+            for state in states {
+                let routed = route_source(def, state.room, state.listener_world, &self.doors);
+                if routed.extra_dist <= 0.0 || routed.route.len() < 2 {
+                    continue;
+                }
+                let p = routed.route[1];
+                if legs.iter().any(|(q, _)| *q == p) {
+                    continue;
+                }
+                let leg = self.source_leg(si, def, src_z, p);
+                legs.push((p, leg));
+            }
+        }
+        let leg_of = |p: (f32, f32)| -> [f32; NBANDS] {
+            legs.iter().find(|(q, _)| *q == p).map_or([1.0; NBANDS], |(_, l)| *l)
+        };
         let rooms = &self.rooms;
         let doors_l = &self.doors;
         let facades = &self.facades;
@@ -1196,8 +1254,9 @@ impl WorldSim {
                     state.listener_world,
                 );
                 let fl = floor_of(routed.virt_world);
+                let leg = leg_of(routed.route[1]);
                 core::array::from_fn(|b| {
-                    door_occ[b].max(fl[b]) * (1.0 - los[b])
+                    door_occ[b].max(fl[b]) * leg[b] * (1.0 - los[b])
                 })
             } else if rooms[state.room].outdoor {
                 // Same outdoor "room" — but buildings may stand between
@@ -1205,13 +1264,28 @@ impl WorldSim {
                 // whistling projectile behind a wall). The bend floor
                 // keeps the whistle bending around the corner instead
                 // of vanishing.
-                let t = straight_path_transmission(
-                    rooms, doors_l, def.pos, state.listener_world);
+                let lz = rooms[state.room].floor_z + state.listener_local.z;
+                let t = walkthrough::straight_path_transmission_z(
+                    rooms,
+                    doors_l,
+                    (def.pos.0, def.pos.1, src_z),
+                    (state.listener_world.0, state.listener_world.1, lz),
+                    false,
+                );
                 let fl = floor_of(def.pos);
                 core::array::from_fn(|b| t[b].max(fl[b]))
             } else {
                 [1.0; NBANDS]
             };
+            // The wet field a routed source builds in this room is fed
+            // through its first aperture: it pays the source leg too
+            // (but not the doorway → listener occlusion — it is diffuse).
+            if routed.extra_dist > 0.0 && routed.route.len() >= 2 {
+                let leg = leg_of(routed.route[1]);
+                for b in 0..NBANDS {
+                    pb.reverb.level[b] *= leg[b];
+                }
+            }
             // Weight amplitudes; key-space per room so blended states coexist.
             for tp in &mut pb.taps {
                 tp.key += state.room as u32 * 1024;
@@ -1247,11 +1321,13 @@ impl WorldSim {
         // model used to fake; through walls it is the bass rumble.
         // Grade-separated pairs have no straight path at all (earth).
         if def.room != st.room && !self.grade_separated(def.room, st.room) {
-            let trans = straight_path_transmission(
+            let lz = self.rooms[st.room].floor_z + st.listener_local.z;
+            let trans = walkthrough::straight_path_transmission_z(
                 &self.rooms,
                 &self.doors,
-                def.pos,
-                st.listener_world,
+                (def.pos.0, def.pos.1, src_z),
+                (st.listener_world.0, st.listener_world.1, lz),
+                false,
             );
             let (dxw, dyw) = (
                 def.pos.0 - st.listener_world.0,
@@ -1359,29 +1435,139 @@ impl WorldSim {
     /// corner-visibility matrix and multi-roof rubber band dissolved into
     /// AutoPaths over the world mesh, where a door jamb, a building
     /// corner and a roof line are the same thing: an auto-extracted edge.
-    pub fn bend_factor(&mut self, e: (f32, f32), lis: (f32, f32), src_z: f32) -> [f32; NBANDS] {
-        let ez = 0.5 * (src_z + walkthrough::EYE_HEIGHT);
+    /// Per-band amplitude of the leg from source `si` to the aperture
+    /// point `p` it is routed through: height-aware straight-ray walls,
+    /// floored at the best bend. Cached per (source, aperture) — static
+    /// sources pay the bend search once; moving ones re-search when they
+    /// move a meter, within a small per-tick budget (stale otherwise).
+    fn source_leg(&mut self, si: usize, def: &SourceDef, src_z: f32, p: (f32, f32)) -> [f32; NBANDS] {
+        let door = self.doors.iter().find(|d| {
+            (d.pos.0 - p.0).abs() < 0.1 && (d.pos.1 - p.1).abs() < 0.1
+        });
+        let pz = door.map_or(walkthrough::SRC_HEIGHT, |d| d.zc);
+        let straight = walkthrough::straight_path_transmission_z(
+            &self.rooms,
+            &self.doors,
+            (def.pos.0, def.pos.1, src_z),
+            (p.0, p.1, pz),
+            true,
+        );
+        if straight.iter().all(|&x| x > 0.999) || !crate::quality::diffraction_on() {
+            return straight;
+        }
+        let key = (si, (p.0 * 10.0) as i32, (p.1 * 10.0) as i32);
+        let at = ((def.pos.0 * 1.0) as i32, (def.pos.1 * 1.0) as i32);
+        let bend = match self.leg_cache.get(&key) {
+            Some((c, f)) if *c == at || self.leg_budget == 0 => *f,
+            _ if self.leg_budget == 0 => [0.0; NBANDS],
+            _ => {
+                self.leg_budget -= 1;
+                let f = self.bend_factor_3d(def.pos, src_z, p, pz);
+                self.leg_cache.insert(key, (at, f));
+                f
+            }
+        };
+        core::array::from_fn(|b| straight[b].max(bend[b]))
+    }
+
+    /// The sideways taut string from `a` to `b` around the building
+    /// footprints that stand in the way (the plan-view twin of the
+    /// over-the-silhouette string): corners priced as knife edges, legs
+    /// pay any transmission the mesh still finds, diffraction floored
+    /// like every bent path. A footprint only obstructs where the
+    /// straight line passes it below its roof line; the rooms holding
+    /// either end are skipped (sound leaves those through apertures).
+    fn lateral_path(&mut self, a: Vec3, b: Vec3) -> Option<omg_core::paths::FoundPath> {
+        let (a2, b2) = ((a.x, a.y), (b.x, b.y));
+        let flat = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt().max(1e-3);
+        let mut rects: Vec<([f32; 2], [f32; 2])> = Vec::new();
+        for r in self.rooms.iter().filter(|r| !r.outdoor && r.floor_z + r.height > 0.2) {
+            let pad = r.wall_thickness + 0.05;
+            let (mn, mx) = ([r.min.0 - pad, r.min.1 - pad], [r.max.0 + pad, r.max.1 + pad]);
+            let holds = |p: (f32, f32)| p.0 >= mn[0] && p.0 <= mx[0] && p.1 >= mn[1] && p.1 <= mx[1];
+            if holds(a2) || holds(b2) {
+                continue;
+            }
+            // line height where it passes the footprint's center
+            let c = ((mn[0] + mx[0]) * 0.5, (mn[1] + mx[1]) * 0.5);
+            let t = (((c.0 - a.x) * (b.x - a.x) + (c.1 - a.y) * (b.y - a.y)) / (flat * flat))
+                .clamp(0.0, 1.0);
+            let zl = a.z + (b.z - a.z) * t;
+            // 1.5 m of slack: the string runs lower than the straight
+            // line it replaces, so a roof the line just clears can still
+            // be in the string's way (the over-the-top string covers
+            // paths that truly clear it)
+            if r.barrier_height.max(r.floor_z + r.height) > zl - 1.5 {
+                rects.push((mn, mx));
+            }
+        }
+        let plan = omg_core::paths::plan_detour(a2, b2, &rects)?;
+        // heights along the string: linear in path length between ends
+        let mut cum = vec![0.0f32];
+        for w in plan.windows(2) {
+            let l = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
+            cum.push(cum.last().unwrap() + l);
+        }
+        let total = cum.last().copied().unwrap_or(1.0).max(1e-3);
+        let pts: Vec<Vec3> = plan
+            .iter()
+            .zip(&cum)
+            .map(|(p, c)| Vec3::new(p.0, p.1, a.z + (b.z - a.z) * c / total))
+            .collect();
+        let mut length = 0.0f32;
+        for w in pts.windows(2) {
+            length += (w[1] - w[0]).length();
+        }
+        // the whole string priced once, by its total detour (ISO 9613-2,
+        // lateral: no meteorological reduction)
+        let n = pts.len();
+        let direct = (b - a).length();
+        let ke = omg_core::diffraction::iso9613_barrier_bands(
+            length - direct,
+            n - 2,
+            (pts[n - 2] - pts[1]).length(),
+            (pts[1] - pts[0]).length(),
+            (pts[n - 1] - pts[n - 2]).length(),
+            direct,
+            true,
+        );
+        let floor = omg_core::paths::diffraction_floor(length);
+        let mut gains: [f32; NBANDS] = core::array::from_fn(|band| ke[band].max(floor));
+        for w in pts.windows(2) {
+            let tr = self.auto.transmission(&self.dome.mesh, w[0], w[1]);
+            for band in 0..NBANDS {
+                gains[band] *= tr[band];
+            }
+        }
+        if gains[0] < 1e-6 {
+            return None;
+        }
+        Some(omg_core::paths::FoundPath { points: pts, length, gains, key: 95_000 })
+    }
+
+    /// `bend_factor` with explicit endpoint heights.
+    fn bend_factor_3d(&mut self, e: (f32, f32), ez: f32, l: (f32, f32), lz: f32) -> [f32; NBANDS] {
         let a = Vec3::new(e.0, e.1, ez);
-        let b = Vec3::new(lis.0, lis.1, walkthrough::EYE_HEIGHT);
+        let b = Vec3::new(l.0, l.1, lz);
         let (auto, mesh, buf) = (&mut self.auto, &self.dome.mesh, &mut self.paths_buf);
-        // the occlusion floor is what keeps shadows continuous — worth a
-        // deeper search than the default (only blocked exits pay it)
         let budget =
             PathBudget { edge_candidates: 48, pair_edges: 32, max_paths: 4, taps: false };
         auto.find(mesh, a, b, budget, buf);
-        // Max over ALL paths, the mesh direct included: occlusion takes
-        // max(2D straight, this), and letting the two direct estimators
-        // disagree (a grazing segment reads clear in 3D, blocked in 2D)
-        // once blacked out a one-meter stripe along a facade.
+        let side = self.lateral_path(a, b);
         let d_direct = (b - a).length().max(0.5);
         let mut best = [0.0f32; NBANDS];
-        for p in buf.iter() {
+        for p in self.paths_buf.iter().chain(side.iter()) {
             for band in 0..NBANDS {
                 best[band] =
                     best[band].max(p.gains[band] * d_direct / p.length.max(d_direct));
             }
         }
         best
+    }
+
+    pub fn bend_factor(&mut self, e: (f32, f32), lis: (f32, f32), src_z: f32) -> [f32; NBANDS] {
+        let ez = 0.5 * (src_z + walkthrough::EYE_HEIGHT);
+        self.bend_factor_3d(e, ez, lis, walkthrough::EYE_HEIGHT)
     }
 }
 

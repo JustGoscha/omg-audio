@@ -94,7 +94,7 @@ const SOURCES = [
   { name: 'radio', pos: [37.5, 12.5], z: -2.2, color: 0xd2b06e },
   { name: 'owl', pos: [4, 53], z: 16.3, color: 0xcfd8e6 },
   { name: 'owl', pos: [27.5, 19.5], z: 5.6, color: 0xcfd8e6 },
-  { name: 'bells', pos: [10, 321], z: 21.8, color: 0xf0d890 },
+  { name: 'bells', pos: [10, 321], z: 25.5, color: 0xf0d890 },
 ];
 const MARGIN = 0.35;
 const EYE = 1.6;
@@ -281,6 +281,78 @@ const QUAL_STAT_TIPS = {
   'late field': 'Where the reverb ray traces run, with the wall-clock cost of the last trace dispatch (incl. readback). GPU runs 8× the ray budget for a fraction of the CPU cost — flip it under engine modules → compute.',
   early: 'The ACTIVE early-reflections engine as the sim reports it. Early is CPU-side by design: discovery is a few hundred rays per tick (~1 ms) and every found path is then solved EXACTLY by mirror reconstruction — tiny, branchy work the GPU can’t win. The heavy ray budgets (the reverb traces) are what the compute switch moves. ism and traced sound identical in open space; behind furniture only traced shadows.',
 };
+
+// Movable config panels: drag by the title bar, double-click it to send
+// the panel home. Positions persist per browser (a convenience only —
+// everything works without storage). A panel the user has placed no
+// longer evicts the other one when opened, so both can sit side by side.
+let panelZ = 7;
+function makeMovable(panel, title) {
+  let grip = panel.querySelector('h2');
+  if (!grip) {
+    grip = document.createElement('h2');
+    grip.textContent = title;
+    panel.prepend(grip);
+  }
+  grip.classList.add('grip');
+  grip.title = 'drag to move · double-click to reset';
+  const key = 'omg-panel-' + panel.id;
+  const clampInto = (x, y) => {
+    const w = panel.offsetWidth || 330;
+    const gh = grip.offsetHeight || 32;
+    return [
+      Math.min(Math.max(x, 40 - w), innerWidth - 40),
+      Math.min(Math.max(y, 0), innerHeight - gh),
+    ];
+  };
+  const place = (x, y) => {
+    [x, y] = clampInto(x, y);
+    panel.style.left = x + 'px';
+    panel.style.top = y + 'px';
+    panel.style.right = 'auto';
+    panel.dataset.moved = '1';
+  };
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || 'null');
+    if (saved) place(saved.x, saved.y);
+  } catch (_) {}
+  const raise = () => { panel.style.zIndex = String(++panelZ); };
+  panel.addEventListener('pointerdown', raise);
+  let drag = null;
+  grip.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const r = panel.getBoundingClientRect();
+    drag = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top };
+    grip.setPointerCapture(e.pointerId);
+    panel.classList.add('dragging');
+    e.preventDefault();
+  });
+  grip.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    place(e.clientX - drag.dx, e.clientY - drag.dy);
+  });
+  const end = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    drag = null;
+    panel.classList.remove('dragging');
+    try {
+      localStorage.setItem(key, JSON.stringify({
+        x: parseFloat(panel.style.left), y: parseFloat(panel.style.top),
+      }));
+    } catch (_) {}
+  };
+  grip.addEventListener('pointerup', end);
+  grip.addEventListener('pointercancel', end);
+  grip.addEventListener('dblclick', () => {
+    panel.style.left = panel.style.top = panel.style.right = '';
+    delete panel.dataset.moved;
+    try { localStorage.removeItem(key); } catch (_) {}
+  });
+  // keep a placed panel reachable when the window shrinks
+  addEventListener('resize', () => {
+    if (panel.dataset.moved) place(parseFloat(panel.style.left), parseFloat(panel.style.top));
+  });
+}
 
 function buildQuality() {
   const panel = document.getElementById('quality');
@@ -627,12 +699,20 @@ const v3 = (wx, wy, wz) => new THREE.Vector3(wx, wz, -wy);
   const g = new THREE.Group();
   const shaft = new THREE.Mesh(new THREE.BoxGeometry(6, 24, 6), sil);
   shaft.position.copy(v3(10, 321, 12));
-  const stage = new THREE.Mesh(new THREE.BoxGeometry(6.8, 3, 6.8), sil);
-  stage.position.copy(v3(10, 321, 25.5));
+  // belfry stage (24–27 m): four corner piers and a cornice, open
+  // arches between them — the bells hang in open air (the acoustic
+  // model puts the source here too, above the solid shaft)
+  for (const [ox, oy] of [[-2.8, -2.8], [2.8, -2.8], [-2.8, 2.8], [2.8, 2.8]]) {
+    const pier = new THREE.Mesh(new THREE.BoxGeometry(1.2, 3, 1.2), sil);
+    pier.position.copy(v3(10 + ox, 321 + oy, 25.5));
+    g.add(pier);
+  }
+  const cornice = new THREE.Mesh(new THREE.BoxGeometry(6.8, 0.5, 6.8), sil);
+  cornice.position.copy(v3(10, 321, 26.75));
   const spire = new THREE.Mesh(new THREE.ConeGeometry(4.4, 7, 4), sil);
   spire.position.copy(v3(10, 321, 30.5));
   spire.rotation.y = Math.PI / 4;
-  g.add(shaft, stage, spire);
+  g.add(shaft, cornice, spire);
   scene.add(g);
 }
 
@@ -1330,25 +1410,29 @@ document.getElementById('start').onclick = async (ev) => {
       // ray extraction in the sim runs ONLY while the panel is open
       if (state.setDebugRays) state.setDebugRays(state.debug.on);
     };
+    // Opening a panel closes the other only while both sit at their
+    // shared home spot; once either has been moved they can coexist.
+    const togglePanel = (btn, id, otherBtnId, otherId) => {
+      btn.blur();
+      const p = document.getElementById(id);
+      const o = document.getElementById(otherId);
+      p.hidden = !p.hidden;
+      if (!p.hidden) p.style.zIndex = String(++panelZ);
+      if (!p.hidden && !p.dataset.moved && !o.dataset.moved) {
+        o.hidden = true;
+        document.getElementById(otherBtnId).classList.remove('on');
+      }
+      btn.classList.toggle('on', !p.hidden);
+    };
     buildMixer();
-    document.getElementById('mixerbtn').onclick = (e) => {
-      e.target.blur();
-      const p = document.getElementById('mixer');
-      p.hidden = !p.hidden;
-      if (!p.hidden) document.getElementById('quality').hidden = true;
-      e.target.classList.toggle('on', !p.hidden);
-      document.getElementById('qualbtn').classList.remove('on');
-    };
+    makeMovable(document.getElementById('mixer'), 'mixer');
+    document.getElementById('mixerbtn').onclick = (e) =>
+      togglePanel(e.currentTarget, 'mixer', 'qualbtn', 'quality');
     buildQuality();
+    makeMovable(document.getElementById('quality'), 'engine quality');
     document.getElementById('qualbtn').hidden = false;
-    document.getElementById('qualbtn').onclick = (e) => {
-      e.currentTarget.blur();
-      const p = document.getElementById('quality');
-      p.hidden = !p.hidden;
-      if (!p.hidden) document.getElementById('mixer').hidden = true;
-      e.currentTarget.classList.toggle('on', !p.hidden);
-      document.getElementById('mixerbtn').classList.remove('on');
-    };
+    document.getElementById('qualbtn').onclick = (e) =>
+      togglePanel(e.currentTarget, 'quality', 'mixerbtn', 'mixer');
     setupControls();
     state.running = true;
   } catch (e) {
@@ -1727,7 +1811,7 @@ async function startAudio() {
     state.setDebugRays = (on) => worker.postMessage({ type: 'debug', on });
     state.setEarly = (mode) => {
       state.earlyMode = mode;
-      try { localStorage.setItem('omg-early', mode ? 'traced' : 'ism'); } catch (_) {}
+      try { localStorage.setItem('omg-early-v2', mode ? 'traced' : 'ism'); } catch (_) {}
       worker.postMessage({ type: 'early', mode });
     };
     state.setMute = (srcs, on) => worker.postMessage({ type: 'mute', srcs, on });
@@ -1737,14 +1821,16 @@ async function startAudio() {
       worker.postMessage({ type: 'module', id, on });
     };
     // a real setting: ?early=traced|ism wins, else the remembered
-    // choice, else ism (the classic engine)
+    // choice, else traced (one world mesh, no room/portal special cases;
+    // ism stays selectable as the classic fallback). The storage key is
+    // versioned: choices remembered while ism was the default reset once.
     {
       const p = (new URLSearchParams(location.search).get('early') || '').toLowerCase();
       let stored = null;
-      try { stored = localStorage.getItem('omg-early'); } catch (_) {}
+      try { stored = localStorage.getItem('omg-early-v2'); } catch (_) {}
       const pick = p === 'traced' || p === 'pt' ? 1
         : p === 'ism' ? 0
-          : stored === 'traced' ? 1 : 0;
+          : stored === 'ism' ? 0 : 1;
       state.earlyMode = pick;
       if (pick) worker.postMessage({ type: 'early', mode: pick });
       // remembered module switches (default on)

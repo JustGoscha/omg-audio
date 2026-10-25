@@ -68,6 +68,11 @@
     margin: 0 0 12px; display: flex; align-items: baseline; gap: 12px; }
   .panel h2::after { content: ''; flex: 1; height: 1px; background: var(--line);
     align-self: center; }
+  /* movable panels: the title bar is the handle */
+  .panel h2.grip { cursor: grab; user-select: none; -webkit-user-select: none;
+    touch-action: none; margin: -16px -18px 12px; padding: 14px 18px 4px; }
+  .panel.dragging { opacity: .92; }
+  .panel.dragging h2.grip { cursor: grabbing; }
 
   #mixer .row { display: grid; grid-template-columns: 16px 62px 1fr 58px;
     align-items: center; gap: 8px; margin: 7px 0; }
