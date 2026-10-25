@@ -18,7 +18,6 @@ use omg_core::material::{air_attenuation, Material};
 use omg_core::params::{ParamBlock, RemoteReverb, Tap};
 use omg_core::pt::Aabb;
 use omg_core::SPEED_OF_SOUND;
-use omg_core::scene::Shoebox;
 use omg_core::vec3::Vec3;
 use omg_core::NBANDS;
 
@@ -927,10 +926,7 @@ impl WorldSim {
                     let is_chain = *is_chain;
                 let rp = *rp_cache.get_or_insert_with(|| {
                     let sr = &self.rooms[def.room];
-                    let sbox = Shoebox::new(
-                        Vec3::new(sr.max.0 - sr.min.0, sr.max.1 - sr.min.1, sr.height),
-                        sr.walls,
-                    );
+                    let sbox = sr.shoebox();
                     let src_l = to_local(sr, def.pos.0, def.pos.1, walkthrough::SRC_HEIGHT);
                     let exit = routed.route[1];
                     let door_l = to_local(sr, exit.0, exit.1, walkthrough::SRC_HEIGHT);
@@ -1025,10 +1021,7 @@ impl WorldSim {
                 // threads the hole like any other leg).
                 if !traced {
                 let sr2 = &self.rooms[def.room];
-                let sbox2 = Shoebox::new(
-                    Vec3::new(sr2.max.0 - sr2.min.0, sr2.max.1 - sr2.min.1, sr2.height),
-                    sr2.walls,
-                );
+                let sbox2 = sr2.shoebox();
                 let src_l2 = to_local(sr2, def.pos.0, def.pos.1, walkthrough::SRC_HEIGHT);
                 let exit2 = routed.route[1];
                 let door_l2 = to_local(sr2, exit2.0, exit2.1, walkthrough::SRC_HEIGHT);
@@ -1699,7 +1692,7 @@ impl WorldSim {
             // line it replaces, so a roof the line just clears can still
             // be in the string's way (the over-the-top string covers
             // paths that truly clear it)
-            if r.barrier_height.max(r.floor_z + r.height) > zl - 1.5 {
+            if r.roof_line_at(c.0, c.1) > zl - 1.5 {
                 rects.push((mn, mx));
             }
         }

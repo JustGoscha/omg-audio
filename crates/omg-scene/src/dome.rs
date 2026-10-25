@@ -21,7 +21,7 @@
 //! a stationary listener gets a bit-identical estimate every tick — no
 //! flicker to smooth away, and motion changes the estimate continuously.
 
-use crate::walkthrough::{glass_transmission, Door, RoomDef, DOOR_PANEL_TRANSMISSION, HEAVY_PANEL_TRANSMISSION};
+use crate::walkthrough::{glass_transmission, Door, Roof, RoomDef, DOOR_PANEL_TRANSMISSION, HEAVY_PANEL_TRANSMISSION};
 use omg_core::mesh::{Mesh, MeshBuilder, SegHit};
 use omg_core::vec3::Vec3;
 use omg_core::NBANDS;
@@ -120,7 +120,9 @@ fn subrects(
 
 /// Build the demo world as a mesh: ground, every room's walls with true
 /// holes for its apertures, ceiling/roof slabs (stairwell holes), and a
-/// parapet band up to the acoustic barrier height. Glass panes come back
+/// parapet band up to the acoustic barrier height — or, for a nave
+/// (`Roof::Nave`), walls to the eaves, gable ends, a faceted barrel vault
+/// inside and the two roof pitches outside. Glass panes come back
 /// as transmissive panels (they are not mesh — rays pass them with the
 /// pane's loss).
 pub fn build_world_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>) {
@@ -178,9 +180,12 @@ pub fn build_world_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>)
             .find(|n| {
                 (n.min.0 - r.min.0).abs() < 2.0 && (n.min.1 - r.min.1).abs() < 2.0
             });
-        let wall_top = match above {
-            Some(n) => n.floor_z,
-            None => r.barrier_height.max(z1),
+        let wall_top = match (above, r.roof) {
+            (Some(n), _) => n.floor_z,
+            // a nave: walls to the eaves (its end walls get their gable
+            // triangles further down)
+            (None, Roof::Nave { eave, .. }) => eave.max(z1),
+            (None, Roof::Flat) => r.barrier_height.max(z1),
         };
 
         let sides = [
@@ -224,14 +229,53 @@ pub fn build_world_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>)
                 };
                 b.quad(p(u0, v0), p(u1, v0), p(u1, v1), p(u0, v1), mat);
             }
+            // a nave's end wall rises on as the gable triangle (same
+            // plane, same surface): eaves to the ridge
+            if let Roof::Nave { ridge_axis, .. } = r.roof {
+                if axis == ridge_axis && above.is_none() {
+                    let p = |u: f32, v: f32| {
+                        if axis == 0 { Vec3::new(plane, u, v) } else { Vec3::new(u, plane, v) }
+                    };
+                    let ridge = r.barrier_height.max(wall_top);
+                    b.tri(p(lo, wall_top), p(hi, wall_top), p(0.5 * (lo + hi), ridge), mat);
+                }
+            }
+        }
+
+        let mut mc = r.walls[5];
+        mc.transmission = r.walls[5].transmission_at(r.wall_thickness);
+        let mat = b.material(mc);
+
+        // a nave: the round barrel vault inside (one surface per facet —
+        // each strip is its own plane), the two gable pitches outside
+        if let (Roof::Nave { ridge_axis, .. }, None) = (r.roof, above) {
+            let ((lo, hi), (a0, a1)) = r.nave_spans(ridge_axis);
+            let p = |across: f32, along: f32, z: f32| {
+                if ridge_axis == 1 { Vec3::new(across, along, z) } else { Vec3::new(along, across, z) }
+            };
+            for s in r.vault_profile().windows(2) {
+                let ((u0, v0), (u1, v1)) = (s[0], s[1]);
+                b.begin_surface();
+                b.quad(p(u0, a0, v0), p(u1, a0, v1), p(u1, a1, v1), p(u0, a1, v0), mat);
+            }
+            let ridge = r.barrier_height.max(wall_top);
+            let mid = 0.5 * (lo + hi);
+            for eave_u in [lo, hi] {
+                b.begin_surface();
+                b.quad(
+                    p(eave_u, a0, wall_top),
+                    p(mid, a0, ridge),
+                    p(mid, a1, ridge),
+                    p(eave_u, a1, wall_top),
+                    mat,
+                );
+            }
+            continue;
         }
 
         // ceiling / roof slab at the room's top, with holes for vertical
         // portals (a stairwell: the aperture between this room and the
         // storey whose floor sits on this slab)
-        let mut mc = r.walls[5];
-        mc.transmission = r.walls[5].transmission_at(r.wall_thickness);
-        let mat = b.material(mc);
         b.begin_surface(); // this room's slab/roof plane
         let mut holes = Vec::new();
         for d in doors {

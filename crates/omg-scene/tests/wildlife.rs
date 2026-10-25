@@ -1,8 +1,9 @@
 //! Owls on rooftops + the distant belfry (task #20). The interesting
 //! physics is free: the belfry is ~250 m out, so its strikes arrive
 //! bass-tilted by air absorption and spreading; the cathedral owl
-//! perches at z = 17, so its call arrives FROM ABOVE — elevation is
-//! native to the traced engine and the binaural renderer.
+//! perches on the nave roof at z = 24.25, so its call arrives FROM
+//! ABOVE — elevation is native to the traced engine and the binaural
+//! renderer.
 
 use omg_scene::quality;
 use omg_scene::world::WorldSim;
@@ -46,8 +47,8 @@ fn bells_carry_bass_and_owls_arrive_from_above() {
     let owl = &blocks[OWL_CATHEDRAL];
     // Where a sound is heard FROM is set by its first significant arrival
     // (precedence effect), not by its loudest echo. The owl sits a meter
-    // behind the cathedral parapet: from the forecourt its call bends
-    // over the parapet edge — first, from above — while a later bounce
+    // behind the cathedral's portal gable: from the forecourt its call bends
+    // over the gable edge — first, from above — while a later bounce
     // off the hall facade and the ground can legitimately be louder.
     let loudest = owl
         .taps

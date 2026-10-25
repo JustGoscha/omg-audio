@@ -19,7 +19,10 @@ const ROOMS = [
   { name: 'Colonnade', min: [16, 15], max: [16.5, 21], h: 2.5, solid: true },
   { name: 'Kiosk', min: [14.5, 34], max: [16.5, 36], h: 2.7, solid: true },
   { name: 'Old House Upper', min: [24, 16], max: [31, 23], upper: true }, // index-aligned with the sim
-  { name: 'Cathedral', min: [0, 52], max: [16, 74], h: 15, floor: 0x2b2b36 },
+  // h = the vault's springing line; nave = Roof::Nave in the sim (round
+  // barrel vault inside, gable roof from the eaves to the ridge outside)
+  { name: 'Cathedral', min: [0, 52], max: [16, 74], h: 15, floor: 0x2b2b36,
+    nave: { eave: 19, ridge: 28.5, facets: 8 } },
   { name: 'Bunker', min: [34, 6], max: [40, 14], h: 2.2, fz: -3, floor: 0x20241f },
   { name: 'Belfry', min: [7, 318], max: [13, 324], h: 24, solid: true },
   // index-aligned with the sim: the bunker's blockhouse + stair shaft
@@ -95,7 +98,7 @@ const SOURCES = [
     emitters: [[23.5, 27.5], [30.5, 27.5], [23.5, 36.5], [30.5, 36.5]] },
   { name: 'flute', pos: [8, 66], color: 0x9ad2ff },
   { name: 'radio', pos: [37.5, 12.5], z: -2.2, color: 0xd2b06e },
-  { name: 'owl', pos: [4, 53], z: 16.3, color: 0xcfd8e6 },
+  { name: 'owl', pos: [4, 53], z: 24.25, color: 0xcfd8e6 }, // on the nave roof
   { name: 'owl', pos: [27.5, 19.5], z: 5.6, color: 0xcfd8e6 },
   { name: 'bells', pos: [10, 321], z: 25.5, color: 0xf0d890 },
 ];
@@ -916,9 +919,200 @@ function wallX(x, y0, y1, h) {
   }
 }
 
-// split a collider around a doorway so it stays walkable
+// The nave's section, exactly as the sim meshes it (walkthrough.rs
+// Roof::Nave, ridge along y): the round barrel vault is the inscribed
+// half-polygon springing at r.h; the gable roof runs eaves → ridge.
+const CATH = ROOMS.find((r) => r.nave);
+function naveProfile(r) {
+  const { facets } = r.nave;
+  const mid = (r.min[0] + r.max[0]) / 2;
+  const rad = (r.max[0] - r.min[0]) / 2;
+  const pts = [];
+  for (let k = 0; k <= facets; k++) {
+    const th = Math.PI * (1 - k / facets);
+    pts.push([mid + rad * Math.cos(th), r.h + rad * Math.sin(th)]);
+  }
+  return pts;
+}
+function naveVaultZ(r, x) {
+  const p = naveProfile(r);
+  for (let k = 0; k + 1 < p.length; k++) {
+    const [x0, z0] = p[k];
+    const [x1, z1] = p[k + 1];
+    if (x >= x0 && x <= x1) return z0 + ((z1 - z0) * (x - x0)) / Math.max(1e-6, x1 - x0);
+  }
+  return r.h;
+}
+function naveRoofZ(r, x) {
+  const mid = (r.min[0] + r.max[0]) / 2;
+  const half = (r.max[0] - r.min[0]) / 2;
+  const f = Math.min(1, Math.max(0, 1 - Math.abs(x - mid) / half));
+  return r.nave.eave + (r.nave.ridge - r.nave.eave) * f;
+}
+
+// a canvas texture of leaded colored glass (deterministic panes)
+function stainedGlass(w, h, rose) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  const cols = ['#2a4fa8', '#a8242e', '#d8a83a', '#2f7a4a', '#5a2f8a', '#3a7ab8'];
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  g.fillStyle = '#16121c';
+  g.fillRect(0, 0, w, h);
+  if (rose) {
+    // twelve petals around a golden boss, two rings of tracery
+    const cx = w / 2, cy = h / 2, R = w / 2;
+    for (let ring = 0; ring < 2; ring++) {
+      for (let k = 0; k < 12; k++) {
+        const a0 = (k / 12) * Math.PI * 2 + ring * (Math.PI / 12);
+        g.fillStyle = cols[(k + ring * 3) % cols.length];
+        g.beginPath();
+        g.moveTo(cx, cy);
+        g.arc(cx, cy, R * (ring ? 0.62 : 0.97), a0 + 0.04, a0 + Math.PI / 6 - 0.04);
+        g.closePath();
+        g.fill();
+      }
+    }
+    g.fillStyle = '#e0b84a';
+    g.beginPath(); g.arc(cx, cy, R * 0.18, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#16121c'; g.lineWidth = 3;
+    for (const rr of [0.18, 0.62, 0.97]) {
+      g.beginPath(); g.arc(cx, cy, R * rr, 0, Math.PI * 2); g.stroke();
+    }
+  } else {
+    const pw = w / 4, ph = h / 14;
+    for (let i = 0; i < 4; i++) {
+      for (let j = 0; j < 14; j++) {
+        g.fillStyle = cols[Math.floor(rnd() * cols.length)];
+        g.fillRect(i * pw + 1.5, j * ph + 1.5, pw - 3, ph - 3);
+      }
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// Exterior of the church: gables, a steep slate roof, the barrel vault
+// seen from inside, round-arched stained-glass windows in every bay, a
+// rose over the portal, stepped buttresses and a cross on the apex. The
+// gables, roof and vault are the acoustic mesh's shapes; glass, rose and
+// buttresses are visual (the sim's walls are solid stone there).
+function buildCathedralShell() {
+  const r = CATH;
+  const { eave, ridge } = r.nave;
+  const [x0, y0] = r.min;
+  const [x1, y1] = r.max;
+  const mid = (x0 + x1) / 2;
+  const stone = new THREE.MeshLambertMaterial({ color: 0x4c4c58 });
+
+  // gable triangles on both end walls (eaves → ridge), wall-thick
+  const tri = new THREE.Shape();
+  tri.moveTo(0, 0);
+  tri.lineTo(x1 - x0, 0);
+  tri.lineTo(mid - x0, ridge - eave);
+  tri.closePath();
+  const gableGeo = new THREE.ExtrudeGeometry(tri, { depth: 0.15, bevelEnabled: false });
+  for (const y of [y0, y1]) {
+    const gm = new THREE.Mesh(gableGeo, wallMat);
+    gm.position.set(x0, eave, -y - 0.075);
+    scene.add(gm);
+    const ge = new THREE.LineSegments(new THREE.EdgesGeometry(gableGeo), edgeMat);
+    ge.position.copy(gm.position);
+    scene.add(ge);
+  }
+
+  // the two roof pitches (slate), eaves to ridge along the nave
+  const quad = (a, b, c, d) => [a, b, c, a, c, d].flatMap((p) => [p.x, p.y, p.z]);
+  const roofGeo = new THREE.BufferGeometry();
+  roofGeo.setAttribute('position', new THREE.Float32BufferAttribute([
+    ...quad(v3(x0, y0, eave), v3(mid, y0, ridge), v3(mid, y1, ridge), v3(x0, y1, eave)),
+    ...quad(v3(x1, y0, eave), v3(x1, y1, eave), v3(mid, y1, ridge), v3(mid, y0, ridge)),
+  ], 3));
+  roofGeo.computeVertexNormals();
+  scene.add(new THREE.Mesh(roofGeo, new THREE.MeshLambertMaterial({
+    color: 0x2a303c, side: THREE.DoubleSide,
+  })));
+  scene.add(new THREE.LineSegments(new THREE.EdgesGeometry(roofGeo), edgeMat));
+
+  // the round barrel vault: a half-cylinder whose facets ARE the sim's
+  // (open-ended, θ over the upper half once its axis lies along y)
+  const vault = new THREE.Mesh(
+    new THREE.CylinderGeometry((x1 - x0) / 2, (x1 - x0) / 2, y1 - y0, r.nave.facets, 1, true,
+      Math.PI / 2, Math.PI),
+    new THREE.MeshLambertMaterial({ color: 0x46464f, side: THREE.DoubleSide }),
+  );
+  vault.rotation.x = Math.PI / 2;
+  vault.position.copy(v3(mid, (y0 + y1) / 2, r.h));
+  scene.add(vault);
+
+  // round-arched stained-glass windows in every bay of both flanks,
+  // set into both faces of the wall
+  const ww = 1.1, wh = 6.0, wz = 4.0;
+  const win = new THREE.Shape();
+  win.moveTo(-ww / 2, 0);
+  win.lineTo(ww / 2, 0);
+  win.lineTo(ww / 2, wh);
+  win.absarc(0, wh, ww / 2, 0, Math.PI, false);
+  win.lineTo(-ww / 2, 0);
+  const winGeo = new THREE.ShapeGeometry(win, 8);
+  const glassTex = stainedGlass(64, 256, false);
+  glassTex.repeat.set(1 / ww, 1 / (wh + ww / 2));
+  glassTex.offset.set(0.5, 0);
+  const winMat = new THREE.MeshBasicMaterial({ map: glassTex, side: THREE.DoubleSide });
+  const bays = [];
+  for (let y = 56.6; y < 70.5; y += 3.2) bays.push(y);
+  for (const x of [x0, x1]) {
+    for (const y of bays) {
+      for (const off of [-0.09, 0.09]) {
+        const m = new THREE.Mesh(winGeo, winMat);
+        m.position.copy(v3(x + off, y, wz));
+        m.rotation.y = Math.PI / 2;
+        scene.add(m);
+      }
+    }
+  }
+
+  // rose window over the portal, in a stone ring
+  const roseZ = 13, roseR = 2.4;
+  const roseMat = new THREE.MeshBasicMaterial({
+    map: stainedGlass(256, 256, true), side: THREE.DoubleSide,
+  });
+  for (const off of [-0.09, 0.09]) {
+    const m = new THREE.Mesh(new THREE.CircleGeometry(roseR, 24), roseMat);
+    m.position.copy(v3(mid, y0 + off, roseZ));
+    scene.add(m);
+  }
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(roseR + 0.12, 0.2, 6, 24), stone);
+  ring.position.copy(v3(mid, y0, roseZ));
+  scene.add(ring);
+
+  // stepped buttresses on the flanks at every bay line (solid to walkers)
+  for (let y = 55.0; y <= 71.01; y += 3.2) {
+    for (const [x, s] of [[x0, -1], [x1, 1]]) {
+      addBox(x + s * 0.6, y, 5.5, 1.2, 0.9, 11);   // lower stage
+      addBox(x + s * 0.35, y, 13.5, 0.7, 0.7, 5);  // upper stage
+      COLLIDERS.push({ axis: 0, plane: x + s * 1.2, lo: y - 0.45, hi: y + 0.45, h: 11 });
+      for (const yy of [y - 0.45, y + 0.45]) {
+        COLLIDERS.push({ axis: 1, plane: yy, lo: Math.min(x, x + s * 1.2), hi: Math.max(x, x + s * 1.2), h: 11 });
+      }
+    }
+  }
+
+  // a stone cross on the portal gable's apex
+  const cross = new THREE.Group();
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.25, 2.4, 0.25), stone);
+  post.position.y = 1.2;
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.25, 0.25), stone);
+  bar.position.y = 1.65;
+  cross.add(post, bar);
+  cross.position.copy(v3(mid, y0, ridge));
+  scene.add(cross);
+}
+
 // Romanesque interior: arcades with rounded arches, a triforium tier,
-// rib-vaulted ceiling, an apse with altar, checkered stone floor.
+// ribs under the barrel vault, an apse with altar, checkered stone floor.
 // Visual only — acoustically the arcades are the cathedral material's
 // high scattering fraction (the tracer diffuses reflections off it).
 function buildCathedralInterior() {
@@ -988,20 +1182,22 @@ function buildCathedralInterior() {
       scene.add(shelf);
     }
   }
-  // transverse arches + vault ribs across the nave at every bay line
+  // transverse arches between the colonnades + ribs hugging the barrel
+  // vault at every bay line (same facet count as the vault: they follow
+  // its corners just beneath it)
   const bigArch = new THREE.TorusGeometry(4.0, 0.3, 8, 18, Math.PI);
-  const rib = new THREE.TorusGeometry(4.6, 0.16, 6, 18, Math.PI);
+  const rib = new THREE.TorusGeometry(7.75, 0.18, 6, CATH.nave.facets, Math.PI);
   for (const y of ys) {
     const a = new THREE.Mesh(bigArch, stoneD);
     a.position.copy(v3(8, y, 8.5));
     scene.add(a);
     const r = new THREE.Mesh(rib, stone);
-    r.position.copy(v3(8, y, 10.2));
+    r.position.copy(v3(8, y, CATH.h));
     scene.add(r);
   }
-  // longitudinal ridge line along the vault crest
-  const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 19), stoneD);
-  ridge.position.copy(v3(8, 63.5, 14.8));
+  // longitudinal ridge rib along the vault crown
+  const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 22), stoneD);
+  ridge.position.copy(v3(8, 63, CATH.h + 7.75));
   scene.add(ridge);
 
   // apse: a faceted alcove at the north end with the altar
@@ -1035,8 +1231,8 @@ function buildCathedralInterior() {
   const warm = new THREE.PointLight(0xffd9a0, 35, 28);
   warm.position.copy(v3(8, 60, 5));
   scene.add(warm);
-  const cool = new THREE.PointLight(0x8faddf, 30, 45);
-  cool.position.copy(v3(8, 64, 12));
+  const cool = new THREE.PointLight(0x8faddf, 40, 45);
+  cool.position.copy(v3(8, 64, 16));
   scene.add(cool);
 }
 
@@ -1217,7 +1413,7 @@ function buildWorld() {
     floor.position.copy(v3(r.min[0] + w / 2, r.min[1] + d / 2,
       r.fz !== undefined ? r.fz + 0.02 : (r.outdoor ? -0.03 : 0.02)));
     scene.add(floor);
-    if (!r.outdoor) {
+    if (!r.outdoor && !r.nave) { // a nave's vault is built by hand
       const ceil = new THREE.Mesh(new THREE.PlaneGeometry(w, d), ceilMat);
       ceil.rotation.x = Math.PI / 2;
       ceil.position.copy(v3(r.min[0] + w / 2, r.min[1] + d / 2, (r.fz || 0) + r.h));
@@ -1260,11 +1456,13 @@ function buildWorld() {
   wallY(26, 22, 32, 4.5);         // club south
   wallY(38, 22, 32, 4.5);         // club north
 
-  // cathedral, far north across the field (portal = door 6)
-  wallY(52, 0, 16, 15);
-  wallY(74, 0, 16, 15);
-  wallX(0, 52, 74, 15);           // stained-glass west flank
-  wallX(16, 52, 74, 15);          // stained-glass east flank
+  // cathedral, far north across the field (portal = door 6): walls to
+  // the eaves; gables, roof and vault in buildCathedralShell
+  wallY(52, 0, 16, 19);           // portal facade
+  wallY(74, 0, 16, 19);
+  wallX(0, 52, 74, 19);           // stained-glass west flank
+  wallX(16, 52, 74, 19);          // stained-glass east flank
+  buildCathedralShell();
   buildCathedralInterior();
 
   // bunker: an underground box; only the stair ramp touches the surface.
@@ -2184,9 +2382,14 @@ function throwBall() {
   state.fx(8 + slot, 0, 'play'); // flight woosh
 }
 
-function roomHeightAt(x, y) {
+// Ceiling height over (x, y) seen from inside — or, with `top`, the roof
+// surface seen from above (they differ under a nave's vault + gable).
+function roomHeightAt(x, y, top = false) {
   for (const r of ROOMS) {
-    if (!r.outdoor && !r.virtual && x > r.min[0] && x < r.max[0] && y > r.min[1] && y < r.max[1]) return r.h;
+    if (!r.outdoor && !r.virtual && x > r.min[0] && x < r.max[0] && y > r.min[1] && y < r.max[1]) {
+      if (r.nave) return top ? naveRoofZ(r, x) : naveVaultZ(r, x);
+      return r.h;
+    }
   }
   return Infinity;
 }
@@ -2228,13 +2431,14 @@ function updateProjectile(p, dt, now) {
 
   // ceiling (from inside), roof landing (from above), ground
   const hRoom = roomHeightAt(p.x, p.y);
+  const hTop = roomHeightAt(p.x, p.y, true);
   if (hRoom !== Infinity) {
     if (p.z <= hRoom - 0.15 && nz > hRoom - 0.15 && p.vz > 0) {
       p.vz = -p.vz * 0.5;
       nz = hRoom - 0.15;
       fx(1);
-    } else if (p.z >= hRoom + 0.1 && nz < hRoom + 0.1) {
-      nz = hRoom + 0.12;
+    } else if (p.z >= hTop + 0.1 && nz < hTop + 0.1) {
+      nz = hTop + 0.12;
       if (Math.abs(p.vz) > 1.2) fx(1);
       p.vz = -p.vz * 0.5;
       p.vx *= 0.8;
