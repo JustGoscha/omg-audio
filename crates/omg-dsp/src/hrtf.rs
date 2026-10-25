@@ -113,12 +113,96 @@ impl BinauralDecoder {
     }
 }
 
-/// Dot products of `hist` against two kernels at once, with explicit 4-lane
-/// accumulation: float reductions don't auto-vectorize under strict FP
-/// semantics, so the reassociation is spelled out and the compiler keeps the
-/// lanes in NEON / wasm simd128 registers.
+/// Dot products of `hist` against two kernels at once (over the shortest
+/// of the three). Float reductions don't auto-vectorize under strict FP
+/// semantics — and the spelled-out 4-lane form below did not either on
+/// aarch64 — so NEON and wasm simd128 get explicit kernels: 8 lanes per
+/// kernel in two accumulators each, so consecutive adds overlap.
 #[inline]
 fn dot2(hist: &[f32], kl: &[f32], kr: &[f32]) -> (f32, f32) {
+    let n = hist.len().min(kl.len()).min(kr.len());
+    let (hist, kl, kr) = (&hist[..n], &kl[..n], &kr[..n]);
+    #[cfg(target_arch = "aarch64")]
+    {
+        dot2_neon(hist, kl, kr)
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        dot2_simd128(hist, kl, kr)
+    }
+    #[cfg(not(any(target_arch = "aarch64", all(target_arch = "wasm32", target_feature = "simd128"))))]
+    {
+        dot2_portable(hist, kl, kr)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn dot2_neon(hist: &[f32], kl: &[f32], kr: &[f32]) -> (f32, f32) {
+    use core::arch::aarch64::*;
+    let n = hist.len();
+    let n8 = n & !7;
+    // SAFETY: NEON is baseline on aarch64; every load reads [i, i + 8)
+    // with i + 8 ≤ n8 ≤ n, the common length of all three slices.
+    let (mut sl, mut sr) = unsafe {
+        let (h, l, r) = (hist.as_ptr(), kl.as_ptr(), kr.as_ptr());
+        let z = vdupq_n_f32(0.0);
+        let (mut l0, mut l1, mut r0, mut r1) = (z, z, z, z);
+        let mut i = 0;
+        while i < n8 {
+            let h0 = vld1q_f32(h.add(i));
+            let h1 = vld1q_f32(h.add(i + 4));
+            l0 = vfmaq_f32(l0, h0, vld1q_f32(l.add(i)));
+            l1 = vfmaq_f32(l1, h1, vld1q_f32(l.add(i + 4)));
+            r0 = vfmaq_f32(r0, h0, vld1q_f32(r.add(i)));
+            r1 = vfmaq_f32(r1, h1, vld1q_f32(r.add(i + 4)));
+            i += 8;
+        }
+        (vaddvq_f32(vaddq_f32(l0, l1)), vaddvq_f32(vaddq_f32(r0, r1)))
+    };
+    for i in n8..n {
+        sl += hist[i] * kl[i];
+        sr += hist[i] * kr[i];
+    }
+    (sl, sr)
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[inline]
+fn dot2_simd128(hist: &[f32], kl: &[f32], kr: &[f32]) -> (f32, f32) {
+    use core::arch::wasm32::*;
+    let n = hist.len();
+    let n8 = n & !7;
+    let sum = |v: v128| (f32x4_extract_lane::<0>(v) + f32x4_extract_lane::<1>(v)) + (f32x4_extract_lane::<2>(v) + f32x4_extract_lane::<3>(v));
+    // SAFETY: simd128 is enabled for this build; every load reads
+    // [i, i + 8) with i + 8 ≤ n8 ≤ n, the common length of all three
+    // slices (v128_load has no alignment requirement).
+    let (mut sl, mut sr) = unsafe {
+        let (h, l, r) = (hist.as_ptr(), kl.as_ptr(), kr.as_ptr());
+        let z = f32x4_splat(0.0);
+        let (mut l0, mut l1, mut r0, mut r1) = (z, z, z, z);
+        let mut i = 0;
+        while i < n8 {
+            let h0 = v128_load(h.add(i) as *const v128);
+            let h1 = v128_load(h.add(i + 4) as *const v128);
+            l0 = f32x4_add(l0, f32x4_mul(h0, v128_load(l.add(i) as *const v128)));
+            l1 = f32x4_add(l1, f32x4_mul(h1, v128_load(l.add(i + 4) as *const v128)));
+            r0 = f32x4_add(r0, f32x4_mul(h0, v128_load(r.add(i) as *const v128)));
+            r1 = f32x4_add(r1, f32x4_mul(h1, v128_load(r.add(i + 4) as *const v128)));
+            i += 8;
+        }
+        (sum(f32x4_add(l0, l1)), sum(f32x4_add(r0, r1)))
+    };
+    for i in n8..n {
+        sl += hist[i] * kl[i];
+        sr += hist[i] * kr[i];
+    }
+    (sl, sr)
+}
+
+#[cfg(not(any(target_arch = "aarch64", all(target_arch = "wasm32", target_feature = "simd128"))))]
+#[inline]
+fn dot2_portable(hist: &[f32], kl: &[f32], kr: &[f32]) -> (f32, f32) {
     let mut al = [0.0f32; 4];
     let mut ar = [0.0f32; 4];
     let mut h4 = hist.chunks_exact(4);
@@ -205,6 +289,10 @@ impl HrirGrid {
     }
 }
 
+/// Longest history + block `PointConv::process_block` handles in one
+/// linear buffer (128-tap HRIRs, 128-sample blocks).
+const CONV_SPAN: usize = 512;
+
 /// Per-emitter nearest-HRIR convolver with ~10 ms crossfade on index change.
 pub struct PointConv {
     ring: Vec<f32>,
@@ -241,6 +329,47 @@ impl PointConv {
             self.cur = idx;
             self.xfade = 1.0;
         }
+    }
+
+    /// `x.len()` samples at once, ADDED onto `l` and `r`: what `process`
+    /// returns sample by sample (up to float rounding). The history and
+    /// the block sit in one linear buffer, so every output is one
+    /// contiguous dot product (no ring split).
+    pub fn process_block(&mut self, grid: &HrirGrid, x: &[f32], l: &mut [f32], r: &mut [f32]) {
+        let n = self.ring.len();
+        let m = x.len().min(l.len()).min(r.len());
+        if n + m > CONV_SPAN || n != grid.taps {
+            for j in 0..m {
+                let (a, b) = self.process(grid, x[j]);
+                l[j] += a;
+                r[j] += b;
+            }
+            return;
+        }
+        // buf = history oldest → newest, then the block
+        let mut buf = [0.0f32; CONV_SPAN];
+        let old = (self.pos + 1) % n;
+        buf[..n - old].copy_from_slice(&self.ring[old..]);
+        buf[n - old..n].copy_from_slice(&self.ring[..old]);
+        buf[n..n + m].copy_from_slice(&x[..m]);
+        let (cl, cr) = (&grid.hrir_l[self.cur], &grid.hrir_r[self.cur]);
+        for j in 0..m {
+            // window ending at sample j (newest last), kernels pre-reversed
+            let w = &buf[j + 1..j + 1 + n];
+            let (mut a, mut b) = dot2(w, cl, cr);
+            if self.xfade > 0.0 {
+                let (pa, pb) = dot2(w, &grid.hrir_l[self.prev], &grid.hrir_r[self.prev]);
+                let f = self.xfade;
+                self.xfade = (self.xfade - self.xstep).max(0.0);
+                a += f * (pa - a);
+                b += f * (pb - b);
+            }
+            l[j] += a;
+            r[j] += b;
+        }
+        // the ring keeps the newest n, oldest first
+        self.ring.copy_from_slice(&buf[m..m + n]);
+        self.pos = n - 1;
     }
 
     #[inline]
