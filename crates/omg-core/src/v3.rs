@@ -25,6 +25,9 @@ use crate::tracer::{estimate_reverb, Echogram, BIN_DT, MAX_TIME};
 use crate::vec3::Vec3;
 use crate::{NBANDS, SPEED_OF_SOUND};
 
+/// V3.3: the walk run elsewhere (the GPU kernel), folded back here.
+pub mod fold;
+
 /// Early window after the free-field arrival: binned into taps.
 pub const EARLY_S: f32 = 0.080;
 /// Early delay bin width.
