@@ -625,16 +625,21 @@ impl Renderer {
             }
         }
 
-        // Late field: source signal (as of the first arrival) scaled by the traced per-band late
-        // level — independent of source distance, like a real diffuse field.
-        // Scaling the FDN *input* (not output) lets the tail ring out
-        // naturally when the level parameter drops (e.g. stepping outdoors).
-        // An FDN whose input AND tail have been silent goes to sleep — the
-        // demo carries 10 sources × 2 FDNs and most are inaudible at any
-        // moment; waking is instant on the first nonzero input sample.
+        // Late field: source signal (as of the first arrival) through the
+        // FDN, scaled by the traced per-band late level — independent of
+        // source distance, like a real diffuse field. The level applies at
+        // the OUTPUT: it is the field at the listener, so when the rays
+        // stop reaching (you leave the cathedral) its tail goes with them
+        // instead of ringing on for an RT60 outside; a source that falls
+        // silent still rings out, since its signal stopped, not the level.
+        // The input is gated off once the level is negligible, so an FDN
+        // whose input AND tail are silent goes to sleep — most sources are
+        // inaudible at any moment; waking is instant.
         let x = read(self.onset.tick().max(1.0));
+        let own_level = self.fdn_level.tick();
+        let own_gate = if own_level > 1e-6 || self.fdn_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
         let wet_in = self.send_eq.tick(
-            x * self.fdn_level.tick(),
+            x * own_gate,
             self.send_low.tick(),
             self.send_high.tick(),
             self.c_low,
@@ -648,7 +653,7 @@ impl Renderer {
             let mut lines = [0.0f32; NLINES];
             self.fdn.process(own_in, &mut lines);
             let mut e = 0.0f32;
-            let lvl = 0.5;
+            let lvl = 0.5 * own_level;
             for i in 0..NLINES {
                 let g = lines[i] * lvl;
                 e += g.abs();
@@ -658,6 +663,11 @@ impl Renderer {
             }
             if e < 1e-6 && own_in.abs() <= 1e-7 {
                 self.fdn_idle += 1;
+                // asleep with its level gone: what it held is inaudible
+                // and must not resume as a ghost when the level returns
+                if self.fdn_idle == FDN_IDLE_AFTER && own_gate == 0.0 {
+                    self.fdn.clear();
+                }
             } else {
                 self.fdn_idle = 0;
             }
@@ -666,7 +676,11 @@ impl Renderer {
         // Coupled-room wet: source room's reverb as a directional emitter
         // at the doorway (mono sum — a distant aperture, not a diffuse field
         // around the listener).
-        let rpre = self.remote_lp.tick(x * self.remote_level.tick(), self.remote_lp_coef.tick());
+        // remote wet: likewise scaled at the output (its level is how much
+        // of that room reaches you through the portal, right now)
+        let rem_level = self.remote_level.tick();
+        let rem_gate = if rem_level > 1e-6 || self.remote_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
+        let rpre = self.remote_lp.tick(x * rem_gate, self.remote_lp_coef.tick());
         let rin = self.remote_eq.tick(
             rpre,
             self.remote_low.tick(),
@@ -687,7 +701,7 @@ impl Renderer {
             self.remote_fdn.process(rem_in, &mut rlines);
             let mut e = 0.0f32;
             for (i, line) in rlines.iter().enumerate() {
-                let g = line * 0.9;
+                let g = line * 0.9 * rem_level;
                 e += g.abs();
                 for k in 0..NCH {
                     foa[k] += g * self.remote_spread[i][k];
@@ -695,6 +709,9 @@ impl Renderer {
             }
             if e < 1e-6 && rem_in.abs() <= 1e-7 {
                 self.remote_idle += 1;
+                if self.remote_idle == FDN_IDLE_AFTER && rem_gate == 0.0 {
+                    self.remote_fdn.clear();
+                }
             } else {
                 self.remote_idle = 0;
             }

@@ -365,3 +365,47 @@ fn only_exposed_edges_diffract() {
     assert!(has(v(0.0, 0.0, 4.0), v(6.0, 0.0, 4.0)), "the wall's top edge diffracts");
     assert!(has(v(6.0, 0.0, 0.0), v(6.0, 0.0, 4.0)), "the wall's outside corner diffracts");
 }
+
+/// Flying out THROUGH a wall: everything the averages hold was built from
+/// rays on the inside and none of them reaches the outside. The very
+/// next tick must sound like the outside — a fresh tracer's field there —
+/// not like the cathedral just left fading out over seconds (it used to:
+/// the late echogram's EMA kept 85 % of the old room per tick).
+#[test]
+fn crossing_a_wall_drops_the_room_left_behind() {
+    // a closed, live stone room; ground outside
+    let mut mb = MeshBuilder::new();
+    let ground = mb.material(flat_opaque(0.1, 0.1));
+    mb.abox(v(-200.0, -200.0, -1.0), v(200.0, 200.0, 0.0), ground);
+    let stone = mb.material(flat_transmissive(0.03, 0.2, [1e-3, 3e-4, 1e-4]));
+    mb.abox(v(-6.3, -4.3, 0.0), v(-6.0, 4.3, 5.3), stone);
+    mb.abox(v(6.0, -4.3, 0.0), v(6.3, 4.3, 5.3), stone);
+    mb.abox(v(-6.0, -4.3, 0.0), v(6.0, -4.0, 5.3), stone);
+    mb.abox(v(-6.0, 4.0, 0.0), v(6.0, 4.3, 5.3), stone);
+    mb.abox(v(-6.3, -4.3, 5.0), v(6.3, 4.3, 5.3), stone);
+    let mesh = mb.build();
+    let world = World::new(&mesh, &[]);
+    let src = [Source { id: 1, pos: v(2.0, 1.0, 1.6), weight: 1.0 }];
+    let budget = Budget::default();
+    let mid = |f: &omg_core::v3::SourceField| {
+        let early: f32 = f.taps.iter().filter(|t| t.key != KEY_DIRECT).map(|t| t.gains[1] * t.gains[1]).sum();
+        (10.0 * early.max(1e-20).log10(), 20.0 * f.reverb.level[1].max(1e-10).log10())
+    };
+    let mut t = Tracer::new(5);
+    let mut inside = (0.0, 0.0);
+    for _ in 0..40 {
+        inside = mid(&t.trace(&world, v(-3.0, 0.0, 1.6), &src, budget).remove(0));
+    }
+    // one step through the west wall
+    let out = v(-9.0, 0.0, 1.6);
+    let after = mid(&t.trace(&world, out, &src, budget).remove(0));
+    let mut fresh = Tracer::new(77);
+    let mut there = (0.0, 0.0);
+    for _ in 0..40 {
+        there = mid(&fresh.trace(&world, out, &src, budget).remove(0));
+    }
+    assert!(inside.1 - there.1 > 30.0, "setup: the room must ring far louder inside ({inside:?} vs {there:?})");
+    for (name, a, b) in [("early", after.0, there.0), ("late", after.1, there.1)] {
+        assert!((a - b).abs() < 10.0, "{name}: first tick outside {a:.1} dB, settled outside {b:.1} dB (inside {inside:?})");
+    }
+}

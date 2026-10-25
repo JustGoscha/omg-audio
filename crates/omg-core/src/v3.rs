@@ -288,6 +288,84 @@ struct SourceState {
     echo: Option<Echogram>,
 }
 
+impl SourceState {
+    /// Step 5a, shared by `trace` and the externally walked fold: smooth
+    /// one tick's binned contributions into the running state.
+    fn fold(&mut self, early: HashMap<u32, Bin>, echo: Echogram, budget: Budget) {
+        let alpha = if self.echo.is_none() { 1.0 } else { budget.ema.clamp(0.0, 1.0) };
+        let mut keys: Vec<u32> = self.early.keys().copied().collect();
+        for k in early.keys() {
+            if !self.early.contains_key(k) {
+                keys.push(*k);
+            }
+        }
+        for k in keys {
+            let f = early.get(&k).copied().unwrap_or_default();
+            let cur = self.early.entry(k).or_default();
+            for b in 0..NBANDS {
+                cur.e[b] += alpha * (f.e[b] - cur.e[b]);
+            }
+            cur.ed += alpha * (f.ed - cur.ed);
+            cur.dir = cur.dir + (f.dir - cur.dir) * alpha;
+        }
+        self.early.retain(|_, b| b.e.iter().any(|&e| e > 1e-12));
+        // late echogram: a slower statistic, a slower average
+        match &mut self.echo {
+            Some(e) => e.ema(&echo, budget.late_ema.clamp(0.0, 1.0)),
+            None => self.echo = Some(echo),
+        }
+    }
+
+    /// Step 5b: this source's field from the smoothed state.
+    fn field(
+        &self,
+        cells: &[Vec3],
+        t_free: f32,
+        direct: Option<Tap>,
+        edge_taps: &mut Vec<Tap>,
+        reflected: [f32; NBANDS],
+    ) -> SourceField {
+        let mut taps: Vec<Tap> = Vec::new();
+        if let Some(t) = direct {
+            taps.push(t);
+        }
+        taps.append(edge_taps);
+        let mut early: Vec<(&u32, &Bin)> = self.early.iter().collect();
+        early.sort_by(|x, y| y.1.e[1].total_cmp(&x.1.e[1]));
+        for (k, b) in early.into_iter().take(MAX_EARLY_TAPS) {
+            if b.e[1] <= 0.0 {
+                continue;
+            }
+            let dl = b.dir.length();
+            let dir = if dl > 1e-9 { b.dir * (1.0 / dl) } else { cells[cell_of(*k)] };
+            // Delay = this tick's free-field arrival + the bin's fixed
+            // offset. An energy-weighted mean of stochastic arrivals
+            // jitters tick to tick, and the renderer glides every
+            // same-key delay change as motion: audible pitch warble
+            // ("tape delay"). Pinned offsets move only when the
+            // listener or source moves — coherent, real Doppler.
+            let dbin = (k - KEY_EARLY_BASE) % 256;
+            taps.push(Tap {
+                key: *k,
+                delay_s: t_free + (dbin as f32 + 0.5) * DELAY_BIN_S,
+                dir: [dir.x, dir.y, dir.z],
+                gains: core::array::from_fn(|band| b.e[band].max(0.0).sqrt()),
+            });
+        }
+        let empty;
+        let echo = match self.echo.as_ref() {
+            Some(e) => e,
+            None => {
+                empty = Echogram::new();
+                &empty
+            }
+        };
+        let reverb = estimate_reverb(echo);
+        let (late_dir, aniso) = echo.late_direction(EARLY_S);
+        SourceField { taps, reverb, late_dir, aniso, reflected }
+    }
+}
+
 /// Fresh per-tick accumulators for one source.
 struct Acc {
     early: HashMap<u32, Bin>,
@@ -309,6 +387,13 @@ pub struct Tracer {
     /// Averaged over ticks. This replaces the separate dome ray fan.
     sky: Vec<([f32; NBANDS], Vec3)>,
     sky_primed: bool,
+    /// Where the listener was last tick: crossing a surface since then
+    /// (flying through a wall) drops every average — the rays that built
+    /// it can't reach the new side.
+    last_listener: Option<Vec3>,
+    /// Bumped on every such drop; an external walk launched before it
+    /// (its result arrives a tick late) is discarded.
+    pub(crate) epoch: u32,
     /// Diffraction edges of the last mesh traced (rebuilt if it changes).
     edges: Option<EdgeSet>,
     tick: u64,
@@ -354,6 +439,8 @@ impl Tracer {
             hits: Vec::new(),
             sky: vec![([0.0; NBANDS], Vec3::new(0.0, 0.0, 0.0)); N_CELLS],
             sky_primed: false,
+            last_listener: None,
+            epoch: 0,
             edges: None,
             tick: 0,
             ear_vis: None,
@@ -383,6 +470,25 @@ impl Tracer {
     /// Forget a source's history (it moved discontinuously, or left).
     pub fn reset(&mut self, id: u32) {
         self.state.remove(&id);
+    }
+
+    /// Forget every average (the listener crossed a surface).
+    fn forget_all(&mut self) {
+        self.state.clear();
+        self.sky_primed = false;
+        self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    /// Step 4b, shared with the externally walked fold: average the sky.
+    fn fold_sky(&mut self, fresh: impl Iterator<Item = ([f32; NBANDS], Vec3)>, budget: Budget) {
+        let a = if self.sky_primed { budget.ema.clamp(0.0, 1.0) } else { 1.0 };
+        self.sky_primed = true;
+        for (cur, f) in self.sky.iter_mut().zip(fresh) {
+            for b in 0..NBANDS {
+                cur.0[b] += a * (f.0[b] - cur.0[b]);
+            }
+            cur.1 = cur.1 + (f.1 - cur.1) * a;
+        }
     }
 
     /// Trace once from `listener` and return each source's field, in
@@ -670,14 +776,7 @@ impl Tracer {
             dbg.sort_by(|a, b| b.1.total_cmp(&a.1));
             self.debug_paths = dbg;
         }
-        let a = if self.sky_primed { budget.ema.clamp(0.0, 1.0) } else { 1.0 };
-        self.sky_primed = true;
-        for (cur, f) in self.sky.iter_mut().zip(sky_acc) {
-            for b in 0..NBANDS {
-                cur.0[b] += a * (f.0[b] - cur.0[b]);
-            }
-            cur.1 = cur.1 + (f.1 - cur.1) * a;
-        }
+        self.fold_sky(sky_acc.into_iter(), budget);
 
         // 5. smooth over ticks and build each source's field
         let mut out = Vec::with_capacity(sources.len());
@@ -688,63 +787,8 @@ impl Tracer {
                 Acc { early: HashMap::new(), echo: Echogram::new(), t_free: 0.0, total: [0.0; NBANDS] },
             );
             let st = self.state.entry(s.id).or_default();
-            let a = budget.ema.clamp(0.0, 1.0);
-            let fresh_start = st.echo.is_none();
-            let alpha = if fresh_start { 1.0 } else { a };
-            // early bins
-            let mut keys: Vec<u32> = st.early.keys().copied().collect();
-            for k in acc.early.keys() {
-                if !st.early.contains_key(k) {
-                    keys.push(*k);
-                }
-            }
-            for k in keys {
-                let f = acc.early.get(&k).copied().unwrap_or_default();
-                let cur = st.early.entry(k).or_default();
-                for b in 0..NBANDS {
-                    cur.e[b] += alpha * (f.e[b] - cur.e[b]);
-                }
-                cur.ed += alpha * (f.ed - cur.ed);
-                cur.dir = cur.dir + (f.dir - cur.dir) * alpha;
-            }
-            st.early.retain(|_, b| b.e.iter().any(|&e| e > 1e-12));
-            // late echogram: a slower statistic, a slower average
-            match &mut st.echo {
-                Some(e) => e.ema(&acc.echo, budget.late_ema.clamp(0.0, 1.0)),
-                None => st.echo = Some(acc.echo),
-            }
-
-            let mut taps: Vec<Tap> = Vec::new();
-            if let Some(t) = direct[si] {
-                taps.push(t);
-            }
-            taps.append(&mut edge_taps[si]);
-            let mut early: Vec<(&u32, &Bin)> = st.early.iter().collect();
-            early.sort_by(|x, y| y.1.e[1].total_cmp(&x.1.e[1]));
-            for (k, b) in early.into_iter().take(MAX_EARLY_TAPS) {
-                if b.e[1] <= 0.0 {
-                    continue;
-                }
-                let dl = b.dir.length();
-                let dir = if dl > 1e-9 { b.dir * (1.0 / dl) } else { self.cells[cell_of(*k)] };
-                // Delay = this tick's free-field arrival + the bin's fixed
-                // offset. An energy-weighted mean of stochastic arrivals
-                // jitters tick to tick, and the renderer glides every
-                // same-key delay change as motion: audible pitch warble
-                // ("tape delay"). Pinned offsets move only when the
-                // listener or source moves — coherent, real Doppler.
-                let dbin = (k - KEY_EARLY_BASE) % 256;
-                taps.push(Tap {
-                    key: *k,
-                    delay_s: t_free + (dbin as f32 + 0.5) * DELAY_BIN_S,
-                    dir: [dir.x, dir.y, dir.z],
-                    gains: core::array::from_fn(|band| b.e[band].max(0.0).sqrt()),
-                });
-            }
-            let echo = st.echo.as_ref().unwrap();
-            let reverb = estimate_reverb(echo);
-            let (late_dir, aniso) = echo.late_direction(EARLY_S);
-            out.push(SourceField { taps, reverb, late_dir, aniso, reflected: acc.total });
+            st.fold(acc.early, acc.echo, budget);
+            out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
         }
         out
     }
@@ -761,6 +805,21 @@ impl Tracer {
         budget: Budget,
         dbg: &mut Vec<(u32, f32, Vec<Vec3>)>,
     ) -> (Vec<Option<Tap>>, Vec<[f32; NBANDS]>, Vec<Vec<Tap>>) {
+        // 0. crossed a surface since last tick (flew through a wall)?
+        // Then nothing averaged on the old side can reach this one.
+        // (the segment reaches 1 cm past both ends: a listener exactly ON
+        // a wall face last tick or this one still counts as crossing it)
+        if let Some(prev) = self.last_listener {
+            let step = listener - prev;
+            let len = step.length();
+            if len > 1e-4 {
+                let pad = step * (0.01 / len);
+                if world.transmission(prev - pad, listener + pad, &mut self.hits)[1] < 0.999 {
+                    self.forget_all();
+                }
+            }
+        }
+        self.last_listener = Some(listener);
         let debug = self.debug;
         // 1. direct: one exact segment per source
         let mut direct: Vec<Option<Tap>> = Vec::with_capacity(sources.len());

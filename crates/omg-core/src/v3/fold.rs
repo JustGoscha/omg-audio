@@ -111,6 +111,9 @@ pub struct WalkJob {
     pub words: Vec<u32>,
     /// Source ids in job order (the output blocks' order).
     pub ids: Vec<u32>,
+    /// The tracer's epoch at launch; hand it back in `Walked::epoch`. A
+    /// result from before the listener crossed a surface is discarded.
+    pub epoch: u32,
 }
 
 impl WalkJob {
@@ -190,7 +193,7 @@ impl WalkJob {
             }
         }
         w[25] = n_edges;
-        Self { words: w, ids: sources.iter().map(|s| s.id).collect() }
+        Self { words: w, ids: sources.iter().map(|s| s.id).collect(), epoch: 0 }
     }
 
     pub fn header(&self) -> &[u32] {
@@ -237,6 +240,8 @@ pub struct Walked {
     pub data: Vec<f32>,
     /// Strongest walked paths: (source id, mid energy, polyline).
     pub debug: Vec<(u32, f32, Vec<Vec3>)>,
+    /// `WalkJob::epoch` of the job this answers.
+    pub epoch: u32,
 }
 
 /// Decode debug records (DEBUG_WORDS each, any order) into the
@@ -308,7 +313,8 @@ impl Tracer {
         let rot = random_rotation(&mut self.rng);
         let seed = (self.rng.next_u64() >> 32) as u32;
         let edges = if budget.diffraction { self.edges.as_ref() } else { None };
-        let job = WalkJob::build(world, listener, sources, budget, rot, seed, self.debug, &vis, edges);
+        let mut job = WalkJob::build(world, listener, sources, budget, rot, seed, self.debug, &vis, edges);
+        job.epoch = self.epoch;
         let walked = match walk(&job) {
             Walk::Refused => return None,
             Walk::Pending => None,
@@ -330,7 +336,11 @@ impl Tracer {
         mut dbg: Vec<(u32, f32, Vec<Vec3>)>,
         walked: Option<Walked>,
     ) -> Vec<SourceField> {
-        let fresh = walked.as_ref().is_some_and(|w| w.data.len() >= output_words(w.ids.len()));
+        // a walk launched before the listener crossed a surface describes
+        // the other side: drop it, the next one is from here
+        let fresh = walked
+            .as_ref()
+            .is_some_and(|w| w.epoch == self.epoch && w.data.len() >= output_words(w.ids.len()));
         if fresh {
             let w = walked.as_ref().unwrap();
             if self.debug {
@@ -339,25 +349,23 @@ impl Tracer {
                     keep_path(&mut dbg, *id, *e, body, *end);
                 }
             }
-            // the sky field, averaged like the CPU walk's
-            let a = if self.sky_primed { budget.ema.clamp(0.0, 1.0) } else { 1.0 };
-            self.sky_primed = true;
-            for (ci, cur) in self.sky.iter_mut().enumerate() {
-                let o = ci * SLOT;
-                let e = &w.data[o..o + SLOT];
-                for b in 0..NBANDS {
-                    cur.0[b] += a * (e[b] - cur.0[b]);
-                }
-                cur.1 = cur.1 + (Vec3::new(e[3], e[4], e[5]) - cur.1) * a;
-            }
+            // the sky field, averaged exactly like the CPU walk's
+            let sky: Vec<([f32; NBANDS], Vec3)> = (0..self.sky.len())
+                .map(|ci| {
+                    let e = &w.data[ci * SLOT..ci * SLOT + SLOT];
+                    ([e[0], e[1], e[2]], Vec3::new(e[3], e[4], e[5]))
+                })
+                .collect();
+            self.fold_sky(sky.into_iter(), budget);
         }
         if self.debug {
             dbg.sort_by(|a, b| b.1.total_cmp(&a.1));
             self.debug_paths = dbg;
         }
 
-        // 5. smooth over ticks and build each source's field (mirrors
-        // `trace` step 5; a source this walk didn't carry keeps its state)
+        // 5. smooth over ticks and build each source's field — the same
+        // `SourceState::fold` / `field` as `trace` (a source this walk
+        // didn't carry keeps its state)
         let mut out = Vec::with_capacity(sources.len());
         for (si, s) in sources.iter().enumerate() {
             let t_free = (s.pos - listener).length() / SPEED_OF_SOUND;
@@ -405,62 +413,9 @@ impl Tracer {
                 let o = EARLY_WORDS + ECHO_WORDS;
                 total = [blk[o], blk[o + 1], blk[o + 2]];
 
-                let a = budget.ema.clamp(0.0, 1.0);
-                let alpha = if st.echo.is_none() { 1.0 } else { a };
-                let mut keys: Vec<u32> = st.early.keys().copied().collect();
-                for k in early.keys() {
-                    if !st.early.contains_key(k) {
-                        keys.push(*k);
-                    }
-                }
-                for k in keys {
-                    let f = early.get(&k).copied().unwrap_or_default();
-                    let cur = st.early.entry(k).or_default();
-                    for b in 0..NBANDS {
-                        cur.e[b] += alpha * (f.e[b] - cur.e[b]);
-                    }
-                    cur.ed += alpha * (f.ed - cur.ed);
-                    cur.dir = cur.dir + (f.dir - cur.dir) * alpha;
-                }
-                st.early.retain(|_, b| b.e.iter().any(|&e| e > 1e-12));
-                match &mut st.echo {
-                    Some(e) => e.ema(&echo, budget.late_ema.clamp(0.0, 1.0)),
-                    None => st.echo = Some(echo),
-                }
+                st.fold(early, echo, budget);
             }
-
-            let mut taps: Vec<Tap> = Vec::new();
-            if let Some(t) = direct[si] {
-                taps.push(t);
-            }
-            taps.append(&mut edge_taps[si]);
-            let mut early: Vec<(&u32, &Bin)> = st.early.iter().collect();
-            early.sort_by(|x, y| y.1.e[1].total_cmp(&x.1.e[1]));
-            for (k, b) in early.into_iter().take(MAX_EARLY_TAPS) {
-                if b.e[1] <= 0.0 {
-                    continue;
-                }
-                let dl = b.dir.length();
-                let dir = if dl > 1e-9 { b.dir * (1.0 / dl) } else { self.cells[cell_of(*k)] };
-                let dbin = (k - KEY_EARLY_BASE) % 256;
-                taps.push(Tap {
-                    key: *k,
-                    delay_s: t_free + (dbin as f32 + 0.5) * DELAY_BIN_S,
-                    dir: [dir.x, dir.y, dir.z],
-                    gains: core::array::from_fn(|band| b.e[band].max(0.0).sqrt()),
-                });
-            }
-            let empty;
-            let echo = match st.echo.as_ref() {
-                Some(e) => e,
-                None => {
-                    empty = Echogram::new();
-                    &empty
-                }
-            };
-            let reverb = estimate_reverb(echo);
-            let (late_dir, aniso) = echo.late_direction(EARLY_S);
-            out.push(SourceField { taps, reverb, late_dir, aniso, reflected: total });
+            out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], total));
         }
         out
     }
@@ -477,6 +432,44 @@ mod tests {
         assert_eq!(SOURCE_WORDS, 17164);
         assert_eq!(SKY_WORDS, 384);
         assert_eq!(DEBUG_WORDS, 28);
+    }
+
+    /// An asynchronous walker answers a tick late. Once the listener has
+    /// crossed a surface, the answer to a job launched on the OTHER side
+    /// must be dropped — folding it in would re-seed the cleared averages
+    /// with the room just left (its reverb heard outside).
+    #[test]
+    fn a_walk_from_before_crossing_a_wall_is_discarded() {
+        let mut mb = crate::mesh::MeshBuilder::new();
+        let wall = mb.material(Material::BRICK);
+        mb.abox(Vec3::new(-0.2, -50.0, -1.0), Vec3::new(0.2, 50.0, 10.0), wall);
+        let mesh = mb.build();
+        let world = World::new(&mesh, &[]);
+        let src = [Source { id: 7, pos: Vec3::new(5.0, 0.0, 1.6), weight: 1.0 }];
+        let budget = Budget::default();
+        let mut tracer = Tracer::new(3);
+        // every walk lands energy in every early bin; `stale` answers
+        // with the previous job's epoch, as a one-tick-late GPU would
+        let mut last_epoch = 0u32;
+        let mut walk = |stale: bool| {
+            move |job: &WalkJob| {
+                let epoch = if stale { last_epoch } else { job.epoch };
+                last_epoch = job.epoch;
+                Walk::Fresh(Walked { ids: job.ids.clone(), data: vec![1e-3; output_words(job.ids.len())], debug: Vec::new(), epoch })
+            }
+        };
+        let early = |f: &SourceField| f.taps.iter().filter(|t| t.key >= KEY_EARLY_BASE && t.key < 20_000).count();
+        let near = Vec3::new(3.0, 0.0, 1.6);
+        for _ in 0..3 {
+            let f = tracer.trace_walked(&world, near, &src, budget, &mut walk(false)).unwrap();
+            assert!(early(&f[0]) > 0, "a fresh walk on this side lands");
+        }
+        // fly through the wall: this tick's answer is the old side's job
+        let far = Vec3::new(-3.0, 0.0, 1.6);
+        let f = tracer.trace_walked(&world, far, &src, budget, &mut walk(true)).unwrap();
+        assert_eq!(early(&f[0]), 0, "the walk from the other side of the wall was folded in");
+        let f = tracer.trace_walked(&world, far, &src, budget, &mut walk(false)).unwrap();
+        assert!(early(&f[0]) > 0, "the next walk, from this side, lands again");
     }
 
     #[test]

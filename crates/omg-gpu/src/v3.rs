@@ -32,6 +32,7 @@ pub type ProbeResult = ([f32; 3], f32, [f32; 3], bool, bool, Option<(f32, f32)>)
 
 struct InFlight {
     ids: Vec<u32>,
+    epoch: u32,
     out_bytes: u64,
     dbg_bytes: u64,
     /// map_async callbacks still outstanding (0 = all mapped).
@@ -269,7 +270,7 @@ impl GpuV3Tracer {
                 p.fetch_sub(1, Ordering::AcqRel);
             });
         }
-        self.flight = Some(InFlight { ids: job.ids.clone(), out_bytes, dbg_bytes, pending, t0: Instant::now() });
+        self.flight = Some(InFlight { ids: job.ids.clone(), epoch: job.epoch, out_bytes, dbg_bytes, pending, t0: Instant::now() });
         true
     }
 
@@ -300,7 +301,7 @@ impl GpuV3Tracer {
             Vec::new()
         };
         self.last_ms = f.t0.elapsed().as_secs_f32() * 1e3;
-        Some(Walked { ids: f.ids, data, debug })
+        Some(Walked { ids: f.ids, data, debug, epoch: f.epoch })
     }
 
     /// Walk one job synchronously: dispatch, wait, read the bins back.

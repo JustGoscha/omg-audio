@@ -19,6 +19,11 @@ impl DelayLine {
         Self { buf: Vec::new(), mask: 0, write: 0 }
     }
 
+    /// Silence the whole line.
+    pub fn clear(&mut self) {
+        self.buf.fill(0.0);
+    }
+
     pub fn write(&mut self, x: f32) {
         self.write = (self.write + 1) & self.mask;
         self.buf[self.write] = x;

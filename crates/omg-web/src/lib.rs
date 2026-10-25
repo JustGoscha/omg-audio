@@ -712,7 +712,7 @@ struct WebV3Proxy;
 /// one fewer sample, never a stale one).
 static V3_JOB: std::sync::Mutex<Option<v3fold::WalkJob>> = std::sync::Mutex::new(None);
 /// Source ids of the job JS took last — its result's block order.
-static V3_TAKEN: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+static V3_TAKEN: std::sync::Mutex<(Vec<u32>, u32)> = std::sync::Mutex::new((Vec::new(), 0));
 static V3_RESULT: std::sync::Mutex<Option<v3fold::Walked>> = std::sync::Mutex::new(None);
 
 impl omg_scene::v3walk::V3Walker for WebV3Proxy {
@@ -750,7 +750,7 @@ pub extern "C" fn sim_v3_job_len() -> u32 {
         Some(job) => {
             let n = job.words.len().min(out.len());
             out[..n].copy_from_slice(&job.words[..n]);
-            *V3_TAKEN.lock().unwrap() = job.ids;
+            *V3_TAKEN.lock().unwrap() = (job.ids, job.epoch);
             n as u32
         }
         None => 0,
@@ -776,7 +776,7 @@ pub extern "C" fn sim_v3_buf_ptr() -> *mut f32 {
 #[no_mangle]
 pub extern "C" fn sim_v3_inject(n_out: u32, n_dbg: u32) {
     let buf = unsafe { (*(&raw mut V3_INJECT)).get_or_insert_with(|| leak_f32(V3_STAGE)) };
-    let ids = core::mem::take(&mut *V3_TAKEN.lock().unwrap());
+    let (ids, epoch) = core::mem::take(&mut *V3_TAKEN.lock().unwrap());
     let n_out = n_out as usize;
     if n_out < v3fold::output_words(ids.len()) || n_out > V3_OUT_CAP {
         return; // malformed: drop it, the next walk refreshes
@@ -786,7 +786,7 @@ pub extern "C" fn sim_v3_inject(n_out: u32, n_dbg: u32) {
     let dbg = &buf[n_out..n_out + n_dbg * v3fold::DEBUG_WORDS];
     let dbg_words: &[u32] = unsafe { core::slice::from_raw_parts(dbg.as_ptr() as *const u32, dbg.len()) };
     let debug = v3fold::decode_debug(dbg_words, &ids);
-    *V3_RESULT.lock().unwrap() = Some(v3fold::Walked { ids, data: buf[..n_out].to_vec(), debug });
+    *V3_RESULT.lock().unwrap() = Some(v3fold::Walked { ids, data: buf[..n_out].to_vec(), debug, epoch });
 }
 
 /// Route the v3 walk to the JS driver — only after gpu.js confirmed the

@@ -37,6 +37,15 @@ impl Fdn {
         }
     }
 
+    /// Drop everything ringing (the field it held no longer reaches the
+    /// listener; see the renderer's output-scaled late level).
+    pub fn clear(&mut self) {
+        for l in &mut self.lines {
+            l.clear();
+        }
+        self.damps = [OnePoleLp::default(); NLINES];
+    }
+
     /// Configure decay from traced per-band RT60 (bands: low/mid/high).
     pub fn set_rt60(&mut self, rt60_mid: f32, rt60_high: f32) {
         for i in 0..NLINES {

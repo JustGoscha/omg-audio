@@ -70,6 +70,13 @@ wgpu adapter.
 | Room blending at thresholds | `crates/omg-scene/tests/fx_room_blend.rs` |
 | Quality tiers | `crates/omg-scene/tests/fx_quality_tiers.rs` |
 
+### Engine v3 tracer (omg-core)
+
+| Effect | Test file |
+|---|---|
+| v3 tracer: direct, walls, NEE, late field, diffraction; crossing a wall drops the room left behind | `crates/omg-core/tests/fx_v3_tracer.rs` |
+| GPU walk results from before a wall crossing are discarded | `omg-core v3::fold::tests::a_walk_from_before_crossing_a_wall_is_discarded` |
+
 ### DSP (omg-dsp)
 
 | Effect | Test file |
@@ -79,6 +86,7 @@ wgpu adapter.
 | Path-identity crossfade | `crates/omg-dsp/tests/fx_path_crossfade.rs` |
 | Per-tap band EQ, through-wall lowpass | `crates/omg-dsp/tests/fx_tap_eq.rs` |
 | Own-room FDN reverb | `crates/omg-dsp/tests/fx_fdn_rt60.rs` |
+| Late level at the FDN output: leaving a room takes its tail along, a silent source still rings out | `crates/omg-dsp/tests/fx_late_level.rs` |
 | Remote (coupled) reverb render | `crates/omg-dsp/tests/fx_remote_reverb.rs` |
 | FDN sleep when idle | `crates/omg-dsp/tests/fx_fdn_sleep.rs` |
 | Tap ceiling, point budget | `crates/omg-dsp/tests/fx_tap_budget.rs` |
