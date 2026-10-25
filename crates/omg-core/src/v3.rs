@@ -27,6 +27,8 @@ use crate::{NBANDS, SPEED_OF_SOUND};
 
 /// V3.3: the walk run elsewhere (the GPU kernel), folded back here.
 pub mod fold;
+/// V3.3: the seam an external walker (the GPU kernel) plugs into.
+pub mod walker;
 
 /// Early window after the free-field arrival: binned into taps.
 pub const EARLY_S: f32 = 0.080;

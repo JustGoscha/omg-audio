@@ -387,7 +387,8 @@ impl GpuV3Tracer {
     }
 }
 
-/// The v3 walker the app registers under OMG_GPU=1 (omg_scene::v3walk):
+/// The v3 walker the app registers under OMG_GPU=1 (omg_scene::v3walk)
+/// and the engine uses under `Compute::Gpu` (`omg_core::v3::walker`):
 /// one walk in flight on the world mesh uploaded once at startup; each
 /// tick collects the previous tick's walk (never blocking) and submits
 /// this one — the GPU's latency hides behind the 50 ms tick.
@@ -403,7 +404,7 @@ impl GpuV3Walker {
     }
 }
 
-impl omg_scene::v3walk::V3Walker for GpuV3Walker {
+impl omg_core::v3::walker::V3Walker for GpuV3Walker {
     fn walk(&mut self, job: &WalkJob) -> Walk {
         if !GpuV3Tracer::fits(job) {
             return Walk::Refused;
