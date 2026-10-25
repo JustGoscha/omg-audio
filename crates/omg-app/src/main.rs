@@ -252,10 +252,15 @@ fn main() {
                     println!("world late field + discovery + batched solve: GPU (wgpu K2+K3+K4)");
                 }
                 // V3.3: engine v3's listener walk (K5) over the same world
-                // mesh, one walk in flight, 8x the tier's rays
-                if let Some(v3) = omg_gpu::GpuV3Walker::new(&mesh) {
+                // mesh at 8x the tier's rays. Live: one walk in flight,
+                // folded a tick later. Offline renders tick back to back
+                // (no 50 ms for the GPU to hide in), so they walk
+                // synchronously — every tick gets its own walk.
+                if let Some(mut v3) = omg_gpu::GpuV3Walker::new(&mesh) {
+                    v3.sync = std::env::args().any(|a| a == "--render");
+                    let mode = if v3.sync { "sync" } else { "async" };
                     omg_scene::v3walk::set_v3_walker(Box::new(v3));
-                    println!("engine v3 walk: GPU (wgpu K5, async, 8x rays)");
+                    println!("engine v3 walk: GPU (wgpu K5, {mode}, 8x rays)");
                 }
             }
             None => println!("late field: CPU (OMG_GPU=1 but no adapter)"),

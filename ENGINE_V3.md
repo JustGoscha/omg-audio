@@ -188,7 +188,11 @@ the compute switch is on (`quality::set_gpu_backend`); `quality::v3_gpu()`
 then raises the v3 tier budgets 8× (early and late rays) — only then,
 so a CPU walk never runs at a GPU budget. Native: `OMG_GPU=1` registers
 `GpuV3Walker` (async: one walk in flight, collected next tick without
-blocking; `OMG_EARLY=v3` selects the engine). Web: `sim_v3_enable` after
+blocking; `OMG_EARLY=v3` selects the engine). Offline `--render` walks
+synchronously instead — its ticks run back to back with no 50 ms for
+the GPU to hide in, so there the GPU walk (~60 ms/tick wall, latency-
+bound) is slower than the CPU's (~29 ms); the 8 s walkthrough renders
+within 0.3 dB RMS of the CPU walk. Web: `sim_v3_enable` after
 gpu.js built the pipelines; the worker pumps one job per tick and
 injects the resolved bins (`sim_v3_inject`), version-checked through
 `sim_v3_version`. The quality panel's compute switch applies to v3 and
