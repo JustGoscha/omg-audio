@@ -5,15 +5,16 @@
 #
 # Click: capture mouse / throw a ball · WASD walk · Shift run · Space jump
 # C crouch · F fly · E door · B bells · V whisper · R rain · L labels
-# Q sound quality · G graphics (pixel ⇄ fine) · [ ] pixel size · H hud
+# Q sound quality · G graphics (pixel ⇄ fine) · [ ] pixel height · H hud
 # Esc release mouse.
 #
 # Graphics default to a cheap, low-res "pixel" look: the 3D view renders
-# into a SubViewport at 1/8 of the window's physical resolution (integer
-# factor: square, crisp pixels), upscaled with nearest filtering,
-# nearest-filtered textures, no SSAO/SSIL/volumetric fog, one shadowed
-# light (the moon). G switches to the fine look (full resolution, MSAA,
-# SSAO, SSIL, volumetric fog, shadowed lamps).
+# into a SubViewport 360 px high (width from the window's aspect),
+# upscaled to fill the window with nearest-neighbour filtering — no
+# anti-aliasing anywhere, nearest-filtered textures, no SSAO/SSIL/
+# volumetric fog, one shadowed light (the moon). [ and ] change the
+# height; G switches to the fine look (full resolution, MSAA, SSAO,
+# SSIL, volumetric fog, shadowed lamps).
 extends Node3D
 
 const SKY := "res://../assets/sky/night.jpg"
@@ -32,12 +33,12 @@ var quality := 1
 var t_flicker := 0.0
 var env: Environment
 var view: SubViewport
-var view_box: SubViewportContainer
+var view_rect: TextureRect
 var view_cam: Camera3D
 var fine := false
-# 3D internal resolution = window pixels / PIXEL (keys [ and ])
-const PIXEL := 8
-var pixel := PIXEL
+# 3D internal height in pixel mode (keys [ and ] walk HEIGHTS)
+const HEIGHTS := [180, 240, 270, 360, 480, 540, 720]
+var pixel_h := 360
 var shadow_lights: Array[Light3D] = []
 
 func _ready() -> void:
@@ -131,7 +132,10 @@ func _print_fps() -> void:
 			frames += 1
 		var secs := (Time.get_ticks_usec() - t0) / 1e6
 		res.append("%s: %.0f fps avg, worst frame %.1f ms" % [spot[0], frames / secs, worst])
-	print("FPS (%s graphics, window %s px, 3D rendered at %s, screen scale %.1f, vsync off): %s" % ["fine" if fine else "pixel 1/%d" % pixel,
+		for a in OS.get_cmdline_user_args():
+			if a.begins_with("--fps-shot="): # what the window showed
+				get_viewport().get_texture().get_image().save_png(a.trim_prefix("--fps-shot=") + "_%s.png" % spot[0].replace(" ", "_"))
+	print("FPS (%s graphics, window %s px, 3D rendered at %s, screen scale %.1f, vsync off): %s" % ["fine" if fine else "pixel %dp" % pixel_h,
 		DisplayServer.window_get_size(), view.size, DisplayServer.screen_get_scale(), " · ".join(res)])
 	print("stats: ", world.stats())
 	get_tree().quit()
@@ -172,7 +176,7 @@ func _shots(dir: String) -> void:
 	hud.get_parent().visible = false
 	# full resolution, linear textures, bright and even (a review light,
 	# not the night)
-	view_box.stretch_shrink = 1
+	_size_view(true)
 	DemoMats.set_filtering(false)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.85, 0.85, 0.9)
@@ -218,30 +222,47 @@ func _snap(path: String) -> void:
 	view.get_texture().get_image().save_png(path)
 	print("shot ", path.get_file())
 
-# The 3D view: a SubViewport sharing this world, rendered at 1/pixel
-# resolution and scaled up with nearest filtering (the root viewport
-# draws only the 2D layer on top).
+# The 3D view: a SubViewport sharing this world, rendered small and
+# shown by a full-window TextureRect with nearest filtering (the root
+# viewport draws only the 2D layer: the upscaled view and the HUD at
+# full resolution).
 func _viewport() -> void:
 	get_viewport().disable_3d = true
-	view_box = SubViewportContainer.new()
-	view_box.set_anchors_preset(Control.PRESET_FULL_RECT)
-	view_box.stretch = true
-	view_box.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	view_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var layer := CanvasLayer.new()
-	layer.layer = -1
-	add_child(layer)
-	layer.add_child(view_box)
 	view = SubViewport.new()
-	view.handle_input_locally = false
-	view_box.add_child(view)
+	view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	view.msaa_3d = Viewport.MSAA_DISABLED
+	view.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+	view.use_taa = false
+	add_child(view)
 	view_cam = Camera3D.new()
 	view.add_child(view_cam)
 	view_cam.make_current()
+	var layer := CanvasLayer.new()
+	layer.layer = -1
+	add_child(layer)
+	view_rect = TextureRect.new()
+	view_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	view_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	view_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	view_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	view_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	view_rect.texture = view.get_texture()
+	layer.add_child(view_rect)
+	get_viewport().size_changed.connect(func() -> void: _size_view(fine))
+
+# Pixel mode: pixel_h rows, as many columns as the window's aspect gives
+# (the image fills the window); fine/full: the window's own pixels.
+func _size_view(full: bool) -> void:
+	var win := get_viewport().get_visible_rect().size
+	if full:
+		view.size = Vector2i(win)
+	else:
+		view.size = Vector2i(roundi(pixel_h * win.x / maxf(1.0, win.y)), pixel_h)
 
 func _apply_graphics() -> void:
-	view_box.stretch_shrink = 1 if fine else pixel
+	_size_view(fine)
 	view.msaa_3d = Viewport.MSAA_2X if fine else Viewport.MSAA_DISABLED
+	view_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if fine else CanvasItem.TEXTURE_FILTER_NEAREST
 	env.ssao_enabled = fine
 	env.ssil_enabled = fine
 	env.volumetric_fog_enabled = fine
@@ -311,7 +332,7 @@ func _hud() -> void:
 	hud.add_theme_constant_override("outline_size", 4)
 	layer.add_child(hud)
 	hint = Label.new()
-	hint.text = "click: capture mouse / throw · WASD walk · Shift run · Space jump · C crouch · F fly · E door · B bells · V whisper · R rain · L labels · Q sound quality · G graphics · [ ] pixel size · H hud"
+	hint.text = "click: capture mouse / throw · WASD walk · Shift run · Space jump · C crouch · F fly · E door · B bells · V whisper · R rain · L labels · Q sound quality · G graphics · [ ] pixel height · H hud"
 	hint.add_theme_color_override("font_color", Color(0.75, 0.8, 0.9, 0.85))
 	hint.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	hint.add_theme_constant_override("outline_size", 4)
@@ -373,10 +394,10 @@ func _unhandled_input(e: InputEvent) -> void:
 				fine = not fine
 				_apply_graphics()
 			KEY_BRACKETLEFT:
-				pixel = maxi(1, pixel - 1)
+				pixel_h = HEIGHTS[maxi(0, HEIGHTS.find(pixel_h) - 1)]
 				_apply_graphics()
 			KEY_BRACKETRIGHT:
-				pixel = mini(16, pixel + 1)
+				pixel_h = HEIGHTS[mini(HEIGHTS.size() - 1, HEIGHTS.find(pixel_h) + 1)]
 				_apply_graphics()
 
 func _process(dt: float) -> void:
@@ -401,7 +422,7 @@ func _process(dt: float) -> void:
 		var s := world.stats()
 		var q: String = ["low", "medium", "high", "ultra"][quality]
 		hud.text = "%d fps · %s graphics\n%s · RT60 %.2f s · enclosure %.0f%%\nrain %s · %s%s\nsim %.1f ms (%s, %s) · render load %.0f%% · budget %d paths / %d hrtf / %d voices · %d/%d sources rendering · %d paths · late %d" % [
-			Engine.get_frames_per_second(), "fine" if fine else "pixel 1/%d" % pixel,
+			Engine.get_frames_per_second(), "fine" if fine else "pixel %dp" % pixel_h,
 			room, s.get("rt60", 0.0), 100.0 * s.get("enclosure", 0.0), rain_name,
 			"flying" if player.flying else "walking", " · crouched" if player.crouch > 0.5 else "",
 			s.get("tick_ms", 0.0), q, "gpu" if s.get("gpu", false) else "cpu",

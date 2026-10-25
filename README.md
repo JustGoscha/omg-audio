@@ -194,9 +194,9 @@ present), dressed with CC0 textures (`assets/textures`, Poly Haven) whose
 materials declare their acoustics (`--audit` prints every
 texture → acoustic pairing), and the web demo's sound design (room loops,
 footsteps, owls, bells, whispers, cars, balls, rain). It renders a cheap
-pixel look by default (3D at 1/8 of the window's pixels, nearest
-upscale); G switches to the fine look (full resolution, SSAO/SSIL,
-volumetric fog), [ and ] change the pixel size. Controls: click to
+pixel look by default (3D at 360 px high, width from the window's aspect,
+nearest upscale, no anti-aliasing); G switches to the fine look (full
+resolution, SSAO/SSIL, volumetric fog), [ and ] change the height. Controls: click to
 capture / throw, WASD, Shift run, Space jump, C crouch, F fly, E door,
 B bells, V whisper, R rain, L labels, Q sound quality, H hud.
 `-- --print-fps` measures ~10 s of frame rate, `-- --shots=<dir>` renders
