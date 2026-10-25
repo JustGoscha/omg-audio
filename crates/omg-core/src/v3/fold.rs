@@ -2,51 +2,60 @@
 //!
 //! The heavy half of a v3 tick — the ray walk of both families: raycasts,
 //! next-event shadow segments, source-sphere tests, transmission sampling,
-//! sky escapes — can run outside this crate, in the WGSL kernel
-//! `crates/omg-gpu/shaders/v3_walk.wgsl` (natively through wgpu, in the
-//! browser through `web/gpu.js`). The walker hands back the walk's
+//! edge bends, sky escapes — can run outside this crate, in the WGSL
+//! kernel `crates/omg-gpu/shaders/v3_walk.wgsl` (natively through wgpu,
+//! in the browser through `web/gpu.js`). The walker hands back the walk's
 //! contributions ALREADY BINNED exactly as `deposit` bins them (direction
 //! cell × 2 ms early bins, 10 ms echogram bins relative to the free-field
-//! arrival, per-band totals, sky cells); this module folds them into the
-//! same per-source EMA state and builds the same `SourceField`s as
-//! `Tracer::trace`. The direct path never leaves the CPU: one exact
-//! segment per source, noise-free, recomputed every tick even while an
-//! asynchronous walk is still in flight.
+//! arrival, sky cells); this module folds them into the same per-source
+//! EMA state and builds the same `SourceField`s as `Tracer::trace`.
+//! Everything that is not the walk — the exact direct segments, the
+//! direct visibility, the edge next-event paths — runs on the CPU through
+//! the very code `trace` uses (`Tracer::prepare`), every tick, even while
+//! an asynchronous walk is still in flight.
 //!
-//! Everything here is additive: `Tracer::trace` (the CPU walk) stays the
-//! oracle and the fallback. The fold below mirrors trace()'s step 5 line
-//! for line — keep the two in step when either changes.
+//! `Tracer::trace` (the CPU walk) stays the oracle and the fallback. The
+//! fold below mirrors trace()'s step 5 — keep the two in step.
 //!
 //! Flat formats (the contract with the kernel; bump `WALK_LAYOUT_VERSION`
 //! on ANY change, here and in v3_walk.wgsl):
 //!
-//! JOB — u32 words (f32 payloads as bits), header then three tables:
+//! JOB — u32 words (f32 payloads as bits): the header, then the scene.
 //! ```text
-//! header (HEADER_WORDS = 28, the kernel's 112-byte uniform):
+//! header (HEADER_WORDS = 40, the kernel's 160-byte uniform):
 //!   0..3 rot row 0   3 n_early     4..7 rot row 1   7 n_late
 //!   8..11 rot row 2  11 bounces    12..15 listener  15 seed
 //!   16 k  17 nee  18 late_nee  19 n_sources
 //!   20 n_panels  21 n_pockets  22 has_grade  23 grade
-//!   24 debug  25..28 reserved (0)
-//! sources (SRC_WORDS = 8 each):   pos xyz, weight, t_free, id, 0, 0
-//! panels (PANEL_WORDS = 16 each): min xyz, scattering, max xyz, 0,
-//!                                 absorption xyz, 0, transmission xyz, 0
-//! pockets (POCKET_WORDS = 8):     min xyz, 0, max xyz, 0
+//!   24 debug  25 n_edges  26 off_panels  27 off_pockets  (scene words)
+//!   28..31 edge bounds lo  31 off_edges   32..35 edge bounds hi
+//!   35..40 reserved (0)
+//! scene: sources (SRC_WORDS = 12 each): pos xyz, weight, t_free, id,
+//!          direct visibility xyz, fixed-point norm, 0, 0
+//!        panels (PANEL_WORDS = 16):  min xyz, scattering, max xyz, 0,
+//!          absorption xyz, 0, transmission xyz, 0
+//!        pockets (POCKET_WORDS = 8): min xyz, 0, max xyz, 0
+//!        edges (EDGE_WORDS = 8): a xyz, 0, b xyz, 0 — the diffracting
+//!          edges the CPU walk could bend at this tick (gridded, not
+//!          filled by a panel, not on the ground); none = no diffraction
 //! ```
 //! OUTPUT — f32 words, true energy units (the fold applies the v2
 //! echogram scale): SKY_WORDS of sky cells, then one SOURCE_WORDS block
 //! per job source in job order. A slot is (e₀, e₁, e₂, Σe₁·dx, Σe₁·dy,
 //! Σe₁·dz) with d the ray's first direction. A source block holds the
 //! early slots [cell·DELAY_BINS + delay bin], then the echogram slots,
-//! then the per-band total (+1 pad word).
+//! then the per-band total over the echogram (+1 pad word). Echogram
+//! direction sums are only kept from EARLY_S on (all `late_direction`
+//! reads); `reflected` counts what lands inside the 3 s echogram.
 //!
 //! DEBUG — DEBUG_WORDS per early ray: mid energy, source index, vertex
-//! count, 0, then up to DEBUG_VERTS vertices (ears → bounces → source).
+//! count, 0, then up to DEBUG_VERTS vertices (ears → bends/bounces →
+//! source).
 
 use super::*;
 
 /// Bump on ANY change to the flat formats above or in v3_walk.wgsl.
-pub const WALK_LAYOUT_VERSION: u32 = 1;
+pub const WALK_LAYOUT_VERSION: u32 = 2;
 /// Direction cells for early binning (and the sky).
 pub const CELLS: usize = N_CELLS;
 /// Early delay bins: the early window over the delay bin width.
@@ -60,15 +69,17 @@ pub const ECHO_WORDS: usize = ECHO_BINS * SLOT;
 /// One source's output block: early slots, echogram, totals (+ pad).
 pub const SOURCE_WORDS: usize = EARLY_WORDS + ECHO_WORDS + 4;
 pub const SKY_WORDS: usize = CELLS * SLOT;
-pub const HEADER_WORDS: usize = 28;
-pub const SRC_WORDS: usize = 8;
+pub const HEADER_WORDS: usize = 40;
+pub const SRC_WORDS: usize = 12;
 pub const PANEL_WORDS: usize = 16;
 pub const POCKET_WORDS: usize = 8;
+pub const EDGE_WORDS: usize = 8;
 /// Per-dispatch caps. A world beyond them traces on the CPU instead — a
 /// silently clamped input would change the physics.
 pub const MAX_SOURCES: usize = 64;
 pub const MAX_PANELS: usize = 64;
 pub const MAX_POCKETS: usize = 8;
+pub const MAX_EDGES: usize = 16384;
 pub const DEBUG_VERTS: usize = 8;
 pub const DEBUG_WORDS: usize = 4 + DEBUG_VERTS * 3;
 /// Debug paths a walker needs to return at most (the view's cap).
@@ -77,6 +88,21 @@ pub const DEBUG_KEEP: usize = DEBUG_PATHS;
 /// Output words for a job with `n_sources` sources.
 pub fn output_words(n_sources: usize) -> usize {
     SKY_WORDS + n_sources * SOURCE_WORDS
+}
+
+/// Scene words a job can carry at most (host buffer sizing).
+pub const MAX_SCENE_WORDS: usize =
+    MAX_SOURCES * SRC_WORDS + MAX_PANELS * PANEL_WORDS + MAX_POCKETS * POCKET_WORDS + MAX_EDGES * EDGE_WORDS;
+
+/// Was this edge put into the CPU's search grid? (`EdgeSet::build`
+/// skips edges whose padded box spans more than 4096 cells.)
+fn gridded(a: Vec3, b: Vec3) -> bool {
+    let r = Vec3::new(EDGE_REACH, EDGE_REACH, EDGE_REACH);
+    let lo = Vec3::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z)) - r;
+    let hi = Vec3::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z)) + r;
+    let (k0, k1) = (cell_key(lo), cell_key(hi));
+    let cells = ((k1.0 - k0.0 + 1) as i64) * ((k1.1 - k0.1 + 1) as i64) * ((k1.2 - k0.2 + 1) as i64);
+    cells <= 4096
 }
 
 /// One tick's walk, flattened for an external walker.
@@ -88,7 +114,11 @@ pub struct WalkJob {
 }
 
 impl WalkJob {
-    fn build(
+    /// Flatten one tick. `vis`: each source's per-band direct visibility
+    /// (from `prepare`); `edges`: the diffraction edge set with this
+    /// tick's fill mask, None when diffraction is off.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build(
         world: &World,
         listener: Vec3,
         sources: &[Source],
@@ -96,16 +126,17 @@ impl WalkJob {
         rot: [[f32; 3]; 3],
         seed: u32,
         debug: bool,
+        vis: &[[f32; NBANDS]],
+        edges: Option<&EdgeSet>,
     ) -> Self {
         let f = |x: f32| x.to_bits();
-        let n_early = budget.rays.max(1);
         let mut w = vec![0u32; HEADER_WORDS];
         for r in 0..3 {
             for c in 0..3 {
                 w[r * 4 + c] = f(rot[r][c]);
             }
         }
-        w[3] = n_early;
+        w[3] = budget.rays.max(1);
         w[7] = budget.late_rays;
         w[11] = budget.bounces;
         w[12] = f(listener.x);
@@ -121,24 +152,53 @@ impl WalkJob {
         w[22] = world.grade.is_some() as u32;
         w[23] = f(world.grade.unwrap_or(0.0));
         w[24] = debug as u32;
-        for s in sources {
-            let t_free = (s.pos - listener).length() / SPEED_OF_SOUND;
-            w.extend_from_slice(&[f(s.pos.x), f(s.pos.y), f(s.pos.z), f(s.weight), f(t_free), s.id, 0, 0]);
+        for (si, s) in sources.iter().enumerate() {
+            let d = (s.pos - listener).length();
+            let v = vis.get(si).copied().unwrap_or([0.0; NBANDS]);
+            // fixed-point normalization: the free-field energy at the
+            // source's distance sets the scale its bins accumulate at
+            let norm = (d * d).max(1.0);
+            w.extend_from_slice(&[f(s.pos.x), f(s.pos.y), f(s.pos.z), f(s.weight), f(d / SPEED_OF_SOUND), s.id]);
+            w.extend_from_slice(&[f(v[0]), f(v[1]), f(v[2]), f(norm), 0, 0]);
         }
+        w[26] = (w.len() - HEADER_WORDS) as u32;
         for (mn, mx, m) in world.panels {
             w.extend_from_slice(&[f(mn.x), f(mn.y), f(mn.z), f(m.scattering)]);
             w.extend_from_slice(&[f(mx.x), f(mx.y), f(mx.z), 0]);
             w.extend_from_slice(&[f(m.absorption[0]), f(m.absorption[1]), f(m.absorption[2]), 0]);
             w.extend_from_slice(&[f(m.transmission[0]), f(m.transmission[1]), f(m.transmission[2]), 0]);
         }
+        w[27] = (w.len() - HEADER_WORDS) as u32;
         for (mn, mx) in world.pockets {
             w.extend_from_slice(&[f(mn.x), f(mn.y), f(mn.z), 0, f(mx.x), f(mx.y), f(mx.z), 0]);
         }
+        w[31] = (w.len() - HEADER_WORDS) as u32;
+        let mut n_edges = 0u32;
+        if let Some(es) = edges {
+            for (ei, (a, b)) in es.edges.iter().enumerate() {
+                if es.filled[ei] || !gridded(*a, *b) || n_edges as usize >= MAX_EDGES {
+                    continue;
+                }
+                w.extend_from_slice(&[f(a.x), f(a.y), f(a.z), 0, f(b.x), f(b.y), f(b.z), 0]);
+                n_edges += 1;
+            }
+            for (k, x) in [es.lo.x, es.lo.y, es.lo.z].iter().enumerate() {
+                w[28 + k] = f(*x);
+            }
+            for (k, x) in [es.hi.x, es.hi.y, es.hi.z].iter().enumerate() {
+                w[32 + k] = f(*x);
+            }
+        }
+        w[25] = n_edges;
         Self { words: w, ids: sources.iter().map(|s| s.id).collect() }
     }
 
     pub fn header(&self) -> &[u32] {
         &self.words[..HEADER_WORDS]
+    }
+    /// Everything after the header (sources, panels, pockets, edges).
+    pub fn scene(&self) -> &[u32] {
+        &self.words[HEADER_WORDS..]
     }
     pub fn n_early(&self) -> u32 {
         self.words[3]
@@ -159,20 +219,11 @@ impl WalkJob {
     pub fn n_pockets(&self) -> usize {
         self.words[21] as usize
     }
+    pub fn n_edges(&self) -> usize {
+        self.words[25] as usize
+    }
     pub fn debug(&self) -> bool {
         self.words[24] != 0
-    }
-    pub fn sources(&self) -> &[u32] {
-        let o = HEADER_WORDS;
-        &self.words[o..o + self.n_sources() * SRC_WORDS]
-    }
-    pub fn panels(&self) -> &[u32] {
-        let o = HEADER_WORDS + self.n_sources() * SRC_WORDS;
-        &self.words[o..o + self.n_panels() * PANEL_WORDS]
-    }
-    pub fn pockets(&self) -> &[u32] {
-        let o = HEADER_WORDS + self.n_sources() * SRC_WORDS + self.n_panels() * PANEL_WORDS;
-        &self.words[o..o + self.n_pockets() * POCKET_WORDS]
     }
 }
 
@@ -216,17 +267,31 @@ pub enum Walk {
     /// A finished walk — this job's, or an earlier one's (asynchronous
     /// walkers deliver a tick late; the EMA absorbs it).
     Fresh(Walked),
-    /// Nothing finished yet: hold the smoothed state, refresh the direct.
+    /// Nothing finished yet: hold the smoothed state, refresh the
+    /// direct and edge paths.
     Pending,
     /// Can't take this job (no device, caps): trace on the CPU instead.
     Refused,
 }
 
+/// Parity hooks for the GPU tests: the CPU walk's edge set with this
+/// world's fill mask, and its nearest-edge query along a segment
+/// (t, distance) — exactly what the walk bends at.
+pub fn edge_set(world: &World) -> EdgeSet {
+    let mut es = EdgeSet::build(world.mesh);
+    es.mask_filled(world.panels, world.grade);
+    es
+}
+
+pub fn edge_nearest(es: &mut EdgeSet, o: Vec3, d: Vec3, t_end: f32) -> Option<(f32, f32)> {
+    es.nearest(o, d, t_end, None).map(|(t, a, _, _)| (t, a))
+}
+
 impl Tracer {
     /// `trace`, with the ray walk done by `walk` (the GPU kernel). The
-    /// direct paths, the EMA and the field construction run here exactly
-    /// as in `trace`. Returns None when the walker refused (or the world
-    /// exceeds the flat caps) — the caller traces on the CPU instead.
+    /// direct and edge paths, the EMA and the field construction run here
+    /// exactly as in `trace`. Returns None when the walker refused (or the
+    /// world exceeds the flat caps) — the caller traces on the CPU instead.
     pub fn trace_walked(
         &mut self,
         world: &World,
@@ -238,59 +303,41 @@ impl Tracer {
         if sources.len() > MAX_SOURCES || world.panels.len() > MAX_PANELS || world.pockets.len() > MAX_POCKETS {
             return None;
         }
+        let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
+        let (direct, vis, edge_taps) = self.prepare(world, listener, sources, budget, &mut dbg);
         let rot = random_rotation(&mut self.rng);
         let seed = (self.rng.next_u64() >> 32) as u32;
-        let job = WalkJob::build(world, listener, sources, budget, rot, seed, self.debug);
+        let edges = if budget.diffraction { self.edges.as_ref() } else { None };
+        let job = WalkJob::build(world, listener, sources, budget, rot, seed, self.debug, &vis, edges);
         let walked = match walk(&job) {
             Walk::Refused => return None,
             Walk::Pending => None,
             Walk::Fresh(w) => Some(w),
         };
-        Some(self.fold_walked(world, listener, sources, budget, walked))
+        Some(self.fold_walked(listener, sources, budget, direct, edge_taps, dbg, walked))
     }
 
     /// Fold a walk's binned contributions (or none, while one is in
     /// flight) into the smoothed state and build every source's field.
-    pub fn fold_walked(
+    #[allow(clippy::too_many_arguments)]
+    fn fold_walked(
         &mut self,
-        world: &World,
         listener: Vec3,
         sources: &[Source],
         budget: Budget,
+        direct: Vec<Option<Tap>>,
+        mut edge_taps: Vec<Vec<Tap>>,
+        mut dbg: Vec<(u32, f32, Vec<Vec3>)>,
         walked: Option<Walked>,
     ) -> Vec<SourceField> {
-        let debug = self.debug;
-        let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
-
-        // 1. direct: one exact segment per source (as in `trace`)
-        let mut direct: Vec<Option<Tap>> = Vec::with_capacity(sources.len());
-        for s in sources {
-            let to = s.pos - listener;
-            let d = to.length().max(MIN_DIST);
-            let t = world.transmission(listener, s.pos, &mut self.hits);
-            let air = air_attenuation(d);
-            let gains: [f32; NBANDS] = core::array::from_fn(|b| t[b] * air[b] / d);
-            if debug && gains[1] > 1e-7 {
-                keep_path(&mut dbg, s.id, gains[1] * gains[1], &[listener], s.pos);
-            }
-            direct.push(if gains.iter().any(|&g| g > 1e-7) {
-                let dir = to * (1.0 / to.length().max(1e-6));
-                Some(Tap { key: KEY_DIRECT, delay_s: d / SPEED_OF_SOUND, dir: [dir.x, dir.y, dir.z], gains })
-            } else {
-                None
-            });
-        }
-
         let fresh = walked.as_ref().is_some_and(|w| w.data.len() >= output_words(w.ids.len()));
         if fresh {
             let w = walked.as_ref().unwrap();
-            if debug {
+            if self.debug {
                 for (id, e, v) in &w.debug {
                     let (end, body) = v.split_last().unwrap();
                     keep_path(&mut dbg, *id, *e, body, *end);
                 }
-                dbg.sort_by(|a, b| b.1.total_cmp(&a.1));
-                self.debug_paths = dbg;
             }
             // the sky field, averaged like the CPU walk's
             let a = if self.sky_primed { budget.ema.clamp(0.0, 1.0) } else { 1.0 };
@@ -303,7 +350,8 @@ impl Tracer {
                 }
                 cur.1 = cur.1 + (Vec3::new(e[3], e[4], e[5]) - cur.1) * a;
             }
-        } else if debug {
+        }
+        if self.debug {
             dbg.sort_by(|a, b| b.1.total_cmp(&a.1));
             self.debug_paths = dbg;
         }
@@ -336,6 +384,8 @@ impl Tracer {
                             key,
                             Bin {
                                 e,
+                                // (unused downstream: the tap delay is pinned
+                                // to the bin; kept for the EMA's symmetry)
                                 ed: e[1] * (t_free + (db as f32 + 0.5) * DELAY_BIN_S),
                                 dir: Vec3::new(blk[o + 3], blk[o + 4], blk[o + 5]),
                             },
@@ -383,6 +433,7 @@ impl Tracer {
             if let Some(t) = direct[si] {
                 taps.push(t);
             }
+            taps.append(&mut edge_taps[si]);
             let mut early: Vec<(&u32, &Bin)> = st.early.iter().collect();
             early.sort_by(|x, y| y.1.e[1].total_cmp(&x.1.e[1]));
             for (k, b) in early.into_iter().take(MAX_EARLY_TAPS) {
@@ -437,13 +488,20 @@ mod tests {
         let srcs = [Source { id: 7, pos: Vec3::new(3.0, 4.0, 0.0), weight: 2.0 }];
         let rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let b = Budget { rays: 100, late_rays: 10, bounces: 3, ..Budget::default() };
-        let job = WalkJob::build(&world, Vec3::new(0.0, 0.0, 0.0), &srcs, b, rot, 9, true);
+        let job = WalkJob::build(&world, Vec3::new(0.0, 0.0, 0.0), &srcs, b, rot, 9, true, &[[0.5; 3]], None);
         assert_eq!(job.n_rays(), 110);
-        assert_eq!((job.n_sources(), job.n_panels(), job.n_pockets()), (1, 1, 1));
-        assert_eq!(f32::from_bits(job.sources()[4]), 5.0 / SPEED_OF_SOUND);
-        assert_eq!(job.sources()[5], 7);
-        assert_eq!(f32::from_bits(job.panels()[3]), Material::WOOD_PANEL.scattering);
-        assert_eq!(f32::from_bits(job.pockets()[6]), -0.5);
+        assert_eq!((job.n_sources(), job.n_panels(), job.n_pockets(), job.n_edges()), (1, 1, 1, 0));
+        let sc = job.scene();
+        assert_eq!(f32::from_bits(sc[4]), 5.0 / SPEED_OF_SOUND);
+        assert_eq!(sc[5], 7);
+        assert_eq!(f32::from_bits(sc[7]), 0.5);
+        assert_eq!(f32::from_bits(sc[9]), 25.0);
+        let op = job.words[26] as usize;
+        assert_eq!(op, SRC_WORDS);
+        assert_eq!(f32::from_bits(sc[op + 3]), Material::WOOD_PANEL.scattering);
+        let oq = job.words[27] as usize;
+        assert_eq!(f32::from_bits(sc[oq + 6]), -0.5);
+        assert_eq!(job.words[31] as usize, oq + POCKET_WORDS);
         assert!(job.debug());
     }
 }

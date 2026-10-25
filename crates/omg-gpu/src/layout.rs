@@ -227,6 +227,74 @@ pub struct GpuSolveRec {
     pub valid: u32,
 }
 
+// ------------------------------------- Engine v3 listener walk (K5)
+//
+// The flat job and output formats are defined ONCE, by
+// omg_core::v3::fold (the wasm side builds jobs without wgpu); these are
+// their #[repr(C)] mirrors so the size/offset tests pin the kernel's
+// struct layout (v3_walk.wgsl) to that contract.
+
+pub use omg_core::v3::fold::WALK_LAYOUT_VERSION as V3_LAYOUT_VERSION;
+
+/// The walk job uniform — the first `fold::HEADER_WORDS` words of a
+/// WalkJob. WGSL: rot0 @0, n_early @12, rot1 @16, n_late @28, rot2 @32,
+/// bounces @44, listener @48, seed @60, k @64, nee @68, late_nee @72,
+/// n_sources @76, n_panels @80, n_pockets @84, has_grade @88, grade @92,
+/// debug @96, n_edges @100, off_panels @104, off_pockets @108,
+/// edge_lo @112, off_edges @124, edge_hi @128 — 160 B.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuV3Job {
+    pub rot0: [f32; 3],
+    pub n_early: u32,
+    pub rot1: [f32; 3],
+    pub n_late: u32,
+    pub rot2: [f32; 3],
+    pub bounces: u32,
+    pub listener: [f32; 3],
+    pub seed: u32,
+    pub k: f32,
+    pub nee: u32,
+    pub late_nee: u32,
+    pub n_sources: u32,
+    pub n_panels: u32,
+    pub n_pockets: u32,
+    pub has_grade: u32,
+    pub grade: f32,
+    pub debug: u32,
+    pub n_edges: u32,
+    pub off_panels: u32,
+    pub off_pockets: u32,
+    pub edge_lo: [f32; 3],
+    pub off_edges: u32,
+    pub edge_hi: [f32; 3],
+    pub _r: [u32; 5],
+}
+
+/// One walk source (scene words). WGSL accessors: pos @0, weight @12,
+/// t_free @16, id @20, direct visibility @24, fixed-point norm @36 — 48 B.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuV3Src {
+    pub pos: [f32; 3],
+    pub weight: f32,
+    pub t_free: f32,
+    pub id: u32,
+    pub vis: [f32; 3],
+    pub norm: f32,
+    pub _p: [u32; 2],
+}
+
+/// A below-grade air pocket. WGSL: bmin @0, bmax @16 — 32 B.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuV3Pocket {
+    pub bmin: [f32; 3],
+    pub _p0: u32,
+    pub bmax: [f32; 3],
+    pub _p1: u32,
+}
+
 /// Flatten a SurfaceTable (authored planes + rect-bounded overlay
 /// faces) into the solve kernel's surfaces buffer.
 pub fn flatten_surfaces(table: &omg_core::pt_mesh::SurfaceTable) -> Vec<GpuSurface> {
@@ -339,6 +407,48 @@ mod tests {
         assert_eq!(core::mem::offset_of!(GpuMeshJob, source), 16);
         assert_eq!(core::mem::offset_of!(GpuMeshJob, listener), 32);
         assert_eq!(core::mem::offset_of!(GpuMeshJob, energy), 48);
+    }
+
+    #[test]
+    fn v3_layout_matches_the_fold_contract() {
+        use omg_core::v3::fold::{HEADER_WORDS, PANEL_WORDS, POCKET_WORDS, SRC_WORDS, WalkJob};
+        use omg_core::v3::{Budget, Source, World};
+        use omg_core::vec3::Vec3;
+        assert_eq!(core::mem::size_of::<GpuV3Job>(), HEADER_WORDS * 4);
+        assert_eq!(core::mem::size_of::<GpuV3Job>(), 160);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, n_early), 12);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, n_late), 28);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, bounces), 44);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, listener), 48);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, seed), 60);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, k), 64);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, n_sources), 76);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, grade), 92);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, debug), 96);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, n_edges), 100);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, off_pockets), 108);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, edge_lo), 112);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, off_edges), 124);
+        assert_eq!(core::mem::offset_of!(GpuV3Job, edge_hi), 128);
+        assert_eq!(core::mem::size_of::<GpuV3Src>(), SRC_WORDS * 4);
+        assert_eq!(core::mem::offset_of!(GpuV3Src, t_free), 16);
+        assert_eq!(core::mem::offset_of!(GpuV3Src, vis), 24);
+        assert_eq!(core::mem::offset_of!(GpuV3Src, norm), 36);
+        assert_eq!(core::mem::size_of::<GpuPanel>(), PANEL_WORDS * 4);
+        assert_eq!(core::mem::size_of::<GpuV3Pocket>(), POCKET_WORDS * 4);
+        assert_eq!(core::mem::offset_of!(GpuV3Pocket, bmax), 16);
+        // a real job decodes through the mirror structs
+        let mesh = omg_core::mesh::MeshBuilder::new().build();
+        let w = World::new(&mesh, &[]);
+        let src = [Source { id: 3, pos: Vec3::new(0.0, 4.0, 3.0), weight: 1.0 }];
+        let b = Budget { rays: 77, late_rays: 5, bounces: 2, ..Budget::default() };
+        let rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let job = WalkJob::build(&w, Vec3::new(0.0, 0.0, 0.0), &src, b, rot, 5, false, &[[0.25; 3]], None);
+        let h: &GpuV3Job = bytemuck::from_bytes(bytemuck::cast_slice(job.header()));
+        assert_eq!((h.n_early, h.n_late, h.bounces, h.n_sources, h.seed), (77, 5, 2, 1, 5));
+        assert_eq!(h.off_panels as usize, SRC_WORDS);
+        let s: &GpuV3Src = bytemuck::from_bytes(bytemuck::cast_slice(&job.scene()[..SRC_WORDS]));
+        assert_eq!((s.id, s.vis, s.norm), (3, [0.25; 3], 25.0));
     }
 
     #[test]

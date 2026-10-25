@@ -3,6 +3,9 @@
 //! Phase 0 goldens; the pipelined LateBackend ring is Phase 2.
 
 pub mod layout;
+pub mod v3;
+
+pub use v3::{GpuV3Tracer, GpuV3Walker};
 
 use layout::{
     decode_echogram, flatten_mesh, flatten_surfaces, GpuMeshJob, GpuPanel, GpuSolveJob,
