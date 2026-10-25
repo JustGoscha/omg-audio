@@ -126,6 +126,11 @@ pub struct Renderer {
     grid: Option<Arc<HrirGrid>>,
     src_line: DelayLine,
     taps: Vec<TapState>,
+    /// Indices of slots that are live or still fading out. The audio loop
+    /// walks only these: scanning all MAX_TAPS slots per sample cost
+    /// ~4% of a core per source even with every slot idle
+    /// (tools/bench_sources.mjs).
+    active: Vec<u16>,
     fdn: Fdn,
     fdn_level: Smoothed,
     send_low: Smoothed,
@@ -192,6 +197,7 @@ impl Renderer {
         let conv_taps = grid.as_ref().map_or(1, |g| g.taps);
         Self {
             src_line: DelayLine::new((sample_rate * 0.7) as usize),
+            active: Vec::with_capacity(MAX_TAPS),
             taps: (0..MAX_TAPS)
                 .map(|_| TapState {
                     key: None,
@@ -287,6 +293,13 @@ impl Renderer {
         self.tap_ceiling = n.max(1);
     }
 
+    /// Forget which ParamBlock version was applied, so the next
+    /// `set_params` re-applies even the same block — used when a budget
+    /// share changes and must take effect without waiting a tick.
+    pub fn invalidate_params(&mut self) {
+        self.version_seen = u64::MAX;
+    }
+
     /// Called from the audio thread whenever a new ParamBlock is available.
     pub fn set_params(&mut self, pb: &ParamBlock) {
         if pb.version == self.version_seen {
@@ -360,6 +373,9 @@ impl Renderer {
                         self.taps[i].release();
                     }
                     if let Some(j) = self.taps.iter().position(|s| s.free()) {
+                        if !self.active.contains(&(j as u16)) {
+                            self.active.push(j as u16);
+                        }
                         let slot = &mut self.taps[j];
                         slot.key = Some(t.key);
                         slot.point = want_point;
@@ -464,19 +480,20 @@ impl Renderer {
         }
         self.reselect_countdown -= 1;
 
-        for tap in &mut self.taps {
-            if self.mute_taps {
-                break;
-            }
-            // Settled-inactive slots cost nothing (the dominant case for
-            // idle sources and unused pool headroom). A releasing slot
-            // keeps ticking until its fade-out finishes.
+        let mut ai = 0;
+        while ai < self.active.len() && !self.mute_taps {
+            let idx = self.active[ai] as usize;
+            let tap = &mut self.taps[idx];
+            // A releasing slot keeps ticking until its fade-out finishes;
+            // then it leaves the active list and costs nothing.
             if tap.key.is_none()
                 && tap.g_sh[0].target_val() == 0.0
                 && tap.g_sh[0].current().abs() < 1e-6
             {
+                self.active.swap_remove(ai);
                 continue;
             }
+            ai += 1;
             let d = tap.delay.tick();
             let gl = tap.g_low.tick();
             let gh = tap.g_high.tick();

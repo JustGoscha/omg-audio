@@ -294,7 +294,7 @@ if (DO_ENGINE) {
     return out;
   };
 
-  const makeEngine = async (points, ceiling) => {
+  const makeEngine = async (points, ceiling, mix) => {
     const w = await instantiate();
     w.eng_init(FS);
     const put = (bytes, alloc, done) => {
@@ -306,7 +306,9 @@ if (DO_ENGINE) {
     put(hrirSpk, w.eng_hrir_speakers_alloc, w.eng_hrir_speakers_done);
     w.eng_set_point_budget(points);
     w.eng_set_tap_ceiling(ceiling);
-    return { w, n: 0 };
+    // mix-wide budgets (SOURCES_PLAN S1): totals across all sources
+    if (mix && w.eng_set_mix_budget) w.eng_set_mix_budget(mix.taps, mix.points);
+    return { w, n: 0, mix: !!mix };
   };
   const growTo = (e, n) => {
     while (e.n < n) {
@@ -322,6 +324,7 @@ if (DO_ENGINE) {
       new Float32Array(e.w.memory.buffer, e.w.eng_param_buf_ptr(), b.length).set(b);
       e.w.eng_set_params(i, b.length);
     }
+    if (e.mix && e.w.eng_params_commit) e.w.eng_params_commit();
   };
   const PER_TICK = FS / TICK_HZ / BLOCK; // 18.75 quanta per sim tick
   // render `sec` of audio, re-applying params at 20 Hz; returns wall s
@@ -374,10 +377,13 @@ if (DO_ENGINE) {
     { id: 'b', label: 'pb0 c160 bus-only', points: 0, ceiling: 160 },
     { id: 'c', label: 'pb4 c32 shed', points: 4, ceiling: 32 },
     { id: 'd', label: 'pb1 c160', points: 1, ceiling: 160 },
+    // mix-wide totals: the governor's floor and top rungs ×4
+    { id: 'e', label: 'mix t128 p8 (floor)', points: 24, ceiling: 160, mix: { taps: 128, points: 8 } },
+    { id: 'f', label: 'mix t640 p32 (top)', points: 24, ceiling: 160, mix: { taps: 640, points: 32 } },
   ];
   const table = {};
   for (const c of configs) {
-    const e = await makeEngine(c.points, c.ceiling);
+    const e = await makeEngine(c.points, c.ceiling, c.mix);
     table[c.id] = [];
     for (const n of NS) {
       growTo(e, n);

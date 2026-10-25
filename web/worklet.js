@@ -33,7 +33,25 @@ class OmgProcessor extends AudioWorkletProcessor {
     this.ceilIdx = this.CEILINGS.length - 1; // start dense-shedded too
     this.loadMs = 0;
     this.loadFrames = 0;
+    // Mix-wide budgets (SOURCES_PLAN S1): the ladder rungs are worth
+    // MIX sources; the engine ranks every source's taps by loudness at
+    // the ears and shares the totals — cost no longer grows with the
+    // number of sources playing.
+    this.MIX = 4;
     this.port.onmessage = (e) => this.onMessage(e.data);
+  }
+
+  // Push the current point budget + tap ceiling to the engine.
+  applyBudget() {
+    const ceil = this.manualCeil || this.CEILINGS[this.ceilIdx];
+    if (this.w.eng_set_mix_budget) {
+      this.w.eng_set_mix_budget(ceil * this.MIX, this.budget * this.MIX);
+      // per-source caps stay as a safety ceiling for a single source
+      this.w.eng_set_tap_ceiling(160);
+    } else {
+      this.w.eng_set_point_budget(this.budget);
+      this.w.eng_set_tap_ceiling(ceil);
+    }
   }
 
   async onMessage(m) {
@@ -83,8 +101,7 @@ class OmgProcessor extends AudioWorkletProcessor {
         new Float32Array(this.w.memory.buffer, ptr, f.length).set(f);
         this.w.eng_fx_commit();
       });
-      this.w.eng_set_point_budget(this.budget);
-      this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+      this.applyBudget();
       this.ready = true;
       this.port.postMessage({ type: 'ready' });
     } else if (m.type === 'params' && this.ready) {
@@ -96,6 +113,7 @@ class OmgProcessor extends AudioWorkletProcessor {
         new Float32Array(this.w.memory.buffer, ptr, f.length).set(f);
         this.w.eng_set_params(i, f.length);
       });
+      if (this.w.eng_params_commit) this.w.eng_params_commit();
       // FEED-FORWARD shed: a doorway surge (club vestibule: ~700 taps
       // vs ~100 in the open) is visible HERE, before a single sample
       // renders at the new density — don't wait for the load window to
@@ -104,8 +122,7 @@ class OmgProcessor extends AudioWorkletProcessor {
           || this.ceilIdx < this.CEILINGS.length - 1)) {
         this.budget = this.BUDGET_MIN;
         this.ceilIdx = this.CEILINGS.length - 1;
-        this.w.eng_set_point_budget(this.budget);
-        this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+        this.applyBudget();
         this.loadMs = 0;
         this.loadFrames = 0;
       }
@@ -141,24 +158,19 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.ceilFloor = m.idx || 0;
       if (this.ceilIdx < this.ceilFloor) {
         this.ceilIdx = this.ceilFloor;
-        this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+        this.applyBudget();
       }
     } else if (m.type === 'manual' && this.ready) {
       // tuning-panel override: freeze the governor and set both audio
       // levers directly. {on: false} hands control back to the meters.
       this.manual = !!m.on;
       if (this.manual) {
-        if (m.points != null) {
-          this.budget = Math.max(0, m.points | 0);
-          this.w.eng_set_point_budget(this.budget);
-        }
-        if (m.ceiling != null) {
-          this.manualCeil = Math.max(1, m.ceiling | 0);
-          this.w.eng_set_tap_ceiling(this.manualCeil);
-        }
+        if (m.points != null) this.budget = Math.max(0, m.points | 0);
+        if (m.ceiling != null) this.manualCeil = Math.max(1, m.ceiling | 0);
+        this.applyBudget();
       } else {
         this.manualCeil = null;
-        this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+        this.applyBudget();
       }
     }
   }
@@ -184,11 +196,11 @@ class OmgProcessor extends AudioWorkletProcessor {
         // tuning panel holds the levers: count the gap, touch nothing
       } else if (this.budget > this.BUDGET_MIN) {
         this.budget = this.BUDGET_MIN;
-        this.w.eng_set_point_budget(this.budget);
+        this.applyBudget();
       } else if (this.ceilIdx < this.CEILINGS.length - 1) {
         // already at the sharpness floor and still gapping: shed density
         this.ceilIdx++;
-        this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+        this.applyBudget();
       }
       this.loadMs = 0;
       this.loadFrames = 0;
@@ -214,12 +226,11 @@ class OmgProcessor extends AudioWorkletProcessor {
         if (this.budget > this.BUDGET_MIN || this.ceilIdx < this.CEILINGS.length - 1) {
           this.budget = this.BUDGET_MIN;
           this.ceilIdx = this.CEILINGS.length - 1;
-          this.w.eng_set_point_budget(this.budget);
-          this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+          this.applyBudget();
         }
       } else if (ratio > 0.55 && this.budget > this.BUDGET_MIN) {
         this.budget = Math.max(this.BUDGET_MIN, this.budget - 4);
-        this.w.eng_set_point_budget(this.budget);
+        this.applyBudget();
       } else if (ratio < 0.30) {
         // recover density before sharpness: full tap coverage at soft
         // focus beats razor focus on a thinned field. Climb at the old
@@ -230,10 +241,10 @@ class OmgProcessor extends AudioWorkletProcessor {
           this.calmWins = 0;
           if (this.ceilIdx > (this.ceilFloor || 0)) {
             this.ceilIdx--;
-            this.w.eng_set_tap_ceiling(this.CEILINGS[this.ceilIdx]);
+            this.applyBudget();
           } else if (this.budget < this.BUDGET_MAX) {
             this.budget = Math.min(this.BUDGET_MAX, this.budget + 4);
-            this.w.eng_set_point_budget(this.budget);
+            this.applyBudget();
           }
         }
       } else {

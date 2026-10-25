@@ -27,8 +27,12 @@ static TIER: AtomicU32 = AtomicU32::new(0);
 
 /// Per-lever manual overrides (a tuning UI's independent sliders):
 /// 0 = "follow the tier", anything else wins over the tier value.
-/// Ids: 0 trace rays, 1 gate age, 2 dome rays, 3 dome events, 4 ISM order.
-static OVERRIDES: [AtomicU32; 5] = [
+/// Ids: 0 trace rays, 1 gate age, 2 dome rays, 3 dome events, 4 ISM order,
+/// 5 v3 early rays, 6 v3 reflections per ray, 7 v3 late rays.
+static OVERRIDES: [AtomicU32; 8] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
@@ -194,29 +198,33 @@ impl Tier {
     /// Engine v3: rays from the listener per tick, and bounces per ray
     /// (ENGINE_V3.md). The EMA across ticks carries the variance.
     pub fn v3_rays(self) -> u32 {
-        match self {
+        let t = match self {
             Tier::High => 1024,
             Tier::Med => 768,
             Tier::Low => 512,
-        }
+        };
+        over(5, t).clamp(32, 16384)
     }
 
     /// Engine v3 late family: long rays per tick carrying the reverb
     /// tail (averaged over ~10 ticks).
     pub fn v3_late_rays(self) -> u32 {
-        match self {
+        let t = match self {
             Tier::High => 128,
             Tier::Med => 96,
             Tier::Low => 48,
-        }
+        };
+        over(7, t).clamp(8, 4096)
     }
 
+    /// Reflections per EARLY ray (the late rays continue beyond it).
     pub fn v3_bounces(self) -> u32 {
-        match self {
+        let t = match self {
             Tier::High => 6,
             Tier::Med => 4,
             Tier::Low => 3,
-        }
+        };
+        over(6, t).clamp(1, 32)
     }
 
     pub fn world_rays(self) -> u32 {

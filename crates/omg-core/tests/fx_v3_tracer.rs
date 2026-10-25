@@ -108,6 +108,28 @@ fn mirror_converges_to_the_image_source() {
 }
 
 #[test]
+fn early_tap_delays_do_not_jitter_between_ticks() {
+    // a static scene traced tick after tick: every early tap that
+    // persists must keep EXACTLY its delay (the renderer glides any
+    // same-key delay change as motion — jitter is audible pitch warble)
+    let mesh = floor_slab(flat_opaque(0.1, 0.6));
+    let world = World { mesh: &mesh, panels: &[] };
+    let mut t = Tracer::new(21);
+    let src = [Source { id: 0, pos: v(8.0, 3.0, 2.0), weight: 1.0 }];
+    let b = Budget { rays: 512, bounces: 2, k: 0.06, ema: 0.35, nee: 0, late_rays: 32, late_ema: 0.1, late_nee: 0 };
+    let mut prev: std::collections::HashMap<u32, f32> = std::collections::HashMap::new();
+    for tick in 0..10 {
+        let f = t.trace(&world, v(0.0, 0.0, 1.6), &src, b).remove(0);
+        for tap in &f.taps {
+            if let Some(d) = prev.get(&tap.key) {
+                assert_eq!(*d, tap.delay_s, "tick {tick}: key {} moved {} -> {}", tap.key, d, tap.delay_s);
+            }
+            prev.insert(tap.key, tap.delay_s);
+        }
+    }
+}
+
+#[test]
 fn lambertian_floor_converges_to_one_over_two_h_squared() {
     // white Lambertian floor, source and listener coincident at height h:
     // ∫ (cosθ/ρ²)(1/π)(cosθ/ρ²) dA = 1/(2h²)

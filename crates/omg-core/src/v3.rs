@@ -409,6 +409,7 @@ impl Tracer {
         // 5. smooth over ticks and build each source's field
         let mut out = Vec::with_capacity(sources.len());
         for (si, s) in sources.iter().enumerate() {
+            let t_free = accs[si].t_free;
             let acc = core::mem::replace(
                 &mut accs[si],
                 Acc { early: HashMap::new(), echo: Echogram::new(), t_free: 0.0, total: [0.0; NBANDS] },
@@ -452,9 +453,16 @@ impl Tracer {
                 }
                 let dl = b.dir.length();
                 let dir = if dl > 1e-9 { b.dir * (1.0 / dl) } else { self.cells[cell_of(*k)] };
+                // Delay = this tick's free-field arrival + the bin's fixed
+                // offset. An energy-weighted mean of stochastic arrivals
+                // jitters tick to tick, and the renderer glides every
+                // same-key delay change as motion: audible pitch warble
+                // ("tape delay"). Pinned offsets move only when the
+                // listener or source moves — coherent, real Doppler.
+                let dbin = (k - KEY_EARLY_BASE) % 256;
                 taps.push(Tap {
                     key: *k,
-                    delay_s: b.ed / b.e[1],
+                    delay_s: t_free + (dbin as f32 + 0.5) * DELAY_BIN_S,
                     dir: [dir.x, dir.y, dir.z],
                     gains: core::array::from_fn(|band| b.e[band].max(0.0).sqrt()),
                 });

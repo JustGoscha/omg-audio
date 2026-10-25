@@ -251,6 +251,7 @@ function buildMixer() {
 const QUAL_TIER_VALS = {
   rays: [4096, 2048, 1024], gate: [8, 12, 16], domeRays: [384, 256, 160],
   domeEvents: [6, 5, 4], ism: [3, 3, 2],
+  v3Rays: [1024, 768, 512], v3Bounces: [6, 4, 3], v3Late: [128, 96, 48],
 };
 const QUAL_SLIDERS = [
   { key: 'rays', id: 0, label: 'trace rays', min: 256, max: 32768, step: 256, section: 'simulation · 20 Hz',
@@ -263,10 +264,16 @@ const QUAL_SLIDERS = [
     tip: 'Rays sampling the outdoor-ambience dome against the real geometry every tick (how rain and city noise find windows and doorways). Fewer rays = noisier direction bins under the dome’s own smoothing.' },
   { key: 'domeEvents', id: 3, label: 'dome events', min: 2, max: 6, step: 1,
     tip: 'Bounces and glass panes a dome ray may cross before giving up. Deep events carry little energy (every surface multiplies the loss), so trimming them mostly cuts cost, not sound.' },
+  { key: 'v3Rays', id: 5, label: 'v3 rays', min: 64, max: 8192, step: 64, section: 'engine v3 · listener tracer',
+    tip: 'Rays leaving your ears each 20 Hz tick (early family). Every surface they hit connects to the sources it can see. More rays = steadier early reflections; the cost scales linearly. Only used when early refl = v3.' },
+  { key: 'v3Bounces', id: 6, label: 'reflections', min: 1, max: 24, step: 1,
+    tip: 'Reflections each early ray follows. Paths up to this order become discrete echoes (taps); everything beyond is carried by the late rays. Raising it moves more of the room into precise early echoes at linear cost.' },
+  { key: 'v3Late', id: 7, label: 'late rays', min: 16, max: 1024, step: 16,
+    tip: 'Long rays per tick that keep bouncing until the path is 3 s long or has lost 60 dB — the traced reverb tail. Averaged over ~10 ticks, so even a few dozen give a stable decay; more = steadier reverb time and level.' },
   { key: 'points', label: 'point hrtf', min: 0, max: 32, step: 1, audio: true, section: 'audio render · per sample',
-    tip: 'EVERY path is binaural: bus taps encode at their arrival direction into order-2 ambisonics decoded through 20 virtual speakers, each with its measured KEMAR HRIR — full ILD/ITD, slightly blurred (±20–30°). The strongest N paths additionally get a dedicated nearest-HRIR convolution (710-direction grid): pin-sharp. The precedence effect means the loudest early paths carry localization, so sharpness goes where hearing can use it; the weak tail reads as envelopment either way. Each point tap is a per-sample convolution on the AUDIO thread — the one place the GPU cannot help — hence the budget.' },
+    tip: 'EVERY path is binaural: bus taps encode at their arrival direction into order-2 ambisonics decoded through 20 virtual speakers, each with its measured KEMAR HRIR — full ILD/ITD, slightly blurred (±20–30°). The strongest N paths additionally get a dedicated nearest-HRIR convolution (710-direction grid): pin-sharp. The precedence effect means the loudest early paths carry localization, so sharpness goes where hearing can use it; the weak tail reads as envelopment either way. Each point tap is a per-sample convolution on the AUDIO thread — the one place the GPU cannot help — hence the budget. Mix-wide: 4× this many across all sources, given to the loudest paths at your ears.' },
   { key: 'ceiling', label: 'tap ceiling', min: 16, max: 160, step: 8, audio: true,
-    tip: 'Maximum early-reflection taps rendered per source. A doorway can carry ~145/source and the weakest half sit below the masking threshold of the strongest. Evicted taps fade out — lowering this mid-play is click-free.' },
+    tip: 'Mix-wide tap budget, in units of four sources: the engine ranks EVERY source’s paths by how loud they arrive at your ears (fader included) and renders only the strongest 4× this many in total — a quiet source behind the club keeps its direct path, the voice in front keeps sixty. Render cost no longer grows with the number of sources. Evicted taps fade out — click-free.' },
 ];
 const QUAL_TIER_TIPS = {
   auto: 'Starts at low and earns its way up: climbs a tier after ~10 s of clean running, sheds the moment a sim tick blows 40 ms or the audio thread gaps.',
@@ -278,7 +285,7 @@ const QUAL_STAT_TIPS = {
   'sim tick': 'Worker-side cost of one 20 Hz simulation tick. The budget is 50 ms; above ~40 the auto governor sheds a tier.',
   'render load': 'Audio-thread render time as a share of realtime. Above 85% the worklet governor sheds to its floor.',
   gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
-  'late field': 'Where the reverb ray traces run, with the wall-clock cost of the last trace dispatch (incl. readback). GPU runs 8× the ray budget for a fraction of the CPU cost — flip it under engine modules → compute.',
+  'late field': 'Where the reverb ray traces run, with the wall-clock cost of the last trace dispatch (incl. readback). GPU runs 8× the ray budget for a fraction of the CPU cost — flip it under engine modules → compute. In v3 the reverb is traced by the same CPU pass as the early field, inside the sim tick (GPU port pending), so the compute switch has no effect there.',
   early: 'The ACTIVE early-reflections engine as the sim reports it. Early is CPU-side by design: discovery is a few hundred rays per tick (~1 ms) and every found path is then solved EXACTLY by mirror reconstruction — tiny, branchy work the GPU can’t win. The heavy ray budgets (the reverb traces) are what the compute switch moves. ism and traced sound identical in open space; behind furniture only traced shadows.',
 };
 
@@ -555,12 +562,17 @@ function buildQuality() {
     cells[1].classList.toggle('hot', load > 0.85);
     cells[2].textContent = `${state.debug.gaps || 0}`;
     cells[2].classList.toggle('hot', (state.debug.gaps || 0) > 0);
-    cells[3].textContent = state.debug.gpu
-      ? `gpu · ${(state.debug.gpuMs || 0).toFixed(1)}ms`
-      : 'cpu';
-    cells[4].textContent = !state.debug.early ? 'ism'
-      : state.debug.gpu && state.debug.wdN
-        ? `traced · gpu ${(state.debug.wdMs || 0).toFixed(1)}ms` : 'traced · cpu';
+    // v3 traces early AND late in one CPU pass inside the sim tick: the
+    // GPU late tracer and the traced-early machinery sit idle
+    const v3 = state.debug.early === 3;
+    cells[3].textContent = v3 ? 'v3 · in sim tick'
+      : state.debug.gpu
+        ? `gpu · ${(state.debug.gpuMs || 0).toFixed(1)}ms`
+        : 'cpu';
+    cells[4].textContent = v3 ? 'v3 · cpu'
+      : !state.debug.early ? 'ism'
+        : state.debug.gpu && state.debug.wdN
+          ? `traced · gpu ${(state.debug.wdMs || 0).toFixed(1)}ms` : 'traced · cpu';
     const btn = document.getElementById('qualbtn');
     btn.textContent = `⚙ ${state.qual.manual || Object.keys(state.qual.over).length
       ? 'custom' : ['high', 'med', 'low'][q.tier] + (q.auto ? ' ·auto' : '')}`;

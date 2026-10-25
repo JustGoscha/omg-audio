@@ -891,6 +891,16 @@ struct EngCtx {
     sample_rate: f32,
     point_budget: usize,
     tap_ceiling: usize,
+    /// Mix-wide budgets (0 = off: per-source budgets as before). When set,
+    /// every committed tick ranks ALL sources' taps by loudness at the
+    /// ears and hands each source its share — render cost is bounded by
+    /// these totals, not by how many sources play (SOURCES_PLAN S1).
+    mix_taps: usize,
+    mix_points: usize,
+    /// Latest block per source, for the mix-wide ranking.
+    latest: Vec<Option<ParamBlock>>,
+    /// Current mix-wide shares per source: (taps, points).
+    shares: Vec<(usize, usize)>,
     grid: Option<Arc<HrirGrid>>,
     // staging buffers JS writes into
     hrir_grid_buf: Option<&'static mut [u8]>,
@@ -932,6 +942,10 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         sample_rate,
         point_budget: 8,
         tap_ceiling: 160,
+        mix_taps: 0,
+        mix_points: 0,
+        latest: Vec::new(),
+        shares: Vec::new(),
         grid: None,
         hrir_grid_buf: None,
         hrir_spk_buf: None,
@@ -1187,6 +1201,86 @@ pub extern "C" fn eng_set_params(src: u32, len: u32) {
     let pb = ParamBlock::read_flat(&ctx.param_buf[..len as usize]);
     if let Some(r) = ctx.renderers.get_mut(src as usize) {
         r.set_params(&pb);
+    }
+    let i = src as usize;
+    if ctx.latest.len() <= i {
+        ctx.latest.resize(i + 1, None);
+    }
+    ctx.latest[i] = Some(pb);
+}
+
+/// Mix-wide render budgets: at most `taps` taps and `points` point-HRTF
+/// convolutions across ALL sources together (0, 0 = back to the
+/// per-source budgets). Shares take effect from the next committed tick.
+#[no_mangle]
+pub extern "C" fn eng_set_mix_budget(taps: u32, points: u32) {
+    let ctx = eng();
+    ctx.mix_taps = taps as usize;
+    ctx.mix_points = points as usize;
+    ctx.shares.clear();
+    if taps == 0 {
+        let (pb, tc) = (ctx.point_budget, ctx.tap_ceiling);
+        for r in &mut ctx.renderers {
+            r.set_point_budget(pb);
+            r.set_tap_ceiling(tc);
+        }
+    }
+}
+
+/// After a tick's blocks are in: rank every tap of every source by its
+/// loudness at the ears (path gain × mixer fader) and give each source
+/// the count of its taps among the strongest `mix_taps` (≥ 1, so a
+/// source always keeps its strongest path) and among the strongest
+/// `mix_points` for point-HRTF rendering. Applied with each renderer's
+/// next block. Linear time (selection, not a sort).
+#[no_mangle]
+pub extern "C" fn eng_params_commit() {
+    let ctx = eng();
+    if ctx.mix_taps == 0 {
+        return;
+    }
+    let mut all: Vec<(f32, u16)> = Vec::new();
+    for (i, pb) in ctx.latest.iter().enumerate() {
+        let Some(pb) = pb else { continue };
+        let fader = ctx.mixer.get(i).map_or(1.0, |m| m.target_val()).max(0.0).sqrt();
+        for t in &pb.taps {
+            all.push((t.gains[1] * fader, i as u16));
+        }
+    }
+    let n_src = ctx.renderers.len();
+    let mut taps = vec![0usize; n_src];
+    let mut points = vec![0usize; n_src];
+    let mut count_top = |k: usize, out: &mut Vec<usize>, all: &mut Vec<(f32, u16)>| {
+        if k == 0 {
+            return;
+        }
+        if all.len() > k {
+            all.select_nth_unstable_by(k - 1, |a, b| b.0.total_cmp(&a.0));
+        }
+        for &(_, s) in all.iter().take(k) {
+            if let Some(c) = out.get_mut(s as usize) {
+                *c += 1;
+            }
+        }
+    };
+    count_top(ctx.mix_taps, &mut taps, &mut all);
+    count_top(ctx.mix_points, &mut points, &mut all);
+    if ctx.shares.len() < n_src {
+        ctx.shares.resize(n_src, (usize::MAX, usize::MAX));
+    }
+    for (i, r) in ctx.renderers.iter_mut().enumerate() {
+        let share = (taps[i].max(1), points[i]);
+        if ctx.shares[i] == share {
+            continue;
+        }
+        ctx.shares[i] = share;
+        r.set_tap_ceiling(share.0);
+        r.set_point_budget(share.1);
+        // a changed share takes effect now, not one tick later
+        if let Some(Some(pb)) = ctx.latest.get(i) {
+            r.invalidate_params();
+            r.set_params(pb);
+        }
     }
 }
 
@@ -1986,6 +2080,71 @@ mod tests {
     /// Sources past NSRC (tools/bench_sources.mjs scales the engine to
     /// 128) get their own unit fader, render, and never spill into the
     /// ambience/rain meter channels that follow the NSRC source meters.
+    #[test]
+    fn mix_budget_bounds_the_total_and_favors_the_loud() {
+        // SOURCES_PLAN S1: with a mix-wide budget the number of rendered
+        // taps is bounded by the TOTAL, however many sources play, and
+        // the loudest paths at the ears win it (mixer fader included).
+        let _g = eng_lock();
+        eng_init(SR);
+        let n = 20u32;
+        for i in 0..n {
+            source_with(i, &vec![0.1; 4800]);
+        }
+        // source i: 10 taps of gain (i+1)/100 — the last sources loudest
+        let block = |src: u32, version: u64| {
+            let g = (src + 1) as f32 / 100.0;
+            let pb = ParamBlock {
+                taps: (0..10)
+                    .map(|k| omg_core::params::Tap {
+                        key: 100 + k,
+                        delay_s: 0.001 * k as f32,
+                        dir: [1.0, 0.0, 0.0],
+                        gains: [g; 3],
+                    })
+                    .collect(),
+                reverb: Default::default(),
+                remote: None,
+                version,
+            };
+            let mut flat = Vec::new();
+            pb.write_flat(&mut flat);
+            unsafe { core::slice::from_raw_parts_mut(eng_param_buf_ptr(), flat.len()) }
+                .copy_from_slice(&flat);
+            eng_set_params(src, flat.len() as u32);
+        };
+        eng_set_mix_budget(40, 0);
+        for v in 1..=2u64 {
+            for i in 0..n {
+                block(i, v);
+            }
+            eng_params_commit();
+        }
+        for i in 0..n {
+            block(i, 3);
+        }
+        render(2400);
+        let live: Vec<u32> = (0..n as usize).map(|i| eng().renderers[i].debug_stats().0).collect();
+        let total: u32 = live.iter().sum();
+        // 40 shared + the guaranteed strongest path of every other source
+        assert!(total <= 40 + n, "mix budget exceeded: {total} live taps {live:?}");
+        assert!(total >= 40, "budget not used: {total} {live:?}");
+        assert_eq!(live[n as usize - 1], 10, "the loudest source keeps all its taps: {live:?}");
+        assert!(live[0] <= 1, "the quietest source keeps at most its strongest path: {live:?}");
+        // muting the loudest via its fader hands its share to the others
+        eng_set_mixer(n - 1, 0.0);
+        for v in 4..=5u64 {
+            for i in 0..n {
+                block(i, v);
+            }
+            eng_params_commit();
+        }
+        render(2400);
+        let live2: Vec<u32> = (0..n as usize).map(|i| eng().renderers[i].debug_stats().0).collect();
+        assert!(live2[n as usize - 2] == 10 && live2[n as usize - 5] == 10,
+            "the freed share goes to the next loudest: {live2:?}");
+    }
+
     #[test]
     fn sources_past_nsrc_render_unmetered() {
         let _g = eng_lock();
