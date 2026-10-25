@@ -9,5 +9,6 @@ pub mod environment;
 pub mod late;
 pub mod quality;
 pub mod sim;
+pub mod v3walk;
 pub mod walkthrough;
 pub mod world;

@@ -62,6 +62,25 @@ pub fn set_gpu_backend(on: bool) {
 const GPU_RAY_MULT: u32 = 8;
 const GPU_RAY_CAP: u32 = 32768;
 
+/// Whether an engine-v3 walker (the GPU listener walk, `v3walk.rs`) is
+/// registered. The v3 budgets rise only when it is AND the compute
+/// switch is on — a registered late backend alone must never push the
+/// CPU walk to a GPU-sized budget.
+static V3_WALKER: AtomicU32 = AtomicU32::new(0);
+
+pub fn set_v3_walker_on(on: bool) {
+    V3_WALKER.store(on as u32, Ordering::Relaxed);
+}
+
+/// Engine v3 walks on the GPU this tick.
+pub fn v3_gpu() -> bool {
+    GPU.load(Ordering::Relaxed) != 0 && V3_WALKER.load(Ordering::Relaxed) != 0
+}
+
+/// v3 budgets on the GPU: 8× rays of both families (variance only —
+/// the estimate is the same, it just settles faster and flutters less).
+const V3_GPU_MULT: u32 = 8;
+
 /// Early-reflections backend (GPU_PLAN.md Track C): 0 = ism (the
 /// classic image-source engine), 1 = traced (PT-early: discovery +
 /// exact chain solve). Both are kept forever; `traced` currently also
@@ -197,24 +216,36 @@ impl Tier {
     /// only for now — the GPU multiplier deliberately does not apply.
     /// Engine v3: rays from the listener per tick, and bounces per ray
     /// (ENGINE_V3.md). The EMA across ticks carries the variance.
+    /// ×8 while the GPU walker runs (`v3_gpu`).
     pub fn v3_rays(self) -> u32 {
+        self.v3_rays_for(v3_gpu())
+    }
+
+    /// The early-ray budget for a CPU (`gpu = false`) or GPU walk.
+    pub fn v3_rays_for(self, gpu: bool) -> u32 {
         let t = match self {
             Tier::High => 1024,
             Tier::Med => 768,
             Tier::Low => 512,
         };
-        over(5, t).clamp(32, 16384)
+        let (t, cap) = if gpu { (t * V3_GPU_MULT, 65536) } else { (t, 16384) };
+        over(5, t).clamp(32, cap)
     }
 
     /// Engine v3 late family: long rays per tick carrying the reverb
-    /// tail (averaged over ~10 ticks).
+    /// tail (averaged over ~10 ticks). ×8 on the GPU walker.
     pub fn v3_late_rays(self) -> u32 {
+        self.v3_late_rays_for(v3_gpu())
+    }
+
+    pub fn v3_late_rays_for(self, gpu: bool) -> u32 {
         let t = match self {
             Tier::High => 128,
             Tier::Med => 96,
             Tier::Low => 48,
         };
-        over(7, t).clamp(8, 4096)
+        let (t, cap) = if gpu { (t * V3_GPU_MULT, 8192) } else { (t, 4096) };
+        over(7, t).clamp(8, cap)
     }
 
     /// Reflections per EARLY ray (the late rays continue beyond it).

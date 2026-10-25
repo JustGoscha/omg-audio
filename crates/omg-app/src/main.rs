@@ -180,18 +180,20 @@ fn main() {
         omg_scene::quality::set_tier(tier);
         println!("quality tier: {q}");
     }
-    // OMG_EARLY=traced|ism: early-reflections backend (Track C).
+    // OMG_EARLY=traced|ism|v3: early-reflections backend (Track C; v3 =
+    // the one listener tracer, ENGINE_V3.md).
     if let Ok(e) = std::env::var("OMG_EARLY") {
         let mode = match e.as_str() {
             "traced" | "pt" => 1,
             "ism" => 0,
+            "v3" => 3,
             other => {
-                eprintln!("OMG_EARLY: unknown backend '{other}' (ism|traced), using ism");
+                eprintln!("OMG_EARLY: unknown backend '{other}' (ism|traced|v3), using ism");
                 0
             }
         };
         omg_scene::quality::set_early(mode);
-        println!("early reflections: {}", if mode == 1 { "traced (PT)" } else { "ism" });
+        println!("early reflections: {}", ["ism", "traced (PT)", "hybrid", "v3"][mode as usize]);
     }
     // module A/B switches (parity with the web quality panel)
     if std::env::var("OMG_DIFFRACTION").map(|v| v == "0").unwrap_or(false) {
@@ -248,6 +250,12 @@ fn main() {
                     omg_scene::early_world::set_world_discovery(Box::new(disc));
                     omg_scene::early_world::set_world_solver(Box::new(solve));
                     println!("world late field + discovery + batched solve: GPU (wgpu K2+K3+K4)");
+                }
+                // V3.3: engine v3's listener walk (K5) over the same world
+                // mesh, one walk in flight, 8x the tier's rays
+                if let Some(v3) = omg_gpu::GpuV3Walker::new(&mesh) {
+                    omg_scene::v3walk::set_v3_walker(Box::new(v3));
+                    println!("engine v3 walk: GPU (wgpu K5, async, 8x rays)");
                 }
             }
             None => println!("late field: CPU (OMG_GPU=1 but no adapter)"),

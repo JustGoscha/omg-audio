@@ -1259,7 +1259,8 @@ impl WorldSim {
             })
             .collect();
         let world = World { grade: Some(0.0), pockets: &pockets, ..World::new(&self.dome.mesh, &self.late_panels) };
-        let fields = tracer.trace(&world, eye, &srcs, budget);
+        // V3.3: the GPU walker when the compute switch is on, else CPU
+        let fields = crate::v3walk::trace(tracer, &world, eye, &srcs, budget);
 
         let (sin, cos) = st.yaw.sin_cos();
         let rot = |d: [f32; 3]| [cos * d[0] + sin * d[1], -sin * d[0] + cos * d[1], d[2]];
