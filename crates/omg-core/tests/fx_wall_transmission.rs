@@ -197,3 +197,38 @@ fn shared_wall_geometry_is_closed() {
         assert!(mesh.raycast(v(9.0, 2.5, 1.5), d).is_some());
     }
 }
+
+#[test]
+fn authored_thickness_overrides_the_geometry() {
+    // A single-plane wall (no back face to pair with) is priced at the
+    // nominal 0.1 m — unless its material carries a thickness override,
+    // which then wins over whatever the geometry says (paired or not).
+    use omg_core::mesh::MeshBuilder;
+    use omg_core::paths::segment_transmission;
+    let m = Material::BRICK;
+    let build = |thick: f32, solid: bool| {
+        let mut mb = MeshBuilder::new();
+        let id = mb.material(m);
+        if solid {
+            mb.abox(v(4.9, -50.0, -50.0), v(5.1, 50.0, 50.0), id); // 0.2 m slab
+        } else {
+            mb.quad(v(5.0, -50.0, -50.0), v(5.0, 50.0, -50.0), v(5.0, 50.0, 50.0), v(5.0, -50.0, 50.0), id);
+        }
+        mb.set_thickness(id, thick);
+        mb.build()
+    };
+    let mut hits = Vec::new();
+    let (a, b) = (v(0.0, 0.0, 1.0), v(10.0, 0.0, 1.0));
+    let plane = segment_transmission(&build(0.0, false), a, b, &mut hits);
+    let slab = segment_transmission(&build(0.0, true), a, b, &mut hits);
+    let plane_ovr = segment_transmission(&build(0.3, false), a, b, &mut hits);
+    let slab_ovr = segment_transmission(&build(0.3, true), a, b, &mut hits);
+    for band in 0..NBANDS {
+        assert!((plane[band] - m.transmission_at(0.1)[band]).abs() < 1e-7);
+        assert!((slab[band] - m.transmission_at(0.2)[band]).abs() < 1e-6);
+        assert!((plane_ovr[band] - m.transmission_at(0.3)[band]).abs() < 1e-7);
+        assert!((slab_ovr[band] - m.transmission_at(0.3)[band]).abs() < 1e-7, "a paired slab is still ONE wall");
+    }
+    assert_eq!(build(0.3, false).material_thickness(0), Some(0.3));
+    assert_eq!(build(0.0, false).material_thickness(0), None);
+}

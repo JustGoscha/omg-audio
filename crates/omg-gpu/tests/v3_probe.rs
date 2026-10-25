@@ -135,6 +135,26 @@ fn v3_probe_thick_wall_and_panels_match_cpu() {
 }
 
 #[test]
+fn v3_probe_authored_thickness_matches_cpu() {
+    // single-plane walls whose material carries a thickness override
+    // (Mesh::set_material_thickness): the kernel must price them the same
+    let mut mb = MeshBuilder::new();
+    let floor = mb.material(Material { absorption: [0.1; 3], scattering: 0.9, transmission: [0.0; 3] });
+    let wall = mb.material(Material::BRICK);
+    let pane = mb.material(Material::GLASS);
+    mb.set_thickness(wall, 0.35);
+    mb.set_thickness(pane, 0.15);
+    mb.abox(v(-60.0, -60.0, -1.0), v(60.0, 60.0, 0.0), floor);
+    mb.quad(v(5.0, -60.0, 0.0), v(5.0, 60.0, 0.0), v(5.0, 60.0, 30.0), v(5.0, -60.0, 30.0), wall);
+    mb.abox(v(-3.0, -60.0, 0.0), v(-2.9, 60.0, 30.0), pane);
+    let mesh = mb.build();
+    let w = World::new(&mesh, &[]);
+    let mut rng = Rng::new(17);
+    let segs = random_segs(&mut rng, 4000, v(-10.0, -10.0, 0.001), v(15.0, 10.0, 6.0));
+    check("authored thickness", &mesh, &w, &segs);
+}
+
+#[test]
 fn v3_probe_bunker_earth_matches_cpu() {
     let mut mb = MeshBuilder::new();
     let wall = mb.material(Material { absorption: [0.05; 3], scattering: 0.2, transmission: [0.04, 0.005, 0.0006] });

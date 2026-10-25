@@ -25,15 +25,17 @@ pub const ENERGY_SCALE: f32 = (1u32 << 30) as f32;
 pub const DIR_SCALE: f32 = (1u32 << 28) as f32;
 
 /// One face's acoustics. WGSL: absorption @0, scattering @12,
-/// transmission @16 — 32 B. Transmission drives the tracer's
-/// through-the-wall branch (mass law).
+/// transmission @16, thickness @28 — 32 B. Transmission drives the
+/// tracer's through-the-wall branch (mass law); thickness > 0 overrides
+/// the wall thickness the v3 walk infers (`Mesh::material_thickness`;
+/// the other kernels ignore it).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuFace {
     pub absorption: [f32; 3],
     pub scattering: f32,
     pub transmission: [f32; 3],
-    pub _p: u32,
+    pub thickness: f32,
 }
 
 /// The whole trace job as one uniform block.
@@ -68,7 +70,7 @@ impl GpuTraceJob {
             absorption: room.walls[i].absorption,
             scattering: room.walls[i].scattering,
             transmission: room.walls[i].transmission,
-            _p: 0,
+            thickness: 0.0,
         };
         Self {
             size: [room.size.x, room.size.y, room.size.z],
@@ -351,11 +353,12 @@ pub fn flatten_mesh(
     let mats = mesh
         .materials
         .iter()
-        .map(|m| GpuFace {
+        .enumerate()
+        .map(|(i, m)| GpuFace {
             absorption: m.absorption,
             scattering: m.scattering,
             transmission: m.transmission,
-            _p: 0,
+            thickness: mesh.material_thickness(i as u16).unwrap_or(0.0),
         })
         .collect();
     (nodes, prims, mats)

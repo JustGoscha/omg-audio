@@ -503,6 +503,8 @@ pub fn segment_transmission(mesh: &Mesh, a: Vec3, b: Vec3, hits: &mut Vec<crate:
         } else {
             0.1
         };
+        // an authored thickness wins over the geometry's (one wall either way)
+        let thickness = mesh.material_thickness(enter.material).unwrap_or(thickness);
         let tr = mat.transmission_at(thickness);
         for band in 0..NBANDS {
             g[band] *= tr[band];

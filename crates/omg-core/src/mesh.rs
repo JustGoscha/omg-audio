@@ -22,6 +22,10 @@ pub struct Mesh {
     /// Per-triangle index into `materials`.
     pub tri_material: Vec<u16>,
     pub materials: Vec<Material>,
+    /// Per-material wall-thickness override (m) for transmission; 0 =
+    /// infer it from the geometry (paired entry/exit faces). See
+    /// `set_material_thickness`.
+    thickness: Vec<f32>,
     /// Per-triangle authored-surface id (chain-key identity, C6a).
     tri_surface: Vec<u16>,
     /// Per-triangle tessellation limit (m) for BVH packing — the far
@@ -74,6 +78,8 @@ pub struct MeshBuilder {
     indices: Vec<[u32; 3]>,
     tri_material: Vec<u16>,
     materials: Vec<Material>,
+    /// Per-material thickness overrides (0 = infer).
+    thickness: Vec<f32>,
     tri_surface: Vec<u16>,
     tri_max_edge: Vec<f32>,
     /// Tessellation limit applied to subsequently pushed tris (see
@@ -92,7 +98,18 @@ impl MeshBuilder {
 
     pub fn material(&mut self, m: Material) -> u16 {
         self.materials.push(m);
+        self.thickness.push(0.0);
         (self.materials.len() - 1) as u16
+    }
+
+    /// Wall thickness (m) the transmission of `material` is priced at,
+    /// whatever the geometry says; 0 = infer it from the geometry (the
+    /// default: paired entry/exit faces of a solid wall, a nominal 0.1 m
+    /// for a single face). See `Mesh::set_material_thickness`.
+    pub fn set_thickness(&mut self, material: u16, thickness_m: f32) {
+        if let Some(t) = self.thickness.get_mut(material as usize) {
+            *t = thickness_m.max(0.0);
+        }
     }
 
     /// Open a new SURFACE: one authored plane (a wall with its aperture
@@ -153,14 +170,18 @@ impl MeshBuilder {
     }
 
     pub fn build(self) -> Mesh {
-        Mesh::with_surfaces_edges(
+        let mut mesh = Mesh::with_surfaces_edges(
             self.positions,
             self.indices,
             self.tri_material,
             self.materials,
             self.tri_surface,
             self.tri_max_edge,
-        )
+        );
+        for (i, t) in self.thickness.iter().enumerate() {
+            mesh.set_material_thickness(i as u16, *t);
+        }
+        mesh
     }
 }
 
@@ -206,11 +227,13 @@ impl Mesh {
         assert_eq!(indices.len(), tri_material.len());
         assert_eq!(indices.len(), tri_surface.len());
         assert_eq!(indices.len(), tri_max_edge.len());
+        let thickness = vec![0.0; materials.len()];
         let mut mesh = Self {
             positions,
             indices,
             tri_material,
             materials,
+            thickness,
             tri_surface,
             tri_max_edge,
             nodes: Vec::new(),
@@ -218,6 +241,25 @@ impl Mesh {
         };
         mesh.build_bvh();
         mesh
+    }
+
+    /// Price every crossing of `material` as a wall `thickness_m` thick
+    /// (mass law, `Material::transmission_at`) instead of inferring the
+    /// thickness from the geometry; 0 restores the inference. For levels
+    /// whose walls are single planes (no back face to pair with), and for
+    /// thin elements (glass: `REF_THICKNESS_M` = the material's own
+    /// transmission, as given).
+    pub fn set_material_thickness(&mut self, material: u16, thickness_m: f32) {
+        let i = material as usize;
+        if i < self.materials.len() {
+            self.thickness.resize(self.materials.len(), 0.0);
+            self.thickness[i] = thickness_m.max(0.0);
+        }
+    }
+
+    /// The thickness override of `material`, if it has one.
+    pub fn material_thickness(&self, material: u16) -> Option<f32> {
+        self.thickness.get(material as usize).copied().filter(|&t| t > 0.0)
     }
 
     /// Stable surface id of a triangle (chain-key identity).
