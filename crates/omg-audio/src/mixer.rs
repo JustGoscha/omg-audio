@@ -30,6 +30,7 @@ use omg_dsp::ambi::NCH;
 use omg_dsp::hrtf::HrirGrid;
 use omg_dsp::near::NearVoice;
 use omg_dsp::output::OutputStage;
+use omg_dsp::renderer::{BusBlock, BLOCK};
 use omg_dsp::smooth::Smoothed;
 use omg_dsp::{PlayLog, Renderer};
 use std::collections::HashMap;
@@ -734,36 +735,51 @@ impl Mixer {
                 s.audible.snap(s.audible.target_val());
             }
         }
-        for k in 0..n {
-            let mut bus = [0.0f32; NCH];
-            let (mut pl, mut pr) = (0.0f32, 0.0f32);
+        // sources render a block at a time, path by path
+        // (Renderer::process_log_block); the output stage per sample
+        let mut done = 0;
+        while done < n {
+            let m = (n - done).min(BLOCK);
+            let mut bus: BusBlock = [[0.0; BLOCK]; NCH];
+            let (mut pl, mut pr) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
             let now = self.clock;
             for &i in &self.active {
                 let s = &mut self.slots[i as usize];
-                let g = s.fader.tick() * s.audible.tick();
+                let mut gain = [0.0f32; BLOCK];
+                for g in &mut gain[..m] {
+                    *g = s.fader.tick() * s.audible.tick();
+                }
                 let w0 = bus[0];
-                let (a, b) = s.renderer.process_log(&s.log, now, g, &mut bus);
-                pl += a;
-                pr += b;
-                let dw = bus[0] - w0;
-                s.meter.add(0.5 * (a * a + b * b) + 2.0 * dw * dw);
-            }
-            let (mut ol, mut or) = self.out.process(&bus, pl, pr);
-            // near-field voices: post-loudness-stage on purpose — a
-            // whisper's identity is its absolute closeness
-            for v in &mut self.near {
-                if v.pos < v.clip.len() {
-                    let (a, b) = v.ear.process(v.clip[v.pos]);
-                    v.pos += 1;
-                    ol += a;
-                    or += b;
+                let (mut a, mut b) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
+                s.renderer.process_log_block(&s.log, now, &gain[..m], &mut bus, &mut a[..m], &mut b[..m]);
+                for j in 0..m {
+                    pl[j] += a[j];
+                    pr[j] += b[j];
+                    let dw = bus[0][j] - w0[j];
+                    s.meter.add(0.5 * (a[j] * a[j] + b[j] * b[j]) + 2.0 * dw * dw);
                 }
             }
-            let mg = self.master.tick();
-            l[k] = (ol * mg).clamp(-1.0, 1.0);
-            r[k] = (or * mg).clamp(-1.0, 1.0);
-            self.master_meter.add(0.5 * (l[k] * l[k] + r[k] * r[k]));
-            self.clock += 1.0;
+            for j in 0..m {
+                let k = done + j;
+                let bus: [f32; NCH] = core::array::from_fn(|c| bus[c][j]);
+                let (mut ol, mut or) = self.out.process(&bus, pl[j], pr[j]);
+                // near-field voices: post-loudness-stage on purpose — a
+                // whisper's identity is its absolute closeness
+                for v in &mut self.near {
+                    if v.pos < v.clip.len() {
+                        let (a, b) = v.ear.process(v.clip[v.pos]);
+                        v.pos += 1;
+                        ol += a;
+                        or += b;
+                    }
+                }
+                let mg = self.master.tick();
+                l[k] = (ol * mg).clamp(-1.0, 1.0);
+                r[k] = (or * mg).clamp(-1.0, 1.0);
+                self.master_meter.add(0.5 * (l[k] * l[k] + r[k] * r[k]));
+                self.clock += 1.0;
+            }
+            done += m;
         }
         // forget what no path of a source can still reach (the others
         // forget at the next apply)
