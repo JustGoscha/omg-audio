@@ -1,0 +1,21 @@
+assets/textures — sources and licenses
+
+All textures are from Poly Haven (https://polyhaven.com), published as
+CC0 (https://polyhaven.com/license). 1k JPG sets: *_diff (albedo),
+*_nor_gl (OpenGL normal), *_arm (AO / roughness / metal), re-encoded
+smaller with ffmpeg (diff q5, normal q6, arm downscaled to 512 px) — see
+tools/fetch_textures.sh.
+
+castle_brick_02_red        https://polyhaven.com/a/castle_brick_02_red
+white_sandstone_bricks_03  https://polyhaven.com/a/white_sandstone_bricks_03
+plastered_wall_04          https://polyhaven.com/a/plastered_wall_04
+brushed_concrete           https://polyhaven.com/a/brushed_concrete
+concrete_block_wall        https://polyhaven.com/a/concrete_block_wall
+roof_slates_02             https://polyhaven.com/a/roof_slates_02
+cobblestone_floor_08       https://polyhaven.com/a/cobblestone_floor_08
+leafy_grass                https://polyhaven.com/a/leafy_grass
+asphalt_02                 https://polyhaven.com/a/asphalt_02
+brown_planks_05            https://polyhaven.com/a/brown_planks_05
+herringbone_parquet        https://polyhaven.com/a/herringbone_parquet
+wood_floor                 https://polyhaven.com/a/wood_floor
+marble_tiles               https://polyhaven.com/a/marble_tiles
