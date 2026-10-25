@@ -270,9 +270,9 @@ const QUAL_SLIDERS = [
     tip: 'Reflections each early ray follows. Paths up to this order become discrete echoes (taps); everything beyond is carried by the late rays. Raising it moves more of the room into precise early echoes at linear cost.' },
   { key: 'v3Late', id: 7, modes: [3], label: 'late rays', min: 16, max: 1024, step: 16,
     tip: 'Long rays per tick that keep bouncing until the path is 3 s long or has lost 60 dB — the traced reverb tail. Averaged over ~10 ticks, so even a few dozen give a stable decay; more = steadier reverb time and level.' },
-  { key: 'points', label: 'point hrtf', min: 0, max: 32, step: 1, audio: true, section: 'audio render · per sample',
+  { key: 'points', label: 'point hrtf', min: 0, max: 32, step: 1, audio: true, scale: 4, section: 'audio render · per sample',
     tip: 'EVERY path is binaural: bus taps encode at their arrival direction into order-2 ambisonics decoded through 20 virtual speakers, each with its measured KEMAR HRIR — full ILD/ITD, slightly blurred (±20–30°). The strongest N paths additionally get a dedicated nearest-HRIR convolution (710-direction grid): pin-sharp. The precedence effect means the loudest early paths carry localization, so sharpness goes where hearing can use it; the weak tail reads as envelopment either way. Each point tap is a per-sample convolution on the AUDIO thread — the one place the GPU cannot help — hence the budget. Mix-wide: 4× this many across all sources, given to the loudest paths at your ears.' },
-  { key: 'ceiling', label: 'tap ceiling', min: 16, max: 160, step: 8, audio: true,
+  { key: 'ceiling', label: 'tap budget', min: 16, max: 160, step: 8, audio: true, scale: 4,
     tip: 'Mix-wide tap budget, in units of four sources: the engine ranks EVERY source’s paths by how loud they arrive at your ears (fader included) and renders only the strongest 4× this many in total — a quiet source behind the club keeps its direct path, the voice in front keeps sixty. Render cost no longer grows with the number of sources. Evicted taps fade out — click-free.' },
 ];
 const QUAL_TIER_TIPS = {
@@ -400,13 +400,16 @@ function buildQuality() {
     label.dataset.tip = s.tip;
     const input = document.createElement('input');
     input.type = 'range';
-    input.min = s.min; input.max = s.max; input.step = s.step;
+    // `scale`: the engine lever is in units of four sources (mix-wide
+    // budgets); the panel shows and sets the real totals
+    const sc = s.scale || 1;
+    input.min = s.min * sc; input.max = s.max * sc; input.step = s.step * sc;
     const val = document.createElement('div');
     val.className = 'qval';
     row.append(label, input, val);
     panel.append(row);
     input.oninput = () => {
-      const v = +input.value;
+      const v = +input.value / sc;
       if (s.audio) {
         state.qual.manual = true;
         state.qual.manualVals[s.key] = v;
@@ -578,8 +581,9 @@ function buildQuality() {
         // a GPU late-field backend runs the tier ray budget at 8x
         if (!pinned && s.key === 'rays' && state.debug.gpu) v = Math.min(v * 8, 32768);
       }
-      if (document.activeElement !== input) input.value = v;
-      val.textContent = `${v}${pinned ? ' ⏚' : ''}`;
+      const shown = Math.round(v * (s.scale || 1));
+      if (document.activeElement !== input) input.value = shown;
+      val.textContent = `${shown}${pinned ? ' ⏚' : ''}`;
       val.classList.toggle('pinned', !!pinned);
     }
     const tick = state.debug.tickMs || 0;
