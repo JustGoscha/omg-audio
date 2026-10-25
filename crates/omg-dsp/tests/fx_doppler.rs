@@ -19,6 +19,7 @@ mod common;
 use common::*;
 use omg_core::params::{ParamBlock, Tap};
 use omg_dsp::ambi::NCH;
+use omg_dsp::playlog::{Clip, PlayLog};
 use omg_dsp::Renderer;
 
 const C: f32 = 343.0;
@@ -139,4 +140,63 @@ fn slow_motion_at_long_delay_keeps_its_shift() {
             );
         }
     }
+}
+
+/// Same as `render`, but the source is a looped 1 kHz recording read from
+/// a PlayLog (no delay line) and updates arrive every `tick` samples.
+fn render_log(n: usize, tick: usize, delay_at: impl Fn(f32) -> f32) -> (Vec<f32>, u32) {
+    let mut r = Renderer::new(SR).without_line();
+    let mut log = PlayLog::new();
+    // 48 samples per cycle at 48 kHz: 100 whole cycles loop seamlessly
+    log.set_loop(Clip::from(sine(F0, 4800, 1.0)), 0.0);
+    let mut version = 1;
+    r.set_params(&block(version, delay_at(0.0)));
+    let mut out = Vec::with_capacity(n);
+    let mut max_live = 0;
+    for k in 0..n {
+        if k % tick == 0 && k > 0 {
+            version += 1;
+            r.set_params(&block(version, delay_at(k as f32 / SR)));
+        }
+        let mut bus = [0.0f32; NCH];
+        r.process_log(&log, k as f64, 1.0, &mut bus);
+        out.push(bus[0]);
+        max_live = max_live.max(r.debug_stats().0);
+    }
+    (out, max_live)
+}
+
+/// 10 km away (29 s of delay, ~1.4 M samples) and driving off at 20 m/s:
+/// the pitch is still exactly Doppler. Delays are f64 end to end — in
+/// f32 a 1.4 M-sample delay steps in 1/8 samples and the glide stalls.
+#[test]
+fn doppler_holds_at_10_km() {
+    let t_move = 0.3;
+    for v in [20.0f32, -20.0] {
+        let rate = -v / C;
+        let (y, live) = render_log(48_000, 480, |t| 10_000.0 / C + rate * (t - t_move).max(0.0));
+        let f = zc_freq(&y[28_800..43_200]);
+        let want = F0 * (1.0 - rate);
+        assert!((f - want).abs() < 0.002 * want, "v={v}: measured {f:.2} Hz, Doppler predicts {want:.2} Hz");
+        assert_eq!(live, 1, "v={v}: must glide one slot");
+    }
+}
+
+/// A 150 m/s flyover with updates at 20 Hz moves the delay 21.9 ms per
+/// tick — past RETARGET_MS, but it is motion, not a new path: the
+/// retarget window widens to half the time between updates (Mach 0.5),
+/// so it still glides at the Doppler pitch. A teleport still crossfades.
+#[test]
+fn fast_motion_at_slow_updates_still_glides() {
+    let t_move = 0.3;
+    let v = 150.0f32;
+    let rate = -v / C;
+    let (y, live) = render_log(48_000, 2400, |t| 0.5 + rate * (t - t_move).max(0.0));
+    let f = zc_freq(&y[33_600..45_600]);
+    let want = F0 * (1.0 - rate);
+    assert!((f - want).abs() < 0.01 * want, "measured {f:.2} Hz, Doppler predicts {want:.2} Hz");
+    assert_eq!(live, 1, "a fast flyover must glide, not crossfade every tick");
+    // a 1 km teleport at the same update rate: crossfade (two slots)
+    let (_, live) = render_log(9600, 2400, |t| if t < 0.1 { 0.5 } else { 0.5 + 1000.0 / C });
+    assert_eq!(live, 2, "a teleport must crossfade");
 }

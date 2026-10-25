@@ -18,7 +18,8 @@ use omg_core::params::ParamBlock;
 use omg_dsp::ambi::NCH;
 use omg_dsp::hrtf::HrirGrid;
 use omg_dsp::output::OutputStage;
-use omg_dsp::Renderer;
+use omg_dsp::playlog::Clip;
+use omg_dsp::{PlayLog, Renderer};
 use omg_scene::world::WorldSim;
 
 const NSRC: usize = 14;
@@ -968,48 +969,6 @@ pub extern "C" fn sim_state_ptr() -> *const f32 {
 
 // ============================================================== ENGINE SIDE
 
-struct SourceState {
-    data: Vec<f32>,
-    pos: usize,
-}
-
-/// One-shot playback of an fx buffer into a source's signal.
-struct Voice {
-    src: usize,
-    buf: usize,
-    pos: usize,
-    /// Per-voice level and playback rate (1, 1 = the buffer as recorded:
-    /// sample-identical to plain playback). `phase` is the fractional
-    /// read position between `pos` and `pos + 1`.
-    gain: f32,
-    rate: f32,
-    phase: f32,
-}
-
-impl Voice {
-    fn plain(src: usize, buf: usize) -> Self {
-        Self { src, buf, pos: 0, gain: 1.0, rate: 1.0, phase: 0.0 }
-    }
-
-    /// Current sample (linear interpolation; exact at phase 0).
-    fn sample(&self, b: &[f32]) -> f32 {
-        let a = b[self.pos];
-        if self.phase == 0.0 {
-            return a * self.gain;
-        }
-        let c = b.get(self.pos + 1).copied().unwrap_or(0.0);
-        (a + (c - a) * self.phase) * self.gain
-    }
-
-    fn advance(&mut self) {
-        self.phase += self.rate;
-        while self.phase >= 1.0 {
-            self.phase -= 1.0;
-            self.pos += 1;
-        }
-    }
-}
-
 /// A NEAR-FIELD one-shot (a whisper at the ear): an fx-bank buffer fed
 /// through `omg_dsp::near::NearVoice`, rendered straight into the ear
 /// buffers and bypassing propagation entirely (see that module for the
@@ -1022,7 +981,15 @@ struct NearPlay {
 
 struct EngCtx {
     renderers: Vec<Renderer>,
-    sources: Vec<SourceState>,
+    /// What each source played when (its loop, its one-shots): every path
+    /// reads it at its own emission time, so a source has no delay line
+    /// and no distance limit (omg_dsp::playlog).
+    logs: Vec<PlayLog>,
+    /// A loop JS is writing (alloc → samples → commit); it joins the
+    /// source's log at the next eng_process.
+    pending_loops: Vec<Option<Vec<f32>>>,
+    /// Engine clock: samples rendered since eng_init.
+    clock: f64,
     out: Option<OutputStage>,
     sample_rate: f32,
     point_budget: usize,
@@ -1044,9 +1011,8 @@ struct EngCtx {
     param_buf: &'static mut [f32],
     out_l: &'static mut [f32],
     out_r: &'static mut [f32],
-    fx_bufs: Vec<Vec<f32>>,
+    fx_bufs: Vec<Clip>,
     fx_stage: Option<&'static mut [f32]>,
-    voices: Vec<Voice>,
     near_voices: Vec<NearPlay>,
     ambient_stage: Option<&'static mut [f32]>,
     ambience: omg_dsp::ambience::Ambience,
@@ -1073,7 +1039,9 @@ static mut ENG: Option<EngCtx> = None;
 pub extern "C" fn eng_init(sample_rate: f32) {
     let ctx = EngCtx {
         renderers: Vec::new(),
-        sources: Vec::new(),
+        logs: Vec::new(),
+        pending_loops: Vec::new(),
+        clock: 0.0,
         out: None,
         sample_rate,
         point_budget: 8,
@@ -1090,7 +1058,6 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         out_r: leak_f32(MAX_BLOCK),
         fx_bufs: Vec::new(),
         fx_stage: None,
-        voices: Vec::new(),
         near_voices: Vec::new(),
         ambient_stage: None,
         ambience: omg_dsp::ambience::Ambience::new(sample_rate),
@@ -1141,8 +1108,8 @@ pub extern "C" fn eng_hrir_speakers_done() {
 #[no_mangle]
 pub extern "C" fn eng_source_commit(i: u32) {
     let ctx = eng();
-    if let Some(s) = ctx.sources.get_mut(i as usize) {
-        omg_dsp::level::normalize_rms(&mut s.data, omg_dsp::level::REF_CLIP_RMS);
+    if let Some(Some(data)) = ctx.pending_loops.get_mut(i as usize) {
+        omg_dsp::level::normalize_rms(data, omg_dsp::level::REF_CLIP_RMS);
     }
 }
 
@@ -1151,16 +1118,17 @@ pub extern "C" fn eng_source_commit(i: u32) {
 #[no_mangle]
 pub extern "C" fn eng_source_alloc(i: u32, nsamples: u32) -> *mut f32 {
     let ctx = eng();
-    assert_eq!(i as usize, ctx.sources.len(), "sources in order");
-    ctx.sources.push(SourceState { data: vec![0.0; nsamples as usize], pos: 0 });
-    let mut r = Renderer::with_grid(ctx.sample_rate, ctx.grid.clone());
+    assert_eq!(i as usize, ctx.logs.len(), "sources in order");
+    ctx.logs.push(PlayLog::new());
+    ctx.pending_loops.push(Some(vec![0.0; nsamples as usize]));
+    let mut r = Renderer::with_grid(ctx.sample_rate, ctx.grid.clone()).without_line();
     r.set_point_budget(ctx.point_budget);
     r.set_tap_ceiling(ctx.tap_ceiling);
     ctx.renderers.push(r);
     if ctx.mixer.len() < ctx.renderers.len() {
         ctx.mixer.push(omg_dsp::smooth::Smoothed::new(1.0, 0.02, ctx.sample_rate));
     }
-    ctx.sources.last_mut().unwrap().data.as_mut_ptr()
+    ctx.pending_loops.last_mut().unwrap().as_mut().unwrap().as_mut_ptr()
 }
 
 /// Per-source point-render budget (strongest N taps get their own HRIR
@@ -1197,7 +1165,7 @@ pub extern "C" fn eng_fx_alloc(nsamples: u32) -> *mut f32 {
 pub extern "C" fn eng_fx_commit() {
     let ctx = eng();
     let buf = ctx.fx_stage.take().expect("alloc first");
-    ctx.fx_bufs.push(buf.to_vec());
+    ctx.fx_bufs.push(Clip::from(&buf[..]));
 }
 
 #[no_mangle]
@@ -1211,18 +1179,17 @@ pub extern "C" fn eng_fx_play(src: u32, kind: u32) {
 #[no_mangle]
 pub extern "C" fn eng_fx_play_var(src: u32, kind: u32, gain: f32, rate: f32) {
     let ctx = eng();
-    if (kind as usize) < ctx.fx_bufs.len() && ctx.voices.len() < 24 {
-        let mut v = Voice::plain(src as usize, kind as usize);
-        v.gain = gain.clamp(0.0, 4.0);
-        v.rate = rate.clamp(0.5, 2.0);
-        ctx.voices.push(v);
+    if let (Some(clip), Some(log)) = (ctx.fx_bufs.get(kind as usize), ctx.logs.get_mut(src as usize)) {
+        log.play(kind, clip.clone(), ctx.clock, gain.clamp(0.0, 4.0), rate.clamp(0.5, 2.0));
     }
 }
 
 #[no_mangle]
 pub extern "C" fn eng_fx_stop(src: u32, kind: u32) {
     let ctx = eng();
-    ctx.voices.retain(|v| !(v.src == src as usize && v.buf == kind as usize));
+    if let Some(log) = ctx.logs.get_mut(src as usize) {
+        log.stop(kind, ctx.clock);
+    }
 }
 
 /// Near-field play: an fx-bank buffer whispered `dist_m` from one ear
@@ -1468,10 +1435,9 @@ pub extern "C" fn eng_set_head(yaw: f32, pitch: f32, roll: f32) {
 #[no_mangle]
 pub extern "C" fn eng_source_replace_alloc(i: u32, nsamples: u32) -> *mut f32 {
     let ctx = eng();
-    let s = &mut ctx.sources[i as usize];
-    s.data = vec![0.0; nsamples as usize];
-    s.pos = 0;
-    s.data.as_mut_ptr()
+    let p = &mut ctx.pending_loops[i as usize];
+    *p = Some(vec![0.0; nsamples as usize]);
+    p.as_mut().unwrap().as_mut_ptr()
 }
 
 /// Ambience internals for field debugging: [user, seep×3, slot mid ×8].
@@ -1509,42 +1475,25 @@ pub extern "C" fn eng_out_r() -> *const f32 {
 pub extern "C" fn eng_process(n: u32) {
     let ctx = eng();
     let n = (n as usize).min(MAX_BLOCK);
+    for (log, p) in ctx.logs.iter_mut().zip(&mut ctx.pending_loops) {
+        if let Some(data) = p.take() {
+            log.set_loop(Clip::from(data), ctx.clock);
+        }
+    }
     for i in 0..n {
         let mut bus = [0.0f32; NCH];
         let mut pl = 0.0f32;
         let mut pr = 0.0f32;
-        for (si, (src, ren)) in
-            ctx.sources.iter_mut().zip(ctx.renderers.iter_mut()).enumerate()
-        {
-            // muted and fully faded: keep the stream and any one-shots
-            // ticking (so unmute resumes in time) but skip ALL rendering
-            // — taps, HRIRs, buses. A muted channel costs nothing.
+        let now = ctx.clock;
+        for (si, (log, ren)) in ctx.logs.iter().zip(ctx.renderers.iter_mut()).enumerate() {
+            // muted and fully faded: skip ALL rendering — taps, HRIRs,
+            // buses. A muted channel costs nothing, and since its loop and
+            // one-shots are a log of times, unmute resumes in time.
             if ctx.mixer[si].target_val() == 0.0 && ctx.mixer[si].current() < 1e-4 {
-                if !src.data.is_empty() {
-                    src.pos = (src.pos + 1) % src.data.len();
-                }
-                for v in &mut ctx.voices {
-                    if v.src == si && v.pos < ctx.fx_bufs[v.buf].len() {
-                        v.advance();
-                    }
-                }
                 continue;
             }
-            let mut x = if src.data.is_empty() {
-                0.0
-            } else {
-                let s = src.data[src.pos];
-                src.pos = (src.pos + 1) % src.data.len();
-                s
-            };
-            for v in &mut ctx.voices {
-                if v.src == si && v.pos < ctx.fx_bufs[v.buf].len() {
-                    x += v.sample(&ctx.fx_bufs[v.buf]);
-                    v.advance();
-                }
-            }
             let w0 = bus[0];
-            let (a, b) = ren.process(x * ctx.mixer[si].tick(), &mut bus);
+            let (a, b) = ren.process_log(log, now, ctx.mixer[si].tick(), &mut bus);
             pl += a;
             pr += b;
             // channel meter: point stereo + this source's bus contribution
@@ -1603,8 +1552,12 @@ pub extern "C" fn eng_process(n: u32) {
         let mg = ctx.master.tick();
         ctx.out_l[i] = (l * mg).clamp(-1.0, 1.0);
         ctx.out_r[i] = (r * mg).clamp(-1.0, 1.0);
+        ctx.clock += 1.0;
     }
-    ctx.voices.retain(|v| v.pos < ctx.fx_bufs[v.buf].len());
+    // forget what no path of a source can still reach
+    for (log, ren) in ctx.logs.iter_mut().zip(&ctx.renderers) {
+        log.forget_before(ctx.clock - ren.horizon() - 1.0);
+    }
     ctx.near_voices.retain(|v| v.pos < ctx.fx_bufs[v.buf].len());
 }
 
@@ -1935,15 +1888,16 @@ mod tests {
         // rate 1.5: 3000 samples play out in ~2000
         eng_fx_play_var(0, 0, 1.0, 1.5);
         render(1990);
-        assert_eq!(eng().voices.len(), 1, "still playing at 1990 samples");
+        assert_eq!(eng().logs[0].shots(), 1, "still playing at 1990 samples");
         render(20);
-        assert!(eng().voices.is_empty(), "a 1.5x voice ends after ~2000 samples");
-        // rate 1.0 / gain 1.0 is plain playback
+        assert_eq!(eng().logs[0].shots(), 0, "a 1.5x voice ends after ~2000 samples");
+        // rate 1.0 / gain 1.0 is plain playback; its last sample is still
+        // in flight one sample after the end (1-sample tap latency)
         eng_fx_play_var(0, 0, 1.0, 1.0);
         render(2999);
-        assert_eq!(eng().voices.len(), 1);
-        render(1);
-        assert!(eng().voices.is_empty());
+        assert_eq!(eng().logs[0].shots(), 1);
+        render(2);
+        assert_eq!(eng().logs[0].shots(), 0);
     }
 
     #[test]
@@ -1981,10 +1935,10 @@ mod tests {
         render(256);
         assert!((meters()[0].0 / (2.0 * unit) - 1.0).abs() < 5e-4, "two voices sum");
 
-        // stop removes both voices of (src 0, kind 0) at once
+        // stop ends both voices of (src 0, kind 0) at once
         eng_fx_stop(0, 0);
-        assert!(eng().voices.is_empty());
         render(8); // flush the 1-sample tap latency
+        assert_eq!(eng().logs[0].shots(), 0, "stopped voices not forgotten");
         meters();
         render(1024);
         assert_eq!(meters()[0].0, 0.0, "stopped voice still sounding");
@@ -1992,20 +1946,20 @@ mod tests {
         // a voice lasts exactly its buffer, then is dropped
         eng_fx_play(0, 1);
         render(1024);
-        assert!(eng().voices.is_empty(), "finished voice not retired");
+        assert_eq!(eng().logs[0].shots(), 0, "finished voice not retired");
         let m = meters();
         let played = m[0].1 * m[0].1 * 1024.0 / (unit * unit);
         assert!((played - 300.0).abs() < 0.3, "voice lasted {played} samples, buffer is 300");
 
         // unknown kind: ignored
         eng_fx_play(0, 9);
-        assert!(eng().voices.is_empty());
+        assert_eq!(eng().logs[0].shots(), 0);
 
         // cap: 30 plays → 24 voices → 24× the level, not 30×
         for _ in 0..30 {
             eng_fx_play(0, 0);
         }
-        assert_eq!(eng().voices.len(), 24);
+        assert_eq!(eng().logs[0].shots(), 24);
         render(64);
         meters();
         render(512);
@@ -2013,11 +1967,45 @@ mod tests {
         assert!((m[0].0 / (24.0 * unit) - 1.0).abs() < 5e-4, "capped level {}", m[0].0 / unit);
     }
 
-    /// BUG: a voice played on a source index that has no allocated source
-    /// is never advanced (only allocated sources tick their voices), so it
-    /// never reaches its buffer end and holds one of the 24 slots forever.
+    /// A bell 10 km away: nothing — not the strike, not its reverb —
+    /// reaches the listener before 10 000 m / 343 m/s ≈ 29.15 s, and then
+    /// it does, read straight from the recording. The source holds no
+    /// audio history at all (a delay line long enough would be 5.6 MB).
     #[test]
-    #[ignore = "BUG: eng_fx_play on an unallocated source leaks a voice slot forever"]
+    fn a_bell_10_km_away_arrives_29_s_late_reverb_included() {
+        let _g = eng_lock();
+        eng_init(SR);
+        source_with(0, &[]);
+        let delay_s = 10_000.0 / omg_core::SPEED_OF_SOUND;
+        let pb = ParamBlock {
+            taps: vec![omg_core::params::Tap { key: 1, delay_s, dir: [1.0, 0.0, 0.0], gains: [1e-3; 3] }],
+            reverb: omg_core::params::ReverbParams { rt60: [1.5; 3], level: [1e-3; 3] },
+            remote: None,
+            version: 1,
+        };
+        let mut flat = Vec::new();
+        pb.write_flat(&mut flat);
+        unsafe { core::slice::from_raw_parts_mut(eng_param_buf_ptr(), flat.len()) }.copy_from_slice(&flat);
+        eng_set_params(0, flat.len() as u32);
+        fx_load(&vec![0.5; 48_000]); // a 1 s "strike"
+        render(4800);
+        meters();
+        eng_fx_play(0, 0);
+        let arrive = (delay_s as f64 * SR as f64) as usize;
+        render(arrive - 100);
+        assert_eq!(meters()[0], (0.0, 0.0), "heard something before the sound could arrive");
+        assert_eq!(eng().logs[0].shots(), 1, "the strike in flight was forgotten");
+        render(200);
+        let m = meters();
+        assert!(m[0].0 > 0.5 * 1e-3, "nothing arrived after {delay_s:.2} s: {:?}", m[0]);
+        render(2 * 48_000);
+        assert_eq!(eng().logs[0].shots(), 0, "a strike heard out is forgotten");
+    }
+
+    /// A voice played on a source index that has no allocated source is
+    /// dropped (it used to sit in a global voice list forever, holding a
+    /// slot): one-shots live in their own source's play log.
+    #[test]
     fn fx_voice_on_unallocated_source_does_not_leak() {
         let _g = eng_lock();
         eng_init(SR);
@@ -2025,7 +2013,8 @@ mod tests {
         fx_load(&[0.1; 100]);
         eng_fx_play(5, 0); // no source 5
         render(1024);
-        assert!(eng().voices.is_empty(), "voice on a missing source never retires");
+        assert_eq!(eng().logs.len(), 1);
+        assert_eq!(eng().logs[0].shots(), 0, "voice landed on another source");
     }
 
     /// (b) Mixer: source faders and master glide (τ 20 ms, no step), clamp
@@ -2051,7 +2040,7 @@ mod tests {
         eng_set_mixer(0, 0.25);
         let p = lvl(&probe(0, 9600));
         assert!(max_step(&p) < 2e-3, "fader step {}", max_step(&p));
-        // p[k] carries the fader of sample k−1 (1-sample tap latency)
+        // the fader applies as heard: p[k] carries the fader of sample k
         let tau = (0.02 * SR) as usize;
         let at_tau = 0.25 + 0.75 * (-1.0f32).exp();
         assert!((p[tau + 1] - at_tau).abs() < 2e-3, "after 1 τ: {} want {at_tau}", p[tau + 1]);
@@ -2071,15 +2060,16 @@ mod tests {
         // ... and once faded below −80 dB the source is skipped entirely
         render(SR as usize / 2);
         assert!(eng().mixer[0].current() < 1e-4);
-        let pos0 = eng().sources[0].pos;
+        let t0 = eng().clock;
         eng().meter_acc[0] = (0.0, 0.0, 0);
         eng_fx_play(0, 0);
         render(1000);
         assert_eq!(eng().meter_acc[0].2, 0, "muted+faded source was still rendered");
         assert_eq!(meters()[0], (0.0, 0.0));
-        // stream and one-shot kept time while skipped
-        assert_eq!(eng().sources[0].pos, (pos0 + 1000) % 4800, "loop lost its place");
-        assert!(eng().voices.is_empty(), "one-shot did not tick while muted");
+        // time kept running while skipped: the 300-sample one-shot is
+        // over and forgotten, the loop is read at the right phase
+        assert_eq!(eng().clock, t0 + 1000.0, "clock stopped while muted");
+        assert_eq!(eng().logs[0].shots(), 0, "one-shot outlived its end while muted");
 
         // unmute glides back up
         eng_set_mixer(0, 1.0);

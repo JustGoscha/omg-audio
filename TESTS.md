@@ -73,7 +73,8 @@ wgpu adapter.
 
 | Effect | Test file |
 |---|---|
-| Doppler (delay glide) | `crates/omg-dsp/tests/fx_doppler.rs` |
+| Doppler (delay glide), also at 10 km and for fast flyovers | `crates/omg-dsp/tests/fx_doppler.rs` |
+| Play log: recorded sources read at emission time, no distance limit | `crates/omg-dsp/src/playlog.rs` (unit tests), `omg-web tests::a_bell_10_km_away_arrives_29_s_late_reverb_included` |
 | Path-identity crossfade | `crates/omg-dsp/tests/fx_path_crossfade.rs` |
 | Per-tap band EQ, through-wall lowpass | `crates/omg-dsp/tests/fx_tap_eq.rs` |
 | Own-room FDN reverb | `crates/omg-dsp/tests/fx_fdn_rt60.rs` |
@@ -135,4 +136,3 @@ wgpu adapter.
 | `fx_fdn_rt60::mid_t60_independent_of_hf_damping` | FDN high damping shortens the mid T60 |
 | `fx_fdn_rt60::own_late_field_is_diffuse_for_short_rooms` | Own-room reverb leans left/up in short rooms |
 | `fx_tap_eq::deep_band_cuts_reach_their_band_gain` | First-order shelves can't reach deep band cuts |
-| `omg-web tests::fx_voice_on_unallocated_source_does_not_leak` | FX voice on an unallocated source never frees its slot |

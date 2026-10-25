@@ -13,6 +13,12 @@ impl DelayLine {
         Self { buf: vec![0.0; len], mask: len - 1, write: 0 }
     }
 
+    /// A line that holds nothing (no allocation) — for renderers whose
+    /// source is a `PlayLog`.
+    pub fn empty() -> Self {
+        Self { buf: Vec::new(), mask: 0, write: 0 }
+    }
+
     pub fn write(&mut self, x: f32) {
         self.write = (self.write + 1) & self.mask;
         self.buf[self.write] = x;

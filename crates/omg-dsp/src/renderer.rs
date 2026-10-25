@@ -2,6 +2,12 @@
 //! early taps (direct + image sources), an FDN late field, everything summed
 //! on a FOA bus and decoded to stereo.
 //!
+//! Where the source's past comes from: a live/generated source writes its
+//! samples into the delay line (`process`); a source made of recordings
+//! keeps a `PlayLog` of what it played when, and every path reads that at
+//! its own emission time (`process_log`) — no audio stored, no distance
+//! limit.
+//!
 //! Tap lifecycle: incoming taps carry a stable `key` identifying their
 //! propagation path. Same key ⇒ the slot glides (delay motion = Doppler,
 //! physically correct). New key ⇒ a free slot fades in from silence at the
@@ -13,7 +19,8 @@ use crate::delay::DelayLine;
 use crate::fdn::{Fdn, NLINES};
 use crate::filter::{OnePoleLp, TapEq};
 use crate::hrtf::{HrirGrid, PointConv};
-use crate::smooth::Smoothed;
+use crate::playlog::PlayLog;
+use crate::smooth::{Smoothed, Smoothed64};
 use omg_core::params::ParamBlock;
 use std::sync::Arc;
 
@@ -23,6 +30,15 @@ pub const MAX_TAPS: usize = 448;
 /// Delay retarget threshold: same-key delay changes above this are treated
 /// as a path identity change (crossfade), below it as motion (glide).
 const RETARGET_MS: f32 = 6.0;
+/// …or, when updates come slowly, half the time since the last one: a
+/// path may glide at up to Mach 0.5 relative speed (a fast flyover at
+/// 20 Hz updates moves its delay ~25 ms per tick and must still be
+/// Doppler, not a crossfade every tick); a teleport still crossfades.
+const RETARGET_FRACTION_OF_TICK: f64 = 0.5;
+/// Delay line length for live / generated sources (`process`). Paths
+/// longer than this clamp to its end; recorded sources use a `PlayLog`
+/// and have no such limit.
+pub const LIVE_LINE_S: f32 = 2.0;
 /// Loudness match of point-rendered direct paths vs. the bus decode.
 const POINT_GAIN: f32 = 0.8;
 /// Default per-source point-render budget: how many of the strongest taps
@@ -57,7 +73,7 @@ struct TapState {
     point: bool,
     /// Walk-frame arrival direction (pre-head-rotation), for HRIR selection.
     base_dir: [f32; 3],
-    delay: Smoothed,      // samples
+    delay: Smoothed64,    // samples
     g_low: Smoothed,      // low/mid amplitude ratio
     g_high: Smoothed,     // high/mid amplitude ratio
     g_sh: [Smoothed; NCH], // anchor gain × SH encoding, per channel
@@ -83,7 +99,7 @@ impl TapState {
 }
 
 struct TapTargets {
-    delay: f32,
+    delay: f64,
     g_low: f32,
     g_high: f32,
     g_sh: [f32; NCH],
@@ -105,7 +121,7 @@ fn targets_of(t: &omg_core::params::Tap, sample_rate: f32) -> TapTargets {
         // lowpass through the band gains: |H(800)| = 1/r → fc = 800/√(r²−1).
         let fc = (800.0 / (g_low_raw * g_low_raw - 1.0).sqrt()).clamp(60.0, 2000.0);
         TapTargets {
-            delay: t.delay_s * sample_rate,
+            delay: t.delay_s as f64 * sample_rate as f64,
             g_low: 1.0,
             g_high: 1.0,
             g_sh: core::array::from_fn(|k| t.gains[0] * enc[k]),
@@ -113,7 +129,7 @@ fn targets_of(t: &omg_core::params::Tap, sample_rate: f32) -> TapTargets {
         }
     } else {
         TapTargets {
-            delay: t.delay_s * sample_rate,
+            delay: t.delay_s as f64 * sample_rate as f64,
             g_low: safe_ratio(t.gains[0]),
             g_high: safe_ratio(t.gains[2]),
             g_sh: core::array::from_fn(|k| g_mid * enc[k]),
@@ -131,6 +147,12 @@ pub struct Renderer {
     /// ~4% of a core per source even with every slot idle
     /// (tools/bench_sources.mjs).
     active: Vec<u16>,
+    /// First arrival (smoothed least tap delay, samples): the late field
+    /// and the remote wet are fed the source as heard THEN, so a far
+    /// source's reverb never starts before its direct sound.
+    onset: Smoothed64,
+    /// Samples since the last applied ParamBlock (retarget window).
+    since_params: u32,
     fdn: Fdn,
     fdn_level: Smoothed,
     send_low: Smoothed,
@@ -196,14 +218,14 @@ impl Renderer {
         });
         let conv_taps = grid.as_ref().map_or(1, |g| g.taps);
         Self {
-            src_line: DelayLine::new((sample_rate * 0.7) as usize),
+            src_line: DelayLine::new((sample_rate * LIVE_LINE_S) as usize),
             active: Vec::with_capacity(MAX_TAPS),
             taps: (0..MAX_TAPS)
                 .map(|_| TapState {
                     key: None,
                     point: false,
                     base_dir: [1.0, 0.0, 0.0],
-                    delay: Smoothed::new(480.0, 0.05, sample_rate),
+                    delay: Smoothed64::new(480.0, 0.05, sample_rate),
                     g_low: Smoothed::new(1.0, 0.05, sample_rate),
                     g_high: Smoothed::new(1.0, 0.05, sample_rate),
                     g_sh: [Smoothed::new(0.0, 0.05, sample_rate); NCH],
@@ -214,6 +236,8 @@ impl Renderer {
                 })
                 .collect(),
             grid,
+            onset: Smoothed64::new(1.0, 0.05, sample_rate),
+            since_params: 0,
             fdn: Fdn::new(sample_rate),
             fdn_level: Smoothed::new(0.0, 0.2, sample_rate),
             send_low: Smoothed::new(1.0, 0.2, sample_rate),
@@ -245,6 +269,25 @@ impl Renderer {
             mute_own_fdn: false,
             mute_remote: false,
         }
+    }
+
+    /// Drop the live delay line: this renderer will only ever be driven
+    /// by `process_log` (its source is recordings, read from a PlayLog).
+    pub fn without_line(mut self) -> Self {
+        self.src_line = DelayLine::empty();
+        self
+    }
+
+    /// How far back (samples) any path may still read, now or once its
+    /// delay has glided to target. A PlayLog may forget what lies before
+    /// `now − horizon()`.
+    pub fn horizon(&self) -> f64 {
+        let mut h = self.onset.current().max(self.onset.target_val());
+        for &i in &self.active {
+            let d = &self.taps[i as usize].delay;
+            h = h.max(d.current()).max(d.target_val());
+        }
+        h
     }
 
     pub fn set_head(&mut self, yaw: f32, pitch: f32, roll: f32) {
@@ -306,6 +349,9 @@ impl Renderer {
             return;
         }
         self.version_seen = pb.version;
+        let thresh = (self.retarget_thresh as f64)
+            .max(RETARGET_FRACTION_OF_TICK * self.since_params as f64);
+        self.since_params = 0;
 
         // CPU ceiling: keep only the strongest incoming taps (see
         // `DEFAULT_TAP_CEILING`; the load governor lowers it live).
@@ -343,8 +389,7 @@ impl Renderer {
                 Some(i)
                     if self.taps[i].point == want_point
                         && (self.first_params
-                            || (self.taps[i].delay.target_val() - tg.delay).abs()
-                                < self.retarget_thresh) =>
+                            || (self.taps[i].delay.target_val() - tg.delay).abs() < thresh) =>
                 {
                     // Same path: glide (motion → Doppler).
                     let slot = &mut self.taps[i];
@@ -407,6 +452,14 @@ impl Renderer {
             }
         }
 
+        if let Some(first) = pb.taps.iter().map(|t| t.delay_s as f64 * self.sample_rate as f64).reduce(f64::min) {
+            if self.first_params || (self.onset.target_val() - first).abs() >= thresh {
+                self.onset.snap(first);
+            } else {
+                self.onset.set(first);
+            }
+        }
+
         self.fdn.set_rt60(pb.reverb.rt60[1], pb.reverb.rt60[2]);
         let lv = pb.reverb.level;
         let ratio = |x: f32| if lv[1] > 1e-6 { (x / lv[1]).clamp(0.0, 4.0) } else { 1.0 };
@@ -444,13 +497,32 @@ impl Renderer {
         self.first_params = false;
     }
 
-    /// One mono source sample in. Diffuse content (reflections, reverb)
+    /// One mono source sample in (a live or generated source: its past
+    /// lives in the delay line). Diffuse content (reflections, reverb)
     /// accumulates onto the shared SH bus; point-rendered taps return their
     /// binaural stereo directly. Bus decoding happens once, downstream.
     #[inline]
     pub fn process(&mut self, x: f32, bus: &mut [f32; NCH]) -> (f32, f32) {
         self.src_line.write(x);
+        let line = core::mem::replace(&mut self.src_line, DelayLine::empty());
+        let out = self.render(|d| line.read(d as f32), bus);
+        self.src_line = line;
+        out
+    }
 
+    /// One output sample of a source made of recordings: every path reads
+    /// `log` at its own emission time `now − delay`, scaled by `gain` (the
+    /// mixer fader, applied as heard). `now` is the engine clock in
+    /// samples; it must advance by one per call.
+    #[inline]
+    pub fn process_log(&mut self, log: &PlayLog, now: f64, gain: f32, bus: &mut [f32; NCH]) -> (f32, f32) {
+        self.render(|d| log.at(now - d) * gain, bus)
+    }
+
+    /// `read(d)`: the source as emitted `d` samples ago (d ≥ 1).
+    #[inline]
+    fn render(&mut self, read: impl Fn(f64) -> f32, bus: &mut [f32; NCH]) -> (f32, f32) {
+        self.since_params = self.since_params.saturating_add(1);
         let foa = bus;
         let mut pl = 0.0f32;
         let mut pr = 0.0f32;
@@ -505,7 +577,7 @@ impl Renderer {
             if g[0].abs() < 1e-7 {
                 continue;
             }
-            let s = self.src_line.read(d);
+            let s = read(d.max(1.0));
             let shaped = tap.lp.tick(s, tap.lp_coef.tick());
             let toned = tap.eq.tick(shaped, gl, gh, self.c_low, self.c_high);
             if tap.point {
@@ -522,13 +594,14 @@ impl Renderer {
             }
         }
 
-        // Late field: raw source signal scaled by the traced per-band late
+        // Late field: source signal (as of the first arrival) scaled by the traced per-band late
         // level — independent of source distance, like a real diffuse field.
         // Scaling the FDN *input* (not output) lets the tail ring out
         // naturally when the level parameter drops (e.g. stepping outdoors).
         // An FDN whose input AND tail have been silent goes to sleep — the
         // demo carries 10 sources × 2 FDNs and most are inaudible at any
         // moment; waking is instant on the first nonzero input sample.
+        let x = read(self.onset.tick().max(1.0));
         let wet_in = self.send_eq.tick(
             x * self.fdn_level.tick(),
             self.send_low.tick(),

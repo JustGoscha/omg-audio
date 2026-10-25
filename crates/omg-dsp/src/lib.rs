@@ -14,8 +14,10 @@ pub mod hrtf;
 pub mod level;
 pub mod near;
 pub mod output;
+pub mod playlog;
 pub mod rain;
 pub mod renderer;
 pub mod smooth;
 
+pub use playlog::PlayLog;
 pub use renderer::Renderer;
