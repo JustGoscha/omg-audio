@@ -26,6 +26,12 @@ pub struct TapEq {
 }
 
 impl TapEq {
+    /// Both internal states below `eps` (fed silence, its output is
+    /// negligible).
+    pub fn quiet(&self, eps: f32) -> bool {
+        self.lp_low.state.abs() < eps && self.lp_high.state.abs() < eps
+    }
+
     /// `g_low`, `g_high`: amplitude ratios vs. mid band.
     #[inline]
     pub fn tick(&mut self, x: f32, g_low: f32, g_high: f32, c_low: f32, c_high: f32) -> f32 {

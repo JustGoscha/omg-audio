@@ -40,6 +40,26 @@ impl Smoothed {
         self.cur = self.target + (self.cur - self.target) * self.coef;
         self.cur
     }
+
+    /// Per-sample decay factor: each `tick` scales `cur − target` by it.
+    pub fn coef(&self) -> f32 {
+        self.coef
+    }
+
+    /// Where a block renderer that ticked this smoother's state by hand
+    /// (see `coef`, `target_val`) left it.
+    pub fn set_current(&mut self, cur: f32) {
+        self.cur = cur;
+    }
+
+    /// Jump `n` ticks at once, exactly: `pow_n` = `coef()`ⁿ. Within a
+    /// block, sample i (0-based) of those ticks is
+    /// `target + (cur − target)·coef^(i+1)` — what block renderers use
+    /// instead of ticking.
+    #[inline]
+    pub fn advance(&mut self, pow_n: f32) {
+        self.cur = self.target + (self.cur - self.target) * pow_n;
+    }
 }
 
 /// f64 twin of [`Smoothed`] for path delays. A 10 km path is ~1.4 M
@@ -170,5 +190,62 @@ impl PathDelay {
         self.cur += self.slope;
         self.age += 1.0;
         self.cur
+    }
+
+    /// `out.len()` ticks of `L` followers side by side: `out[i][l]` is
+    /// what follower l's i-th `tick` returns — the same per-sample motion
+    /// (the slope is the Doppler pitch, so it stays sample-accurate), up
+    /// to float rounding. Two passes: the part of each step that does not
+    /// depend on the state (where the reference is, given the age) for
+    /// the whole block, then the recursion itself with the followers'
+    /// dependency chains interleaved — one follower alone is a ~20-cycle
+    /// chain per sample; side by side they overlap and vectorize.
+    #[inline]
+    pub fn tick_lanes<const L: usize>(p: &mut [PathDelay; L], out: &mut [[f64; L]]) {
+        // `tick` is  goal = A(age) − ic·cur,  slope += (goal − slope)·k,
+        // cur += slope,  with
+        //   A = vel + ic·(target − vel·max(interval − age, 0))  while coasting
+        //   A = ic·target                                       after.
+        // Rearranged as  slope = (1 − k)·slope + k·A − k·ic·cur  the chain
+        // from one sample to the next is a multiply, a subtract and the
+        // add into cur (half of tick's).
+        // pass 1: k·A(age) for the block
+        for l in 0..L {
+            let PathDelay { target, vel, age, interval: i, inv_correct: ic, slope_k: k, .. } = p[l];
+            let coast = k * (vel + ic * target);
+            let rest = k * (ic * target);
+            let civ = k * (ic * vel);
+            for (j, o) in out.iter_mut().enumerate() {
+                let age = age + j as f64;
+                let lag = i - age;
+                // (plain compares: f64::max's NaN rules cost a select
+                // chain in wasm)
+                o[l] = if age >= 2.0 * i {
+                    rest
+                } else if lag > 0.0 {
+                    coast - civ * lag
+                } else {
+                    coast
+                };
+            }
+        }
+        // pass 2: the recursion
+        let a: [f64; L] = core::array::from_fn(|l| 1.0 - p[l].slope_k);
+        let b: [f64; L] = core::array::from_fn(|l| p[l].slope_k * p[l].inv_correct);
+        let mut cur: [f64; L] = core::array::from_fn(|l| p[l].cur);
+        let mut slope: [f64; L] = core::array::from_fn(|l| p[l].slope);
+        for o in out.iter_mut() {
+            for l in 0..L {
+                slope[l] = (a[l] * slope[l] + o[l]) - b[l] * cur[l];
+                cur[l] += slope[l];
+                o[l] = cur[l];
+            }
+        }
+        let n = out.len() as f64;
+        for l in 0..L {
+            p[l].cur = cur[l];
+            p[l].slope = slope[l];
+            p[l].age += n;
+        }
     }
 }

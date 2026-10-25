@@ -13,9 +13,16 @@
 //! physically correct). New key ⇒ a free slot fades in from silence at the
 //! final delay. Vanished key ⇒ the slot fades out and is recycled. Delay is
 //! never slid between two different paths — that would be a pitch chirp.
+//!
+//! Two ways to drive it, same signal: per sample (`process`, `process_log`
+//! — the reference path), or a block at a time (`process_block`,
+//! `process_log_block`, what the hosts use): paths in groups rendered side
+//! by side, each running its whole block with its state in registers —
+//! several times cheaper per path. tests/fx_block_render.rs holds the two
+//! together.
 
 use crate::ambi::{encode_gains, rotate_z, HeadRotation, NCH};
-use crate::delay::DelayLine;
+use crate::delay::{DelayLine, READ_SLACK};
 use crate::fdn::{Fdn, NLINES};
 use crate::filter::{OnePoleLp, TapEq};
 use crate::hrtf::{HrirGrid, PointConv};
@@ -59,12 +66,22 @@ const DEFAULT_TAP_CEILING: usize = 160;
 /// check keeps it awake while anything rings — short enough that silent
 /// sources stop costing within a frame).
 const FDN_IDLE_AFTER: u32 = 1024;
+/// Time constant of every per-tap parameter smoother.
+const TAP_TAU_S: f32 = 0.05;
 /// Closing linear tail of a released slot (see `TapState::release_floor`).
 const TAIL_SAMPLES: u32 = 240;
 /// Angular spread of the remote-reverb lines around the doorway (±~30°).
 const REMOTE_SPREAD_RAD: [f32; NLINES] =
     [-0.55, -0.38, -0.22, -0.08, 0.08, 0.22, 0.38, 0.55];
 const LOW_SHELF_HZ: f32 = 250.0;
+/// Most samples one `process_block` / `process_log_block` call renders.
+pub const BLOCK: usize = 128;
+/// A block of the SH bus, channel-major (`bus[k][i]`: channel k, sample
+/// i) so per-path accumulation vectorizes over samples.
+pub type BusBlock = [[f32; BLOCK]; NCH];
+/// Head-pose HRIR re-selection period (samples).
+const RESELECT_EVERY: u32 = 128;
+const _: () = assert!(BLOCK <= READ_SLACK);
 const HIGH_SHELF_HZ: f32 = 2500.0;
 
 struct TapState {
@@ -101,6 +118,47 @@ impl TapState {
             && self.g_sh[0].target_val() == 0.0
             && self.g_sh[0].current().abs() < 1e-6
             && self.tail == 0
+    }
+
+    /// A releasing slot under its floor closes with a linear tail; at the
+    /// tail's end it is freed. For the next `m` samples: how many it still
+    /// renders (`m` = all; fewer = freed at that sample) and whether
+    /// `fade[..end]` holds tail gains — sample-exact with the per-sample
+    /// path (`pw` as in `Renderer::pw`).
+    fn lifecycle(&mut self, pw: &[f32; BLOCK], m: usize, fade: &mut [f32; BLOCK]) -> (usize, bool) {
+        let mut end = m;
+        let mut faded = false;
+        if self.key.is_none() && self.g_sh[0].target_val() == 0.0 {
+            let g0 = self.g_sh[0].current();
+            let floor = self.release_floor.max(1e-6);
+            // |g| only falls: no tail in this stretch unless it is
+            // already running or the gain reaches the floor by its end
+            if self.tail > 0 || (g0 * pw[m - 1]).abs() < floor || g0.abs() < floor {
+                let mut tail = self.tail;
+                for i in 0..m {
+                    let cur = if i == 0 { g0 } else { g0 * pw[i - 1] };
+                    if tail == 0 && cur.abs() < floor {
+                        tail = TAIL_SAMPLES;
+                    }
+                    if tail > 0 {
+                        tail -= 1;
+                        if tail == 0 {
+                            end = i;
+                            break;
+                        }
+                        fade[i] = tail as f32 / TAIL_SAMPLES as f32;
+                        faded = true;
+                    } else {
+                        fade[i] = 1.0;
+                    }
+                }
+                self.tail = tail;
+            }
+        }
+        if self.free() {
+            end = 0;
+        }
+        (end, faded)
     }
 
     fn release(&mut self) {
@@ -153,6 +211,305 @@ fn targets_of(t: &omg_core::params::Tap, sample_rate: f32) -> TapTargets {
     }
 }
 
+/// Where a block's paths read the source.
+enum Src<'a> {
+    /// The live line, with this sub-block already written: `last` is the
+    /// block index of its newest sample.
+    Line { line: &'a DelayLine, last: usize },
+    /// A recorded source; block sample j is engine time `now + j`, heard
+    /// at fader `gain[j]`.
+    Log { log: &'a PlayLog, now: f64, gain: &'a [f32] },
+}
+
+impl Src<'_> {
+    /// `out[i]`: the source as heard at block sample `j0 + i` over a path
+    /// of `max(d[i][lane], 1)` samples.
+    #[inline]
+    fn block<const L: usize>(&self, j0: usize, d: &[[f64; L]], lane: usize, out: &mut [f32]) {
+        match *self {
+            Src::Line { line, last } => {
+                for (i, (o, x)) in out.iter_mut().zip(d).enumerate() {
+                    *o = line.read_back(x[lane].max(1.0) as f32, last - (j0 + i));
+                }
+            }
+            Src::Log { log, now, gain } => {
+                let n = out.len();
+                let mut t = [0.0f64; BLOCK];
+                let base = now + j0 as f64;
+                for (i, (t, x)) in t[..n].iter_mut().zip(d).enumerate() {
+                    let x = x[lane];
+                    // max(x, 1) without f64::max's NaN select chain (wasm)
+                    *t = base + i as f64 - if x < 1.0 { 1.0 } else { x };
+                }
+                log.read_block(&t[..n], &gain[j0..j0 + n], out);
+            }
+        }
+    }
+}
+
+/// What every group of one block shares.
+struct GroupCx<'a, 'b> {
+    pw: &'a [f32; BLOCK],
+    grid: Option<&'a HrirGrid>,
+    c_low: f32,
+    c_high: f32,
+    src: &'a Src<'b>,
+    off: usize,
+    m: usize,
+    bus: &'a mut BusBlock,
+    pl: &'a mut [f32],
+    pr: &'a mut [f32],
+}
+
+/// The tap slots `group` (≤ L of them) over one block, side by side:
+/// their per-sample recursions — delay motion (f64; its slope is the
+/// Doppler pitch, so it is stepped per sample) and lowpass + shelves —
+/// run interleaved in `L` lanes, so the slots' dependency chains overlap
+/// and vectorize instead of each path waiting on its own. The rest runs
+/// per slot over the block: the source read for the whole window, and the
+/// mono result spread onto the nine bus channels with the gain smoothers
+/// in closed form (`target + (cur − target)·pw[i]`: two multiply-adds per
+/// channel and sample, vectorized over samples). Spare lanes repeat
+/// lane 0 and are thrown away. True when a slot was freed.
+fn tap_group<const L: usize>(taps: &mut [TapState], group: &[u16], cx: &mut GroupCx) -> bool {
+    let (pw, m, off) = (cx.pw, cx.m, cx.off);
+    // block scratch on the stack (measured: faster than keeping it in
+    // the renderer, zeroing included)
+    let mut dd = [[0.0f64; L]; BLOCK]; // delays, then emission times
+    let mut ss = [[0.0f32; BLOCK]; L]; // source reads
+    let mut shsh = [[0.0f32; L]; BLOCK]; // filtered
+    let mut fade = [[1.0f32; BLOCK]; L]; // release-tail gains
+    let mut mono = [0.0f32; BLOCK];
+    let mut mp = [0.0f32; BLOCK];
+    let c = group.len();
+    let idx: [usize; L] = core::array::from_fn(|l| group[if l < c { l } else { 0 }] as usize);
+    let mut end = [0usize; L];
+    let mut faded = [false; L];
+    let mut loud = [false; L];
+    for l in 0..c {
+        let tap = &mut taps[idx[l]];
+        (end[l], faded[l]) = tap.lifecycle(pw, m, &mut fade[l]);
+        if end[l] > 0 {
+            // skip silent stretches (smoothers still move); gains are
+            // monotone, so the ends bound the stretch
+            let (t0, c0) = (tap.g_sh[0].target_val(), tap.g_sh[0].current());
+            let (a, b) = (t0 + (c0 - t0) * pw[0], t0 + (c0 - t0) * pw[end[l] - 1]);
+            loud[l] = a.abs().max(b.abs()) >= 1e-7;
+        }
+    }
+
+    // delay motion, sample-accurate, all lanes at once (a freed slot's
+    // delay is snapped when it is reused)
+    let d = &mut dd[..m];
+    let mut pd: [PathDelay; L] = core::array::from_fn(|l| taps[idx[l]].delay);
+    PathDelay::tick_lanes(&mut pd, d);
+    for l in 0..c {
+        taps[idx[l]].delay = pd[l];
+    }
+
+    // the source at each path's emission times
+    for l in 0..c {
+        if loud[l] {
+            cx.src.block(off, &d[..end[l]], l, &mut ss[l][..end[l]]);
+        }
+    }
+
+    // through-wall lowpass + band shelves, lanes interleaved
+    let tg = |l: usize, f: fn(&TapState) -> &Smoothed| {
+        let g = f(&taps[idx[l]]);
+        (g.target_val(), g.current() - g.target_val())
+    };
+    let lpc: [(f32, f32); L] = core::array::from_fn(|l| tg(l, |t| &t.lp_coef));
+    let glo: [(f32, f32); L] = core::array::from_fn(|l| tg(l, |t| &t.g_low));
+    let ghi: [(f32, f32); L] = core::array::from_fn(|l| tg(l, |t| &t.g_high));
+    let mut lp: [OnePoleLp; L] = core::array::from_fn(|l| taps[idx[l]].lp);
+    let mut eq: [TapEq; L] = core::array::from_fn(|l| taps[idx[l]].eq);
+    let shaped = &mut shsh[..m];
+    let s = &ss;
+    let (c_low, c_high) = (cx.c_low, cx.c_high);
+    for (i, sh) in shaped.iter_mut().enumerate() {
+        let p = pw[i];
+        for l in 0..L {
+            let x = lp[l].tick(s[l][i], lpc[l].0 + lpc[l].1 * p);
+            sh[l] = eq[l].tick(x, glo[l].0 + glo[l].1 * p, ghi[l].0 + ghi[l].1 * p, c_low, c_high);
+        }
+    }
+
+    let mut freed = false;
+    for l in 0..c {
+        let e = end[l];
+        let tap = &mut taps[idx[l]];
+        if e > 0 {
+            let pe = pw[e - 1];
+            if loud[l] {
+                tap.lp = lp[l];
+                tap.eq = eq[l];
+                tap.lp_coef.advance(pe);
+                let mono = &mut mono[..e];
+                for (v, sh) in mono.iter_mut().zip(shaped.iter()) {
+                    *v = sh[l];
+                }
+                if faded[l] {
+                    for (v, f) in mono.iter_mut().zip(&fade[l][..e]) {
+                        *v *= f;
+                    }
+                }
+                match (cx.grid, tap.point) {
+                    (Some(grid), true) => {
+                        // g[0] is the broadband mid gain (W of SN3D SH = 1).
+                        let t0 = tap.g_sh[0].target_val();
+                        let d0 = tap.g_sh[0].current() - t0;
+                        for (i, v) in mono.iter_mut().enumerate() {
+                            *v = *v * (t0 + d0 * pw[i]) * POINT_GAIN;
+                        }
+                        tap.conv.process_block(grid, mono, &mut cx.pl[off..off + e], &mut cx.pr[off..off + e]);
+                    }
+                    _ => {
+                        // bus[k] += mono · (Tₖ + Dₖ·pw) = Tₖ·mono + Dₖ·(mono·pw)
+                        let mp = &mut mp[..e];
+                        for ((q, v), p) in mp.iter_mut().zip(mono.iter()).zip(pw) {
+                            *q = v * p;
+                        }
+                        for (k, g) in tap.g_sh.iter().enumerate() {
+                            let tk = g.target_val();
+                            let dk = g.current() - tk;
+                            let row = &mut cx.bus[k][off..off + e];
+                            for ((r, v), q) in row.iter_mut().zip(mono.iter()).zip(mp.iter()) {
+                                *r += tk * v + dk * q;
+                            }
+                        }
+                    }
+                }
+            }
+            tap.g_low.advance(pe);
+            tap.g_high.advance(pe);
+            for g in &mut tap.g_sh {
+                g.advance(pe);
+            }
+        }
+        if e < m {
+            // freed: leaves the active list after the block
+            for g in &mut tap.g_sh {
+                g.snap(0.0);
+            }
+            freed = true;
+        }
+    }
+    freed
+}
+
+/// One FDN step of `late`: wake on input, run while awake, scale the lines
+/// by `pre·lvl`, spread them onto `foa` along `dirs`, and fall asleep after
+/// `FDN_IDLE_AFTER` silent samples (clearing it when its level is gone, so
+/// what it held cannot resume as a ghost). True when it ran.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn fdn_step(
+    fdn: &mut Fdn,
+    idle: &mut u32,
+    input: f32,
+    pre: f32,
+    lvl: f32,
+    gate: f32,
+    dirs: &[[f32; NCH]; NLINES],
+    foa: &mut [f32; NCH],
+) -> bool {
+    if input.abs() > 1e-7 {
+        *idle = 0;
+    }
+    if *idle >= FDN_IDLE_AFTER {
+        return false;
+    }
+    let mut lines = [0.0f32; NLINES];
+    fdn.process(input, &mut lines);
+    let mut e = 0.0f32;
+    for i in 0..NLINES {
+        let g = lines[i] * pre * lvl;
+        e += g.abs();
+        for k in 0..NCH {
+            foa[k] += g * dirs[i][k];
+        }
+    }
+    if e < 1e-6 && input.abs() <= 1e-7 {
+        *idle += 1;
+        if *idle == FDN_IDLE_AFTER && gate == 0.0 {
+            fdn.clear();
+        }
+    } else {
+        *idle = 0;
+    }
+    true
+}
+
+/// An FDN's per-sample feed over a block (see `fdn_step`).
+struct FdnFeed<'a> {
+    input: &'a [f32],
+    pre: f32,
+    lvl: &'a [f32],
+    gate: &'a [f32],
+}
+
+/// `fdn_step` over block samples `off..off + f.input.len()`, onto `bus`.
+/// Awake and unable to fall asleep within the block (fewer samples than
+/// it still needs to idle): the FDN runs a block at a time and its lines
+/// spread onto the bus vectorized over samples. Asleep with no input: it
+/// stays asleep. Otherwise per sample, exactly as `late`.
+fn fdn_block(fdn: &mut Fdn, idle: &mut u32, f: &FdnFeed, dirs: &[[f32; NCH]; NLINES], bus: &mut BusBlock, off: usize) {
+    let m = f.input.len();
+    let wakes = f.input.iter().any(|v| v.abs() > 1e-7);
+    if *idle >= FDN_IDLE_AFTER && !wakes {
+        return;
+    }
+    if (*idle as usize) + m < FDN_IDLE_AFTER as usize && m <= fdn.max_block() {
+        let mut g = [[0.0f32; BLOCK]; NLINES];
+        fdn.process_block(f.input, &mut g);
+        let mut e = [0.0f32; BLOCK];
+        for g in &mut g {
+            for ((g, l), e) in g[..m].iter_mut().zip(f.lvl).zip(&mut e[..m]) {
+                *g = *g * f.pre * l;
+                *e += g.abs();
+            }
+        }
+        for (k, row) in bus.iter_mut().enumerate() {
+            let row = &mut row[off..off + m];
+            for (g, d) in g.iter().zip(dirs) {
+                let d = d[k];
+                for (r, g) in row.iter_mut().zip(&g[..m]) {
+                    *r += g * d;
+                }
+            }
+        }
+        for (e, x) in e[..m].iter().zip(f.input) {
+            if *e < 1e-6 && x.abs() <= 1e-7 {
+                *idle += 1;
+            } else {
+                *idle = 0;
+            }
+        }
+        return;
+    }
+    for j in 0..m {
+        let mut foa: [f32; NCH] = core::array::from_fn(|k| bus[k][off + j]);
+        if fdn_step(fdn, idle, f.input[j], f.pre, f.lvl[j], f.gate[j], dirs, &mut foa) {
+            for k in 0..NCH {
+                bus[k][off + j] = foa[k];
+            }
+        }
+    }
+}
+
+/// Advance each smoother `n` samples at once (exact one-pole jump).
+fn advance_n(s: &mut [Smoothed], n: usize) {
+    if n == 0 {
+        return;
+    }
+    for g in s {
+        if g.current() != g.target_val() {
+            g.advance(g.coef().powi(n as i32));
+        }
+    }
+}
+
 pub struct Renderer {
     grid: Option<Arc<HrirGrid>>,
     src_line: DelayLine,
@@ -197,6 +554,11 @@ pub struct Renderer {
     fdn_dirs: [[f32; NCH]; NLINES],
     c_low: f32,
     c_high: f32,
+    /// `pw[i]` = coefⁱ⁺¹ of the per-tap parameter smoothers (all share one
+    /// time constant): block rendering evaluates them in closed form,
+    /// `target + (cur − target)·pw[i]` — the same one-pole curve, without
+    /// a per-sample dependency chain.
+    pw: [f32; BLOCK],
     sample_rate: f32,
     retarget_thresh: f32,
     /// Per-source point-render budget (see `DEFAULT_POINT_TAPS`).
@@ -239,8 +601,9 @@ impl Renderer {
             ]
         });
         let conv_taps = grid.as_ref().map_or(1, |g| g.taps);
+        let tap_coef = Smoothed::new(0.0, TAP_TAU_S, sample_rate).coef() as f64;
         Self {
-            src_line: DelayLine::new((sample_rate * LIVE_LINE_S) as usize),
+            src_line: DelayLine::new((sample_rate * LIVE_LINE_S) as usize + READ_SLACK),
             active: Vec::with_capacity(MAX_TAPS),
             taps: (0..MAX_TAPS)
                 .map(|_| TapState {
@@ -248,10 +611,10 @@ impl Renderer {
                     point: false,
                     base_dir: [1.0, 0.0, 0.0],
                     delay: PathDelay::new(480.0),
-                    g_low: Smoothed::new(1.0, 0.05, sample_rate),
-                    g_high: Smoothed::new(1.0, 0.05, sample_rate),
-                    g_sh: [Smoothed::new(0.0, 0.05, sample_rate); NCH],
-                    lp_coef: Smoothed::new(1.0, 0.05, sample_rate),
+                    g_low: Smoothed::new(1.0, TAP_TAU_S, sample_rate),
+                    g_high: Smoothed::new(1.0, TAP_TAU_S, sample_rate),
+                    g_sh: [Smoothed::new(0.0, TAP_TAU_S, sample_rate); NCH],
+                    lp_coef: Smoothed::new(1.0, TAP_TAU_S, sample_rate),
                     lp: OnePoleLp::default(),
                     eq: TapEq::default(),
                     conv: PointConv::new(conv_taps, sample_rate),
@@ -282,6 +645,7 @@ impl Renderer {
             fdn_dirs: core::array::from_fn(|i| encode_gains(corner_dirs[i])),
             c_low: OnePoleLp::coef(LOW_SHELF_HZ, sample_rate),
             c_high: OnePoleLp::coef(HIGH_SHELF_HZ, sample_rate),
+            pw: core::array::from_fn(|i| tap_coef.powi(i as i32 + 1) as f32),
             sample_rate,
             retarget_thresh: RETARGET_MS * 1e-3 * sample_rate,
             point_budget: DEFAULT_POINT_TAPS,
@@ -553,7 +917,7 @@ impl Renderer {
     pub fn process(&mut self, x: f32, bus: &mut [f32; NCH]) -> (f32, f32) {
         self.src_line.write(x);
         let line = core::mem::replace(&mut self.src_line, DelayLine::empty());
-        let out = self.render(|d| line.read(d as f32), bus);
+        let out = self.render(|d| line.read_back(d as f32, 0), bus);
         self.src_line = line;
         out
     }
@@ -565,6 +929,168 @@ impl Renderer {
     #[inline]
     pub fn process_log(&mut self, log: &PlayLog, now: f64, gain: f32, bus: &mut [f32; NCH]) -> (f32, f32) {
         self.render(|d| log.at(now - d) * gain, bus)
+    }
+
+    /// Block form of [`process`](Self::process): `x.len()` (≤ [`BLOCK`])
+    /// live source samples in; the bus contribution is ADDED to `bus`
+    /// (`bus[k][i]`), point-rendered stereo ADDED to `pl[i]`, `pr[i]`.
+    /// Renders what `x.len()` calls of `process` would, path by path
+    /// instead of sample by sample (see `render_block`).
+    pub fn process_block(&mut self, x: &[f32], bus: &mut BusBlock, pl: &mut [f32], pr: &mut [f32]) {
+        let n = x.len().min(BLOCK).min(pl.len()).min(pr.len());
+        let mut line = core::mem::replace(&mut self.src_line, DelayLine::empty());
+        let mut off = 0;
+        while off < n {
+            let m = self.begin_sub_block(n - off);
+            for &v in &x[off..off + m] {
+                line.write(v);
+            }
+            let src = Src::Line { line: &line, last: off + m - 1 };
+            self.render_block(&src, off, m, bus, pl, pr);
+            off += m;
+        }
+        self.src_line = line;
+    }
+
+    /// Block form of [`process_log`](Self::process_log): `gain.len()`
+    /// (≤ [`BLOCK`]) samples starting at engine time `now`, `gain[i]` the
+    /// fader at sample i. Adds onto `bus`, `pl`, `pr` like
+    /// [`process_block`](Self::process_block).
+    pub fn process_log_block(
+        &mut self,
+        log: &PlayLog,
+        now: f64,
+        gain: &[f32],
+        bus: &mut BusBlock,
+        pl: &mut [f32],
+        pr: &mut [f32],
+    ) {
+        let n = gain.len().min(BLOCK).min(pl.len()).min(pr.len());
+        let src = Src::Log { log, now, gain };
+        let mut off = 0;
+        while off < n {
+            let m = self.begin_sub_block(n - off);
+            self.render_block(&src, off, m, bus, pl, pr);
+            off += m;
+        }
+    }
+
+    /// Head pose, HRIR re-selection and bookkeeping for the next sub-block
+    /// of at most `left` samples; returns its length. Sub-blocks end where
+    /// the per-sample path would re-select (every `RESELECT_EVERY`
+    /// samples), so the re-selection lands on the same sample.
+    fn begin_sub_block(&mut self, left: usize) -> usize {
+        let m;
+        if self.reselect_countdown == 0 {
+            let yaw = self.head[0].tick();
+            let pitch = self.head[1].tick();
+            let roll = self.head[2].tick();
+            self.reselect(yaw, pitch, roll);
+            self.reselect_countdown = RESELECT_EVERY;
+            m = left.min(RESELECT_EVERY as usize);
+            advance_n(&mut self.head, m - 1);
+        } else {
+            m = left.min(self.reselect_countdown as usize);
+            advance_n(&mut self.head, m);
+        }
+        self.reselect_countdown -= m as u32;
+        self.since_params = self.since_params.saturating_add(m as u32);
+        m
+    }
+
+    /// Re-select point-tap HRIRs against the head pose (PointConv
+    /// crossfades index changes) and refresh the remote-reverb aperture
+    /// spread from the smoothed door direction.
+    fn reselect(&mut self, yaw: f32, pitch: f32, roll: f32) {
+        if let Some(grid) = &self.grid {
+            let rot = HeadRotation::new(yaw, pitch, roll);
+            for tap in &mut self.taps {
+                if tap.point && tap.key.is_some() {
+                    tap.conv.set_dir(grid, rot.rotate_dir(tap.base_dir));
+                }
+            }
+        }
+        let center: [f32; NCH] = core::array::from_fn(|k| self.remote_sh[k].current());
+        for (i, offs) in REMOTE_SPREAD_RAD.iter().enumerate() {
+            let mut v = center;
+            rotate_z(&mut v, *offs);
+            self.remote_spread[i] = v;
+        }
+    }
+
+    /// Samples `off..off + m` of a block (`m` ≤ `BLOCK`, no re-selection
+    /// inside), path by path: each tap runs its whole stretch with its
+    /// state in registers — delay motion per sample (the slope is the
+    /// Doppler pitch), the source read for the whole window at once,
+    /// lowpass + shelves, then a mono block spread onto the nine bus
+    /// channels with the gain smoothers in closed form (two vectorizable
+    /// multiply-adds per channel and sample). Same signal as `m` calls of
+    /// `render`, up to float rounding (tests/fx_block_render.rs).
+    fn render_block(&mut self, src: &Src, off: usize, m: usize, bus: &mut BusBlock, pl: &mut [f32], pr: &mut [f32]) {
+        if !self.mute_taps {
+            self.taps_block(src, off, m, bus, pl, pr);
+        }
+        // Late field + remote wet. Both FDNs asleep with their sends shut
+        // and their send filters run down: the per-sample pass would only
+        // move smoothers and push zeros, so jump them instead (most
+        // sources, most of the time).
+        let quiet = self.fdn_idle >= FDN_IDLE_AFTER
+            && self.remote_idle >= FDN_IDLE_AFTER
+            && self.fdn_level.current() <= 1e-6
+            && self.fdn_level.target_val() <= 1e-6
+            && self.remote_level.current() <= 1e-6
+            && self.remote_level.target_val() <= 1e-6
+            && self.send_eq.quiet(1e-9)
+            && self.remote_eq.quiet(1e-9)
+            && self.remote_lp.state.abs() < 1e-9;
+        if quiet {
+            for _ in 0..m {
+                self.onset.tick();
+            }
+            for g in [
+                &mut self.fdn_level,
+                &mut self.send_low,
+                &mut self.send_high,
+                &mut self.remote_level,
+                &mut self.remote_low,
+                &mut self.remote_high,
+                &mut self.remote_lp_coef,
+            ] {
+                advance_n(core::slice::from_mut(g), m);
+            }
+        } else {
+            // the source as of the first arrival, read for the block
+            let mut d = [[0.0f64; 1]; BLOCK];
+            let mut x = [0.0f32; BLOCK];
+            PathDelay::tick_lanes(core::array::from_mut(&mut self.onset), &mut d[..m]);
+            src.block(off, &d[..m], 0, &mut x[..m]);
+            self.late_block(&x[..m], off, bus);
+        }
+        // the remote direction smoothers are only read at re-selection
+        let pm = self.remote_sh[0].coef().powi(m as i32);
+        for g in &mut self.remote_sh {
+            g.advance(pm);
+        }
+    }
+
+    /// The early paths over samples `off..off + m`, in groups of 8 (4 for
+    /// a short tail) rendered side by side (see `tap_group`).
+    fn taps_block(&mut self, src: &Src, off: usize, m: usize, bus: &mut BusBlock, pl: &mut [f32], pr: &mut [f32]) {
+        let Renderer { taps, active, pw, grid, c_low, c_high, .. } = self;
+        let mut cx = GroupCx { pw, grid: grid.as_deref(), c_low: *c_low, c_high: *c_high, src, off, m, bus, pl, pr };
+        let mut freed = false;
+        let mut a0 = 0;
+        while a0 < active.len() {
+            let left = active.len() - a0;
+            let c = if left > 4 { left.min(8) } else { left };
+            let g = &active[a0..a0 + c];
+            freed |= if c > 4 { tap_group::<8>(taps, g, &mut cx) } else { tap_group::<4>(taps, g, &mut cx) };
+            a0 += c;
+        }
+        if freed {
+            let taps = &self.taps;
+            self.active.retain(|&i| !taps[i as usize].free());
+        }
     }
 
     /// `read(d)`: the source as emitted `d` samples ago (d ≥ 1).
@@ -582,21 +1108,8 @@ impl Renderer {
         // current head pose (PointConv crossfades index changes), and refresh
         // the remote-reverb aperture spread from the smoothed door direction.
         if self.reselect_countdown == 0 {
-            self.reselect_countdown = 128;
-            if let Some(grid) = &self.grid {
-                let rot = HeadRotation::new(yaw, pitch, roll);
-                for tap in &mut self.taps {
-                    if tap.point && tap.key.is_some() {
-                        tap.conv.set_dir(grid, rot.rotate_dir(tap.base_dir));
-                    }
-                }
-            }
-            let center: [f32; NCH] = core::array::from_fn(|k| self.remote_sh[k].current());
-            for (i, offs) in REMOTE_SPREAD_RAD.iter().enumerate() {
-                let mut v = center;
-                rotate_z(&mut v, *offs);
-                self.remote_spread[i] = v;
-            }
+            self.reselect_countdown = RESELECT_EVERY;
+            self.reselect(yaw, pitch, roll);
         }
         self.reselect_countdown -= 1;
 
@@ -657,6 +1170,15 @@ impl Renderer {
             }
         }
 
+        let x = read(self.onset.tick().max(1.0));
+        self.late(x, foa);
+        (pl, pr)
+    }
+
+    /// Late field and coupled-room wet for one sample, `x` = the source
+    /// as of its first arrival. Adds onto `foa`.
+    #[inline]
+    fn late(&mut self, x: f32, foa: &mut [f32; NCH]) {
         // Late field: source signal (as of the first arrival) through the
         // FDN, scaled by the traced per-band late level — independent of
         // source distance, like a real diffuse field. The level applies at
@@ -667,7 +1189,6 @@ impl Renderer {
         // The input is gated off once the level is negligible, so an FDN
         // whose input AND tail are silent goes to sleep — most sources are
         // inaudible at any moment; waking is instant.
-        let x = read(self.onset.tick().max(1.0));
         let own_level = self.fdn_level.tick();
         let own_gate = if own_level > 1e-6 || self.fdn_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
         let wet_in = self.send_eq.tick(
@@ -678,32 +1199,7 @@ impl Renderer {
             self.c_high,
         );
         let own_in = if self.mute_own_fdn { 0.0 } else { wet_in };
-        if own_in.abs() > 1e-7 {
-            self.fdn_idle = 0;
-        }
-        if self.fdn_idle < FDN_IDLE_AFTER {
-            let mut lines = [0.0f32; NLINES];
-            self.fdn.process(own_in, &mut lines);
-            let mut e = 0.0f32;
-            let lvl = 0.5 * own_level;
-            for i in 0..NLINES {
-                let g = lines[i] * lvl;
-                e += g.abs();
-                for k in 0..NCH {
-                    foa[k] += g * self.fdn_dirs[i][k];
-                }
-            }
-            if e < 1e-6 && own_in.abs() <= 1e-7 {
-                self.fdn_idle += 1;
-                // asleep with its level gone: what it held is inaudible
-                // and must not resume as a ghost when the level returns
-                if self.fdn_idle == FDN_IDLE_AFTER && own_gate == 0.0 {
-                    self.fdn.clear();
-                }
-            } else {
-                self.fdn_idle = 0;
-            }
-        }
+        fdn_step(&mut self.fdn, &mut self.fdn_idle, own_in, 1.0, 0.5 * own_level, own_gate, &self.fdn_dirs, foa);
 
         // Coupled-room wet: source room's reverb as a directional emitter
         // at the doorway (mono sum — a distant aperture, not a diffuse field
@@ -725,30 +1221,42 @@ impl Renderer {
             self.remote_sh[k].tick();
         }
         let rem_in = if self.mute_remote { 0.0 } else { rin };
-        if rem_in.abs() > 1e-7 {
-            self.remote_idle = 0;
+        fdn_step(&mut self.remote_fdn, &mut self.remote_idle, rem_in, 0.9, rem_level, rem_gate, &self.remote_spread, foa);
+    }
+
+    /// `late` for block samples `off..off + x.len()` (`x[j]` = the source
+    /// as of the first arrival): the send chains and smoothers per sample,
+    /// each FDN a block at a time while it is awake and stays awake
+    /// through the block (around falling asleep or waking it steps per
+    /// sample, exactly as `late`).
+    fn late_block(&mut self, x: &[f32], off: usize, bus: &mut BusBlock) {
+        let m = x.len();
+        let (c_low, c_high) = (self.c_low, self.c_high);
+        let mut own_in = [0.0f32; BLOCK];
+        let mut own_lvl = [0.0f32; BLOCK];
+        let mut own_gate = [0.0f32; BLOCK];
+        let mut rem_in = [0.0f32; BLOCK];
+        let mut rem_lvl = [0.0f32; BLOCK];
+        let mut rem_gate = [0.0f32; BLOCK];
+        for (j, &x) in x.iter().enumerate() {
+            let own_level = self.fdn_level.tick();
+            let gate = if own_level > 1e-6 || self.fdn_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
+            let wet_in = self.send_eq.tick(x * gate, self.send_low.tick(), self.send_high.tick(), c_low, c_high);
+            own_in[j] = if self.mute_own_fdn { 0.0 } else { wet_in };
+            own_lvl[j] = 0.5 * own_level;
+            own_gate[j] = gate;
+            let rem_level = self.remote_level.tick();
+            let gate = if rem_level > 1e-6 || self.remote_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
+            let rpre = self.remote_lp.tick(x * gate, self.remote_lp_coef.tick());
+            let rin = self.remote_eq.tick(rpre, self.remote_low.tick(), self.remote_high.tick(), c_low, c_high);
+            rem_in[j] = if self.mute_remote { 0.0 } else { rin };
+            rem_lvl[j] = rem_level;
+            rem_gate[j] = gate;
         }
-        if self.remote_idle < FDN_IDLE_AFTER {
-            let mut rlines = [0.0f32; NLINES];
-            self.remote_fdn.process(rem_in, &mut rlines);
-            let mut e = 0.0f32;
-            for (i, line) in rlines.iter().enumerate() {
-                let g = line * 0.9 * rem_level;
-                e += g.abs();
-                for k in 0..NCH {
-                    foa[k] += g * self.remote_spread[i][k];
-                }
-            }
-            if e < 1e-6 && rem_in.abs() <= 1e-7 {
-                self.remote_idle += 1;
-                if self.remote_idle == FDN_IDLE_AFTER && rem_gate == 0.0 {
-                    self.remote_fdn.clear();
-                }
-            } else {
-                self.remote_idle = 0;
-            }
-        }
-        (pl, pr)
+        let own = FdnFeed { input: &own_in[..m], pre: 1.0, lvl: &own_lvl[..m], gate: &own_gate[..m] };
+        fdn_block(&mut self.fdn, &mut self.fdn_idle, &own, &self.fdn_dirs, bus, off);
+        let rem = FdnFeed { input: &rem_in[..m], pre: 0.9, lvl: &rem_lvl[..m], gate: &rem_gate[..m] };
+        fdn_block(&mut self.remote_fdn, &mut self.remote_idle, &rem, &self.remote_spread, bus, off);
     }
 }
 

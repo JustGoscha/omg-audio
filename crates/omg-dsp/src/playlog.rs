@@ -165,6 +165,78 @@ impl PlayLog {
         x
     }
 
+    /// `out[i] = at(t[i]) · gain[i]` for a block of emission times — one
+    /// path's reads over a render block. `t` moves by about one sample
+    /// per entry (slowly varying delay), so the loop segment is looked up
+    /// once and its read position stepped instead of re-wrapped; one-shots
+    /// that cannot sound anywhere in the block are skipped whole.
+    pub fn read_block(&self, t: &[f64], gain: &[f32], out: &mut [f32]) {
+        let n = t.len().min(gain.len()).min(out.len());
+        let (t, gain, out) = (&t[..n], &gain[..n], &mut out[..n]);
+        if n == 0 {
+            return;
+        }
+        // the block's emission-time span — only needed when a loop
+        // hand-over or a one-shot could start or end inside it (plain
+        // compares: f64::min/max's NaN rules cost a select chain in wasm)
+        let always = matches!(self.loops.as_slice(), [only] if only.start == f64::NEG_INFINITY);
+        let (lo, hi) = if always && self.shots.is_empty() {
+            (t[0], t[0])
+        } else {
+            let (mut lo, mut hi) = (t[0], t[0]);
+            for &x in t {
+                if x < lo {
+                    lo = x;
+                }
+                if x > hi {
+                    hi = x;
+                }
+            }
+            (lo, hi)
+        };
+        // loop part: one segment covering the whole block (the usual
+        // case), else per sample
+        let seg_of = |x: f64| -> Option<usize> {
+            match self.loops.as_slice() {
+                [only] if only.start <= x => Some(0),
+                [_] | [] => None,
+                many => many.iter().rposition(|s| s.start <= x),
+            }
+        };
+        let (slo, shi) = (seg_of(lo), seg_of(hi));
+        if slo == shi {
+            match slo.map(|i| &self.loops[i]) {
+                Some(seg) if !seg.clip.is_empty() => {
+                    let origin = if seg.start.is_finite() { seg.start } else { 0.0 };
+                    loop_block(&seg.clip, t, origin, seg.rate as f64, seg.gain, gain, out);
+                }
+                _ => out.fill(0.0),
+            }
+        } else {
+            for ((o, &x), g) in out.iter_mut().zip(t).zip(gain) {
+                *o = match seg_of(x).map(|i| &self.loops[i]) {
+                    Some(seg) => {
+                        let origin = if seg.start.is_finite() { seg.start } else { 0.0 };
+                        let p = if seg.rate == 1.0 { x - origin } else { (x - origin) * seg.rate as f64 };
+                        loop_sample(&seg.clip, p) * seg.gain * g
+                    }
+                    None => 0.0,
+                };
+            }
+        }
+        for s in &self.shots {
+            if hi < s.start || lo >= s.end() {
+                continue;
+            }
+            let rate = s.rate as f64;
+            for ((o, &x), g) in out.iter_mut().zip(t).zip(gain) {
+                if x >= s.start && x < s.stop {
+                    *o += clip_sample(&s.clip, (x - s.start) * rate) * s.gain * g;
+                }
+            }
+        }
+    }
+
     /// Forget what no path can still hear: nothing will read before `t`.
     pub fn forget_before(&mut self, t: f64) {
         self.shots.retain(|s| s.end() > t);
@@ -190,6 +262,36 @@ fn loop_sample(c: &[f32], p: f64) -> f32 {
         return a;
     }
     a + (c[(i + 1) % n] - a) * f
+}
+
+/// `out[i] = loop_sample(c, (t[i] − origin)·rate) · seg_gain · gain[i]`,
+/// stepping the wrapped read position from `t[0]` instead of re-wrapping
+/// every sample.
+fn loop_block(c: &[f32], t: &[f64], origin: f64, rate: f64, seg_gain: f32, gain: &[f32], out: &mut [f32]) {
+    let n = c.len();
+    let nf = n as f64;
+    let wrap = |p: f64| p - (p / nf).floor() * nf;
+    let t0 = t[0];
+    let p0 = wrap((t0 - origin) * rate);
+    for ((o, &x), g) in out.iter_mut().zip(t).zip(gain) {
+        let mut p = p0 + (x - t0) * rate;
+        if p >= nf {
+            p -= nf;
+            if p >= nf {
+                p = wrap(p);
+            }
+        } else if p < 0.0 {
+            p += nf;
+            if p < 0.0 {
+                p = wrap(p);
+            }
+        }
+        let i = (p as usize).min(n - 1);
+        let f = (p - i as f64) as f32;
+        let a = c[i];
+        let b = c[if i + 1 == n { 0 } else { i + 1 }];
+        *o = (a + (b - a) * f) * seg_gain * g;
+    }
 }
 
 fn clip_sample(c: &[f32], p: f64) -> f32 {
