@@ -597,6 +597,7 @@ mod tests {
                 })
                 .collect(),
             windows: vec![],
+            ..Default::default()
         }
     }
 
@@ -607,6 +608,7 @@ mod tests {
             roof_gain: 1.0,
             routes: vec![],
             windows: vec![EnvWindow { dir: [1.0, 0.0, 0.0], gain: 0.5 }],
+            ..Default::default()
         }
     }
 

@@ -14,9 +14,12 @@ pub const MAX_ENV_WINDOWS: usize = 4;
 const ROUTE_STRIDE: usize = 8; // id, dir xyz, gains ×3, dist
 const WINDOW_STRIDE: usize = 4; // dir xyz, gain
 
-/// seep(3) + enclosure + roof + n_routes + routes + n_windows + windows.
-pub const ENV_FLAT_LEN: usize =
-    3 + 1 + 1 + 1 + MAX_ENV_ROUTES * ROUTE_STRIDE + 1 + MAX_ENV_WINDOWS * WINDOW_STRIDE;
+/// seep(3) + enclosure + roof + n_routes + routes + n_windows + windows
+/// + amb_seep(3) + n_amb_routes + amb_routes.
+pub const ENV_FLAT_LEN: usize = AMB_OFF + 3 + 1 + MAX_ENV_ROUTES * ROUTE_STRIDE;
+
+/// Where the ambience block starts in the flat form (after the windows).
+pub const AMB_OFF: usize = 3 + 1 + 1 + 1 + MAX_ENV_ROUTES * ROUTE_STRIDE + 1 + MAX_ENV_WINDOWS * WINDOW_STRIDE;
 
 /// One inlet for the outdoor field: an aperture of the listener's room
 /// (door slit, pane, stairwell) or — outdoors — a horizon sector of the
@@ -60,6 +63,14 @@ pub struct Environment {
     pub roof_gain: f32,
     pub routes: Vec<EnvRoute>,
     pub windows: Vec<EnvWindow>,
+    /// The AMBIENCE bed's diffuse residual inside the shell — `seep`
+    /// scaled by how loud the bed's emitters are around the building.
+    pub amb_seep: [f32; 3],
+    /// The ambience bed's inlets: the field of its shaped emitters
+    /// (`omg_scene::ambient`) — direct from the emitters' geometry plus
+    /// what the occluded share returns through the sky inlets. `routes`
+    /// stay the dome's (rain falls from the sky everywhere).
+    pub amb_routes: Vec<EnvRoute>,
 }
 
 impl Default for Environment {
@@ -70,8 +81,37 @@ impl Default for Environment {
             roof_gain: 0.0,
             routes: Vec::new(),
             windows: Vec::new(),
+            amb_seep: [0.0; 3],
+            amb_routes: Vec::new(),
         }
     }
+}
+
+fn write_routes(routes: &[EnvRoute], out: &mut [f32]) {
+    let nr = routes.len().min(MAX_ENV_ROUTES);
+    out[0] = nr as f32;
+    for (i, r) in routes.iter().take(nr).enumerate() {
+        let o = 1 + i * ROUTE_STRIDE;
+        out[o] = r.id as f32;
+        out[o + 1..o + 4].copy_from_slice(&r.dir);
+        out[o + 4..o + 7].copy_from_slice(&r.gains);
+        out[o + 7] = r.dist;
+    }
+}
+
+fn read_routes(flat: &[f32]) -> Vec<EnvRoute> {
+    let nr = (flat[0] as usize).min(MAX_ENV_ROUTES);
+    (0..nr)
+        .map(|i| {
+            let o = 1 + i * ROUTE_STRIDE;
+            EnvRoute {
+                id: flat[o] as u32,
+                dir: [flat[o + 1], flat[o + 2], flat[o + 3]],
+                gains: [flat[o + 4], flat[o + 5], flat[o + 6]],
+                dist: flat[o + 7],
+            }
+        })
+        .collect()
 }
 
 impl Environment {
@@ -81,15 +121,7 @@ impl Environment {
         out[..3].copy_from_slice(&self.seep);
         out[3] = self.enclosure;
         out[4] = self.roof_gain;
-        let nr = self.routes.len().min(MAX_ENV_ROUTES);
-        out[5] = nr as f32;
-        for (i, r) in self.routes.iter().take(nr).enumerate() {
-            let o = 6 + i * ROUTE_STRIDE;
-            out[o] = r.id as f32;
-            out[o + 1..o + 4].copy_from_slice(&r.dir);
-            out[o + 4..o + 7].copy_from_slice(&r.gains);
-            out[o + 7] = r.dist;
-        }
+        write_routes(&self.routes, &mut out[5..]);
         let wo = 6 + MAX_ENV_ROUTES * ROUTE_STRIDE;
         let nw = self.windows.len().min(MAX_ENV_WINDOWS);
         out[wo] = nw as f32;
@@ -98,22 +130,13 @@ impl Environment {
             out[o..o + 3].copy_from_slice(&w.dir);
             out[o + 3] = w.gain;
         }
+        out[AMB_OFF..AMB_OFF + 3].copy_from_slice(&self.amb_seep);
+        write_routes(&self.amb_routes, &mut out[AMB_OFF + 3..]);
     }
 
     pub fn read_flat(flat: &[f32]) -> Self {
         assert!(flat.len() >= ENV_FLAT_LEN);
-        let nr = (flat[5] as usize).min(MAX_ENV_ROUTES);
-        let routes = (0..nr)
-            .map(|i| {
-                let o = 6 + i * ROUTE_STRIDE;
-                EnvRoute {
-                    id: flat[o] as u32,
-                    dir: [flat[o + 1], flat[o + 2], flat[o + 3]],
-                    gains: [flat[o + 4], flat[o + 5], flat[o + 6]],
-                    dist: flat[o + 7],
-                }
-            })
-            .collect();
+        let routes = read_routes(&flat[5..]);
         let wo = 6 + MAX_ENV_ROUTES * ROUTE_STRIDE;
         let nw = (flat[wo] as usize).min(MAX_ENV_WINDOWS);
         let windows = (0..nw)
@@ -128,6 +151,8 @@ impl Environment {
             roof_gain: flat[4],
             routes,
             windows,
+            amb_seep: [flat[AMB_OFF], flat[AMB_OFF + 1], flat[AMB_OFF + 2]],
+            amb_routes: read_routes(&flat[AMB_OFF + 3..]),
         }
     }
 }
@@ -172,14 +197,19 @@ impl RouteSlots {
     /// Apply a fresh environment: update matching ids, retire missing
     /// ones toward zero, place new routes in silent slots.
     pub fn update(&mut self, env: &Environment) {
+        self.update_routes(&env.routes);
+    }
+
+    /// [`update`] for any route list (the ambience bed has its own).
+    pub fn update_routes(&mut self, routes: &[EnvRoute]) {
         for s in &mut self.slots {
-            if s.id != Self::FREE && !env.routes.iter().any(|r| r.id == s.id) {
+            if s.id != Self::FREE && !routes.iter().any(|r| r.id == s.id) {
                 for g in &mut s.gains {
                     g.set(0.0);
                 }
             }
         }
-        for r in &env.routes {
+        for r in routes {
             let slot = if let Some(s) = self.slots.iter_mut().find(|s| s.id == r.id) {
                 s
             } else if let Some(s) = self.slots.iter_mut().find(|s| {
@@ -228,6 +258,8 @@ mod tests {
                 EnvRoute { id: 101, dir: [0.0, 1.0, 0.0], gains: [1.0, 0.9, 0.8], dist: 35.0 },
             ],
             windows: vec![EnvWindow { dir: [0.0, 0.0, 1.0], gain: 0.4 }],
+            amb_seep: [0.3, 0.2, 0.1],
+            amb_routes: vec![EnvRoute { id: 207, dir: [0.0, 0.6, -0.8], gains: [0.7, 0.6, 0.5], dist: 10.0 }],
         };
         let mut flat = [0.0f32; ENV_FLAT_LEN];
         env.write_flat(&mut flat);

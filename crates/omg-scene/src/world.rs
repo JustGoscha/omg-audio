@@ -3,7 +3,8 @@
 //! ParamBlock per source plus viz/telemetry info. Drives both the native
 //! scripted walkthrough and the interactive web build.
 
-use crate::dome::{door_panels, DomeProbe, DOME_ID_BASE};
+use crate::ambient::{AmbientEmitter, AmbientShape};
+use crate::dome::{door_panels, DomeProbe, DOME_BINS, DOME_ID_BASE};
 use crate::early_world::WorldEarly;
 use crate::environment::AcousticsGraph;
 use crate::sim::{Facade, Sim};
@@ -101,6 +102,15 @@ pub struct WorldSim {
     last_routes: Vec<Vec<(f32, f32)>>,
     last_level: Vec<f32>,
     tick_no: u64,
+    /// The ambience bed's emitters (`ambient.rs`): shapes in the world.
+    ambient: Vec<AmbientEmitter>,
+    /// Scene calibration of the shaped emitters (per band): their free
+    /// field at the reference ear equals the open dome.
+    amb_cal: [f32; NBANDS],
+    /// The open dome per band: ½ sky + ½ ground-reflected sky.
+    amb_open: [f32; NBANDS],
+    amb_leaves: Vec<crate::ambient::Leaf>,
+    amb_hits: Vec<omg_core::mesh::SegHit>,
 }
 
 /// Below this summed mid-band gain a source is treated as inaudible for
@@ -239,7 +249,35 @@ impl WorldSim {
             last_level: defs.iter().map(|_| f32::MAX).collect(),
             defs,
             tick_no: 0,
+            ambient: Vec::new(),
+            amb_cal: [0.0; NBANDS],
+            amb_open: [0.0; NBANDS],
+            amb_leaves: Vec::new(),
+            amb_hits: Vec::new(),
         }
+        .with_ambient_demo()
+    }
+
+    fn with_ambient_demo(mut self) -> Self {
+        let em = walkthrough::ambient_emitters(&self.rooms);
+        self.set_ambient(em);
+        self
+    }
+
+    /// Install the ambience bed's emitters (shapes in the world) and
+    /// calibrate the shaped ones together: their free field at
+    /// `walkthrough::AMBIENT_REFERENCE` equals the open dome — the
+    /// recording is what an ear hears standing there.
+    pub fn set_ambient(&mut self, emitters: Vec<AmbientEmitter>) {
+        let ground = self.rooms.iter().find(|r| r.outdoor).expect("an outdoor room").walls[4];
+        self.amb_open = core::array::from_fn(|b| 0.5 + 0.5 * (1.0 - ground.absorption[b]));
+        let (x, y, z) = walkthrough::AMBIENT_REFERENCE;
+        self.amb_cal = crate::ambient::calibrate(&emitters, Vec3::new(x, y, z), self.amb_open);
+        self.ambient = emitters;
+    }
+
+    pub fn ambient(&self) -> &[AmbientEmitter] {
+        &self.ambient
     }
 
     /// True when one room is buried and the other is not: the 2D
@@ -1598,26 +1636,118 @@ impl WorldSim {
             }
             _ => self.dome.sample(eye, &leaves),
         };
-        let mut routes: Vec<EnvRoute> = bins
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.energy[1] * DOME_GAIN > 1e-8)
-            .map(|(k, b)| EnvRoute {
-                id: DOME_ID_BASE + k as u32,
-                dir: b.dir,
-                gains: core::array::from_fn(|band| (b.energy[band] * DOME_GAIN).sqrt()),
-                dist: 10.0,
-            })
-            .collect();
-        routes.sort_by(|a, b| b.gains[1].total_cmp(&a.gains[1]));
-        routes.truncate(MAX_ENV_ROUTES);
+        let to_routes = |e: &[[f32; NBANDS]; DOME_BINS], d: &[[f32; 3]; DOME_BINS]| {
+            let mut routes: Vec<EnvRoute> = (0..DOME_BINS)
+                .filter(|&k| e[k][1] * DOME_GAIN > 1e-8)
+                .map(|k| EnvRoute {
+                    id: DOME_ID_BASE + k as u32,
+                    dir: d[k],
+                    gains: core::array::from_fn(|band| (e[k][band] * DOME_GAIN).sqrt()),
+                    dist: 10.0,
+                })
+                .collect();
+            routes.sort_by(|a, b| b.gains[1].total_cmp(&a.gains[1]));
+            routes.truncate(MAX_ENV_ROUTES);
+            routes
+        };
+        let sky_e: [[f32; NBANDS]; DOME_BINS] = core::array::from_fn(|k| bins[k].energy);
+        let sky_d: [[f32; 3]; DOME_BINS] = core::array::from_fn(|k| bins[k].dir);
+        let routes = to_routes(&sky_e, &sky_d);
+
+        // The ambience bed: its emitters' field at this ear.
+        let (amb_e, amb_d, amb_seep) = self.ambient_field(eye, &leaves, &sky_e, &sky_d, &seep_e);
+        let amb_routes = to_routes(&amb_e, &amb_d);
         Environment {
             seep: core::array::from_fn(|b| seep_e[b].sqrt()),
             enclosure,
             roof_gain: roof,
             routes,
             windows,
+            amb_seep: core::array::from_fn(|b| amb_seep[b].sqrt()),
+            amb_routes,
         }
+    }
+
+    /// The ambience bed at `eye`, per dome bin (energy, direction) plus
+    /// its shell-seep energy. A `Dome` emitter is the traced sky itself.
+    /// A shaped emitter (`ambient.rs`) contributes
+    ///   direct — its quadrature leaves, each priced along its straight
+    ///            line to the ear (walls, panes, leaves), binned by
+    ///            arrival direction: from below when flying, toward the
+    ///            meadow from afar, through the window it is seen by;
+    ///   inlet  — the share the geometry blocked, (1 − ν)·λ, returned
+    ///            the way the traced sky reaches this ear (doorways,
+    ///            facade bounces), where ν is the visible fraction of its
+    ///            free field and λ its free-field level relative to the
+    ///            open dome. Indoors ν → 0 and this is the dome bed
+    ///            scaled by how loud the emitters are around the house;
+    ///            in the open ν → 1 and the shape speaks for itself;
+    ///   seep   — the power-balance residual scaled by λ.
+    /// Module switch 2 off plays the classic dome instead.
+    fn ambient_field(
+        &mut self,
+        eye: Vec3,
+        leaves: &[crate::dome::Panel],
+        sky_e: &[[f32; NBANDS]; DOME_BINS],
+        sky_d: &[[f32; 3]; DOME_BINS],
+        seep_e: &[f32; NBANDS],
+    ) -> ([[f32; NBANDS]; DOME_BINS], [[f32; 3]; DOME_BINS], [f32; NBANDS]) {
+        let mut e = [[0.0f32; NBANDS]; DOME_BINS];
+        let mut dsum = [Vec3::new(0.0, 0.0, 0.0); DOME_BINS];
+        let mut seep = [0.0f32; NBANDS];
+        let sky_v = |k: usize| Vec3::new(sky_d[k][0], sky_d[k][1], sky_d[k][2]);
+        let classic = [AmbientEmitter { shape: AmbientShape::Dome, level: 1.0 }];
+        let emitters: &[AmbientEmitter] =
+            if crate::quality::ambient_shaped_on() { &self.ambient } else { &classic };
+        let mut any_shaped = false;
+        for em in emitters {
+            if em.shape != AmbientShape::Dome {
+                any_shaped = true;
+                continue;
+            }
+            for k in 0..DOME_BINS {
+                for b in 0..NBANDS {
+                    e[k][b] += em.level * sky_e[k][b];
+                }
+                dsum[k] = dsum[k] + sky_v(k) * (em.level * sky_e[k][1]);
+            }
+            for b in 0..NBANDS {
+                seep[b] += em.level * seep_e[b];
+            }
+        }
+        if any_shaped {
+            let shaped: Vec<AmbientEmitter> =
+                emitters.iter().filter(|m| m.shape != AmbientShape::Dome).cloned().collect();
+            let (dome, hits) = (&self.dome, &mut self.amb_hits);
+            let f = crate::ambient::field(
+                &shaped,
+                self.amb_cal,
+                eye,
+                |a, p| dome.transmission(a, p, leaves, hits),
+                &mut self.amb_leaves,
+            );
+            let direct = f.direct_total();
+            for b in 0..NBANDS {
+                if f.free[b] <= 1e-20 {
+                    continue;
+                }
+                let nu = (direct[b] / f.free[b]).clamp(0.0, 1.0);
+                let lambda = f.free[b] / self.amb_open[b];
+                let back = (1.0 - nu) * lambda;
+                for k in 0..DOME_BINS {
+                    e[k][b] += f.direct[k][b] + back * sky_e[k][b];
+                    if b == 1 {
+                        dsum[k] = dsum[k] + f.dir_sum[k] + sky_v(k) * (back * sky_e[k][1]);
+                    }
+                }
+                seep[b] += lambda * seep_e[b];
+            }
+        }
+        let d = core::array::from_fn(|k| {
+            let v = if dsum[k].length() > 1e-12 { dsum[k].normalize() } else { sky_v(k) };
+            [v.x, v.y, v.z]
+        });
+        (e, d, seep)
     }
 }
 
@@ -1857,26 +1987,32 @@ mod tests {
     fn ambient_field_is_continuous_through_a_doorway() {
         let mut w = WorldSim::new();
         // straight walk through the Hall ↔ Outside door at (7, 24)
-        let mut prev = f32::NAN;
+        // the dome (rain) and the shaped ambience bed (crickets) alike
+        let mut prev = [f32::NAN; 2];
         let mut y = 27.0;
         while y >= 20.0 {
             let (_, info) = w.tick_at(7.0, y, 0.0);
             let e = &info.env;
             // total received ambient energy: diffuse seep + every route
-            let total: f32 = e.seep[1] * e.seep[1]
-                + e.routes.iter().map(|r| r.gains[1] * r.gains[1]).sum::<f32>();
-            assert!(total > 1e-6, "ambient field died at y={y}");
-            if prev.is_finite() {
-                let ratio = (total / prev).max(prev / total);
-                assert!(
-                    ratio < 2.0,
-                    "ambient energy jump {:.1} dB between y={} and y={}",
-                    10.0 * ratio.log10(),
-                    y + 0.25,
-                    y
-                );
+            let totals: [f32; 2] = [
+                e.seep[1] * e.seep[1] + e.routes.iter().map(|r| r.gains[1] * r.gains[1]).sum::<f32>(),
+                e.amb_seep[1] * e.amb_seep[1]
+                    + e.amb_routes.iter().map(|r| r.gains[1] * r.gains[1]).sum::<f32>(),
+            ];
+            for (total, prev) in totals.into_iter().zip(prev.iter_mut()) {
+                assert!(total > 1e-6, "ambient field died at y={y}");
+                if prev.is_finite() {
+                    let ratio = (total / *prev).max(*prev / total);
+                    assert!(
+                        ratio < 2.0,
+                        "ambient energy jump {:.1} dB between y={} and y={}",
+                        10.0 * ratio.log10(),
+                        y + 0.25,
+                        y
+                    );
+                }
+                *prev = total;
             }
-            prev = total;
             y -= 0.25;
         }
         // and enclosure must ramp, not snap

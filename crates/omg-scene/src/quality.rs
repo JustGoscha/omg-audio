@@ -113,8 +113,10 @@ pub fn early() -> u32 {
 /// engine features, toggleable live for listening comparisons.
 /// Ids: 0 = edge diffraction (knife-edge bend taps around jambs and
 /// building corners + the outdoor occlusion floors), 1 = furniture
-/// acoustics (occluder boxes shadowing/transmitting in the early solve).
-static MODULES: [AtomicU32; 2] = [AtomicU32::new(1), AtomicU32::new(1)];
+/// acoustics (occluder boxes shadowing/transmitting in the early solve),
+/// 2 = shaped ambience (the bed's emitters have a shape in the world —
+/// crickets in the grass; off = the classic sky dome around the ear).
+static MODULES: [AtomicU32; 3] = [AtomicU32::new(1), AtomicU32::new(1), AtomicU32::new(1)];
 
 pub fn set_module(id: u32, on: bool) {
     if let Some(m) = MODULES.get(id as usize) {
@@ -128,6 +130,10 @@ pub fn diffraction_on() -> bool {
 
 pub fn furniture_on() -> bool {
     MODULES[1].load(Ordering::Relaxed) != 0
+}
+
+pub fn ambient_shaped_on() -> bool {
+    MODULES[2].load(Ordering::Relaxed) != 0
 }
 
 /// Manually pin one lever (see `OVERRIDES` for ids); `value` 0 hands the

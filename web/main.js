@@ -461,7 +461,7 @@ function buildQuality() {
     panel.append(row);
     switchRows.push(btns);
   };
-  const mods = () => state.modules || [true, true];
+  const mods = () => state.modules || [true, true, true];
 
   mkSwitch('early refl',
     'Which engine produces the discrete early echoes. Both feed the identical tap contract downstream — switch mid-play, the renderer crossfades.',
@@ -518,6 +518,19 @@ function buildQuality() {
         tip: 'Acoustically transparent furniture: no shadows, no table-top slap, empty-room reverb. The empty-shoebox assumption, kept for A/B.',
         set: () => state.setModule?.(1, false),
         active: () => !mods()[1] },
+    ]);
+
+  mkSwitch('ambience',
+    'Where the ambience bed (crickets) lives in the world. Its direction and level come from geometry either way; this picks the emitter shape.',
+    [
+      { name: 'ground',
+        tip: 'Crickets in the grass: emitters spread over the outdoor ground (minus buildings and the street). In the meadow they surround you; fly up (F) and they come from below, fading and narrowing with height; fly far away and they shrink toward the town and vanish. Indoors they reach you through doors, windows and the shell, as before.',
+        set: () => state.setModule?.(2, true),
+        active: () => mods()[2] },
+      { name: 'dome',
+        tip: 'The classic skybox: the bed surrounds you from the sky and horizon wherever you are — even 1 km up. Kept for A/B.',
+        set: () => state.setModule?.(2, false),
+        active: () => !mods()[2] },
     ]);
 
   const stats = document.createElement('div');
@@ -2076,7 +2089,7 @@ async function startAudio() {
     };
     state.setMute = (srcs, on) => worker.postMessage({ type: 'mute', srcs, on });
     state.setModule = (id, on) => {
-      (state.modules = state.modules || [true, true])[id] = on;
+      (state.modules = state.modules || [true, true, true])[id] = on;
       try { localStorage.setItem('omg-mod' + id, on ? '1' : '0'); } catch (_) {}
       worker.postMessage({ type: 'module', id, on });
     };
@@ -2095,8 +2108,8 @@ async function startAudio() {
       state.earlyMode = pick;
       if (pick) worker.postMessage({ type: 'early', mode: pick });
       // remembered module switches (default on)
-      state.modules = [true, true];
-      for (const id of [0, 1]) {
+      state.modules = [true, true, true];
+      for (const id of [0, 1, 2]) {
         let s = null;
         try { s = localStorage.getItem('omg-mod' + id); } catch (_) {}
         if (s === '0') {
@@ -3048,13 +3061,15 @@ function drawMeters() {
     if (c && st && state.envOff) {
       const eo = state.envOff;
       const db = 20 * Math.log10(c[21] + 1e-6);
-      const n = Math.min(st[eo + 5] | 0, 2);
+      // the bed's own block (omg_dsp::env AMB_OFF): seep ×3, n, routes
+      const ao = eo + 6 + 8 * 8 + 1 + 4 * 4;
+      const n = Math.min(st[ao + 3] | 0, 2);
       let line = `amb ${db.toFixed(0)}dB`;
       for (let i = 0; i < n; i++) {
-        const o = eo + 6 + i * 8;
+        const o = ao + 4 + i * 8;
         line += ` ${st[o] | 0}:${st[o + 5].toFixed(2)}`;
       }
-      line += ` seep:${st[eo + 1].toFixed(2)}`;
+      line += ` seep:${st[ao + 1].toFixed(2)}`;
       g.fillStyle = '#8fb8d8';
       g.fillText(line, 86, H - 26);
     }

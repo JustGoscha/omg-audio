@@ -78,7 +78,7 @@ pub struct DomeBin {
 
 /// Rectangle (u0, u1, v0, v1) minus hole rectangles, as sub-rectangles:
 /// vertical strips at hole u-edges, complement v-intervals per strip.
-fn subrects(
+pub(crate) fn subrects(
     r: (f32, f32, f32, f32),
     holes: &[(f32, f32, f32, f32)],
 ) -> Vec<(f32, f32, f32, f32)> {
@@ -460,6 +460,45 @@ impl DomeProbe {
                 };
                 for b in 0..NBANDS {
                     tp[b] *= t[b] * t[b];
+                }
+            }
+        }
+        tp
+    }
+
+    /// Straight-line ENERGY transmission per band from `a` to `b`: every
+    /// mesh surface crossed pays its mass law, every pane its glass and
+    /// every door leaf its panel — the same pricing as the through-shell
+    /// dome rays, for a finite segment (an ambient emitter's leaf).
+    pub fn transmission(&self, a: Vec3, b: Vec3, leaves: &[Panel], buf: &mut Vec<SegHit>) -> [f32; NBANDS] {
+        let mut tp = [1.0f32; NBANDS];
+        self.mesh.segment_hits(a, b, buf);
+        for h in buf.iter() {
+            let m = &self.mesh.materials[h.material as usize];
+            for k in 0..NBANDS {
+                tp[k] *= m.transmission[k] * m.transmission[k];
+            }
+            if tp[0] < 1e-9 {
+                return [0.0; NBANDS];
+            }
+        }
+        let d = b - a;
+        let len = d.length();
+        if len < 1e-6 {
+            return tp;
+        }
+        let dir = d * (1.0 / len);
+        for p in self.glass.iter().chain(leaves.iter()) {
+            if p.hit(a, dir, len).is_some() {
+                let t = if p.glass {
+                    glass_transmission(p.heavy)
+                } else if p.heavy {
+                    HEAVY_PANEL_TRANSMISSION
+                } else {
+                    DOOR_PANEL_TRANSMISSION
+                };
+                for k in 0..NBANDS {
+                    tp[k] *= t[k] * t[k];
                 }
             }
         }

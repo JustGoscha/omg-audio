@@ -1574,3 +1574,42 @@ mod tests {
         assert!(half[2] > 2.0 * closed[2] && half[2] < 0.95, "half-open sits between: {half:?}");
     }
 }
+
+/// The street's asphalt strip (x range): cars pass on it, and it is the
+/// one outdoor ground that is not grass (web/main.js draws it the same).
+pub const STREET_X: (f32, f32) = (-20.2, -15.8);
+
+/// Where the ambience recording was "made": ear height on open grass,
+/// south of the town. The shaped emitters are calibrated so their free
+/// field here equals the open dome the bed used to play everywhere.
+pub const AMBIENT_REFERENCE: (f32, f32, f32) = (10.0, -150.0, 1.6);
+
+/// Height of the cricket layer above the ground, m.
+pub const CRICKET_Z: f32 = 0.1;
+
+/// The demo's ambience bed as shaped emitters: crickets in the grass —
+/// the outdoor ground (GRASS) minus every building footprint standing on
+/// it and the asphalt street. Fly up and they come from below; walk off
+/// and they collapse toward the meadow (`ambient.rs`).
+pub fn ambient_emitters(rooms: &[RoomDef]) -> Vec<crate::ambient::AmbientEmitter> {
+    use crate::ambient::{AmbientEmitter, AmbientShape, Rect};
+    let out = rooms.iter().find(|r| r.outdoor).expect("an outdoor room");
+    // holes must be disjoint (each carves its own area): add every
+    // footprint as the pieces not already covered
+    let mut holes: Vec<Rect> = Vec::new();
+    let add = |r: (f32, f32, f32, f32), holes: &mut Vec<Rect>| {
+        let have: Vec<(f32, f32, f32, f32)> =
+            holes.iter().map(|&((a, b), (c, d))| (a, c, b, d)).collect();
+        for (u0, u1, v0, v1) in crate::dome::subrects(r, &have) {
+            holes.push(((u0, v0), (u1, v1)));
+        }
+    };
+    for r in rooms.iter().filter(|r| !r.outdoor && r.floor_z < 0.5 && r.floor_z + r.height > 0.2) {
+        add((r.min.0, r.max.0, r.min.1, r.max.1), &mut holes);
+    }
+    add((STREET_X.0, STREET_X.1, out.min.1, out.max.1), &mut holes);
+    vec![AmbientEmitter {
+        shape: AmbientShape::GroundArea { min: out.min, max: out.max, z: CRICKET_Z, holes },
+        level: 1.0,
+    }]
+}
