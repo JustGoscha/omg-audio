@@ -53,6 +53,15 @@ amplitude 1/d). All energies are per band.
    probability (re-weighted, as in the v2 late tracer), else reflects
    keeping `1 − α − τ²`: specular with probability `1 − s`, else
    cosine-weighted diffuse.
+5. **Two ray families, one estimate.** EARLY rays (many, `x` bounces)
+   count paths with 1..=x reflections. LATE rays (fewer) keep bouncing
+   until the path is 3 s long or has lost 60 dB, and count only paths
+   with more than x reflections. Every path is counted by exactly one
+   family, so the sum is unbiased — and the reverb tail is traced to
+   its end (no bounce cap: a live 8×6×3 m room traces 3.0 s against
+   Eyring's 3.2 s, where the v2 tracer's 64-bounce cap stopped at
+   1.1 s). The tail is a slow statistic: few late rays per tick,
+   one sampled source per bounce, averaged over ~10 ticks.
 
 Checks this must pass, each an isolated test (`crates/omg-core/tests/fx_v3_*.rs`):
 - free field: only the direct tap, exact;
@@ -63,7 +72,8 @@ Checks this must pass, each an isolated test (`crates/omg-core/tests/fx_v3_*.rs`
   the reflected energy converges to the analytic `1/(2h²)`;
 - a bell behind a building in a lit street: the shadow is filled by
   facade reflections (NEE) instead of silence;
-- the late level and RT60 in a shoebox match the v2 tracer.
+- the late level and RT60 in a shoebox match the v2 tracer;
+- a live room's tail is traced to the end (Eyring, not a bounce cap).
 
 ## From paths to the renderer
 
@@ -112,10 +122,13 @@ v3 does not get for free (step V3.4).
 
 ## Budgets (first cut)
 
-| Tier | rays n | bounces x | NEE sources per hit |
-|---|---|---|---|
-| High | 2048 | 6 | all (≤ 16) |
-| Med | 1024 | 4 | all (≤ 16) |
-| Low | 512 | 3 | all (≤ 16) |
+| Tier | early rays n | bounces x | late rays | native ms/tick indoors |
+|---|---|---|---|---|
+| High | 1024 | 6 | 128 | 25–31 |
+| Med | 768 | 4 | 96 | — |
+| Low | 512 | 3 | 48 | 8–10 |
 
-Source sphere angle: k = 0.06 (≈ 3.4°).
+Next-event connections: 4 sampled sources per early bounce, 1 per late
+bounce (all of them when there are fewer). Source sphere angle:
+k = 0.06 (≈ 3.4°). Early bins average over ticks with weight 0.35,
+the late echogram with 0.1.

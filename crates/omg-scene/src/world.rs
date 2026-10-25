@@ -1215,7 +1215,16 @@ impl WorldSim {
             }
         }
         let tier = crate::quality::tier();
-        let budget = Budget { rays: tier.v3_rays(), bounces: tier.v3_bounces(), k: 0.06, ema: 0.35, nee: 4 };
+        let budget = Budget {
+            rays: tier.v3_rays(),
+            bounces: tier.v3_bounces(),
+            k: 0.06,
+            ema: 0.35,
+            nee: 4,
+            late_rays: tier.v3_late_rays(),
+            late_ema: 0.1,
+            late_nee: 1,
+        };
         let tracer = self.v3_tracer.get_or_insert_with(|| Tracer::new(0x0e3_5eed));
         let world = World { mesh: &self.dome.mesh, panels: &self.late_panels };
         let fields = tracer.trace(&world, eye, &srcs, budget);

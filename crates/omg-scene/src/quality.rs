@@ -195,9 +195,19 @@ impl Tier {
     /// (ENGINE_V3.md). The EMA across ticks carries the variance.
     pub fn v3_rays(self) -> u32 {
         match self {
-            Tier::High => 2048,
-            Tier::Med => 1024,
+            Tier::High => 1024,
+            Tier::Med => 768,
             Tier::Low => 512,
+        }
+    }
+
+    /// Engine v3 late family: long rays per tick carrying the reverb
+    /// tail (averaged over ~10 ticks).
+    pub fn v3_late_rays(self) -> u32 {
+        match self {
+            Tier::High => 128,
+            Tier::Med => 96,
+            Tier::Low => 48,
         }
     }
 

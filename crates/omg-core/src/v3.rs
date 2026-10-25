@@ -118,13 +118,30 @@ pub struct Budget {
     /// the hit point) and reweights — cost per bounce stays flat as the
     /// source count grows. 0 = connect to every source.
     pub nee: usize,
+    /// LATE family: rays that keep bouncing until the path is MAX_TIME
+    /// long or has lost 60 dB, counting only paths with MORE than
+    /// `bounces` reflections (the early family counts the rest — every
+    /// path exactly once). This is the reverb tail, traced.
+    pub late_rays: u32,
+    /// EMA weight of a fresh tick for the late echogram (the tail is a
+    /// slow statistic: few late rays per tick, averaged over many).
+    pub late_ema: f32,
+    /// Next-event connections per bounce for the late family (the tail
+    /// is a sum of many weak bounces: one sampled source each is plenty).
+    pub late_nee: usize,
 }
 
 impl Default for Budget {
     fn default() -> Self {
-        Self { rays: 1024, bounces: 4, k: 0.06, ema: 0.35, nee: 4 }
+        Self { rays: 1024, bounces: 4, k: 0.06, ema: 0.35, nee: 4, late_rays: 256, late_ema: 0.15, late_nee: 1 }
     }
 }
+
+/// Hard cap on late-family segments per ray (the time and energy limits
+/// end it first in any real room).
+const LATE_MAX_SEGMENTS: u32 = 600;
+/// Late rays stop once they have lost this much (60 dB).
+const LATE_FLOOR: f32 = 1e-6;
 
 /// What one source sounds like at the listener (world frame, unit gain).
 #[derive(Clone, Debug)]
@@ -241,22 +258,37 @@ impl Tracer {
         let primary = fibonacci_sphere(n as usize);
         let mut picks: Vec<(usize, f32)> = Vec::new();
         let mut imp: Vec<f32> = Vec::new();
-        let inv_n = 1.0 / n as f32;
-        for d0 in primary {
+        // Two families, disjoint by reflection count, so every path is
+        // counted exactly once: EARLY rays count paths with 1..=bounces
+        // reflections; LATE rays (fewer, long) count everything beyond.
+        let late_primary = fibonacci_sphere(budget.late_rays as usize);
+        let fams: [(&[Vec3], u32, u32, u32, usize); 2] = [
+            (&primary, 1, budget.bounces, budget.bounces + 1, budget.nee),
+            (&late_primary, budget.bounces + 1, u32::MAX, LATE_MAX_SEGMENTS, budget.late_nee),
+        ];
+        for (dirs, lo, hi, segments, nee) in fams {
+        if dirs.is_empty() || lo > hi {
+            continue;
+        }
+        let inv_n = 1.0 / dirs.len() as f32;
+        let counts = |order: u32| order >= lo && order <= hi;
+        for &d0 in dirs {
             let first = rot_apply(&rot, d0);
             let mut origin = listener;
             let mut dir = first;
             let mut thr = [1.0f32; NBANDS];
             let mut length = 0.0f32;
-            // the last interaction was a specular reflection (sphere hits count)
+            // reflections so far, and whether the last one was specular
+            // (only then do sphere hits count — NEE covered diffuse ones)
+            let mut refl = 0u32;
             let mut specular = false;
-            for _bounce in 0..=budget.bounces {
+            for _seg in 0..segments {
                 let hit = world.raycast(origin, dir);
                 let t_hit = hit.as_ref().map_or(f32::MAX, |h| h.t);
 
                 // 3. specular chains into a source sphere, priced from the
                 // source's REAL position
-                if specular {
+                if specular && counts(refl) {
                     for (si, s) in sources.iter().enumerate() {
                         let to = s.pos - origin;
                         let along = to.dot(dir);
@@ -293,12 +325,12 @@ impl Tracer {
 
                 // 2. next-event estimation: the diffuse share of this
                 // surface, lit by every source it can reach
-                if mat.scattering > 0.0 {
+                if mat.scattering > 0.0 && counts(refl + 1) {
                     let off = p + normal * EPS;
                     // which sources, and with what weight: all of them, or
                     // `nee` draws ∝ weight / distance² (unbiased: 1/(m·p))
                     picks.clear();
-                    if budget.nee == 0 || sources.len() <= budget.nee {
+                    if nee == 0 || sources.len() <= nee {
                         picks.extend((0..sources.len()).map(|i| (i, 1.0f32)));
                     } else {
                         imp.clear();
@@ -309,7 +341,7 @@ impl Tracer {
                             sum += w;
                             imp.push(sum);
                         }
-                        let m = budget.nee;
+                        let m = nee;
                         for _ in 0..m {
                             let u = self.rng.next_f32() * sum;
                             let i = imp.partition_point(|&c| c < u).min(sources.len() - 1);
@@ -355,9 +387,10 @@ impl Tracer {
                 for b in 0..NBANDS {
                     thr[b] *= keep[b] / (1.0 - pt);
                 }
-                if thr.iter().all(|&e| e < 1e-6) {
+                if thr.iter().all(|&e| e < LATE_FLOOR) {
                     break;
                 }
+                refl += 1;
                 if self.rng.next_f32() < mat.scattering {
                     dir = (normal + self.rng.unit_sphere()).normalize();
                     if dir.dot(normal) < 1e-3 {
@@ -370,6 +403,7 @@ impl Tracer {
                 }
                 origin = p + normal * EPS;
             }
+        }
         }
 
         // 5. smooth over ticks and build each source's field
@@ -400,9 +434,9 @@ impl Tracer {
                 cur.dir = cur.dir + (f.dir - cur.dir) * alpha;
             }
             st.early.retain(|_, b| b.e.iter().any(|&e| e > 1e-12));
-            // late echogram
+            // late echogram: a slower statistic, a slower average
             match &mut st.echo {
-                Some(e) => e.ema(&acc.echo, alpha),
+                Some(e) => e.ema(&acc.echo, budget.late_ema.clamp(0.0, 1.0)),
                 None => st.echo = Some(acc.echo),
             }
 

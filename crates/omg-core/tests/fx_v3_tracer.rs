@@ -96,12 +96,12 @@ fn mirror_converges_to_the_image_source() {
     let air = air_attenuation(l_img);
     let want = air[1] * air[1] / (l_img * l_img);
     for k in [0.04f32, 0.1] {
-        let got = mean_reflected(&mesh, lis, src, Budget { rays: 20_000, bounces: 1, k, ema: 1.0, nee: 0 }, 6);
+        let got = mean_reflected(&mesh, lis, src, Budget { rays: 20_000, bounces: 1, k, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0 }, 6);
         let ratio = got[1] / want;
         assert!((ratio - 1.0).abs() < 0.15, "k {k}: mirror energy {:.3e} vs image {:.3e} (×{ratio:.3})", got[1], want);
     }
     // and it arrives from below, at the image delay
-    let f = one(&mesh, lis, src, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee: 0 }, 9);
+    let f = one(&mesh, lis, src, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0 }, 9);
     let refl = f.taps.iter().filter(|t| t.key != KEY_DIRECT).max_by(|a, b| a.gains[1].total_cmp(&b.gains[1])).expect("a reflection tap");
     assert!(refl.dir[2] < -0.2, "mirror reflection must come from below: {:?}", refl.dir);
     assert!((refl.delay_s - l_img / omg_core::SPEED_OF_SOUND).abs() < 0.002, "delay {} vs {}", refl.delay_s, l_img / omg_core::SPEED_OF_SOUND);
@@ -114,7 +114,7 @@ fn lambertian_floor_converges_to_one_over_two_h_squared() {
     let mesh = floor_slab(flat_opaque(0.0, 1.0));
     let h = 2.0;
     let p = v(0.0, 0.0, h);
-    let got = mean_reflected(&mesh, p, p, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee: 0 }, 6);
+    let got = mean_reflected(&mesh, p, p, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0 }, 6);
     let want = 1.0 / (2.0 * h * h);
     // low band: air absorption is negligible over these paths
     let ratio = got[0] / want;
@@ -133,7 +133,7 @@ fn shadowed_listener_hears_a_lit_facade_behind_them() {
     mb.abox(v(-40.0, -2.0, 0.0), v(40.0, 0.0, 25.0), facade);
     let mesh = mb.build();
     let (lis, src) = (v(0.0, 5.0, 1.6), v(0.0, 200.0, 25.0));
-    let f = one(&mesh, lis, src, Budget { rays: 8192, bounces: 2, k: 0.06, ema: 1.0, nee: 0 }, 3);
+    let f = one(&mesh, lis, src, Budget { rays: 8192, bounces: 2, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0 }, 3);
     let direct = f.taps.iter().find(|t| t.key == KEY_DIRECT);
     assert!(direct.is_none() || direct.unwrap().gains[1] < 1e-6, "the barrier must block the direct path");
     let free = 1.0 / (200.0f32 * 200.0);
@@ -156,12 +156,12 @@ fn late_rt60_agrees_with_the_v2_tracer() {
     let mut echo = Echogram::new();
     trace(&mesh, src, lis, 20_000, [1.0; 3], &mut Rng::new(5), &mut echo);
     let v2 = estimate_reverb(&echo);
-    // v3: listener-launched, many bounces for the tail
+    // v3: a few early bounces + the late family carrying the tail
     let mut t = Tracer::new(7);
     let world = World { mesh: &mesh, panels: &[] };
     let mut f = None;
-    for _ in 0..6 {
-        f = Some(t.trace(&world, lis, &[Source { id: 0, pos: src, weight: 1.0 }], Budget { rays: 2048, bounces: 48, k: 0.06, ema: 0.5, nee: 0 }).remove(0));
+    for _ in 0..8 {
+        f = Some(t.trace(&world, lis, &[Source { id: 0, pos: src, weight: 1.0 }], Budget { rays: 1024, bounces: 4, k: 0.06, ema: 0.5, nee: 0, late_rays: 1024, late_ema: 0.5, late_nee: 0 }).remove(0));
     }
     let v3 = f.unwrap().reverb;
     eprintln!("rt60 v2 {:?} v3 {:?}; level v2 {:?} v3 {:?}", v2.rt60, v3.rt60, v2.level, v3.level);
@@ -183,7 +183,7 @@ fn sampled_connections_stay_unbiased() {
     let world = World { mesh: &mesh, panels: &[] };
     let run = |nee: usize, seed: u64| -> Vec<f32> {
         let mut t = Tracer::new(seed);
-        t.trace(&world, lis, &srcs, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee })
+        t.trace(&world, lis, &srcs, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee, late_rays: 0, late_ema: 1.0, late_nee: 0 })
             .iter()
             .map(|f| f.reflected[0])
             .collect()
@@ -200,4 +200,33 @@ fn sampled_connections_stay_unbiased() {
         let r = two[i] / all[i];
         assert!((r - 1.0).abs() < 0.2, "source {i}: sampled {:.4e} vs all {:.4e} (×{r:.3})", two[i], all[i]);
     }
+}
+
+#[test]
+fn live_room_tail_is_traced_to_the_end() {
+    // the v2 tracer's 64-bounce cap cut this room's tail to ~1.1 s
+    // (fx_late_rt60::live_room_rt60_is_not_truncated); the late family
+    // bounces until the path has lost 60 dB, so Eyring holds
+    let mut mb = MeshBuilder::new();
+    let alpha = 0.04f32;
+    let m = mb.material(flat_opaque(alpha, 0.5));
+    let (x, y, z) = (8.0f32, 6.0f32, 3.0f32);
+    common::shell(&mut mb, v(0.0, 0.0, 0.0), v(x, y, z), [Some(m); 6]);
+    let mesh = mb.build();
+    let world = World { mesh: &mesh, panels: &[] };
+    let mut t = Tracer::new(11);
+    let src = [Source { id: 0, pos: v(6.0, 4.0, 1.5), weight: 1.0 }];
+    let mut f = None;
+    for _ in 0..8 {
+        f = Some(t.trace(&world, v(2.0, 2.0, 1.5), &src, Budget { rays: 512, bounces: 4, k: 0.06, ema: 0.5, nee: 0, late_rays: 1024, late_ema: 0.5, late_nee: 0 }).remove(0));
+    }
+    let rt = f.unwrap().reverb.rt60;
+    let (vol, area) = (x * y * z, 2.0 * (x * y + x * z + y * z));
+    let eyring = 0.161 * vol / (-area * (1.0 - alpha).ln());
+    eprintln!("live room RT60 v3 {rt:?} vs Eyring {eyring:.2} s");
+    // low band: air absorption is negligible, Eyring is the reference
+    let r = rt[0] / eyring;
+    assert!((r - 1.0).abs() < 0.25, "low-band RT60 {:.2} s vs Eyring {eyring:.2} s", rt[0]);
+    // air absorption shortens the highs
+    assert!(rt[2] < rt[0], "air must shorten the high band: {rt:?}");
 }
