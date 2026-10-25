@@ -19,6 +19,7 @@ use omg_dsp::ambi::NCH;
 use omg_dsp::hrtf::HrirGrid;
 use omg_dsp::output::OutputStage;
 use omg_dsp::playlog::Clip;
+use omg_dsp::renderer::{BusBlock, BLOCK};
 use omg_dsp::{PlayLog, Renderer};
 use omg_scene::world::WorldSim;
 
@@ -1480,10 +1481,14 @@ pub extern "C" fn eng_process(n: u32) {
             log.set_loop(Clip::from(data), ctx.clock);
         }
     }
-    for i in 0..n {
-        let mut bus = [0.0f32; NCH];
-        let mut pl = 0.0f32;
-        let mut pr = 0.0f32;
+    // Sources render a block at a time, path by path (Renderer::
+    // process_log_block); the shared stages after the bus run per sample.
+    let mut done = 0;
+    while done < n {
+        let m = (n - done).min(BLOCK);
+        let mut bus: BusBlock = [[0.0; BLOCK]; NCH];
+        let mut pl = [0.0f32; BLOCK];
+        let mut pr = [0.0f32; BLOCK];
         let now = ctx.clock;
         for (si, (log, ren)) in ctx.logs.iter().zip(ctx.renderers.iter_mut()).enumerate() {
             // muted and fully faded: skip ALL rendering — taps, HRIRs,
@@ -1492,67 +1497,82 @@ pub extern "C" fn eng_process(n: u32) {
             if ctx.mixer[si].target_val() == 0.0 && ctx.mixer[si].current() < 1e-4 {
                 continue;
             }
+            let mut gain = [0.0f32; BLOCK];
+            for g in &mut gain[..m] {
+                *g = ctx.mixer[si].tick();
+            }
+            // sources past NSRC exist only in benchmarks: unmetered
+            if si >= NSRC {
+                ren.process_log_block(log, now, &gain[..m], &mut bus, &mut pl[..m], &mut pr[..m]);
+                continue;
+            }
             let w0 = bus[0];
-            let (a, b) = ren.process_log(log, now, ctx.mixer[si].tick(), &mut bus);
-            pl += a;
-            pr += b;
+            let (mut a, mut b) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
+            ren.process_log_block(log, now, &gain[..m], &mut bus, &mut a[..m], &mut b[..m]);
             // channel meter: point stereo + this source's bus contribution
             // (W-channel delta, roughly calibrated to the decode)
-            // (sources past NSRC exist only in benchmarks: unmetered)
-            if si < NSRC {
+            let acc = &mut ctx.meter_acc[si];
+            for j in 0..m {
+                pl[j] += a[j];
+                pr[j] += b[j];
+                let dw = bus[0][j] - w0[j];
+                let m2 = 0.5 * (a[j] * a[j] + b[j] * b[j]) + 2.0 * dw * dw;
+                acc.0 = acc.0.max(m2);
+                acc.1 += m2 as f64;
+            }
+            acc.2 += m as u32;
+        }
+        for j in 0..m {
+            let mut bus: [f32; NCH] = core::array::from_fn(|k| bus[k][j]);
+            let (pl, pr) = (pl[j], pr[j]);
+            // Environment audio: rain and ambience are outdoor fields routed
+            // through the same geometry-priced inlets (apertures, shell seep,
+            // horizon sectors) — world-anchored on the SH bus, no per-room
+            // constants and no listener-glued bed.
+            {
+                let w0 = bus[0];
+                ctx.rain.process(&mut bus);
                 let dw = bus[0] - w0;
-                let m2 = 0.5 * (a * a + b * b) + 2.0 * dw * dw;
-                let acc = &mut ctx.meter_acc[si];
+                let m2 = 2.0 * dw * dw;
+                let acc = &mut ctx.meter_acc[NSRC + 1];
                 acc.0 = acc.0.max(m2);
                 acc.1 += m2 as f64;
                 acc.2 += 1;
             }
-        }
-        // Environment audio: rain and ambience are outdoor fields routed
-        // through the same geometry-priced inlets (apertures, shell seep,
-        // horizon sectors) — world-anchored on the SH bus, no per-room
-        // constants and no listener-glued bed.
-        {
-            let w0 = bus[0];
-            ctx.rain.process(&mut bus);
-            let dw = bus[0] - w0;
-            let m2 = 2.0 * dw * dw;
-            let acc = &mut ctx.meter_acc[NSRC + 1];
-            acc.0 = acc.0.max(m2);
-            acc.1 += m2 as f64;
-            acc.2 += 1;
-        }
-        {
-            let w0 = bus[0];
-            ctx.ambience.process(&mut bus);
-            let dw = bus[0] - w0;
-            let m2 = 2.0 * dw * dw;
-            let acc = &mut ctx.meter_acc[NSRC];
-            acc.0 = acc.0.max(m2);
-            acc.1 += m2 as f64;
-            acc.2 += 1;
-        }
-        let (mut l, mut r) = match &mut ctx.out {
-            Some(o) => o.process(&bus, pl, pr),
-            None => (pl.tanh(), pr.tanh()),
-        };
-        // near-field ear stage — POST-AGC on purpose: a whisper's whole
-        // identity is its absolute closeness; the scene's loudness
-        // governor must not ride its level up or down
-        for v in &mut ctx.near_voices {
-            let src = &ctx.fx_bufs[v.buf];
-            if v.pos >= src.len() {
-                continue;
+            {
+                let w0 = bus[0];
+                ctx.ambience.process(&mut bus);
+                let dw = bus[0] - w0;
+                let m2 = 2.0 * dw * dw;
+                let acc = &mut ctx.meter_acc[NSRC];
+                acc.0 = acc.0.max(m2);
+                acc.1 += m2 as f64;
+                acc.2 += 1;
             }
-            let (a, b) = v.ear.process(src[v.pos]);
-            v.pos += 1;
-            l += a;
-            r += b;
+            let (mut l, mut r) = match &mut ctx.out {
+                Some(o) => o.process(&bus, pl, pr),
+                None => (pl.tanh(), pr.tanh()),
+            };
+            // near-field ear stage — POST-AGC on purpose: a whisper's whole
+            // identity is its absolute closeness; the scene's loudness
+            // governor must not ride its level up or down
+            for v in &mut ctx.near_voices {
+                let src = &ctx.fx_bufs[v.buf];
+                if v.pos >= src.len() {
+                    continue;
+                }
+                let (a, b) = v.ear.process(src[v.pos]);
+                v.pos += 1;
+                l += a;
+                r += b;
+            }
+            let mg = ctx.master.tick();
+            let i = done + j;
+            ctx.out_l[i] = (l * mg).clamp(-1.0, 1.0);
+            ctx.out_r[i] = (r * mg).clamp(-1.0, 1.0);
+            ctx.clock += 1.0;
         }
-        let mg = ctx.master.tick();
-        ctx.out_l[i] = (l * mg).clamp(-1.0, 1.0);
-        ctx.out_r[i] = (r * mg).clamp(-1.0, 1.0);
-        ctx.clock += 1.0;
+        done += m;
     }
     // forget what no path of a source can still reach
     for (log, ren) in ctx.logs.iter_mut().zip(&ctx.renderers) {
