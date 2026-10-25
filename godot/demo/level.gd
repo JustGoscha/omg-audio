@@ -529,28 +529,35 @@ func _cathedral_interior() -> void:
 		var py := 73.7 - 3.0 * absf(sin(ang))
 		var xf := Transform3D(Basis(Vector3.UP, ang + PI / 2), v(px, py, 6))
 		stone.box_xf(xf, Vector3(2.4, 12, 0.3))
-	var altar := OmgGeometry.new()
-	altar.material = "stone"
-	altar.as_boxes = true
-	altar.name = "Altar"
-	root.add_child(altar)
-	var am := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(2.4, 1.1, 1.2)
-	am.mesh = bm
-	am.material_override = DemoMats.pbr("marble_tiles", 1.0, Color(0.9, 0.88, 0.85))
-	am.position = v(8, 70.5, 0.55)
-	altar.add_child(am)
+	# the altar itself comes from layout.json when present (furniture);
+	# its cloth and candles sit on whichever altar is there
+	var ay := 70.5
+	var shared_altar := _layout_item("altar")
+	if shared_altar.is_empty():
+		var altar := OmgGeometry.new()
+		altar.material = "stone"
+		altar.as_boxes = true
+		altar.name = "Altar"
+		root.add_child(altar)
+		var am := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(2.4, 1.1, 1.2)
+		am.mesh = bm
+		am.material_override = DemoMats.pbr("marble_tiles", 1.0, Color(0.9, 0.88, 0.85))
+		am.position = v(8, ay, 0.55)
+		altar.add_child(am)
+	else:
+		ay = 0.5 * (shared_altar["min"].y + shared_altar["max"].y)
 	var cloth := geo.B(DemoMats.fabric(Color(0.48, 0.1, 0.14)), "auto", false)
-	cloth.box(6.75, 69.85, 1.1, 9.25, 71.15, 1.16)
-	cloth.box(6.75, 69.85, 0.4, 9.25, 69.88, 1.16)
+	cloth.box(6.75, ay - 0.65, 1.1, 9.25, ay + 0.65, 1.16)
+	cloth.box(6.75, ay - 0.65, 0.4, 9.25, ay - 0.62, 1.16)
 	var wax := geo.B(DemoMats.plain(Color(0.95, 0.92, 0.85), 0.6), "", false)
 	var flame := geo.B(DemoMats.glow(Color(1.0, 0.7, 0.3), 6.0), "", false)
 	var candles := []
 	for cx in [6.9, 7.4, 8.6, 9.1]:
-		wax.box(cx - 0.04, 70.45, 1.16, cx + 0.04, 70.55, 1.5)
-		flame.box(cx - 0.015, 70.485, 1.5, cx + 0.015, 70.515, 1.56)
-	for p in [Vector3(8, 70.4, 2.0), Vector3(8, 60, 5.0)]:
+		wax.box(cx - 0.04, ay - 0.05, 1.16, cx + 0.04, ay + 0.05, 1.5)
+		flame.box(cx - 0.015, ay - 0.015, 1.5, cx + 0.015, ay + 0.015, 1.56)
+	for p in [Vector3(8, ay - 0.1, 2.0), Vector3(8, 60, 5.0)]:
 		var l := OmniLight3D.new()
 		l.position = v(p.x, p.y, p.z)
 		l.light_color = Color(1.0, 0.72, 0.42)
@@ -566,7 +573,10 @@ func _cathedral_interior() -> void:
 	cool.omni_range = 18.0
 	root.add_child(cool)
 	markers["candles"] = candles
-	# pews: big wooden absorbers and diffusers in a church
+	# pews: big wooden absorbers and diffusers in a church (from
+	# layout.json when present; this is the fallback)
+	if not _layout_item("pew").is_empty():
+		return
 	var pew := geo.B(DemoMats.planks(Color(0.55, 0.4, 0.3), "furniture_wood"))
 	var py2 := 54.5
 	while py2 < 66.0:
@@ -770,18 +780,38 @@ const LAYOUT := "res://../assets/demo/layout.json"
 # on the piece (explicit `omg_material` meta: the engine traces the
 # piece's real faces).
 func _furniture() -> void:
-	var items := _layout_items()
+	var items := _layout_cached()
 	if items.is_empty():
 		for f in FURNITURE:
 			items.append({"kind": f[7], "acoustic": f[6], "min": Vector3(f[0], f[1], f[2]), "max": Vector3(f[3], f[4], f[5]), "yaw": 0.0})
 	for it in items:
+		# the cathedral's round columns are built (and traced) by
+		# _cathedral_interior at the same spots as the layout's pillars
+		if it["kind"] == "pillar":
+			continue
 		_piece(it)
+
+var _layout_cache = null
+
+func _layout_cached() -> Array:
+	if _layout_cache == null:
+		_layout_cache = _layout_items()
+	return _layout_cache
+
+# The first layout piece of `kind` ({} when none / no layout file).
+func _layout_item(kind: String) -> Dictionary:
+	for it in _layout_cached():
+		if it["kind"] == kind:
+			return it
+	return {}
 
 # Tolerant reader: {"rooms": [{"furniture": [...]}, ...]} or
 # {"furniture": [...]} or a bare list; items carry "kind", "material" /
 # "acoustic", and either "min"+"max" / "aabb" [x0,y0,z0,x1,y1,z1], or
 # "position" (centre of the footprint, z = floor) + "size" [x,y,z] +
-# "yaw" (radians, z-up world).
+# "yaw" (degrees, z-up world). layout.json gives "pos" + "size" (own
+# frame) + "yaw"; its "min"/"max" are the TURNED world box, used only
+# when no own-frame size is given.
 func _layout_items() -> Array:
 	var path := ProjectSettings.globalize_path(LAYOUT)
 	if not FileAccess.file_exists(path):
@@ -800,8 +830,21 @@ func _layout_items() -> Array:
 	for f in raw:
 		if not f is Dictionary:
 			continue
-		var it := {"kind": str(f.get("kind", "box")), "acoustic": str(f.get("acoustic", f.get("material", "furniture_wood"))), "yaw": float(f.get("yaw", 0.0))}
-		if f.has("min") and f.has("max"):
+		# "material" names the acoustic preset; "acoustic": false marks a
+		# visual-only piece (rugs, floor lamps). yaw is in degrees in the
+		# file (CCW from +y, z-up world) — the same turn as rotation.y.
+		var mat := str(f.get("material", "furniture_wood"))
+		if f.get("acoustic", true) is bool and not f.get("acoustic", true):
+			mat = "none"
+		var it := {"kind": str(f.get("kind", "box")), "acoustic": mat, "yaw": deg_to_rad(float(f.get("yaw", 0.0)))}
+		if f.has("pos") and f.has("size"):
+			# the piece's OWN frame: centre of the footprint, z = bottom,
+			# size = width × depth × height before the yaw turn
+			var c := _vec(f["pos"])
+			var sz := _vec(f["size"])
+			it["min"] = Vector3(c.x - sz.x * 0.5, c.y - sz.y * 0.5, c.z)
+			it["max"] = Vector3(c.x + sz.x * 0.5, c.y + sz.y * 0.5, c.z + sz.z)
+		elif f.has("min") and f.has("max"):
 			it["min"] = _vec(f["min"])
 			it["max"] = _vec(f["max"])
 		elif f.has("aabb"):
