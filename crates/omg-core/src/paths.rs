@@ -184,7 +184,13 @@ impl AutoPaths {
             // pocket" bug); a true silhouette edge has air beyond it and
             // is unaffected. Floor semantics keep exact legs.
             let (e1, e2) = if budget.taps {
-                (p + (p - src).normalize() * 0.06, p + (p - lis).normalize() * 0.06)
+                // both legs meet 3 cm off the edge on the OUTSIDE of the
+                // bend: a silhouette edge has air there, so neither leg
+                // grazes it (a grazing leg read as hit or miss depending
+                // on float detail in the BVH); an apex ON a coincident
+                // wall plane still makes a leg cross that wall
+                let q = outside_of_bend(p, src, lis, 0.03);
+                (q, q)
             } else {
                 (p, p)
             };
@@ -277,12 +283,9 @@ impl AutoPaths {
                 // same endpoint-grazing rule as single bends (tap
                 // semantics only)
                 let (x1, m1, m2, x2) = if budget.taps {
-                    (
-                        p1 + (p1 - src).normalize() * 0.06,
-                        p1 + (p1 - p2).normalize() * 0.06,
-                        p2 + (p2 - p1).normalize() * 0.06,
-                        p2 + (p2 - lis).normalize() * 0.06,
-                    )
+                    let q1 = outside_of_bend(p1, src, p2, 0.03);
+                    let q2 = outside_of_bend(p2, p1, lis, 0.03);
+                    (q1, q1, q2, q2)
                 } else {
                     (p1, p1, p2, p2)
                 };
@@ -618,6 +621,16 @@ fn seg_crosses_rect(p: (f32, f32), q: (f32, f32), mn: [f32; 2], mx: [f32; 2]) ->
         }
     }
     t1 - t0 > 1e-6
+}
+
+/// `p` nudged `d` meters to the outside of the bend a → p → b (the side
+/// away from whatever the path bends around).
+fn outside_of_bend(p: Vec3, a: Vec3, b: Vec3, d: f32) -> Vec3 {
+    let out = (p - a).normalize() - (b - p).normalize();
+    if out.length() < 1e-4 {
+        return p;
+    }
+    p + out.normalize() * d
 }
 
 /// Upper convex hull of (s, z) points sorted by s: the taut string.

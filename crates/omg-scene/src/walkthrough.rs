@@ -196,6 +196,24 @@ pub fn rooms() -> Vec<RoomDef> {
             wall_thickness: 0.4,
             outdoor: false,
         },
+        // The bunker's way in: a concrete blockhouse over a stair shaft.
+        // One room from the bunker floor (-3 m) to the blockhouse roof
+        // (+2.4 m): the blast door opens into it from the street, the
+        // shaft drops through a hole in the ground (cut by the mesh for
+        // the below-grade hatch door), and that open hatch leads into the
+        // bunker. Before, the bunker was a sealed box: its door sat on no
+        // wall and nothing connected the street to it.
+        RoomDef {
+            name: "Bunker Stair",
+            min: (31.4, 6.0),
+            max: (34.0, 8.0),
+            height: 5.4,
+            barrier_height: 2.6,
+            floor_z: -3.0,
+            walls: [Material::CONCRETE; 6],
+            wall_thickness: 0.3,
+            outdoor: false,
+        },
         // Outside must come LAST: enclosed rooms overlap its rectangle and
         // room_of matches in order. It surrounds all buildings.
         RoomDef {
@@ -222,7 +240,8 @@ pub const HOUSE_UP: usize = 8;
 pub const CATHEDRAL: usize = 9;
 pub const BUNKER: usize = 10;
 pub const BELFRY: usize = 11;
-pub const OUTSIDE: usize = 12;
+pub const BUNKER_STAIR: usize = 12;
+pub const OUTSIDE: usize = 13;
 
 /// A doorway between two rooms. `axis`: 0 = opening in an x=const wall,
 /// 1 = opening in a y=const wall. Arbitrary graph topology (BFS routing).
@@ -288,7 +307,7 @@ pub fn doors() -> Vec<Door> {
         // index 6) — closed, it transmits like the blast door, not wood
         Door { rooms: (OUTSIDE, CATHEDRAL), pos: (8.0, 52.0), axis: 1, half: 1.2, height: 3.5, zc: 1.75, glass: false, openness: 0.0, heavy: true },
         // bunker blockhouse: a heavy steel door at the stair head (index 7)
-        Door { rooms: (OUTSIDE, BUNKER), pos: (31.4, 7.0), axis: 0, half: 0.7, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: true },
+        Door { rooms: (OUTSIDE, BUNKER_STAIR), pos: (31.4, 7.0), axis: 0, half: 0.7, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: true },
         // windows
         Door { rooms: (LIVING, OUTSIDE), pos: (3.0, 0.0), axis: 1, half: 1.3, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
         // club windows are laminated glazing: the boom passes, the hiss dies
@@ -303,6 +322,9 @@ pub fn doors() -> Vec<Door> {
         // stairwell: the vertical portal between the two storeys — always
         // open, never toggled (indices ≥ 8 are outside the E-key range)
         Door { rooms: (HOUSE, HOUSE_UP), pos: (24.8, 21.5), axis: 0, half: 0.7, height: 2.2, zc: 3.0, glass: false, openness: 1.0, heavy: false },
+        // the open hatch at the foot of the bunker stair, below grade (the
+        // mesh cuts the shaft's ground hole above it)
+        Door { rooms: (BUNKER_STAIR, BUNKER), pos: (34.0, 7.0), axis: 0, half: 0.8, height: 2.2, zc: -1.9, glass: false, openness: 1.0, heavy: false },
     ]
 }
 

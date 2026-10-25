@@ -22,6 +22,9 @@ const ROOMS = [
   { name: 'Cathedral', min: [0, 52], max: [16, 74], h: 15, floor: 0x2b2b36 },
   { name: 'Bunker', min: [34, 6], max: [40, 14], h: 2.2, fz: -3, floor: 0x20241f },
   { name: 'Belfry', min: [7, 318], max: [13, 324], h: 24, solid: true },
+  // index-aligned with the sim: the bunker's blockhouse + stair shaft
+  // (its walls, roof and steps are built by hand below)
+  { name: 'Bunker Stair', min: [31.4, 6], max: [34, 8], h: 2.4, virtual: true },
   { name: 'Outside', min: [-28, -1900], max: [48, 2000], outdoor: true, floor: 0x1c2a20 },
 ];
 // axis: 0 = opening in an x=const wall, 1 = opening in a y=const wall
@@ -1199,7 +1202,7 @@ function openColliderGap(axis, plane, at, hw = DOOR_HALF, dh = DOOR_H) {
 function buildWorld() {
   // floors + ceilings
   for (const r of ROOMS) {
-    if (r.solid || r.upper) continue;
+    if (r.solid || r.upper || r.virtual) continue;
     const w = r.max[0] - r.min[0];
     const d = r.max[1] - r.min[1];
     const floor = new THREE.Mesh(
@@ -2177,7 +2180,7 @@ function throwBall() {
 
 function roomHeightAt(x, y) {
   for (const r of ROOMS) {
-    if (!r.outdoor && x > r.min[0] && x < r.max[0] && y > r.min[1] && y < r.max[1]) return r.h;
+    if (!r.outdoor && !r.virtual && x > r.min[0] && x < r.max[0] && y > r.min[1] && y < r.max[1]) return r.h;
   }
   return Infinity;
 }
@@ -2359,7 +2362,7 @@ function movePose(t) {
 const STEP_SURFACES = ['wood', 'carpet', 'concrete', 'grass'];
 const ROOM_SURFACE = {
   'Living Room': 'wood', Corridor: 'wood', 'Great Hall': 'concrete',
-  Entrance: 'concrete', Club: 'concrete', 'Old House': 'wood',
+  Entrance: 'concrete', Club: 'concrete', 'Old House': 'wood', 'Bunker Stair': 'concrete',
   'Old House Upper': 'carpet', Cathedral: 'concrete', Bunker: 'concrete',
   Outside: 'grass',
 };

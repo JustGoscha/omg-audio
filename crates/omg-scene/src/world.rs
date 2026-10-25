@@ -1250,7 +1250,7 @@ impl WorldSim {
         let pockets: Vec<(Vec3, Vec3)> = self
             .rooms
             .iter()
-            .filter(|r| !r.outdoor && r.floor_z + r.height <= 0.2)
+            .filter(|r| !r.outdoor && r.floor_z < -0.05)
             .map(|r| {
                 (
                     Vec3::new(r.min.0, r.min.1, r.floor_z),
