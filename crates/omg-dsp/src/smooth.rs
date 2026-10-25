@@ -105,18 +105,35 @@ pub struct PathDelay {
     slope: f64,
     /// Samples since the last retarget.
     age: f64,
-    /// Update interval this motion was planned for (samples).
+    /// Update interval this motion was planned for (samples), and the
+    /// per-sample constants derived from it (no divides per sample).
     interval: f64,
+    inv_correct: f64,
+    slope_k: f64,
 }
 
 impl PathDelay {
     pub fn new(v: f64) -> Self {
-        Self { cur: v, target: v, vel: 0.0, slope: 0.0, age: 0.0, interval: 2400.0 }
+        let mut s = Self { cur: v, target: v, vel: 0.0, slope: 0.0, age: 0.0, interval: 0.0, inv_correct: 0.0, slope_k: 0.0 };
+        s.set_interval(2400.0);
+        s
     }
 
     /// Jump (a new path): no motion history.
     pub fn snap(&mut self, v: f64) {
-        *self = Self { interval: self.interval, ..Self::new(v) };
+        let interval = self.interval;
+        *self = Self::new(v);
+        self.set_interval(interval);
+    }
+
+    fn set_interval(&mut self, interval: f64) {
+        self.interval = interval;
+        // drift is corrected gently (over ~16 intervals): the reference
+        // is timed by update ARRIVAL, which jitters, while the velocity
+        // comes from the targets themselves, which don't
+        self.inv_correct = 1.0 / (16.0 * interval);
+        // slope settles within ~a quarter interval: no pitch steps
+        self.slope_k = (4.0 / interval).min(1.0);
     }
 
     /// A new target from an update arriving every `interval` samples on
@@ -126,7 +143,9 @@ impl PathDelay {
         self.vel = (target - self.target) / interval;
         self.target = target;
         self.age = 0.0;
-        self.interval = interval;
+        if interval != self.interval {
+            self.set_interval(interval);
+        }
     }
 
     pub fn current(&self) -> f64 {
@@ -146,12 +165,8 @@ impl PathDelay {
         // the next update (age = i) it has just reached it
         let lag = if coasting { (i - self.age).max(0.0) } else { 0.0 };
         let reference = self.target - vel * lag;
-        // drift is corrected gently (over ~16 intervals): the reference
-        // is timed by update ARRIVAL, which jitters, while the velocity
-        // comes from the targets themselves, which don't
-        let goal = vel + (reference - self.cur) / (16.0 * i);
-        // slope settles within ~a quarter interval: no pitch steps
-        self.slope += (goal - self.slope) * (4.0 / i).min(1.0);
+        let goal = vel + (reference - self.cur) * self.inv_correct;
+        self.slope += (goal - self.slope) * self.slope_k;
         self.cur += self.slope;
         self.age += 1.0;
         self.cur

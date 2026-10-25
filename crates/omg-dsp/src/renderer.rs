@@ -59,6 +59,8 @@ const DEFAULT_TAP_CEILING: usize = 160;
 /// check keeps it awake while anything rings — short enough that silent
 /// sources stop costing within a frame).
 const FDN_IDLE_AFTER: u32 = 1024;
+/// Closing linear tail of a released slot (see `TapState::release_floor`).
+const TAIL_SAMPLES: u32 = 240;
 /// Angular spread of the remote-reverb lines around the doorway (±~30°).
 const REMOTE_SPREAD_RAD: [f32; NLINES] =
     [-0.55, -0.38, -0.22, -0.08, 0.08, 0.22, 0.38, 0.55];
@@ -81,6 +83,16 @@ struct TapState {
     lp: OnePoleLp,
     eq: TapEq,
     conv: PointConv,
+    /// A releasing slot fades on its normal one-pole (complementary to
+    /// the path fading in, so a crossfade keeps its level) until it is
+    /// 56 dB under where the fade began, then a short linear tail
+    /// (`TAIL_SAMPLES`) takes it to exactly zero and frees it: ~0.33 s
+    /// in all instead of the ~0.5 s an absolute 1e-6 floor took. With
+    /// paths coming and going every tick, those ghosts ran at ~3× the
+    /// tap budget.
+    release_floor: f32,
+    /// Samples left in the closing linear tail (0 = not in it).
+    tail: u32,
 }
 
 impl TapState {
@@ -88,10 +100,13 @@ impl TapState {
         self.key.is_none()
             && self.g_sh[0].target_val() == 0.0
             && self.g_sh[0].current().abs() < 1e-6
+            && self.tail == 0
     }
 
     fn release(&mut self) {
         self.key = None;
+        self.release_floor = 0.0015 * self.g_sh[0].current().abs();
+        self.tail = 0;
         for g in &mut self.g_sh {
             g.set(0.0);
         }
@@ -240,6 +255,8 @@ impl Renderer {
                     lp: OnePoleLp::default(),
                     eq: TapEq::default(),
                     conv: PointConv::new(conv_taps, sample_rate),
+                    release_floor: 0.0,
+                    tail: 0,
                 })
                 .collect(),
             grid,
@@ -589,10 +606,25 @@ impl Renderer {
             let tap = &mut self.taps[idx];
             // A releasing slot keeps ticking until its fade-out finishes;
             // then it leaves the active list and costs nothing.
-            if tap.key.is_none()
-                && tap.g_sh[0].target_val() == 0.0
-                && tap.g_sh[0].current().abs() < 1e-6
-            {
+            // a releasing slot under its floor closes with a linear tail
+            let mut fade = 1.0f32;
+            if tap.key.is_none() && tap.g_sh[0].target_val() == 0.0 {
+                if tap.tail == 0 && tap.g_sh[0].current().abs() < tap.release_floor.max(1e-6) {
+                    tap.tail = TAIL_SAMPLES;
+                }
+                if tap.tail > 0 {
+                    tap.tail -= 1;
+                    if tap.tail == 0 {
+                        for g in &mut tap.g_sh {
+                            g.snap(0.0);
+                        }
+                        self.active.swap_remove(ai);
+                        continue;
+                    }
+                    fade = tap.tail as f32 / TAIL_SAMPLES as f32;
+                }
+            }
+            if tap.free() {
                 self.active.swap_remove(ai);
                 continue;
             }
@@ -602,7 +634,7 @@ impl Renderer {
             let gh = tap.g_high.tick();
             let mut g = [0.0f32; NCH];
             for k in 0..NCH {
-                g[k] = tap.g_sh[k].tick();
+                g[k] = tap.g_sh[k].tick() * fade;
             }
             // Skip silent slots entirely (their smoothers still ticked).
             if g[0].abs() < 1e-7 {
