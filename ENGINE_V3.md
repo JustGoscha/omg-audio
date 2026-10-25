@@ -112,11 +112,28 @@ v3 does not get for free (step V3.4).
   per source becomes a lookup.
 - **V3.3 — GPU:** the same loop as a WebGPU kernel (the v2 late tracer
   and PT discovery already run there).
-- **V3.4 — diffraction by sampling:** rays passing near a mesh edge
-  get deflected by the uncertainty-relation rule (Stephenson), so
-  bending around corners and over roofs emerges from tracing. Until
-  then v3 has no diffraction: shadows get reflections and
-  transmission only.
+- **V3.4 — diffraction (done):** two parts, disjoint so nothing counts
+  twice.
+  - *In the walk:* a ray passing within 3 m of an exposed edge bends
+    around it at its closest approach, by an angle drawn from a spread
+    σ = λ / (4π·a) (uncertainty relation: the narrower the gap, the wider
+    the spread; bass spreads more). The bent ray keeps its angle to the
+    edge (Keller's cone); per-band weights keep all three bands unbiased.
+    Multi-edge paths and bends after reflections emerge from this.
+  - *Edge next-event estimation:* for every source whose straight line
+    is blocked, each edge the listener can see gets one exact bent path
+    (bend point, legs priced through whatever they cross, knife-edge per
+    band); the strongest three distinct ones are kept. Random walks with
+    exactly one bend and no reflection are left to this.
+  - *Gating:* a bent path only carries what the straight line from where
+    it bent does not — on the lit side nothing is added.
+  - *Edges:* sharp creases and free borders of the mesh that are truly
+    exposed: > 225° of open space around them (a wall's foot on the
+    ground is not), not a coplanar seam between wall strips, not filled
+    this tick by a pane or door leaf, not at ground level.
+  Tests: a thin screen follows Kurze–Anderson within 5 dB from the
+  shadow boundary to a 30° bend, bass bends further than treble, the lit
+  side is unchanged, and only exposed edges diffract.
 - **V3.5 — default:** once the probes and the full suite agree, v3
   becomes the default and v1/v2 machinery leaves the runtime.
 

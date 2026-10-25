@@ -96,12 +96,12 @@ fn mirror_converges_to_the_image_source() {
     let air = air_attenuation(l_img);
     let want = air[1] * air[1] / (l_img * l_img);
     for k in [0.04f32, 0.1] {
-        let got = mean_reflected(&mesh, lis, src, Budget { rays: 20_000, bounces: 1, k, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0 }, 6);
+        let got = mean_reflected(&mesh, lis, src, Budget { rays: 20_000, bounces: 1, k, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0, diffraction: false }, 6);
         let ratio = got[1] / want;
         assert!((ratio - 1.0).abs() < 0.15, "k {k}: mirror energy {:.3e} vs image {:.3e} (×{ratio:.3})", got[1], want);
     }
     // and it arrives from below, at the image delay
-    let f = one(&mesh, lis, src, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0 }, 9);
+    let f = one(&mesh, lis, src, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0, diffraction: false }, 9);
     let refl = f.taps.iter().filter(|t| t.key != KEY_DIRECT).max_by(|a, b| a.gains[1].total_cmp(&b.gains[1])).expect("a reflection tap");
     assert!(refl.dir[2] < -0.2, "mirror reflection must come from below: {:?}", refl.dir);
     assert!((refl.delay_s - l_img / omg_core::SPEED_OF_SOUND).abs() < 0.002, "delay {} vs {}", refl.delay_s, l_img / omg_core::SPEED_OF_SOUND);
@@ -116,7 +116,7 @@ fn early_tap_delays_do_not_jitter_between_ticks() {
     let world = World::new(&mesh, &[]);
     let mut t = Tracer::new(21);
     let src = [Source { id: 0, pos: v(8.0, 3.0, 2.0), weight: 1.0 }];
-    let b = Budget { rays: 512, bounces: 2, k: 0.06, ema: 0.35, nee: 0, late_rays: 32, late_ema: 0.1, late_nee: 0 };
+    let b = Budget { rays: 512, bounces: 2, k: 0.06, ema: 0.35, nee: 0, late_rays: 32, late_ema: 0.1, late_nee: 0, diffraction: false };
     let mut prev: std::collections::HashMap<u32, f32> = std::collections::HashMap::new();
     for tick in 0..10 {
         let f = t.trace(&world, v(0.0, 0.0, 1.6), &src, b).remove(0);
@@ -136,7 +136,7 @@ fn lambertian_floor_converges_to_one_over_two_h_squared() {
     let mesh = floor_slab(flat_opaque(0.0, 1.0));
     let h = 2.0;
     let p = v(0.0, 0.0, h);
-    let got = mean_reflected(&mesh, p, p, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0 }, 6);
+    let got = mean_reflected(&mesh, p, p, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0, diffraction: false }, 6);
     let want = 1.0 / (2.0 * h * h);
     // low band: air absorption is negligible over these paths
     let ratio = got[0] / want;
@@ -155,7 +155,7 @@ fn shadowed_listener_hears_a_lit_facade_behind_them() {
     mb.abox(v(-40.0, -2.0, 0.0), v(40.0, 0.0, 25.0), facade);
     let mesh = mb.build();
     let (lis, src) = (v(0.0, 5.0, 1.6), v(0.0, 200.0, 25.0));
-    let f = one(&mesh, lis, src, Budget { rays: 8192, bounces: 2, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0 }, 3);
+    let f = one(&mesh, lis, src, Budget { rays: 8192, bounces: 2, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0, diffraction: false }, 3);
     let direct = f.taps.iter().find(|t| t.key == KEY_DIRECT);
     assert!(direct.is_none() || direct.unwrap().gains[1] < 1e-6, "the barrier must block the direct path");
     let free = 1.0 / (200.0f32 * 200.0);
@@ -183,7 +183,7 @@ fn late_rt60_agrees_with_the_v2_tracer() {
     let world = World::new(&mesh, &[]);
     let mut f = None;
     for _ in 0..8 {
-        f = Some(t.trace(&world, lis, &[Source { id: 0, pos: src, weight: 1.0 }], Budget { rays: 1024, bounces: 4, k: 0.06, ema: 0.5, nee: 0, late_rays: 1024, late_ema: 0.5, late_nee: 0 }).remove(0));
+        f = Some(t.trace(&world, lis, &[Source { id: 0, pos: src, weight: 1.0 }], Budget { rays: 1024, bounces: 4, k: 0.06, ema: 0.5, nee: 0, late_rays: 1024, late_ema: 0.5, late_nee: 0, diffraction: false }).remove(0));
     }
     let v3 = f.unwrap().reverb;
     eprintln!("rt60 v2 {:?} v3 {:?}; level v2 {:?} v3 {:?}", v2.rt60, v3.rt60, v2.level, v3.level);
@@ -205,7 +205,7 @@ fn sampled_connections_stay_unbiased() {
     let world = World::new(&mesh, &[]);
     let run = |nee: usize, seed: u64| -> Vec<f32> {
         let mut t = Tracer::new(seed);
-        t.trace(&world, lis, &srcs, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee, late_rays: 0, late_ema: 1.0, late_nee: 0 })
+        t.trace(&world, lis, &srcs, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee, late_rays: 0, late_ema: 1.0, late_nee: 0, diffraction: false })
             .iter()
             .map(|f| f.reflected[0])
             .collect()
@@ -240,7 +240,7 @@ fn live_room_tail_is_traced_to_the_end() {
     let src = [Source { id: 0, pos: v(6.0, 4.0, 1.5), weight: 1.0 }];
     let mut f = None;
     for _ in 0..8 {
-        f = Some(t.trace(&world, v(2.0, 2.0, 1.5), &src, Budget { rays: 512, bounces: 4, k: 0.06, ema: 0.5, nee: 0, late_rays: 1024, late_ema: 0.5, late_nee: 0 }).remove(0));
+        f = Some(t.trace(&world, v(2.0, 2.0, 1.5), &src, Budget { rays: 512, bounces: 4, k: 0.06, ema: 0.5, nee: 0, late_rays: 1024, late_ema: 0.5, late_nee: 0, diffraction: false }).remove(0));
     }
     let rt = f.unwrap().reverb.rt60;
     let (vol, area) = (x * y * z, 2.0 * (x * y + x * z + y * z));
@@ -268,7 +268,7 @@ fn earth_swallows_what_leaves_a_bunker() {
     let pockets = [(v(0.0, 0.0, -3.0), v(6.0, 8.0, -0.8))];
     let lis = v(3.0, 4.0, -1.4);
     let src = [Source { id: 0, pos: v(3.0, 30.0, 1.6), weight: 1.0 }];
-    let b = Budget { rays: 2048, bounces: 3, k: 0.06, ema: 1.0, nee: 0, late_rays: 128, late_ema: 1.0, late_nee: 0 };
+    let b = Budget { rays: 2048, bounces: 3, k: 0.06, ema: 1.0, nee: 0, late_rays: 128, late_ema: 1.0, late_nee: 0, diffraction: false };
     let sky_of = |w: &World| {
         let mut t = Tracer::new(4);
         t.trace(w, lis, &src, b);
@@ -284,4 +284,84 @@ fn earth_swallows_what_leaves_a_bunker() {
     let f = t.trace(&World { grade: Some(0.0), pockets: &pockets, ..World::new(&mesh, &[]) }, lis, &src, b).remove(0);
     let d = f.taps.iter().find(|t| t.key == KEY_DIRECT).map_or(0.0, |t| t.gains[1]);
     assert!(d < 1e-4, "direct path through earth: {d}");
+}
+
+// ------------------------------------------------------------ diffraction
+
+/// Absorbing half-plane screen x = 0 with its top edge at z = 0.
+fn screen() -> Mesh {
+    let mut mb = MeshBuilder::new();
+    let m = mb.material(flat_opaque(1.0, 0.0));
+    mb.quad(v(0.0, -300.0, -300.0), v(0.0, 300.0, -300.0), v(0.0, 300.0, 0.0), v(0.0, -300.0, 0.0), m);
+    mb.build()
+}
+
+fn energy(f: &omg_core::v3::SourceField) -> [f32; 3] {
+    let mut e = [0.0f32; 3];
+    for t in &f.taps {
+        for b in 0..3 {
+            e[b] += t.gains[b] * t.gains[b];
+        }
+    }
+    e
+}
+
+#[test]
+fn knife_edge_shadow_follows_kurze_anderson() {
+    // source 20 m in front, 1 m below the edge; listener 20 m behind at
+    // depths from just inside the shadow to 11 m deep (a 30° bend)
+    let mesh = screen();
+    let src = v(-20.0, 0.0, -1.0);
+    let edge = v(0.0, 0.0, 0.0);
+    let b = Budget { rays: 4000, bounces: 1, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0, diffraction: true };
+    for zl in [0.5f32, -2.0, -5.0, -10.0] {
+        let lis = v(20.0, 0.0, zl);
+        let mut t = Tracer::new(3);
+        let e = energy(&t.trace(&World::new(&mesh, &[]), lis, &[Source { id: 0, pos: src, weight: 1.0 }], b).remove(0));
+        let (d1, d2) = ((edge - src).length(), (lis - edge).length());
+        let det = d1 + d2 - (lis - src).length();
+        let ka = omg_core::diffraction::knife_edge_bands(det);
+        for band in 0..3 {
+            let want = ka[band] * ka[band] / ((d1 + d2) * (d1 + d2));
+            let diff = 10.0 * (e[band] / want).log10();
+            assert!(diff.abs() < 5.0, "z {zl} band {band}: {diff:+.1} dB off the knife edge");
+        }
+        assert!(e[0] > e[2], "z {zl}: bass must bend further than treble: {e:?}");
+    }
+}
+
+#[test]
+fn diffraction_never_adds_on_the_lit_side() {
+    // in plain view the exact direct path carries the field: bending
+    // around a nearby edge must not add to it
+    let mesh = screen();
+    let src = v(-20.0, 0.0, -1.0);
+    let lis = v(20.0, 0.0, 3.0); // well above the shadow boundary
+    let run = |diffraction: bool| {
+        let b = Budget { rays: 4000, bounces: 1, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0, diffraction };
+        let mut t = Tracer::new(5);
+        energy(&t.trace(&World::new(&mesh, &[]), lis, &[Source { id: 0, pos: src, weight: 1.0 }], b).remove(0))
+    };
+    let (off, on) = (run(false), run(true));
+    for band in 0..3 {
+        let d = 10.0 * (on[band] / off[band]).log10();
+        assert!(d.abs() < 0.5, "band {band}: lit side changed by {d:+.2} dB");
+    }
+}
+
+#[test]
+fn only_exposed_edges_diffract() {
+    // a wall standing on the ground has ~half of space around its foot:
+    // no shadow to bend into. Its top edge and outside corner stand free.
+    let mut mb = MeshBuilder::new();
+    let m = mb.material(flat_opaque(0.1, 0.1));
+    mb.quad(v(-50.0, -50.0, 0.0), v(50.0, -50.0, 0.0), v(50.0, 50.0, 0.0), v(-50.0, 50.0, 0.0), m);
+    mb.abox(v(0.0, 0.0, 0.0), v(6.0, 0.3, 4.0), m);
+    let mesh = mb.build();
+    let es = omg_core::v3::EdgeSet::build(&mesh);
+    let has = |a: Vec3, b: Vec3| {
+        es.edges.iter().any(|(x, y)| ((*x - a).length() < 1e-3 && (*y - b).length() < 1e-3) || ((*x - b).length() < 1e-3 && (*y - a).length() < 1e-3))
+    };
+    assert!(has(v(0.0, 0.0, 4.0), v(6.0, 0.0, 4.0)), "the wall's top edge diffracts");
+    assert!(has(v(6.0, 0.0, 0.0), v(6.0, 0.0, 4.0)), "the wall's outside corner diffracts");
 }

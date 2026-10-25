@@ -1243,6 +1243,7 @@ impl WorldSim {
             late_rays: tier.v3_late_rays(),
             late_ema: 0.1,
             late_nee: 1,
+            diffraction: crate::quality::diffraction_on(),
         };
         let tracer = self.v3_tracer.get_or_insert_with(|| Tracer::new(0x0e3_5eed));
         // the bunker is an air pocket in solid ground

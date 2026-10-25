@@ -642,7 +642,7 @@ fn upper_hull(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
 /// The point on segment [a, b] minimizing |src→p| + |p→lis| (the physical
 /// bend point on a diffracting edge). Convex in the parameter — golden
 /// section on t ∈ [0, 1].
-fn bend_point(a: Vec3, b: Vec3, src: Vec3, lis: Vec3) -> Vec3 {
+pub fn bend_point(a: Vec3, b: Vec3, src: Vec3, lis: Vec3) -> Vec3 {
     let cost = |t: f32| {
         let p = a + (b - a) * t;
         (p - src).length() + (lis - p).length()

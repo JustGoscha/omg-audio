@@ -229,11 +229,13 @@ pub struct Budget {
     /// Next-event connections per bounce for the late family (the tail
     /// is a sum of many weak bounces: one sampled source each is plenty).
     pub late_nee: usize,
+    /// Rays passing close to a mesh edge bend around it (V3.4).
+    pub diffraction: bool,
 }
 
 impl Default for Budget {
     fn default() -> Self {
-        Self { rays: 1024, bounces: 4, k: 0.06, ema: 0.35, nee: 4, late_rays: 256, late_ema: 0.15, late_nee: 1 }
+        Self { rays: 1024, bounces: 4, k: 0.06, ema: 0.35, nee: 4, late_rays: 256, late_ema: 0.15, late_nee: 1, diffraction: true }
     }
 }
 
@@ -307,6 +309,13 @@ pub struct Tracer {
     /// Averaged over ticks. This replaces the separate dome ray fan.
     sky: Vec<([f32; NBANDS], Vec3)>,
     sky_primed: bool,
+    /// Diffraction edges of the last mesh traced (rebuilt if it changes).
+    edges: Option<EdgeSet>,
+    tick: u64,
+    /// Which edges the listener sees: (listener, tick, mask).
+    ear_vis: Option<(Vec3, u64, Vec<bool>)>,
+    /// Per source id: (listener, source, tick, edge-path taps).
+    edge_cache: HashMap<u32, (Vec3, Vec3, u64, Vec<Tap>)>,
     /// Capture the strongest paths of each tick for the debug view.
     pub debug: bool,
     /// Last tick's strongest paths: (source id, mid energy, polyline
@@ -345,6 +354,10 @@ impl Tracer {
             hits: Vec::new(),
             sky: vec![([0.0; NBANDS], Vec3::new(0.0, 0.0, 0.0)); N_CELLS],
             sky_primed: false,
+            edges: None,
+            tick: 0,
+            ear_vis: None,
+            edge_cache: HashMap::new(),
             debug: false,
             debug_paths: Vec::new(),
         }
@@ -416,6 +429,169 @@ impl Tracer {
             });
         }
 
+        // per-band direct visibility: diffracted DIRECT paths only carry
+        // what the straight ray does not (the exact direct already does)
+        let vis: Vec<[f32; NBANDS]> = sources
+            .iter()
+            .zip(&direct)
+            .map(|(s, d)| match d {
+                Some(t) => {
+                    let dd = (s.pos - listener).length().max(MIN_DIST);
+                    let air = air_attenuation(dd);
+                    core::array::from_fn(|b| (t.gains[b] * dd / air[b].max(1e-9)).clamp(0.0, 1.0))
+                }
+                None => [0.0; NBANDS],
+            })
+            .collect();
+        if budget.diffraction {
+            let key = (world.mesh.indices.len(), world.mesh.positions.len());
+            if self.edges.as_ref().map_or(true, |e| e.key != key) {
+                self.edges = Some(EdgeSet::build(world.mesh));
+            }
+            if let Some(es) = self.edges.as_mut() {
+                es.mask_filled(world.panels, world.grade);
+            }
+        }
+
+        // Edge next-event estimation: the DIRECT field around one edge,
+        // connected deterministically for every blocked source (a random
+        // ray finding a distant source after bending is too rare to
+        // carry it). Knife-edge (Kurze–Anderson) per band, legs priced
+        // through whatever they cross, only the share the straight ray
+        // doesn't carry. Distinct edges add (each is its own path).
+        self.tick += 1;
+        let tick = self.tick;
+        let mut edge_taps: Vec<Vec<Tap>> = vec![Vec::new(); sources.len()];
+        if let (true, Some(es)) = (budget.diffraction, self.edges.as_ref()) {
+            // which edges can the listener see at all? (shared by every
+            // source: a few points along each edge, pulled 5 cm toward the
+            // listener; reused while the listener stays put)
+            let fresh_vis = self.ear_vis.as_ref().map_or(true, |(p, t, m)| {
+                (*p - listener).length() > EDGE_REUSE_M || tick - t >= EDGE_REFRESH_TICKS || m.len() != es.edges.len()
+            });
+            if fresh_vis {
+            let seen_from_ear: Vec<bool> = es
+                .edges
+                .iter()
+                .enumerate()
+                .map(|(ei, (a, b))| {
+                    !es.filled[ei]
+                        && [0.1f32, 0.3, 0.5, 0.7, 0.9].iter().any(|f| {
+                            let m = *a + (*b - *a) * *f;
+                            let to = m - listener;
+                            let l = to.length();
+                            l > 0.2 && l < 400.0 && {
+                                let end = m - to * (0.05 / l);
+                                world.mesh.raycast(listener, to * (1.0 / l)).map_or(true, |(t, _)| t > l - 0.06)
+                                    && !world.crosses_earth(listener, end)
+                            }
+                        })
+                })
+                .collect();
+                self.ear_vis = Some((listener, tick, seen_from_ear));
+            }
+            let seen_from_ear = &self.ear_vis.as_ref().unwrap().2;
+            for (si, s) in sources.iter().enumerate() {
+                if vis[si][1] > 0.999 {
+                    continue;
+                }
+                if let Some((pl, ps, t, taps)) = self.edge_cache.get(&s.id) {
+                    if (*pl - listener).length() < EDGE_REUSE_M
+                        && (*ps - s.pos).length() < EDGE_REUSE_M
+                        && tick - t < EDGE_REFRESH_TICKS
+                    {
+                        edge_taps[si] = taps.clone();
+                        continue;
+                    }
+                }
+                let direct_len = (s.pos - listener).length().max(MIN_DIST);
+                // rank every exposed edge by its pure knife-edge bound
+                let mut cand: Vec<(f32, usize, Vec3)> = es
+                    .edges
+                    .iter()
+                    .enumerate()
+                    .filter(|(ei, _)| seen_from_ear[*ei])
+
+                    .filter_map(|(ei, (a, b))| {
+                        let p = crate::paths::bend_point(*a, *b, s.pos, listener);
+                        let (d1, d2) = ((p - listener).length(), (s.pos - p).length());
+                        if d1 < 0.2 || d2 < 0.2 {
+                            return None;
+                        }
+                        // a bend AT ground level is no silhouette for an
+                        // above-ground path (it is where an edge meets the
+                        // ground, not where it stands out)
+                        if world.grade.is_some_and(|g| p.z < g + 0.3 && listener.z > g) {
+                            return None;
+                        }
+                        let det = d1 + d2 - direct_len;
+                        let ka = crate::diffraction::knife_edge_bands(det.max(1e-4));
+                        Some((ka[0] / (d1 + d2), ei, p))
+                    })
+                    .collect();
+                cand.sort_by(|x, y| y.0.total_cmp(&x.0));
+                // price every candidate, then keep the strongest distinct
+                let mut found: Vec<(f32, Vec3, Tap)> = Vec::new();
+                for (_, ei, p) in cand.into_iter().take(EDGE_CANDIDATES) {
+                    let to_edge = p - listener;
+                    let n1 = to_edge.normalize();
+                    let (d1, d2) = (to_edge.length(), (s.pos - p).length());
+                    // both legs meet 3 cm off the edge on the OUTSIDE of
+                    // the bend (away from whatever the path bends around):
+                    // a true silhouette edge has open air there and neither
+                    // leg grazes it; an edge lying on a zero-thickness wall
+                    // plane leaves one leg crossing that wall
+                    let n2 = (s.pos - p).normalize();
+                    let out = n1 - n2;
+                    if out.length() < 1e-3 {
+                        continue; // no bend: the straight line itself
+                    }
+                    let q = p + out.normalize() * 0.03;
+                    let t1 = world.transmission(listener, q, &mut self.hits);
+                    let t2 = world.transmission(q, s.pos, &mut self.hits);
+                    if t1[0] * t2[0] < 1e-6 {
+                        continue;
+                    }
+                    let det = d1 + d2 - direct_len;
+                    let ka = crate::diffraction::knife_edge_bands(det.max(1e-4));
+                    let air = air_attenuation(d1 + d2);
+                    let gains: [f32; NBANDS] = core::array::from_fn(|b| {
+                        ka[b] * t1[b] * t2[b] * air[b] / (d1 + d2) * (1.0 - vis[si][b]).sqrt()
+                    });
+                    if gains.iter().all(|&g| g < 1e-7) {
+                        continue;
+                    }
+                    found.push((
+                        gains[0] + gains[1],
+                        p,
+                        Tap {
+                            key: KEY_EDGE_BASE + ei as u32,
+                            delay_s: (d1 + d2) / SPEED_OF_SOUND,
+                            dir: [n1.x, n1.y, n1.z],
+                            gains,
+                        },
+                    ));
+                }
+                found.sort_by(|x, y| y.0.total_cmp(&x.0));
+                let mut kept: Vec<Vec3> = Vec::new();
+                for (_, p, tap) in found {
+                    if kept.len() >= EDGE_PATHS {
+                        break;
+                    }
+                    // coincident edges (a parapet over its slab) are one path
+                    if kept.iter().any(|q| (*q - p).length() < 1.0) {
+                        continue;
+                    }
+                    kept.push(p);
+                    if debug {
+                        keep_path(&mut dbg, s.id, tap.gains[1] * tap.gains[1], &[listener, p], s.pos);
+                    }
+                    edge_taps[si].push(tap);
+                }
+                self.edge_cache.insert(s.id, (listener, s.pos, tick, edge_taps[si].clone()));
+            }
+        }
+
         // 2. rays: stratified (Fibonacci) and randomly rotated per tick
         let rot = random_rotation(&mut self.rng);
         let primary = fibonacci_sphere(n as usize);
@@ -428,8 +604,8 @@ impl Tracer {
         let mut sky_acc: Vec<([f32; NBANDS], Vec3)> =
             vec![([0.0; NBANDS], Vec3::new(0.0, 0.0, 0.0)); N_CELLS];
         let fams: [(&[Vec3], u32, u32, u32, usize); 2] = [
-            (&primary, 1, budget.bounces, budget.bounces + 1, budget.nee),
-            (&late_primary, budget.bounces + 1, u32::MAX, LATE_MAX_SEGMENTS, budget.late_nee),
+            (&primary, 0, budget.bounces, budget.bounces + 1 + MAX_BENDS, budget.nee),
+            (&late_primary, budget.bounces + 1, u32::MAX, LATE_MAX_SEGMENTS + MAX_BENDS, budget.late_nee),
         ];
         for (dirs, lo, hi, segments, nee) in fams {
         if dirs.is_empty() || lo > hi {
@@ -447,6 +623,14 @@ impl Tracer {
             // (only then do sphere hits count — NEE covered diffuse ones)
             let mut refl = 0u32;
             let mut specular = false;
+            // bent around an edge since the last diffuse bounce, and
+            // where the ray was when it first bent (gating: a bend only
+            // adds what the straight line from there doesn't carry)
+            let mut bent = false;
+            let mut bends = 0u32;
+            let mut bend_from: Option<Vec3> = None;
+            // a ray passes an edge once: never bend twice at the same one
+            let mut last_edge: Option<usize> = None;
             if debug {
                 verts.clear();
                 verts.push(listener);
@@ -457,14 +641,22 @@ impl Tracer {
                 }
                 let hit = world.raycast(origin, dir);
                 let t_hit = hit.as_ref().map_or(f32::MAX, |h| h.t);
+                // diffraction: the edge this segment passes closest to
+                let edge = if budget.diffraction && bends < MAX_BENDS {
+                    let reach = if t_hit.is_finite() { t_hit } else { 400.0 };
+                    self.edges.as_mut().and_then(|es| es.nearest(origin, dir, reach, last_edge))
+                } else {
+                    None
+                };
+                let t_seg = edge.map_or(t_hit, |(te, _, _, _)| te);
 
                 // 3. specular chains into a source sphere, priced from the
                 // source's REAL position
-                if specular && counts(refl) {
+                if (specular || bent) && counts(refl) {
                     for (si, s) in sources.iter().enumerate() {
                         let to = s.pos - origin;
                         let along = to.dot(dir);
-                        if along <= 0.0 || along >= t_hit {
+                        if along <= 0.0 || along >= t_seg {
                             continue;
                         }
                         let seg = to.length();
@@ -477,8 +669,28 @@ impl Tracer {
                         let t = world.transmission(origin, s.pos, &mut self.hits);
                         let air = air_attenuation(l_s);
                         let w = 4.0 * inv_n / (budget.k * budget.k * l_s * l_s);
-                        let e: [f32; NBANDS] =
-                            core::array::from_fn(|b| thr[b] * t[b] * t[b] * air[b] * air[b] * w);
+                        // a bent path with no reflection is the DIRECT
+                        // field around an edge: only what the straight
+                        // ray doesn't already carry
+                        // one edge, no reflection: that is the edge
+                        // next-event path, already counted exactly
+                        if refl == 0 && bends == 1 && !specular {
+                            continue;
+                        }
+                        // a bent path only carries what the straight
+                        // line from where it bent doesn't (lit side:
+                        // nothing — that wave is already counted)
+                        let gate: [f32; NBANDS] = match bend_from {
+                            Some(_) if refl == 0 => core::array::from_fn(|b| 1.0 - vis[si][b]),
+                            Some(f) => {
+                                let tv = world.transmission(f, s.pos, &mut self.hits);
+                                core::array::from_fn(|b| (1.0 - tv[b]).clamp(0.0, 1.0))
+                            }
+                            None => [1.0; NBANDS],
+                        };
+                        let e: [f32; NBANDS] = core::array::from_fn(|b| {
+                            thr[b] * t[b] * t[b] * air[b] * air[b] * w * gate[b]
+                        });
                         if debug {
                             keep_path(&mut dbg, s.id, e[1], &verts, s.pos);
                         }
@@ -486,12 +698,33 @@ impl Tracer {
                     }
                 }
 
+                if let Some((te, a, u, ei)) = edge {
+                    last_edge = Some(ei);
+                    // bend around the edge at the closest approach
+                    if bend_from.is_none() {
+                        bend_from = Some(origin);
+                    }
+                    let (eps, w) = sample_bend(&mut self.rng, a);
+                    origin = origin + dir * te;
+                    length += te;
+                    if debug {
+                        verts.push(origin);
+                    }
+                    dir = rotate_about(dir, u, eps);
+                    for b in 0..NBANDS {
+                        thr[b] *= w[b];
+                    }
+                    bent = true;
+                    bends += 1;
+                    continue;
+                }
+
                 let Some(hit) = hit else {
                     // escaped to open sky: the outdoor field reaches the
                     // listener along this ray's first direction. Escapes
                     // split by reflection count like every other path
                     // (early family ≤ bounces, late family beyond).
-                    let mine = if lo == 1 { refl <= hi } else { refl >= lo };
+                    let mine = if lo == 0 { refl <= hi } else { refl >= lo };
                     if mine && !world.escapes_into_earth(origin, dir) {
                         let mut best = 0usize;
                         let mut bd = f32::MIN;
@@ -595,12 +828,14 @@ impl Tracer {
                     break;
                 }
                 refl += 1;
+                bend_from = None;
                 if self.rng.next_f32() < mat.scattering {
                     dir = (normal + self.rng.unit_sphere()).normalize();
                     if dir.dot(normal) < 1e-3 {
                         dir = normal;
                     }
                     specular = false;
+                    bent = false;
                 } else {
                     dir = dir - normal * (2.0 * dir.dot(normal));
                     specular = true;
@@ -662,6 +897,7 @@ impl Tracer {
             if let Some(t) = direct[si] {
                 taps.push(t);
             }
+            taps.append(&mut edge_taps[si]);
             let mut early: Vec<(&u32, &Bin)> = st.early.iter().collect();
             early.sort_by(|x, y| y.1.e[1].total_cmp(&x.1.e[1]));
             for (k, b) in early.into_iter().take(MAX_EARLY_TAPS) {
@@ -731,6 +967,293 @@ fn deposit(acc: &mut Acc, cells: &[Vec3], e: [f32; NBANDS], delay: f32, dir: Vec
         let key = KEY_EARLY_BASE + best as u32 * 256 + dbin.min(255);
         acc.early.entry(key).or_default().add(e, delay, dir);
     }
+}
+
+// ------------------------------------------------------- diffraction
+
+/// Rays passing farther than this from an edge don't feel it.
+pub const EDGE_REACH: f32 = 3.0;
+/// Spread of the bend angle: σ = λ / (DIFF_C · a), a = closest distance
+/// to the edge (uncertainty relation: the narrower the gap a ray squeezes
+/// past, the wider its direction spreads — and longer waves spread more).
+/// Calibrated against the Kurze–Anderson knife edge (fx_v3_tracer).
+pub const DIFF_C: f32 = 4.0 * core::f32::consts::PI;
+/// Bends per ray (multi-edge paths: over a roof, around a corner).
+const MAX_BENDS: u32 = 3;
+/// How far along one ray segment edges are searched (m).
+const EDGE_SEARCH: f32 = 120.0;
+/// Edge paths and listener edge visibility are reused until the
+/// listener (or the source) moves this far, refreshed every N ticks.
+const EDGE_REUSE_M: f32 = 0.2;
+const EDGE_REFRESH_TICKS: u64 = 8;
+/// Deterministic single-edge direct paths kept per source.
+const EDGE_PATHS: usize = 3;
+/// Edges whose legs are checked per blocked source (best knife-edge
+/// bounds first — most near the blocked line are themselves blocked).
+const EDGE_CANDIDATES: usize = 40;
+/// Tap keys of edge paths: base + edge index (early bins sit below).
+const KEY_EDGE_BASE: u32 = 20_000;
+const EDGE_CELL: f32 = 4.0;
+
+/// Diffracting edges of a mesh (sharp creases ≥ 30° and free borders),
+/// in a uniform grid for segment queries.
+pub struct EdgeSet {
+    pub edges: Vec<(Vec3, Vec3)>,
+    grid: HashMap<(i32, i32, i32), Vec<u32>>,
+    key: (usize, usize),
+    seen: Vec<u32>,
+    stamp: u32,
+    /// Bounds of all edges, padded by EDGE_REACH: rays outside it skip
+    /// the search entirely.
+    lo: Vec3,
+    hi: Vec3,
+    /// Edges whose opening is FILLED this tick (a pane, a closed or ajar
+    /// door leaf against the frame): not exposed, no diffraction.
+    filled: Vec<bool>,
+}
+
+fn cell_key(p: Vec3) -> (i32, i32, i32) {
+    (
+        (p.x / EDGE_CELL).floor() as i32,
+        (p.y / EDGE_CELL).floor() as i32,
+        (p.z / EDGE_CELL).floor() as i32,
+    )
+}
+
+impl EdgeSet {
+    pub fn build(mesh: &Mesh) -> Self {
+        let mut by_edge: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        for (ti, idx) in mesh.indices.iter().enumerate() {
+            for k in 0..3 {
+                let (i, j) = (idx[k], idx[(k + 1) % 3]);
+                by_edge.entry((i.min(j), i.max(j))).or_default().push(ti as u32);
+            }
+        }
+        let mut edges = Vec::new();
+        for ((i, j), tris) in by_edge {
+            let (a, b) = (mesh.positions[i as usize], mesh.positions[j as usize]);
+            let candidate = match tris.as_slice() {
+                // a free border — unless the surface simply continues in
+                // the same plane past it (a seam between the strips a
+                // wall with a window hole is built from)
+                [t] => !seam(mesh, *t, a, b),
+                [t0, t1] => mesh.tri_normal(*t0).dot(mesh.tri_normal(*t1)).abs() < 0.866,
+                _ => false,
+            };
+            if candidate && (b - a).length() > 0.05 && exposed(mesh, a, b) {
+                edges.push((a, b));
+            }
+        }
+        let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+        for (ei, (a, b)) in edges.iter().enumerate() {
+            let lo = Vec3::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z)) - Vec3::new(EDGE_REACH, EDGE_REACH, EDGE_REACH);
+            let hi = Vec3::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z)) + Vec3::new(EDGE_REACH, EDGE_REACH, EDGE_REACH);
+            let (k0, k1) = (cell_key(lo), cell_key(hi));
+            // very long edges (a ground plane's border) would flood the grid
+            let cells = ((k1.0 - k0.0 + 1) as i64) * ((k1.1 - k0.1 + 1) as i64) * ((k1.2 - k0.2 + 1) as i64);
+            if cells > 4096 {
+                continue;
+            }
+            for x in k0.0..=k1.0 {
+                for y in k0.1..=k1.1 {
+                    for z in k0.2..=k1.2 {
+                        grid.entry((x, y, z)).or_default().push(ei as u32);
+                    }
+                }
+            }
+        }
+        let n = edges.len();
+        let r = Vec3::new(EDGE_REACH, EDGE_REACH, EDGE_REACH);
+        let (mut lo, mut hi) = (Vec3::new(f32::MAX, f32::MAX, f32::MAX), Vec3::new(f32::MIN, f32::MIN, f32::MIN));
+        for (a, b) in &edges {
+            for p in [*a, *b] {
+                lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+                hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+            }
+        }
+        Self {
+            edges,
+            grid,
+            key: (mesh.indices.len(), mesh.positions.len()),
+            seen: vec![0; n],
+            stamp: 0,
+            lo: lo - r,
+            hi: hi + r,
+            filled: vec![false; n],
+        }
+    }
+
+    /// Mark edges that bound an opening an overlay box currently fills,
+    /// and edges lying on the ground (no shadow to bend into).
+    fn mask_filled(&mut self, panels: &[(Vec3, Vec3, Material)], grade: Option<f32>) {
+        for (ei, (a, b)) in self.edges.iter().enumerate() {
+            // edges that never rise above the ground (wall bottoms, the
+            // rim of a buried room): no shadow to bend into
+            let on_ground = grade.is_some_and(|g| a.z.max(b.z) < g + 0.3);
+            self.filled[ei] = on_ground || panels.iter().any(|(mn, mx, _)| {
+                [0.25f32, 0.5, 0.75].iter().any(|f| {
+                    let p = *a + (*b - *a) * *f;
+                    let dx = (mn.x - p.x).max(p.x - mx.x).max(0.0);
+                    let dy = (mn.y - p.y).max(p.y - mx.y).max(0.0);
+                    let dz = (mn.z - p.z).max(p.z - mx.z).max(0.0);
+                    dx * dx + dy * dy + dz * dz < 0.08 * 0.08
+                })
+            });
+        }
+    }
+
+    /// The edge the segment o + d·t, t ∈ (0, t_end) passes closest to
+    /// (within EDGE_REACH, alongside the edge's span): (t, distance, unit
+    /// edge direction).
+    fn nearest(&mut self, o: Vec3, d: Vec3, t_end: f32, skip: Option<usize>) -> Option<(f32, f32, Vec3, usize)> {
+        self.stamp = self.stamp.wrapping_add(1);
+        if self.stamp == 0 {
+            self.seen.iter_mut().for_each(|s| *s = 0);
+            self.stamp = 1;
+        }
+        // only where edges are: clip to their padded bounds, and look no
+        // further than EDGE_SEARCH along one segment
+        let Some((c0, c1)) = clip_box(o, o + d * t_end.min(EDGE_SEARCH), self.lo, self.hi) else {
+            return None;
+        };
+        let seg = t_end.min(EDGE_SEARCH);
+        let (t_start, t_end) = (c0 * seg, c1 * seg);
+        let mut best: Option<(f32, f32, Vec3, usize)> = None;
+        let mut last = None;
+        let step = EDGE_CELL * 0.5;
+        let mut t = t_start;
+        loop {
+            let k = cell_key(o + d * t.min(t_end));
+            if last != Some(k) {
+                last = Some(k);
+                if let Some(list) = self.grid.get(&k) {
+                    for &ei in list {
+                        let ei = ei as usize;
+                        if self.seen[ei] == self.stamp || self.filled[ei] || skip == Some(ei) {
+                            continue;
+                        }
+                        self.seen[ei] = self.stamp;
+                        let (a, b) = self.edges[ei];
+                        let e = b - a;
+                        let w0 = o - a;
+                        let (bb, cc, dd, ee) = (d.dot(e), e.dot(e), d.dot(w0), e.dot(w0));
+                        let den = cc - bb * bb;
+                        if den < 1e-9 {
+                            continue; // parallel to the edge
+                        }
+                        let tt = (bb * ee - cc * dd) / den;
+                        let ss = (ee - bb * dd) / den;
+                        if !(0.02..=0.98).contains(&ss) || tt < 0.05 || tt > t_end - 0.05 {
+                            continue;
+                        }
+                        let dist = (o + d * tt - (a + e * ss)).length();
+                        if dist < EDGE_REACH && best.map_or(true, |(_, bd, _, _)| dist < bd) {
+                            best = Some((tt, dist, e * (1.0 / cc.sqrt()), ei));
+                        }
+                    }
+                }
+            }
+            if t >= t_end {
+                break;
+            }
+            t = (t + step).min(t_end);
+        }
+        best
+    }
+}
+
+/// Is the free border a→b of triangle `t` just a seam — does a coplanar
+/// surface continue right past it?
+fn seam(mesh: &Mesh, t: u32, a: Vec3, b: Vec3) -> bool {
+    let n = mesh.tri_normal(t);
+    let idx = mesh.indices[t as usize];
+    let c = (mesh.positions[idx[0] as usize] + mesh.positions[idx[1] as usize] + mesh.positions[idx[2] as usize])
+        * (1.0 / 3.0);
+    let u = (b - a).normalize();
+    let mut out = u.cross(n).normalize();
+    if (c - (a + b) * 0.5).dot(out) > 0.0 {
+        out = out * -1.0; // point AWAY from the triangle, within its plane
+    }
+    let mut continued = 0;
+    for f in [0.25f32, 0.5, 0.75] {
+        let q = a + (b - a) * f + out * 0.03;
+        let o = q + n * 0.05;
+        if mesh.raycast(o, n * -1.0).is_some_and(|(t, _)| t < 0.1) {
+            continued += 1;
+        }
+    }
+    continued >= 2
+}
+
+/// Does open space wrap around this edge by more than ~200°? Only such
+/// edges diffract into a shadow: a building's outside corner, a roof
+/// line, a door jamb, a screen's top. A wall standing on the ground, or
+/// a room's inside corner, has a quarter of space around it and casts no
+/// shadow to bend into — but in a mesh without shared vertices those
+/// show up as free face borders. Probed geometrically: 16 directions in
+/// the plane across the edge, at three points along it.
+pub fn exposed(mesh: &Mesh, a: Vec3, b: Vec3) -> bool {
+    const N: usize = 16;
+    const R: f32 = 0.5;
+    let u = (b - a).normalize();
+    let helper = if u.z.abs() < 0.9 { Vec3::new(0.0, 0.0, 1.0) } else { Vec3::new(1.0, 0.0, 0.0) };
+    let p1 = u.cross(helper).normalize();
+    let p2 = u.cross(p1);
+    let mut best = 0usize;
+    for f in [0.25f32, 0.5, 0.75] {
+        let m = a + (b - a) * f;
+        let free: Vec<bool> = (0..N)
+            .map(|k| {
+                let th = k as f32 * core::f32::consts::TAU / N as f32;
+                let d = p1 * th.cos() + p2 * th.sin();
+                let o = m + d * 0.02;
+                !mesh.raycast(o, d).is_some_and(|(t, _)| t < R)
+            })
+            .collect();
+        // longest circular run of free directions
+        let mut run = 0usize;
+        let mut longest = 0usize;
+        for k in 0..2 * N {
+            if free[k % N] {
+                run += 1;
+                longest = longest.max(run.min(N));
+            } else {
+                run = 0;
+            }
+        }
+        best = best.max(longest);
+    }
+    // > 225°: a wall standing on the ground measures ~200° (rays along
+    // its plane slip by), an outside corner or roof line ~270°+
+    best * 360 > 225 * N
+}
+
+/// Bend angle for a ray passing an edge at distance `a`: sampled from
+/// the three bands' (truncated Cauchy) spreads in equal parts; returns
+/// the angle and each band's unbiased weight pdf_b / mixture.
+fn sample_bend(rng: &mut Rng, a: f32) -> (f32, [f32; NBANDS]) {
+    let half_pi = core::f32::consts::FRAC_PI_2;
+    let sig: [f32; NBANDS] = core::array::from_fn(|b| {
+        let lambda = SPEED_OF_SOUND / crate::diffraction::BAND_CENTER_HZ[b];
+        (lambda / (DIFF_C * a.max(0.05))).max(1e-4)
+    });
+    let pdf = |b: usize, e: f32| -> f32 {
+        let s = sig[b];
+        let z = (2.0 / core::f32::consts::PI) * (half_pi / s).atan();
+        (1.0 / (core::f32::consts::PI * z)) * s / (s * s + e * e)
+    };
+    let j = ((rng.next_f32() * NBANDS as f32) as usize).min(NBANDS - 1);
+    let u = rng.next_f32() * 2.0 - 1.0;
+    let eps = sig[j] * (u * (half_pi / sig[j]).atan()).tan();
+    let mix = (0..NBANDS).map(|b| pdf(b, eps)).sum::<f32>() / NBANDS as f32;
+    (eps, core::array::from_fn(|b| pdf(b, eps) / mix.max(1e-12)))
+}
+
+/// Rotate `d` about unit axis `u` by `eps` (Rodrigues): the bent ray
+/// keeps its angle to the edge (Keller's cone).
+fn rotate_about(d: Vec3, u: Vec3, eps: f32) -> Vec3 {
+    let (s, c) = eps.sin_cos();
+    (d * c + u.cross(d) * s + u * (u.dot(d) * (1.0 - c))).normalize()
 }
 
 /// `n` nearly uniform unit vectors (golden-angle spiral).

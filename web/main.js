@@ -469,7 +469,7 @@ function buildQuality() {
         set: () => state.setEarly?.(1),
         active: () => state.earlyMode === 1 || state.earlyMode === 2 },
       { name: 'v3',
-        tip: 'Engine v3 (ENGINE_V3.md): one tracer for everything. Rays from your ears bounce through the world; every surface they hit connects to the sources it can see, through whatever walls are in the way. Early AND late, indoors and out, from one mechanism. No diffraction yet.',
+        tip: 'Engine v3 (ENGINE_V3.md): one tracer for everything. Rays from your ears bounce through the world; every surface they hit connects to the sources it can see, through whatever walls are in the way. Early AND late, indoors and out, from one mechanism; rays passing close to an edge bend around it.',
         set: () => state.setEarly?.(3),
         active: () => state.earlyMode === 3 },
     ]);
@@ -499,7 +499,7 @@ function buildQuality() {
         tip: 'Hard shadows: step behind a wall and the source cuts to wall-transmission only. Instructive A/B — this is what most game audio sounds like.',
         set: () => state.setModule?.(0, false),
         active: () => !mods()[0] },
-    ], [0, 1]); // v3 has no diffraction yet
+    ], [0, 1, 3]);
 
   mkSwitch('furniture',
     'Whether furniture participates acoustically, with its full material: occluding and filtering sight lines, REFLECTING off hard faces (a table top slaps back, solved exactly like a wall), and absorbing the late field — a furnished room decays faster than an empty one. Geometry always renders; this is ears-only.',
