@@ -127,6 +127,72 @@ export async function initGpu(wasm) {
     mesh = null;
   }
 
+  // Engine v3 (ENGINE_V3.md V3.3, kernel K5): the listener walk over the
+  // SAME uploaded world BVH. Two passes per job (walk into 64-bit
+  // fixed-point accumulators, resolve to f32), one job in flight; the
+  // wasm-side proxy registers only when this built.
+  const V3_VERSION = 2; // omg_core::v3::fold::WALK_LAYOUT_VERSION
+  const V3_SKY = 384;
+  const V3_SRC = 17164; // SOURCE_WORDS
+  const V3_MAX_SRC = 64;
+  const V3_DEBUG_WORDS = 28;
+  const V3_DEBUG_KEEP = 64;
+  const V3_SCENE_WORDS = 64 * 12 + 64 * 16 + 8 * 8 + 16384 * 8; // fold MAX_SCENE_WORDS
+  let v3 = null;
+  try {
+    if (mesh && wasm.sim_v3_version && wasm.sim_v3_version() === V3_VERSION) {
+      const code = await (await fetch('../crates/omg-gpu/shaders/v3_walk.wgsl')).text();
+      const module = device.createShaderModule({ code });
+      const walkPipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'walk' } });
+      const resolvePipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'resolve' } });
+      const outBytes = (V3_SKY + V3_MAX_SRC * V3_SRC) * 4;
+      v3 = {
+        walkPipe,
+        resolvePipe,
+        busy: false,
+        job: device.createBuffer({ size: 160, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+        scene: device.createBuffer({ size: V3_SCENE_WORDS * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+        acc: device.createBuffer({ size: outBytes * 2, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+        out: device.createBuffer({ size: outBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC }),
+        read: device.createBuffer({ size: outBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }),
+        dbgWords: 0,
+      };
+      v3.setDbg = (words) => {
+        v3.dbgWords = words;
+        v3.dbg = device.createBuffer({
+          size: words * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        });
+        v3.dbgRead = device.createBuffer({ size: words * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        v3.walkBind = device.createBindGroup({
+          layout: walkPipe.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: v3.job } },
+            { binding: 1, resource: { buffer: mesh.nodes } },
+            { binding: 2, resource: { buffer: mesh.prims } },
+            { binding: 3, resource: { buffer: mesh.mats } },
+            { binding: 4, resource: { buffer: v3.scene } },
+            { binding: 5, resource: { buffer: v3.acc } },
+            { binding: 7, resource: { buffer: v3.dbg } },
+          ],
+        });
+      };
+      v3.setDbg(V3_DEBUG_WORDS);
+      v3.resolveBind = device.createBindGroup({
+        layout: resolvePipe.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: v3.job } },
+          { binding: 4, resource: { buffer: v3.scene } },
+          { binding: 5, resource: { buffer: v3.acc } },
+          { binding: 6, resource: { buffer: v3.out } },
+        ],
+      });
+      console.info('[gpu] engine v3 walk kernel ready');
+    }
+  } catch (e) {
+    console.warn('[gpu] v3 walk kernel unavailable — v3 walks on the CPU:', e);
+    v3 = null;
+  }
+
   const mkOut = (words) => device.createBuffer({
     size: words * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
@@ -391,6 +457,64 @@ export async function initGpu(wasm) {
     }
   };
 
+  let v3Ms = 0;
+  let v3N = 0;
+  const v3Dispatch = async (words, injectV3) => {
+    v3.busy = true;
+    const t0 = performance.now();
+    try {
+      const nEarly = words[3];
+      const nLate = words[7];
+      const nSrc = words[19];
+      const debug = words[24] !== 0;
+      const outWords = V3_SKY + nSrc * V3_SRC;
+      const dbgWords = debug ? nEarly * V3_DEBUG_WORDS : 0;
+      if (dbgWords > v3.dbgWords) v3.setDbg(1 << Math.ceil(Math.log2(dbgWords)));
+      device.queue.writeBuffer(v3.job, 0, words, 0, 40);
+      if (words.length > 40) device.queue.writeBuffer(v3.scene, 0, words, 40, words.length - 40);
+      const enc = device.createCommandEncoder();
+      enc.clearBuffer(v3.acc, 0, outWords * 8);
+      if (dbgWords) enc.clearBuffer(v3.dbg, 0, dbgWords * 4);
+      const pass = enc.beginComputePass();
+      pass.setPipeline(v3.walkPipe);
+      pass.setBindGroup(0, v3.walkBind);
+      pass.dispatchWorkgroups(Math.ceil((nEarly + nLate) / 64));
+      pass.setPipeline(v3.resolvePipe);
+      pass.setBindGroup(0, v3.resolveBind);
+      pass.dispatchWorkgroups(Math.ceil(outWords / 64));
+      pass.end();
+      enc.copyBufferToBuffer(v3.out, 0, v3.read, 0, outWords * 4);
+      if (dbgWords) enc.copyBufferToBuffer(v3.dbg, 0, v3.dbgRead, 0, dbgWords * 4);
+      device.queue.submit([enc.finish()]);
+      const maps = [v3.read.mapAsync(GPUMapMode.READ, 0, outWords * 4)];
+      if (dbgWords) maps.push(v3.dbgRead.mapAsync(GPUMapMode.READ, 0, dbgWords * 4));
+      await Promise.all(maps);
+      const data = new Float32Array(v3.read.getMappedRange(0, outWords * 4)).slice();
+      v3.read.unmap();
+      let dbg = new Uint32Array(0);
+      if (dbgWords) {
+        // keep the strongest early rays only (the view's cap)
+        const all = new Uint32Array(v3.dbgRead.getMappedRange(0, dbgWords * 4));
+        const f = new Float32Array(all.buffer, all.byteOffset, all.length);
+        const order = [];
+        for (let r = 0; r < nEarly; r++) if (f[r * V3_DEBUG_WORDS] > 0) order.push(r);
+        order.sort((a, b) => f[b * V3_DEBUG_WORDS] - f[a * V3_DEBUG_WORDS]);
+        const keep = order.slice(0, V3_DEBUG_KEEP);
+        dbg = new Uint32Array(keep.length * V3_DEBUG_WORDS);
+        keep.forEach((r, i) => dbg.set(all.subarray(r * V3_DEBUG_WORDS, (r + 1) * V3_DEBUG_WORDS), i * V3_DEBUG_WORDS));
+        v3.dbgRead.unmap();
+      }
+      injectV3(data, dbg);
+      v3Ms = performance.now() - t0;
+      v3N++;
+      noteBusy(v3Ms);
+    } catch (e) {
+      console.warn('[gpu] v3 walk dispatch failed:', e);
+    } finally {
+      v3.busy = false;
+    }
+  };
+
   return {
     /// Drain wasm's queued jobs and dispatch them. `inject(id, echoF32)`
     /// delivers each decoded result. Jobs with no free slot are dropped —
@@ -444,9 +568,21 @@ export async function initGpu(wasm) {
       const job = new Float32Array(wasmExports.memory.buffer, wasmExports.sim_wdisc_jobs_ptr(), 5).slice();
       discDispatch(job, injectWd);
     },
+    /// Engine v3 walk (K5): one job per tick, newest wins, one in flight.
+    /// The job is taken from wasm only when the slot is free; its result
+    /// injects before a later tick and folds one tick late.
+    pumpV3(wasmExports, injectV3) {
+      if (!v3 || v3.busy || !wasmExports.sim_v3_job_len) return;
+      const n = wasmExports.sim_v3_job_len();
+      if (!n) return;
+      const words = new Uint32Array(wasmExports.memory.buffer, wasmExports.sim_v3_job_ptr(), n).slice();
+      v3Dispatch(words, injectV3);
+    },
+    /// True when the v3 walk pipelines built (over the uploaded BVH).
+    v3Ok: !!v3,
     /// True when the world-mesh kernel compiled and the BVH uploaded —
     /// the worker registers the wasm-side world proxy only then.
     meshOk: !!mesh,
-    stats: () => ({ ms: lastMs, duty, ptMs, ptN, wdMs, wdN }),
+    stats: () => ({ ms: lastMs, duty, ptMs, ptN, wdMs, wdN, v3Ms, v3N }),
   };
 }

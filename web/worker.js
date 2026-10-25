@@ -44,6 +44,7 @@ function handle(m) {
         w.sim_gpu_enable();
         if (gpu.meshOk && w.sim_wlate_enable) w.sim_wlate_enable();
         if (gpu.meshOk && w.sim_wdisc_enable) w.sim_wdisc_enable();
+        if (gpu.v3Ok && w.sim_v3_enable) w.sim_v3_enable();
       } else w.sim_gpu_disable();
     }
   }
@@ -64,6 +65,8 @@ onmessage = async (e) => {
         // pipelines actually built
         if (gpu.meshOk && w.sim_wlate_enable) w.sim_wlate_enable();
         if (gpu.meshOk && w.sim_wdisc_enable) w.sim_wdisc_enable();
+        // engine v3's listener walk (K5), over the same uploaded BVH
+        if (gpu.v3Ok && w.sim_v3_enable) w.sim_v3_enable();
         gpuOn = true;
       }
       console.log(`[gpu] late field: ${gpu ? 'WebGPU' : 'CPU'}`);
@@ -91,6 +94,15 @@ const injectWd = (n, words) => {
   w.sim_wdisc_inject(n);
 };
 
+// a v3 walk result: resolved bins (f32), then the strongest debug paths
+// (raw u32 records); folds into the sim one tick late
+const injectV3 = (data, dbg) => {
+  const ptr = w.sim_v3_buf_ptr();
+  new Float32Array(w.memory.buffer, ptr, data.length).set(data);
+  if (dbg.length) new Uint32Array(w.memory.buffer, ptr + data.length * 4, dbg.length).set(dbg);
+  w.sim_v3_inject(data.length, dbg.length / 28);
+};
+
 const injectPt = (id, words) => {
   new Uint32Array(w.memory.buffer, w.sim_pt_buf_ptr(), 9).set(words);
   w.sim_pt_inject(id);
@@ -114,6 +126,7 @@ function tick() {
     gpu.pumpPt(w, injectPt);
     gpu.pumpWorldLate(w, inject);
     gpu.pumpWorldDisc(w, injectWd);
+    gpu.pumpV3(w, injectV3);
   }
   const blocks = [];
   const nsrc = w.sim_nsrc ? w.sim_nsrc() : 11;
@@ -134,6 +147,7 @@ function tick() {
     gpuMs: gpu ? gpu.stats().ms : 0, gpuDuty: gpu ? gpu.stats().duty : 0,
     early: w.sim_early_mode(), ptMs: gpu ? gpu.stats().ptMs : 0, ptN: gpu ? gpu.stats().ptN : 0,
     wdMs: gpu ? gpu.stats().wdMs : 0, wdN: gpu ? gpu.stats().wdN : 0,
+    v3Ms: gpu ? gpu.stats().v3Ms : 0, v3N: gpu ? gpu.stats().v3N : 0,
     rays,
   }, rays ? [...blocks, state.buffer, rays] : [...blocks, state.buffer]);
 }

@@ -267,11 +267,11 @@ const QUAL_SLIDERS = [
     tip: 'Rays sampling the outdoor-ambience dome against the real geometry every tick (how rain and city noise find windows and doorways). Fewer rays = noisier direction bins under the dome’s own smoothing.' },
   { key: 'domeEvents', id: 3, modes: [0, 1], label: 'dome events', min: 2, max: 6, step: 1,
     tip: 'Bounces and glass panes a dome ray may cross before giving up. Deep events carry little energy (every surface multiplies the loss), so trimming them mostly cuts cost, not sound.' },
-  { key: 'v3Rays', id: 5, modes: [3], label: 'v3 rays', min: 64, max: 8192, step: 64, section: 'engine v3 · listener tracer',
-    tip: 'Rays leaving your ears each 20 Hz tick (early family). Every surface they hit connects to the sources it can see. More rays = steadier early reflections; the cost scales linearly. Only used when early refl = v3.' },
+  { key: 'v3Rays', id: 5, modes: [3], label: 'v3 rays', min: 64, max: 65536, step: 64, section: 'engine v3 · listener tracer',
+    tip: 'Rays leaving your ears each 20 Hz tick (early family). Every surface they hit connects to the sources it can see. More rays = steadier early reflections; the cost scales linearly. Only used when early refl = v3. With compute = gpu the walk runs on the GPU at 8× the tier budget.' },
   { key: 'v3Bounces', id: 6, modes: [3], label: 'reflections', min: 1, max: 24, step: 1,
     tip: 'Reflections each early ray follows. Paths up to this order become discrete echoes (taps); everything beyond is carried by the late rays. Raising it moves more of the room into precise early echoes at linear cost.' },
-  { key: 'v3Late', id: 7, modes: [3], label: 'late rays', min: 16, max: 1024, step: 16,
+  { key: 'v3Late', id: 7, modes: [3], label: 'late rays', min: 16, max: 8192, step: 16,
     tip: 'Long rays per tick that keep bouncing until the path is 3 s long or has lost 60 dB — the traced reverb tail. Averaged over ~10 ticks, so even a few dozen give a stable decay; more = steadier reverb time and level.' },
   { key: 'points', label: 'point hrtf', min: 0, max: 32, step: 1, audio: true, scale: 4, section: 'audio render · per sample',
     tip: 'EVERY path is binaural: bus taps encode at their arrival direction into order-2 ambisonics decoded through 20 virtual speakers, each with its measured KEMAR HRIR — full ILD/ITD, slightly blurred (±20–30°). The strongest N paths additionally get a dedicated nearest-HRIR convolution (710-direction grid): pin-sharp. The precedence effect means the loudest early paths carry localization, so sharpness goes where hearing can use it; the weak tail reads as envelopment either way. Each point tap is a per-sample convolution on the AUDIO thread — the one place the GPU cannot help — hence the budget. Mix-wide: 4× this many across all sources, given to the loudest paths at your ears.' },
@@ -288,8 +288,8 @@ const QUAL_STAT_TIPS = {
   'sim tick': 'Worker-side cost of one 20 Hz simulation tick. The budget is 50 ms; above ~40 the auto governor sheds a tier.',
   'render load': 'Audio-thread render time as a share of realtime. Above 85% the worklet governor sheds to its floor.',
   gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
-  'late field': 'Where the reverb ray traces run, with the wall-clock cost of the last trace dispatch (incl. readback). GPU runs 8× the ray budget for a fraction of the CPU cost — flip it under engine modules → compute. In v3 the reverb is traced by the same CPU pass as the early field, inside the sim tick (GPU port pending), so the compute switch has no effect there.',
-  early: 'The ACTIVE early-reflections engine as the sim reports it. Early is CPU-side by design: discovery is a few hundred rays per tick (~1 ms) and every found path is then solved EXACTLY by mirror reconstruction — tiny, branchy work the GPU can’t win. The heavy ray budgets (the reverb traces) are what the compute switch moves. ism and traced sound identical in open space; behind furniture only traced shadows.',
+  'late field': 'Where the reverb ray traces run, with the wall-clock cost of the last trace dispatch (incl. readback). GPU runs 8× the ray budget for a fraction of the CPU cost — flip it under engine modules → compute. In v3 the reverb is traced by the same listener walk as the early field — see the early cell.',
+  early: 'The ACTIVE early-reflections engine as the sim reports it. In v3 with compute = gpu: the wall-clock of the last listener walk on the GPU (dispatch to readback; it folds into the sim one tick later). The sim tick then only pays for the exact direct and edge paths and the fold. Early is CPU-side by design: discovery is a few hundred rays per tick (~1 ms) and every found path is then solved EXACTLY by mirror reconstruction — tiny, branchy work the GPU can’t win. The heavy ray budgets (the reverb traces) are what the compute switch moves. ism and traced sound identical in open space; behind furniture only traced shadows.',
 };
 
 // Movable config panels: drag by the title bar, double-click it to send
@@ -485,11 +485,11 @@ function buildQuality() {
         set: () => state.setGpu?.(false),
         active: () => !state.debug.gpu },
       { name: 'gpu',
-        tip: 'WebGPU compute: late-field reverb traces (per-room and world-mesh) + chain discovery. Requires Chrome with WebGPU; greyed out when unavailable.',
+        tip: 'WebGPU compute: late-field reverb traces (per-room and world-mesh) + chain discovery; in v3 the whole listener walk (both ray families, next-event connections, diffraction bends) at 8× the rays, a tick late. Requires Chrome with WebGPU; greyed out when unavailable.',
         set: () => { if (state.debug.gpuAvail) state.setGpu?.(true); },
         active: () => !!state.debug.gpu,
         avail: () => !!state.debug.gpuAvail },
-    ], [0, 1]); // v3 traces on the CPU (GPU port pending)
+    ], [0, 1, 3]); // v3: the listener walk itself moves (V3.3)
 
   mkSwitch('diffraction',
     'Knife-edge bending around door jambs, building corners and roof lines (plus the outdoor occlusion floors). This is what keeps a source audible — bass-tilted, from the edge’s direction — when you lose the sight line.',
@@ -583,6 +583,8 @@ function buildQuality() {
         v = pinned ? state.qual.over[s.key] : QUAL_TIER_VALS[s.key][q.tier];
         // a GPU late-field backend runs the tier ray budget at 8x
         if (!pinned && s.key === 'rays' && state.debug.gpu) v = Math.min(v * 8, 32768);
+        // ...and a GPU v3 walk runs both v3 ray families at 8x
+        if (!pinned && (s.key === 'v3Rays' || s.key === 'v3Late') && state.debug.gpu && state.debug.v3N) v *= 8;
       }
       const shown = Math.round(v * (s.scale || 1));
       if (document.activeElement !== input) input.value = shown;
@@ -597,14 +599,15 @@ function buildQuality() {
     cells[1].classList.toggle('hot', load > 0.85);
     cells[2].textContent = `${state.debug.gaps || 0}`;
     cells[2].classList.toggle('hot', (state.debug.gaps || 0) > 0);
-    // v3 traces early AND late in one CPU pass inside the sim tick: the
-    // GPU late tracer and the traced-early machinery sit idle
+    // v3 traces early AND late in one listener walk: in the sim tick on
+    // the CPU, or on the GPU (compute = gpu) folding in a tick late
     const v3 = state.debug.early === 3;
-    cells[3].textContent = v3 ? 'v3 · in sim tick'
+    const v3gpu = v3 && state.debug.gpu && state.debug.v3N;
+    cells[3].textContent = v3 ? (v3gpu ? 'v3 · gpu walk' : 'v3 · in sim tick')
       : state.debug.gpu
         ? `gpu · ${(state.debug.gpuMs || 0).toFixed(1)}ms`
         : 'cpu';
-    cells[4].textContent = v3 ? 'v3 · cpu'
+    cells[4].textContent = v3 ? (v3gpu ? `v3 · gpu ${(state.debug.v3Ms || 0).toFixed(1)}ms` : 'v3 · cpu')
       : !state.debug.early ? 'ism'
         : state.debug.gpu && state.debug.wdN
           ? `traced · gpu ${(state.debug.wdMs || 0).toFixed(1)}ms` : 'traced · cpu';
@@ -1921,6 +1924,8 @@ async function startAudio() {
     state.debug.ptN = e.data.ptN || 0;
     state.debug.wdMs = e.data.wdMs || 0;
     state.debug.wdN = e.data.wdN || 0;
+    state.debug.v3Ms = e.data.v3Ms || 0;
+    state.debug.v3N = e.data.v3N || 0;
     const q = state.quality;
     if (q.auto) {
       // shed on a blown budget immediately (a 20 Hz tick has 50 ms; at

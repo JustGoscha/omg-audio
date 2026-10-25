@@ -692,6 +692,109 @@ pub extern "C" fn sim_mesh_mats_ptr() -> *const u32 {
     mesh_flat().2.as_ptr()
 }
 
+// ------------------------------------------- engine v3 walk bridge (K5)
+// ENGINE_V3.md V3.3: with early = v3 and the compute switch on, each
+// tick's v3 walk becomes ONE flat job (omg_core::v3::fold::WalkJob: the
+// 160-byte uniform header + the scene words, copied verbatim into the
+// kernel's buffers). JS dispatches v3_walk.wgsl over the world BVH it
+// already uploaded for K2/K3, reads the resolved bins back and injects
+// them; the proxy hands that result to the NEXT tick's fold — one tick
+// late, which the EMA absorbs. The direct and edge paths never wait: the
+// fold recomputes them every tick on the CPU. Registered only after
+// gpu.js confirmed the v3 pipeline built.
+
+use omg_core::v3::fold as v3fold;
+
+struct WebV3Proxy;
+
+/// The newest job not yet taken by JS (newest wins: a dropped tick is
+/// one fewer sample, never a stale one).
+static V3_JOB: std::sync::Mutex<Option<v3fold::WalkJob>> = std::sync::Mutex::new(None);
+/// Source ids of the job JS took last — its result's block order.
+static V3_TAKEN: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+static V3_RESULT: std::sync::Mutex<Option<v3fold::Walked>> = std::sync::Mutex::new(None);
+
+impl omg_scene::v3walk::V3Walker for WebV3Proxy {
+    fn walk(&mut self, job: &v3fold::WalkJob) -> v3fold::Walk {
+        if job.words.len() > V3_JOB_CAP {
+            return v3fold::Walk::Refused;
+        }
+        *V3_JOB.lock().unwrap() = Some(job.clone());
+        match V3_RESULT.lock().unwrap().take() {
+            Some(w) => v3fold::Walk::Fresh(w),
+            None => v3fold::Walk::Pending,
+        }
+    }
+}
+
+const V3_JOB_CAP: usize = v3fold::HEADER_WORDS + v3fold::MAX_SCENE_WORDS;
+const V3_OUT_CAP: usize = v3fold::SKY_WORDS + v3fold::MAX_SOURCES * v3fold::SOURCE_WORDS;
+const V3_STAGE: usize = V3_OUT_CAP + v3fold::DEBUG_KEEP * v3fold::DEBUG_WORDS;
+static mut V3_JOB_OUT: Option<&'static mut [u32]> = None;
+static mut V3_INJECT: Option<&'static mut [f32]> = None;
+
+/// Mirrors omg_core::v3::fold::WALK_LAYOUT_VERSION — gpu.js refuses the
+/// v3 pipeline on mismatch.
+#[no_mangle]
+pub extern "C" fn sim_v3_version() -> u32 {
+    v3fold::WALK_LAYOUT_VERSION
+}
+
+/// Take this tick's walk job (call only when a dispatch slot is free):
+/// returns its u32 word count (header + scene) in sim_v3_job_ptr, 0 = none.
+#[no_mangle]
+pub extern "C" fn sim_v3_job_len() -> u32 {
+    let out = unsafe { (*(&raw mut V3_JOB_OUT)).get_or_insert_with(|| leak_u32(V3_JOB_CAP)) };
+    match V3_JOB.lock().unwrap().take() {
+        Some(job) => {
+            let n = job.words.len().min(out.len());
+            out[..n].copy_from_slice(&job.words[..n]);
+            *V3_TAKEN.lock().unwrap() = job.ids;
+            n as u32
+        }
+        None => 0,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn sim_v3_job_ptr() -> *const u32 {
+    let out = unsafe { (*(&raw mut V3_JOB_OUT)).get_or_insert_with(|| leak_u32(V3_JOB_CAP)) };
+    out.as_ptr()
+}
+
+/// Staging for one result: `n_out` resolved f32 words (sky + one block
+/// per source of the taken job), then `n_dbg` debug records of
+/// DEBUG_WORDS u32 each (the strongest early rays; 0 without debug).
+#[no_mangle]
+pub extern "C" fn sim_v3_buf_ptr() -> *mut f32 {
+    let buf = unsafe { (*(&raw mut V3_INJECT)).get_or_insert_with(|| leak_f32(V3_STAGE)) };
+    buf.as_mut_ptr()
+}
+
+/// Deliver the staged result of the job JS took last.
+#[no_mangle]
+pub extern "C" fn sim_v3_inject(n_out: u32, n_dbg: u32) {
+    let buf = unsafe { (*(&raw mut V3_INJECT)).get_or_insert_with(|| leak_f32(V3_STAGE)) };
+    let ids = core::mem::take(&mut *V3_TAKEN.lock().unwrap());
+    let n_out = n_out as usize;
+    if n_out < v3fold::output_words(ids.len()) || n_out > V3_OUT_CAP {
+        return; // malformed: drop it, the next walk refreshes
+    }
+    let n_dbg = (n_dbg as usize).min(v3fold::DEBUG_KEEP);
+    // the debug records were written as raw u32 words
+    let dbg = &buf[n_out..n_out + n_dbg * v3fold::DEBUG_WORDS];
+    let dbg_words: &[u32] = unsafe { core::slice::from_raw_parts(dbg.as_ptr() as *const u32, dbg.len()) };
+    let debug = v3fold::decode_debug(dbg_words, &ids);
+    *V3_RESULT.lock().unwrap() = Some(v3fold::Walked { ids, data: buf[..n_out].to_vec(), debug });
+}
+
+/// Route the v3 walk to the JS driver — only after gpu.js confirmed the
+/// v3 pipeline built over the uploaded world mesh.
+#[no_mangle]
+pub extern "C" fn sim_v3_enable() {
+    omg_scene::v3walk::set_v3_walker(Box::new(WebV3Proxy));
+}
+
 /// Route traces through the JS WebGPU driver. Call once, before the
 /// first tick, and only after gpu.js initialized successfully.
 #[no_mangle]
@@ -719,6 +822,9 @@ pub extern "C" fn sim_gpu_disable() {
     omg_scene::early::clear_early_discovery();
     omg_scene::early_world::clear_world_discovery();
     omg_scene::quality::set_gpu_backend(false);
+    omg_scene::v3walk::clear_v3_walker();
+    *V3_JOB.lock().unwrap() = None;
+    *V3_RESULT.lock().unwrap() = None;
     GPU_JOBS.lock().unwrap().clear();
     GPU_RESULTS.lock().unwrap().clear();
     PT_JOBS.lock().unwrap().clear();
