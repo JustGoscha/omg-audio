@@ -1231,7 +1231,7 @@ function buildWorld() {
   // ground skirt below everything, fog carries it to the horizon
   {
     const skirt = new THREE.Mesh(
-      new THREE.PlaneGeometry(8000, 8000),
+      new THREE.PlaneGeometry(60000, 60000), // fly 10+ km out and back
       new THREE.MeshBasicMaterial({ color: 0x141f18 }),
     );
     skirt.rotation.x = -Math.PI / 2;
@@ -2290,6 +2290,11 @@ function floorHeightAt(x, y, curZ) {
 // C / Ctrl sinks. Height is kept as airZ over the floor, so F again
 // simply drops you: the ordinary jump fall, landing thud included.
 const FLY_SPEED = 8.0;
+// Shift while flying keeps doubling the speed every ~1.5 s up to
+// FLY_TOP: 10 km out in about a minute and a half. Kept under Mach 0.5:
+// faster than that, a path's delay outruns the renderer's glide window
+// and Doppler turns into a crossfade per tick.
+const FLY_TOP = 150;
 function toggleFly() {
   state.fly = !state.fly;
   state.vz = 0;
@@ -2305,7 +2310,7 @@ function flyPose(dt) {
   const climb = (state.keys.has('Space') ? 1 : 0)
     - (state.keys.has('KeyC') || state.keys.has('ControlLeft') ? 1 : 0);
   if (!f && !r && !climb) return;
-  const step = (FLY_SPEED + sprintBoost(dt)) * dt;
+  const step = (FLY_SPEED + sprintBoost(dt, true)) * dt;
   const ch = Math.cos(state.heading);
   const sh = Math.sin(state.heading);
   const cp = Math.cos(state.pitch);
@@ -2345,11 +2350,12 @@ function moveInput() {
 // sprint builds: Shift gives the old 1.8× immediately, then keeps
 // accelerating at 1 m/s² for as long as it's held — the belfry is a
 // quarter kilometer away, after all. Release bleeds off quickly.
-function sprintBoost(dt) {
+function sprintBoost(dt, flying = false) {
   const shifting = state.keys.has('ShiftLeft') || state.keys.has('ShiftRight');
   if (shifting) {
-    state.sprintV = Math.min((state.sprintV ?? 0) < WALK_SPEED * 0.8
-      ? WALK_SPEED * 0.8 : state.sprintV + 1.0 * dt, 27);
+    const v = state.sprintV ?? 0;
+    state.sprintV = Math.min(v < WALK_SPEED * 0.8
+      ? WALK_SPEED * 0.8 : v + (flying ? Math.max(1.0, 0.46 * v) : 1.0) * dt, flying ? FLY_TOP : 27);
   } else {
     state.sprintV = Math.max(0, (state.sprintV || 0) - 30 * dt);
   }
@@ -2526,6 +2532,16 @@ function frame(t) {
     camera.position.copy(v3(state.pose.x, state.pose.y, EYE + (state.pose.z || 0) + (state.airZ || 0) - 0.7 * (state.crouch || 0)));
     camera.rotation.y = state.heading - Math.PI / 2;
     camera.rotation.x = state.pitch;
+    // far out (flying), the town must stay in view: the far plane
+    // reaches back past it, and the near plane backs off so depth
+    // precision holds over the longer range
+    const reach = Math.hypot(state.pose.x - 10, state.pose.y - 160) + 1200;
+    const near = Math.min(1, Math.max(0.05, reach / 25000));
+    if (Math.abs(camera.far - reach) > 50 || camera.near !== near) {
+      camera.far = Math.max(1200, reach);
+      camera.near = near;
+      camera.updateProjectionMatrix();
+    }
   }
 
   const tt = t / 1000;
