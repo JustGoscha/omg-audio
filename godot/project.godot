@@ -5,12 +5,21 @@ config_version=5
 
 config/name="omg-audio Godot demo"
 run/main_scene="res://demo.tscn"
-config/features=PackedStringArray("4.2")
+config/features=PackedStringArray("4.7")
 
 [audio]
 
 driver/mix_rate=48000
 
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+
 [rendering]
 
-renderer/rendering_method="mobile"
+renderer/rendering_method="forward_plus"
+lights_and_shadows/directional_shadow/size=2048
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0
+lights_and_shadows/positional_shadow/soft_shadow_filter_quality=0
+environment/volumetric_fog/volume_size=96

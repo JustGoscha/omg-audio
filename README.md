@@ -161,15 +161,46 @@ sh tools/build_godot.sh        # cargo build the extension + stage into godot/bi
 /Applications/Godot.app/Contents/MacOS/Godot --path godot                          # playable demo
 ```
 
-`OmgEngine` (RefCounted) is the whole integration surface: `setup(rate)`,
-`set_source_samples(i, PackedFloat32Array)`, `set_listener(x, y, yaw)`,
-`set_head(yaw, pitch, roll)`, `set_dynamic(slot, x, y, z, active)`, and
-`render(frames) -> PackedVector2Array` which you push into an
-`AudioStreamGenerator`. The simulation runs on its own 20 Hz thread inside
-the extension; `render()` never blocks on it — the same two-clock
-architecture as every other frontend. `godot/demo.gd` is the whole demo:
-first-person walk (click to capture, WASD + mouse, Esc to release) with
-synthesized music and club sources.
+The extension is omg-audio (`crates/omg-audio`) as Godot nodes — nothing
+demo-specific:
+
+- `OmgWorld` — the engine: omg-audio's `threaded::Engine` (simulation
+  thread; v3 on the GPU with `use_gpu`, CPU otherwise). `rebuild_geometry()`
+  collects the level's triangles (MeshInstance3D surfaces) into an
+  omg-audio `Geometry`; an output thread renders binaural audio ahead
+  into a ring that Godot's audio thread pulls through `OmgOutputStream` —
+  the game thread never runs DSP or waits on the engine. Also:
+  `load_clip(path, options)` (Ogg Vorbis/FLAC/Opus, FLAC, WAV decoded in
+  Rust in the background, with the web demo's shaping options),
+  `whisper()` (near field at one ear), ambience bed + rain routed by the
+  frame's sky (`ambience_file`, `rain_bank_file`, `rain_intensity`),
+  `ground_plane`, `quality`, `stats()`, and the web worklet's load
+  governor over omg-audio's mix-wide budgets.
+- `OmgGeometry` — tags everything below it with an acoustic material
+  (`material = "brick"`, see `OmgWorld.material_presets()`; `"none"` opts
+  out); `as_boxes` makes its meshes solid boxes. Simplest of all: give a
+  visual Material an `omg_material` meta once and every mesh using it is
+  acoustic — the texture brings its sound.
+- `OmgSource` — a looping `file` and/or one-shots (`play_clip`), at a real
+  SPL (`level_db` at 1 m).
+- `OmgListener` — the ears (falls back to the current camera).
+- `OmgDoor` — a leaf or pane filling an opening (an omg-audio object box),
+  priced by `openness`.
+
+`godot/demo.gd` + `godot/demo/` is the web demo's town at night, generated
+in GDScript (same rooms, doors, windows and landmarks as `web/main.js` /
+the walkthrough scene; furniture from `assets/demo/layout.json` when
+present), dressed with CC0 textures (`assets/textures`, Poly Haven) whose
+materials declare their acoustics (`--audit` prints every
+texture → acoustic pairing), and the web demo's sound design (room loops,
+footsteps, owls, bells, whispers, cars, balls, rain). It renders a cheap
+pixel look by default (3D at 360 px high, width from the window's aspect,
+nearest upscale, no anti-aliasing); G switches to the fine look (full
+resolution, SSAO/SSIL, volumetric fog), [ and ] change the height. Controls: click to
+capture / throw, WASD, Shift run, Space jump, C crouch, F fly, E door,
+B bells, V whisper, R rain, L labels, Q sound quality, H hud.
+`-- --print-fps` measures ~10 s of frame rate, `-- --shots=<dir>` renders
+a tour of viewpoints to PNGs, `-- --gpu` traces on the GPU.
 
 ## Architecture — the two clocks
 
@@ -256,7 +287,7 @@ with explicit 4-lane accumulation.
 | `omg-scene` | the world: rooms, doors, windows, materials/thickness, portal graph, transmission/aperture/diffraction routing, `WorldSim` | yes |
 | `omg-web` | wasm C-ABI exports (`sim_*` for the Worker, `eng_*` for the Worklet), no wasm-bindgen | is the wasm |
 | `omg-app` | native binary: cpal live output, offline render, walkthrough scripting, JSON export for the video tool | native |
-| `omg-godot` | GDExtension (godot-rust): the engine as a Godot 4 class, KEMAR HRIRs baked in | native |
+| `omg-godot` | GDExtension (godot-rust): omg-audio as Godot 4 nodes (OmgWorld, OmgGeometry, OmgSource, OmgListener, OmgDoor), KEMAR HRIRs baked in | native |
 
 ## Deliberate approximations (and what full fidelity would need)
 
