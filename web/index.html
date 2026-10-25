@@ -107,6 +107,8 @@
   #quality .seg button:disabled:hover { color: var(--dim); }
   #quality .qrow.qmod { grid-template-columns: 92px 1fr; }
   #quality .qrow.qmod .seg { margin: 0; }
+  /* mode-dependent rows, sections and stats (see buildQuality) */
+  #quality [hidden] { display: none !important; }
   #quality .qrow { display: grid; grid-template-columns: 92px 1fr 64px;
     align-items: center; gap: 10px; margin: 8px 0; }
   #quality .qrow label { color: var(--dim); font-size: 11px; position: relative;

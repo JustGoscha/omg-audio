@@ -254,21 +254,21 @@ const QUAL_TIER_VALS = {
   v3Rays: [1024, 768, 512], v3Bounces: [6, 4, 3], v3Late: [128, 96, 48],
 };
 const QUAL_SLIDERS = [
-  { key: 'rays', id: 0, label: 'trace rays', min: 256, max: 32768, step: 256, section: 'simulation · 20 Hz',
+  { key: 'rays', id: 0, modes: [0, 1], label: 'trace rays', min: 256, max: 32768, step: 256, section: 'simulation · 20 Hz',
     tip: 'Stochastic rays per reverb trace, per source. Fewer rays = a noisier RT60/level estimate that the running average smooths out — more flutter, never a different sound. The single biggest sim-CPU lever.' },
-  { key: 'ism', id: 4, label: 'ism order', min: 2, max: 3, step: 1,
+  { key: 'ism', id: 4, modes: [0], label: 'ism order', min: 2, max: 3, step: 1,
     tip: 'Image-source reflection order: how many wall bounces the early echoes are traced through. 3 ≈ 63 discrete reflections per source, 2 ≈ 15 — roughly halving the tap count the audio thread must render. 2 keeps the audible early pattern; the late reverb covers the rest.' },
-  { key: 'gate', id: 1, label: 'refresh age', min: 4, max: 32, step: 1,
+  { key: 'gate', id: 1, modes: [0, 1], label: 'refresh age', min: 4, max: 32, step: 1,
     tip: 'How many 20 Hz ticks a settled scene may keep its last reverb estimate before re-tracing. Motion, door swings and level changes always re-trace immediately — this only slows the idle refresh.' },
   { key: 'domeRays', id: 2, label: 'dome rays', min: 32, max: 384, step: 32,
     tip: 'Rays sampling the outdoor-ambience dome against the real geometry every tick (how rain and city noise find windows and doorways). Fewer rays = noisier direction bins under the dome’s own smoothing.' },
   { key: 'domeEvents', id: 3, label: 'dome events', min: 2, max: 6, step: 1,
     tip: 'Bounces and glass panes a dome ray may cross before giving up. Deep events carry little energy (every surface multiplies the loss), so trimming them mostly cuts cost, not sound.' },
-  { key: 'v3Rays', id: 5, label: 'v3 rays', min: 64, max: 8192, step: 64, section: 'engine v3 · listener tracer',
+  { key: 'v3Rays', id: 5, modes: [3], label: 'v3 rays', min: 64, max: 8192, step: 64, section: 'engine v3 · listener tracer',
     tip: 'Rays leaving your ears each 20 Hz tick (early family). Every surface they hit connects to the sources it can see. More rays = steadier early reflections; the cost scales linearly. Only used when early refl = v3.' },
-  { key: 'v3Bounces', id: 6, label: 'reflections', min: 1, max: 24, step: 1,
+  { key: 'v3Bounces', id: 6, modes: [3], label: 'reflections', min: 1, max: 24, step: 1,
     tip: 'Reflections each early ray follows. Paths up to this order become discrete echoes (taps); everything beyond is carried by the late rays. Raising it moves more of the room into precise early echoes at linear cost.' },
-  { key: 'v3Late', id: 7, label: 'late rays', min: 16, max: 1024, step: 16,
+  { key: 'v3Late', id: 7, modes: [3], label: 'late rays', min: 16, max: 1024, step: 16,
     tip: 'Long rays per tick that keep bouncing until the path is 3 s long or has lost 60 dB — the traced reverb tail. Averaged over ~10 ticks, so even a few dozen give a stable decay; more = steadier reverb time and level.' },
   { key: 'points', label: 'point hrtf', min: 0, max: 32, step: 1, audio: true, section: 'audio render · per sample',
     tip: 'EVERY path is binaural: bus taps encode at their arrival direction into order-2 ambisonics decoded through 20 virtual speakers, each with its measured KEMAR HRIR — full ILD/ITD, slightly blurred (±20–30°). The strongest N paths additionally get a dedicated nearest-HRIR convolution (710-direction grid): pin-sharp. The precedence effect means the loudest early paths carry localization, so sharpness goes where hearing can use it; the weak tail reads as envelopment either way. Each point tap is a per-sample convolution on the AUDIO thread — the one place the GPU cannot help — hence the budget. Mix-wide: 4× this many across all sources, given to the loudest paths at your ears.' },
@@ -378,15 +378,23 @@ function buildQuality() {
   });
   panel.append(seg);
 
+  // Only what the ACTIVE early engine uses is shown (state.earlyMode:
+  // 0 ism, 1/2 traced, 3 v3); a section disappears with all its rows.
+  const modeOf = () => (state.earlyMode === 2 ? 1 : (state.earlyMode || 0));
+  const sections = [];
+  let curSection = null;
   for (const s of QUAL_SLIDERS) {
     if (s.section) {
       const h = document.createElement('div');
       h.className = 'qsection';
       h.textContent = s.section;
       panel.append(h);
+      curSection = { el: h, rows: [] };
+      sections.push(curSection);
     }
     const row = document.createElement('div');
     row.className = 'qrow';
+    if (curSection) curSection.rows.push({ row, s });
     const label = document.createElement('label');
     label.innerHTML = `<span>${s.label}</span>`;
     label.dataset.tip = s.tip;
@@ -421,9 +429,11 @@ function buildQuality() {
   mh.textContent = 'engine modules';
   panel.append(mh);
   const switchRows = [];
-  const mkSwitch = (label, tip, options) => {
+  const switchVis = [];
+  const mkSwitch = (label, tip, options, modes) => {
     const row = document.createElement('div');
     row.className = 'qrow qmod';
+    if (modes) switchVis.push({ row, modes });
     const lab = document.createElement('label');
     lab.innerHTML = `<span>${label}</span>`;
     lab.dataset.tip = tip;
@@ -473,7 +483,7 @@ function buildQuality() {
         set: () => { if (state.debug.gpuAvail) state.setGpu?.(true); },
         active: () => !!state.debug.gpu,
         avail: () => !!state.debug.gpuAvail },
-    ]);
+    ], [0, 1]); // v3 traces on the CPU (GPU port pending)
 
   mkSwitch('diffraction',
     'Knife-edge bending around door jambs, building corners and roof lines (plus the outdoor occlusion floors). This is what keeps a source audible — bass-tilted, from the edge’s direction — when you lose the sight line.',
@@ -486,7 +496,7 @@ function buildQuality() {
         tip: 'Hard shadows: step behind a wall and the source cuts to wall-transmission only. Instructive A/B — this is what most game audio sounds like.',
         set: () => state.setModule?.(0, false),
         active: () => !mods()[0] },
-    ]);
+    ], [0, 1]); // v3 has no diffraction yet
 
   mkSwitch('furniture',
     'Whether furniture participates acoustically, with its full material: occluding and filtering sight lines, REFLECTING off hard faces (a table top slaps back, solved exactly like a wall), and absorbing the late field — a furnished room decays faster than an empty one. Geometry always renders; this is ears-only.',
@@ -503,9 +513,14 @@ function buildQuality() {
 
   const stats = document.createElement('div');
   stats.className = 'qstats';
+  // stats likewise: the late-field backend means nothing in v3 (its
+  // reverb is traced inside the sim tick)
+  const statModes = { 'late field': [0, 1] };
+  const statCells = [];
   const cells = ['sim tick', 'render load', 'gaps', 'late field', 'early'].map((k) => {
     const c = document.createElement('div');
     c.className = 'cell';
+    if (statModes[k]) statCells.push({ c, modes: statModes[k] });
     c.title = QUAL_STAT_TIPS[k];
     c.innerHTML = `<span class="k">${k}</span><span class="v">–</span>`;
     stats.append(c);
@@ -537,6 +552,19 @@ function buildQuality() {
         if (o.avail) b.disabled = !o.avail();
       }
     }
+    const m = modeOf();
+    const shows = (modes) => !modes || modes.includes(m);
+    for (const sec of sections) {
+      let any = false;
+      for (const { row, s } of sec.rows) {
+        const on = shows(s.modes);
+        row.hidden = !on;
+        any = any || on;
+      }
+      sec.el.hidden = !any;
+    }
+    for (const { row, modes } of switchVis) row.hidden = !shows(modes);
+    for (const { c, modes } of statCells) c.hidden = !shows(modes);
     for (const { s, input, val } of state.qual.rows) {
       let v; let pinned;
       if (s.audio) {
