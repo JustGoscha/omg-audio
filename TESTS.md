@@ -64,6 +64,7 @@ wgpu adapter.
 | Coupled / remote reverb (sim) | `crates/omg-scene/tests/fx_coupled_reverb.rs` |
 | Glass panes, heavy doors | `crates/omg-scene/tests/fx_glass_heavy_doors.rs` |
 | Ambient dome | `crates/omg-scene/tests/fx_ambient_dome.rs` |
+| Shaped ambience (ground-area / volume emitters: surround at ear height, from below and fading when flying, toward the area from afar, roof and doorway pricing) | `crates/omg-scene/tests/fx_ambient_shapes.rs`, `src/ambient.rs` (unit); demo crickets: `tests/ambient_crickets.rs` |
 | Outdoor-field power balance | `crates/omg-scene/tests/fx_outdoor_field.rs` |
 | Door-graph routing | `crates/omg-scene/tests/fx_door_routing.rs` |
 | Room blending at thresholds | `crates/omg-scene/tests/fx_room_blend.rs` |

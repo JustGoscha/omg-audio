@@ -1,10 +1,12 @@
 //! Ambience: the outdoor loop (city hum, night nature) rendered through
 //! the environment's inlets instead of as a listener-anchored bed.
 //!
-//!  - Each environment route (an aperture of the listener's room, or a
-//!    horizon sector outdoors) plays a decorrelated read of the loop,
-//!    band-shaped by the route's geometry-priced gains and encoded at its
-//!    world direction on the SH bus.
+//!  - Each ambience route (`Environment::amb_routes`: a direction bin of
+//!    the bed's emitters' field — crickets in the grass from below when
+//!    flying, an aperture of the listener's room indoors) plays a
+//!    decorrelated read of the loop, band-shaped by the route's
+//!    geometry-priced gains and encoded at its world direction on the SH
+//!    bus.
 //!  - The diffuse residual (the field that built up INSIDE the room via
 //!    its shell) plays as four decorrelated world-anchored feeds, shaped
 //!    by the power-balance seep spectrum.
@@ -73,9 +75,11 @@ impl Ambience {
         self.user.set(g.clamp(0.0, 8.0));
     }
 
+    /// The bed's own inlets (`amb_routes` / `amb_seep`): the field of its
+    /// shaped emitters, not the rain's dome routes.
     pub fn set_environment(&mut self, env: &Environment) {
-        self.routes.update(env);
-        for (s, &v) in self.seep.iter_mut().zip(env.seep.iter()) {
+        self.routes.update_routes(&env.amb_routes);
+        for (s, &v) in self.seep.iter_mut().zip(env.amb_seep.iter()) {
             s.set(v);
         }
     }
@@ -180,7 +184,15 @@ mod tests {
     }
 
     fn env_with(routes: Vec<EnvRoute>, seep: [f32; 3]) -> Environment {
-        Environment { seep, enclosure: 0.0, roof_gain: 0.0, routes, windows: vec![] }
+        Environment {
+            seep,
+            enclosure: 0.0,
+            roof_gain: 0.0,
+            routes: vec![],
+            windows: vec![],
+            amb_seep: seep,
+            amb_routes: routes,
+        }
     }
 
     #[test]
