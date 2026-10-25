@@ -47,9 +47,78 @@ const KEY_EARLY_BASE: u32 = 16;
 pub struct World<'a> {
     pub mesh: &'a Mesh,
     pub panels: &'a [(Vec3, Vec3, Material)],
+    /// Ground level, when the world has solid earth beneath it. Below
+    /// it, everything outside `pockets` is earth: rays that end up there
+    /// die, and segments through it are blocked.
+    pub grade: Option<f32>,
+    /// Below-grade air volumes (a bunker): (min, max).
+    pub pockets: &'a [(Vec3, Vec3)],
 }
 
-impl World<'_> {
+/// Amplitude through earth (a few meters of soil: nothing audible).
+const EARTH: f32 = 1e-4;
+
+impl<'a> World<'a> {
+    /// A world with no earth (open below), no overlays added.
+    pub fn new(mesh: &'a Mesh, panels: &'a [(Vec3, Vec3, Material)]) -> Self {
+        Self { mesh, panels, grade: None, pockets: &[] }
+    }
+
+    /// Would a ray leaving `p` along `d` with nothing left to hit run
+    /// into the earth instead of reaching open sky? Downward rays always
+    /// do; from below grade, anything not climbing steeply does.
+    fn escapes_into_earth(&self, p: Vec3, d: Vec3) -> bool {
+        let Some(g) = self.grade else { return false };
+        d.z < -1e-3 || (p.z < g - 0.05 && d.z <= 0.05)
+    }
+
+    /// Is `p` inside solid earth?
+    fn in_earth(&self, p: Vec3) -> bool {
+        let Some(g) = self.grade else { return false };
+        p.z < g - 0.05
+            && !self.pockets.iter().any(|(mn, mx)| {
+                p.x >= mn.x && p.x <= mx.x && p.y >= mn.y && p.y <= mx.y && p.z >= mn.z && p.z <= mx.z
+            })
+    }
+
+    /// Does segment a→b run through earth for more than a few cm? Its
+    /// below-grade part, minus whatever lies inside the air pockets.
+    fn crosses_earth(&self, a: Vec3, b: Vec3) -> bool {
+        let Some(g) = self.grade else { return false };
+        let g = g - 0.05;
+        let (za, zb) = (a.z, b.z);
+        if za >= g && zb >= g {
+            return false;
+        }
+        // parameter range below grade
+        let (t0, t1) = if (zb - za).abs() < 1e-9 {
+            (0.0, 1.0)
+        } else {
+            let tc = ((g - za) / (zb - za)).clamp(0.0, 1.0);
+            if za < g { (0.0, tc) } else { (tc, 1.0) }
+        };
+        let len = (b - a).length();
+        // subtract pocket intervals
+        let mut ivs: Vec<(f32, f32)> = Vec::new();
+        for (mn, mx) in self.pockets {
+            if let Some((p0, p1)) = clip_box(a, b, *mn, *mx) {
+                ivs.push((p0.max(t0), p1.min(t1)));
+            }
+        }
+        ivs.retain(|iv| iv.1 > iv.0);
+        ivs.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut covered = 0.0f32;
+        let mut end = t0;
+        for (s0, s1) in ivs {
+            let s0 = s0.max(end);
+            if s1 > s0 {
+                covered += s1 - s0;
+                end = s1;
+            }
+        }
+        (t1 - t0 - covered) * len > 0.1
+    }
+
     fn raycast(&self, p: Vec3, d: Vec3) -> Option<GeomHit> {
         WithPanels { base: self.mesh, panels: self.panels }.raycast_hit(p, d)
     }
@@ -57,6 +126,9 @@ impl World<'_> {
     /// Per-band amplitude of the segment a→b: mesh walls by their real
     /// thickness, overlay boxes once each.
     pub fn transmission(&self, a: Vec3, b: Vec3, hits: &mut Vec<SegHit>) -> [f32; NBANDS] {
+        if self.crosses_earth(a, b) {
+            return [EARTH; NBANDS];
+        }
         let mut g = segment_transmission(self.mesh, a, b, hits);
         for (mn, mx, m) in self.panels {
             if segment_crosses_box(a, b, *mn, *mx) {
@@ -67,6 +139,31 @@ impl World<'_> {
         }
         g
     }
+}
+
+/// Parameter interval [t0, t1] ⊂ [0, 1] of segment a→b inside the box.
+fn clip_box(a: Vec3, b: Vec3, mn: Vec3, mx: Vec3) -> Option<(f32, f32)> {
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for axis in 0..3 {
+        let (da, pa, lo, hi) = (d.get(axis), a.get(axis), mn.get(axis), mx.get(axis));
+        if da.abs() < 1e-9 {
+            if pa < lo || pa > hi {
+                return None;
+            }
+        } else {
+            let (mut ta, mut tb) = ((lo - pa) / da, (hi - pa) / da);
+            if ta > tb {
+                core::mem::swap(&mut ta, &mut tb);
+            }
+            t0 = t0.max(ta);
+            t1 = t1.min(tb);
+            if t0 > t1 {
+                return None;
+            }
+        }
+    }
+    Some((t0, t1))
 }
 
 fn segment_crosses_box(a: Vec3, b: Vec3, mn: Vec3, mx: Vec3) -> bool {
@@ -200,6 +297,13 @@ pub struct Tracer {
     cells: Vec<Vec3>,
     state: HashMap<u32, SourceState>,
     hits: Vec<SegHit>,
+    /// The outdoor field as the listener's own rays find it: per
+    /// direction cell, the energy of rays that escaped to open sky
+    /// (through doorways, panes, walls, off facades — whatever the walk
+    /// did) and the energy-weighted sum of their starting directions.
+    /// Averaged over ticks. This replaces the separate dome ray fan.
+    sky: Vec<([f32; NBANDS], Vec3)>,
+    sky_primed: bool,
     /// Capture the strongest paths of each tick for the debug view.
     pub debug: bool,
     /// Last tick's strongest paths: (source id, mid energy, polyline
@@ -236,9 +340,28 @@ impl Tracer {
             cells: fibonacci_sphere(N_CELLS),
             state: HashMap::new(),
             hits: Vec::new(),
+            sky: vec![([0.0; NBANDS], Vec3::new(0.0, 0.0, 0.0)); N_CELLS],
+            sky_primed: false,
             debug: false,
             debug_paths: Vec::new(),
         }
+    }
+
+    /// The traced outdoor field: (unit direction, per-band energy) per
+    /// direction cell. Energy is the fraction of the listener's sphere of
+    /// directions that reaches open sky, weighted by everything lost on
+    /// the way (1.0 = in the middle of an empty plain with a perfect
+    /// mirror floor).
+    pub fn sky(&self) -> Vec<([f32; 3], [f32; NBANDS])> {
+        self.sky
+            .iter()
+            .enumerate()
+            .map(|(i, (e, d))| {
+                let dl = d.length();
+                let dir = if dl > 1e-9 { *d * (1.0 / dl) } else { self.cells[i] };
+                ([dir.x, dir.y, dir.z], *e)
+            })
+            .collect()
     }
 
     /// Forget a source's history (it moved discontinuously, or left).
@@ -299,6 +422,8 @@ impl Tracer {
         // counted exactly once: EARLY rays count paths with 1..=bounces
         // reflections; LATE rays (fewer, long) count everything beyond.
         let late_primary = fibonacci_sphere(budget.late_rays as usize);
+        let mut sky_acc: Vec<([f32; NBANDS], Vec3)> =
+            vec![([0.0; NBANDS], Vec3::new(0.0, 0.0, 0.0)); N_CELLS];
         let fams: [(&[Vec3], u32, u32, u32, usize); 2] = [
             (&primary, 1, budget.bounces, budget.bounces + 1, budget.nee),
             (&late_primary, budget.bounces + 1, u32::MAX, LATE_MAX_SEGMENTS, budget.late_nee),
@@ -324,6 +449,9 @@ impl Tracer {
                 verts.push(listener);
             }
             for _seg in 0..segments {
+                if world.in_earth(origin) {
+                    break; // transmitted into solid ground: gone
+                }
                 let hit = world.raycast(origin, dir);
                 let t_hit = hit.as_ref().map_or(f32::MAX, |h| h.t);
 
@@ -355,7 +483,30 @@ impl Tracer {
                     }
                 }
 
-                let Some(hit) = hit else { break };
+                let Some(hit) = hit else {
+                    // escaped to open sky: the outdoor field reaches the
+                    // listener along this ray's first direction. Escapes
+                    // split by reflection count like every other path
+                    // (early family ≤ bounces, late family beyond).
+                    let mine = if lo == 1 { refl <= hi } else { refl >= lo };
+                    if mine && !world.escapes_into_earth(origin, dir) {
+                        let mut best = 0usize;
+                        let mut bd = f32::MIN;
+                        for (ci, c) in self.cells.iter().enumerate() {
+                            let d = c.dot(first);
+                            if d > bd {
+                                bd = d;
+                                best = ci;
+                            }
+                        }
+                        let cell = &mut sky_acc[best];
+                        for b in 0..NBANDS {
+                            cell.0[b] += thr[b] * inv_n;
+                        }
+                        cell.1 = cell.1 + first * (thr[1] * inv_n);
+                    }
+                    break;
+                };
                 let p = origin + dir * t_hit;
                 if debug {
                     verts.push(p);
@@ -459,6 +610,14 @@ impl Tracer {
         if debug {
             dbg.sort_by(|a, b| b.1.total_cmp(&a.1));
             self.debug_paths = dbg;
+        }
+        let a = if self.sky_primed { budget.ema.clamp(0.0, 1.0) } else { 1.0 };
+        self.sky_primed = true;
+        for (cur, f) in self.sky.iter_mut().zip(sky_acc) {
+            for b in 0..NBANDS {
+                cur.0[b] += a * (f.0[b] - cur.0[b]);
+            }
+            cur.1 = cur.1 + (f.1 - cur.1) * a;
         }
 
         // 5. smooth over ticks and build each source's field

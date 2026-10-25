@@ -28,7 +28,7 @@ use omg_core::v3::{Budget, Source, Tracer, World, KEY_DIRECT};
 use omg_core::vec3::Vec3;
 
 fn one(mesh: &Mesh, lis: Vec3, src: Vec3, budget: Budget, seed: u64) -> omg_core::v3::SourceField {
-    let world = World { mesh, panels: &[] };
+    let world = World::new(mesh, &[]);
     let mut t = Tracer::new(seed);
     t.trace(&world, lis, &[Source { id: 0, pos: src, weight: 1.0 }], budget).remove(0)
 }
@@ -113,7 +113,7 @@ fn early_tap_delays_do_not_jitter_between_ticks() {
     // persists must keep EXACTLY its delay (the renderer glides any
     // same-key delay change as motion — jitter is audible pitch warble)
     let mesh = floor_slab(flat_opaque(0.1, 0.6));
-    let world = World { mesh: &mesh, panels: &[] };
+    let world = World::new(&mesh, &[]);
     let mut t = Tracer::new(21);
     let src = [Source { id: 0, pos: v(8.0, 3.0, 2.0), weight: 1.0 }];
     let b = Budget { rays: 512, bounces: 2, k: 0.06, ema: 0.35, nee: 0, late_rays: 32, late_ema: 0.1, late_nee: 0 };
@@ -180,7 +180,7 @@ fn late_rt60_agrees_with_the_v2_tracer() {
     let v2 = estimate_reverb(&echo);
     // v3: a few early bounces + the late family carrying the tail
     let mut t = Tracer::new(7);
-    let world = World { mesh: &mesh, panels: &[] };
+    let world = World::new(&mesh, &[]);
     let mut f = None;
     for _ in 0..8 {
         f = Some(t.trace(&world, lis, &[Source { id: 0, pos: src, weight: 1.0 }], Budget { rays: 1024, bounces: 4, k: 0.06, ema: 0.5, nee: 0, late_rays: 1024, late_ema: 0.5, late_nee: 0 }).remove(0));
@@ -202,7 +202,7 @@ fn sampled_connections_stay_unbiased() {
     let srcs: Vec<Source> = (0..8)
         .map(|i| Source { id: i, pos: v(3.0 * i as f32 - 10.0, 4.0, 1.0 + 0.3 * i as f32), weight: 1.0 + i as f32 })
         .collect();
-    let world = World { mesh: &mesh, panels: &[] };
+    let world = World::new(&mesh, &[]);
     let run = |nee: usize, seed: u64| -> Vec<f32> {
         let mut t = Tracer::new(seed);
         t.trace(&world, lis, &srcs, Budget { rays: 20_000, bounces: 1, k: 0.06, ema: 1.0, nee, late_rays: 0, late_ema: 1.0, late_nee: 0 })
@@ -235,7 +235,7 @@ fn live_room_tail_is_traced_to_the_end() {
     let (x, y, z) = (8.0f32, 6.0f32, 3.0f32);
     common::shell(&mut mb, v(0.0, 0.0, 0.0), v(x, y, z), [Some(m); 6]);
     let mesh = mb.build();
-    let world = World { mesh: &mesh, panels: &[] };
+    let world = World::new(&mesh, &[]);
     let mut t = Tracer::new(11);
     let src = [Source { id: 0, pos: v(6.0, 4.0, 1.5), weight: 1.0 }];
     let mut f = None;
@@ -251,4 +251,37 @@ fn live_room_tail_is_traced_to_the_end() {
     assert!((r - 1.0).abs() < 0.25, "low-band RT60 {:.2} s vs Eyring {eyring:.2} s", rt[0]);
     // air absorption shortens the highs
     assert!(rt[2] < rt[0], "air must shorten the high band: {rt:?}");
+}
+
+#[test]
+fn earth_swallows_what_leaves_a_bunker() {
+    // a concrete box below grade with no floor modeled: without earth,
+    // rays leave through the bottom and through the walls into empty
+    // space and count as open sky. With grade + the box as an air
+    // pocket, the only way out is up through the roof and the ground.
+    let mut mb = MeshBuilder::new();
+    let wall = mb.material(flat_transmissive(0.05, 0.2, [0.04, 0.005, 0.0006]));
+    common::shell(&mut mb, v(0.0, 0.0, -3.0), v(6.0, 8.0, -0.8), [Some(wall), Some(wall), Some(wall), Some(wall), None, Some(wall)]);
+    let ground = mb.material(flat_transmissive(0.1, 0.3, [0.1, 0.02, 0.005]));
+    mb.quad(v(-50.0, -50.0, 0.0), v(50.0, -50.0, 0.0), v(50.0, 50.0, 0.0), v(-50.0, 50.0, 0.0), ground);
+    let mesh = mb.build();
+    let pockets = [(v(0.0, 0.0, -3.0), v(6.0, 8.0, -0.8))];
+    let lis = v(3.0, 4.0, -1.4);
+    let src = [Source { id: 0, pos: v(3.0, 30.0, 1.6), weight: 1.0 }];
+    let b = Budget { rays: 2048, bounces: 3, k: 0.06, ema: 1.0, nee: 0, late_rays: 128, late_ema: 1.0, late_nee: 0 };
+    let sky_of = |w: &World| {
+        let mut t = Tracer::new(4);
+        t.trace(w, lis, &src, b);
+        t.sky().iter().map(|(_, e)| e[1]).sum::<f32>()
+    };
+    let open = sky_of(&World::new(&mesh, &[]));
+    let earthed = sky_of(&World { grade: Some(0.0), pockets: &pockets, ..World::new(&mesh, &[]) });
+    eprintln!("bunker sky: no earth {open:.4}, with earth {earthed:.6}");
+    assert!(open > 0.1, "the leak this test guards against must exist without earth: {open}");
+    assert!(earthed < 1e-3, "under a concrete roof and the ground the sky must be ~0: {earthed}");
+    // and the direct path to a source above ground is blocked by earth
+    let mut t = Tracer::new(5);
+    let f = t.trace(&World { grade: Some(0.0), pockets: &pockets, ..World::new(&mesh, &[]) }, lis, &src, b).remove(0);
+    let d = f.taps.iter().find(|t| t.key == KEY_DIRECT).map_or(0.0, |t| t.gains[1]);
+    assert!(d < 1e-4, "direct path through earth: {d}");
 }

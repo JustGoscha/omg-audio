@@ -301,7 +301,8 @@ pub struct DomeProbe {
     primed: bool,
 }
 
-fn bin_of(d: Vec3) -> usize {
+/// Dome bin of a direction: 8 azimuth sectors + the zenith cap.
+pub fn bin_of(d: Vec3) -> usize {
     if d.z > 0.87 {
         return 8; // zenith
     }

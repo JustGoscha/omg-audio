@@ -1245,7 +1245,19 @@ impl WorldSim {
             late_nee: 1,
         };
         let tracer = self.v3_tracer.get_or_insert_with(|| Tracer::new(0x0e3_5eed));
-        let world = World { mesh: &self.dome.mesh, panels: &self.late_panels };
+        // the bunker is an air pocket in solid ground
+        let pockets: Vec<(Vec3, Vec3)> = self
+            .rooms
+            .iter()
+            .filter(|r| !r.outdoor && r.floor_z + r.height <= 0.2)
+            .map(|r| {
+                (
+                    Vec3::new(r.min.0, r.min.1, r.floor_z),
+                    Vec3::new(r.max.0, r.max.1, r.floor_z + r.height),
+                )
+            })
+            .collect();
+        let world = World { grade: Some(0.0), pockets: &pockets, ..World::new(&self.dome.mesh, &self.late_panels) };
         let fields = tracer.trace(&world, eye, &srcs, budget);
 
         let (sin, cos) = st.yaw.sin_cos();
@@ -1562,7 +1574,35 @@ impl WorldSim {
 
         let leaves = door_panels(&self.doors);
         let eye = Vec3::new(bs.raw.0, bs.raw.1, bs.raw.2);
-        let bins = self.dome.sample(eye, &leaves);
+        let bins = match (crate::quality::early_v3(), &self.v3_tracer) {
+            // v3: no dome fan — the listener's own rays that escaped to
+            // open sky ARE the outdoor field's directions
+            (true, Some(t)) => {
+                let mut bins = [crate::dome::DomeBin::default(); crate::dome::DOME_BINS];
+                let mut dsum = [Vec3::new(0.0, 0.0, 0.0); crate::dome::DOME_BINS];
+                for (dir, e) in t.sky() {
+                    let d = Vec3::new(dir[0], dir[1], dir[2]);
+                    let k = crate::dome::bin_of(d);
+                    for b in 0..NBANDS {
+                        bins[k].energy[b] += e[b];
+                    }
+                    dsum[k] = dsum[k] + d * e[1];
+                }
+                for k in 0..crate::dome::DOME_BINS {
+                    let d = if dsum[k].length() > 1e-9 {
+                        dsum[k].normalize()
+                    } else if k == 8 {
+                        Vec3::new(0.0, 0.0, 1.0)
+                    } else {
+                        let az = (k as f32 + 0.5) * core::f32::consts::TAU / 8.0 - core::f32::consts::PI;
+                        Vec3::new(az.cos(), az.sin(), 0.0)
+                    };
+                    bins[k].dir = [d.x, d.y, d.z];
+                }
+                bins
+            }
+            _ => self.dome.sample(eye, &leaves),
+        };
         let mut routes: Vec<EnvRoute> = bins
             .iter()
             .enumerate()
