@@ -113,3 +113,15 @@ fn shut_door_on_the_chain_charges_the_wet_path() {
         assert!(r.muffle[b] <= DOOR_PANEL_TRANSMISSION[b] + 1e-6, "dry path pays the panel too");
     }
 }
+
+/// A listener in a room no walkable door reaches (inside a doorless
+/// solid structure — the Godot demo lets you walk into the colonnade)
+/// gets the straight line, not a panic on the audio path.
+#[test]
+fn unreachable_room_falls_back_to_the_straight_line() {
+    let ds = doors();
+    const F: usize = 40; // no doors at all
+    let r = route_source(&source(A, (2.0, 2.0)), F, (50.0, 2.0), &ds);
+    assert_eq!(r.route.len(), 2, "source → listener, no door vertices");
+    assert_eq!(r.extra_dist, 0.0);
+}

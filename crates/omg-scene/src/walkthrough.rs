@@ -1148,13 +1148,38 @@ fn graph_size(a: usize, b: usize, all_doors: &[Door]) -> usize {
         + 1
 }
 
+/// Is there a non-glass door path between rooms `a` and `b`?
+fn connected(a: usize, b: usize, all_doors: &[Door]) -> bool {
+    let n = graph_size(a, b, all_doors);
+    let mut seen = vec![false; n];
+    let mut stack = vec![a];
+    seen[a] = true;
+    while let Some(r) = stack.pop() {
+        if r == b {
+            return true;
+        }
+        for d in all_doors.iter().filter(|d| !d.glass) {
+            let next = if d.rooms.0 == r { d.rooms.1 } else if d.rooms.1 == r { d.rooms.0 } else { continue };
+            if !seen[next] {
+                seen[next] = true;
+                stack.push(next);
+            }
+        }
+    }
+    false
+}
+
 pub fn route_source(
     src: &SourceDef,
     lis_room: usize,
     lis: (f32, f32),
     all_doors: &[Door],
 ) -> Routed {
-    if src.room == lis_room {
+    // Same room — or no door path at all (a listener inside a doorless
+    // solid structure: the colonnade, the kiosk, the belfry stage; the
+    // Godot demo lets you walk in): the straight line, whose walls the
+    // straight-path pricing charges. Never a panic on the audio path.
+    if src.room == lis_room || !connected(src.room, lis_room, all_doors) {
         return Routed {
             virt_world: src.pos,
             glass: false,

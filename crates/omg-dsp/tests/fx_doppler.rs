@@ -200,3 +200,60 @@ fn fast_motion_at_slow_updates_still_glides() {
     let (_, live) = render_log(9600, 2400, |t| if t < 0.1 { 0.5 } else { 0.5 + 1000.0 / C });
     assert_eq!(live, 2, "a teleport must crossfade");
 }
+
+/// Like `render_log`, with updates at the given sample times (jitter).
+fn render_log_at(n: usize, updates: &[usize], delay_at: impl Fn(f32) -> f32) -> Vec<f32> {
+    let mut r = Renderer::new(SR).without_line();
+    let mut log = PlayLog::new();
+    log.set_loop(Clip::from(sine(F0, 4800, 1.0)), 0.0);
+    let mut version = 1;
+    r.set_params(&block(version, delay_at(0.0)));
+    let mut next = updates.iter().peekable();
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        if next.peek() == Some(&&k) {
+            next.next();
+            version += 1;
+            // the simulation samples the motion on ITS clock (regular
+            // 50 ms); only the arrival at the audio thread jitters
+            let sim_t = (version - 1) as f32 * 0.05;
+            r.set_params(&block(version, delay_at(sim_t)));
+        }
+        let mut bus = [0.0f32; NCH];
+        r.process_log(&log, k as f64, 1.0, &mut bus);
+        out.push(bus[0]);
+    }
+    out
+}
+
+/// No warble: at constant speed the pitch is CONSTANT between and across
+/// updates, even with updates arriving ±10 ms late or early. (A one-pole
+/// glide toward each update's target moved fast, then slow, every 50 ms:
+/// a ±40 % pitch wobble at 150 m/s, ±1 % walking.)
+#[test]
+fn constant_speed_is_a_constant_pitch() {
+    for v in [150.0f32, 25.0, 3.0] {
+        let rate = -v / C; // dτ/dt
+        // updates every 2400 samples, arrival jitter up to ±480 (±10 ms)
+        let mut s = 0x9e37_79b9u32;
+        let updates: Vec<usize> = (1..40)
+            .map(|i| {
+                s ^= s << 13;
+                s ^= s >> 17;
+                s ^= s << 5;
+                (i * 2400) as i64 + (s % 961) as i64 - 480
+            })
+            .map(|k| k.max(1) as usize)
+            .collect();
+        let y = render_log_at(96_000, &updates, |t| 2.0 + rate * t);
+        let want = F0 * (1.0 - rate);
+        // after the first second, every 20 ms window
+        let mut worst = 0.0f32;
+        for w in (48_000..95_040).step_by(960) {
+            let f = zc_freq(&y[w..w + 960]);
+            worst = worst.max((f / want - 1.0).abs());
+        }
+        let limit = 0.004 + 0.02 * rate.abs();
+        assert!(worst < limit, "v={v} m/s: pitch wobbles {:.2} % (limit {:.2} %)", worst * 100.0, limit * 100.0);
+    }
+}

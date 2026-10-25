@@ -20,7 +20,7 @@ use crate::fdn::{Fdn, NLINES};
 use crate::filter::{OnePoleLp, TapEq};
 use crate::hrtf::{HrirGrid, PointConv};
 use crate::playlog::PlayLog;
-use crate::smooth::{Smoothed, Smoothed64};
+use crate::smooth::{PathDelay, Smoothed};
 use omg_core::params::ParamBlock;
 use std::sync::Arc;
 
@@ -73,7 +73,7 @@ struct TapState {
     point: bool,
     /// Walk-frame arrival direction (pre-head-rotation), for HRIR selection.
     base_dir: [f32; 3],
-    delay: Smoothed64,    // samples
+    delay: PathDelay,     // samples
     g_low: Smoothed,      // low/mid amplitude ratio
     g_high: Smoothed,     // high/mid amplitude ratio
     g_sh: [Smoothed; NCH], // anchor gain × SH encoding, per channel
@@ -150,9 +150,16 @@ pub struct Renderer {
     /// First arrival (smoothed least tap delay, samples): the late field
     /// and the remote wet are fed the source as heard THEN, so a far
     /// source's reverb never starts before its direct sound.
-    onset: Smoothed64,
+    onset: PathDelay,
     /// Samples since the last applied ParamBlock (retarget window).
     since_params: u32,
+    /// Average samples between fresh ParamBlocks (simulation updates):
+    /// the interval path delays plan their constant-rate motion over.
+    update_interval: f64,
+    /// Version of the last FRESH block (re-applied blocks — budget
+    /// changes — must not restart the delay motion).
+    last_version: u64,
+    updates_seen: u32,
     fdn: Fdn,
     fdn_level: Smoothed,
     send_low: Smoothed,
@@ -225,7 +232,7 @@ impl Renderer {
                     key: None,
                     point: false,
                     base_dir: [1.0, 0.0, 0.0],
-                    delay: Smoothed64::new(480.0, 0.05, sample_rate),
+                    delay: PathDelay::new(480.0),
                     g_low: Smoothed::new(1.0, 0.05, sample_rate),
                     g_high: Smoothed::new(1.0, 0.05, sample_rate),
                     g_sh: [Smoothed::new(0.0, 0.05, sample_rate); NCH],
@@ -236,8 +243,11 @@ impl Renderer {
                 })
                 .collect(),
             grid,
-            onset: Smoothed64::new(1.0, 0.05, sample_rate),
+            onset: PathDelay::new(1.0),
             since_params: 0,
+            update_interval: 0.05 * sample_rate as f64,
+            last_version: u64::MAX,
+            updates_seen: 0,
             fdn: Fdn::new(sample_rate),
             fdn_level: Smoothed::new(0.0, 0.2, sample_rate),
             send_low: Smoothed::new(1.0, 0.2, sample_rate),
@@ -349,9 +359,26 @@ impl Renderer {
             return;
         }
         self.version_seen = pb.version;
-        let thresh = (self.retarget_thresh as f64)
-            .max(RETARGET_FRACTION_OF_TICK * self.since_params as f64);
-        self.since_params = 0;
+        // judged against the TYPICAL interval too: an update arriving
+        // early must not turn fast motion into a crossfade
+        let thresh = (self.retarget_thresh as f64).max(
+            RETARGET_FRACTION_OF_TICK * (self.since_params as f64).max(self.update_interval),
+        );
+        let fresh = pb.version != self.last_version;
+        if fresh {
+            if !self.first_params {
+                let since = (self.since_params as f64).clamp(64.0, 0.5 * self.sample_rate as f64);
+                // a long-run mean (running mean at first, then a slow
+                // EMA): velocities are divided by it, so its jitter
+                // would be pitch jitter
+                self.updates_seen += 1;
+                let a = (1.0 / self.updates_seen as f64).max(0.03);
+                self.update_interval += (since - self.update_interval) * a;
+            }
+            self.last_version = pb.version;
+            self.since_params = 0;
+        }
+        let interval = self.update_interval;
 
         // CPU ceiling: keep only the strongest incoming taps (see
         // `DEFAULT_TAP_CEILING`; the load governor lowers it live).
@@ -403,7 +430,9 @@ impl Renderer {
                             slot.g_sh[k].snap(tg.g_sh[k]);
                         }
                     } else {
-                        slot.delay.set(tg.delay);
+                        if fresh {
+                            slot.delay.retarget(tg.delay, interval);
+                        }
                         slot.g_low.set(tg.g_low);
                         slot.g_high.set(tg.g_high);
                         slot.lp_coef.set(tg.lp_coef);
@@ -456,7 +485,9 @@ impl Renderer {
             if self.first_params || (self.onset.target_val() - first).abs() >= thresh {
                 self.onset.snap(first);
             } else {
-                self.onset.set(first);
+                if fresh {
+                    self.onset.retarget(first, interval);
+                }
             }
         }
 
