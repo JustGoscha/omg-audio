@@ -908,7 +908,10 @@ struct EngCtx {
     /// Mixer: per-source user gains (smoothed toward targets), plus
     /// ambience and master. Source faders are POWER faders — the UI maps
     /// an SPL scale (needle drop … jet engine) to these linear gains.
-    mixer: [omg_dsp::smooth::Smoothed; NSRC],
+    /// NSRC faders exist from init (the page may set them before the
+    /// sources load); a source allocated past NSRC (benchmarks only —
+    /// tools/bench_sources.mjs) grows its own unit fader.
+    mixer: Vec<omg_dsp::smooth::Smoothed>,
     master: omg_dsp::smooth::Smoothed,
     /// Per-channel meter accumulators (NSRC sources + ambience + rain):
     /// (peak², Σm², n) since the last commit.
@@ -942,7 +945,7 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         ambient_stage: None,
         ambience: omg_dsp::ambience::Ambience::new(sample_rate),
         rain: omg_dsp::rain::Rain::new(sample_rate),
-        mixer: core::array::from_fn(|_| omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate)),
+        mixer: (0..NSRC).map(|_| omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate)).collect(),
         master: omg_dsp::smooth::Smoothed::new(1.0, 0.02, sample_rate),
         meter_acc: [(0.0, 0.0, 0); NSRC + 2],
         meter_out: leak_f32(2 * (NSRC + 2)),
@@ -1004,6 +1007,9 @@ pub extern "C" fn eng_source_alloc(i: u32, nsamples: u32) -> *mut f32 {
     r.set_point_budget(ctx.point_budget);
     r.set_tap_ceiling(ctx.tap_ceiling);
     ctx.renderers.push(r);
+    if ctx.mixer.len() < ctx.renderers.len() {
+        ctx.mixer.push(omg_dsp::smooth::Smoothed::new(1.0, 0.02, ctx.sample_rate));
+    }
     ctx.sources.last_mut().unwrap().data.as_mut_ptr()
 }
 
@@ -1302,12 +1308,15 @@ pub extern "C" fn eng_process(n: u32) {
             pr += b;
             // channel meter: point stereo + this source's bus contribution
             // (W-channel delta, roughly calibrated to the decode)
-            let dw = bus[0] - w0;
-            let m2 = 0.5 * (a * a + b * b) + 2.0 * dw * dw;
-            let acc = &mut ctx.meter_acc[si];
-            acc.0 = acc.0.max(m2);
-            acc.1 += m2 as f64;
-            acc.2 += 1;
+            // (sources past NSRC exist only in benchmarks: unmetered)
+            if si < NSRC {
+                let dw = bus[0] - w0;
+                let m2 = 0.5 * (a * a + b * b) + 2.0 * dw * dw;
+                let acc = &mut ctx.meter_acc[si];
+                acc.0 = acc.0.max(m2);
+                acc.1 += m2 as f64;
+                acc.2 += 1;
+            }
         }
         // Environment audio: rain and ambience are outdoor fields routed
         // through the same geometry-priced inlets (apertures, shell seep,
@@ -1972,5 +1981,29 @@ mod tests {
         assert!(eng().near_voices.is_empty(), "finished whispers not retired");
         eng_whisper_play(0, 1, 0.06, 0.01); // slots free again
         assert_eq!(eng().near_voices.len(), 1);
+    }
+
+    /// Sources past NSRC (tools/bench_sources.mjs scales the engine to
+    /// 128) get their own unit fader, render, and never spill into the
+    /// ambience/rain meter channels that follow the NSRC source meters.
+    #[test]
+    fn sources_past_nsrc_render_unmetered() {
+        let _g = eng_lock();
+        eng_init(SR);
+        let n = NSRC + 3;
+        for i in 0..n as u32 {
+            source_with(i, &vec![0.1; 4800]);
+        }
+        assert_eq!(eng().mixer.len(), n);
+        let last = n as u32 - 1;
+        route_tap(last, 1.0);
+        render(4800);
+        // no output stage in tests (bus is dropped): read the renderer —
+        // its tap gain only glides up while process() actually runs it
+        let (live, _, gain, _, _) = eng().renderers[last as usize].debug_stats();
+        assert!(live >= 1 && gain > 0.5, "source {last} past NSRC not rendered: {live} {gain}");
+        let m = meters();
+        assert_eq!(m[NSRC], (0.0, 0.0), "overflow source metered as ambience");
+        assert_eq!(m[NSRC + 1], (0.0, 0.0), "overflow source metered as rain");
     }
 }
