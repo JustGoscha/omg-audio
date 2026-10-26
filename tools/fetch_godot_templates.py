@@ -50,6 +50,7 @@ class RangeFile(io.RawIOBase):
 
 def main():
     version, dest = sys.argv[1], sys.argv[2]
+    names = sys.argv[3:] or ["web_"]
     url = (
         f"https://github.com/godotengine/godot/releases/download/{version}-stable/"
         f"Godot_v{version}-stable_export_templates.tpz"
@@ -58,7 +59,8 @@ def main():
     os.makedirs(dest, exist_ok=True)
     for info in z.infolist():
         name = os.path.basename(info.filename)
-        if name == "version.txt" or (name.startswith("web_") and name.endswith(".zip")):
+        wanted = any(name.startswith(n) and name.endswith(".zip") if n.endswith("_") else name == n for n in names)
+        if name == "version.txt" or wanted:
             print(f"  {name} ({info.file_size / 1e6:.1f} MB)", flush=True)
             with z.open(info) as src, open(os.path.join(dest, name), "wb") as out:
                 while chunk := src.read(1 << 20):

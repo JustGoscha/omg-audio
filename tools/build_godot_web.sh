@@ -26,7 +26,7 @@ case "$(uname -s)" in
 esac
 if [ ! -f "$tdir/web_dlink_release.zip" ]; then
   echo "fetching Godot $version web export templates → $tdir"
-  python3 -I tools/fetch_godot_web_templates.py "$version" "$tdir"
+  python3 -I tools/fetch_godot_templates.py "$version" "$tdir" web_
 fi
 
 # 2. the GDExtension: threads (matches the export's thread support),
@@ -43,14 +43,8 @@ mkdir -p godot/bin
 cp target/wasm32-unknown-emscripten/release/omg_godot.wasm godot/bin/
 
 # 3. the assets, into the project for the export (natively the demo reads
-# them from ../assets): kept as plain files ("keep" importer), not imported
-rm -rf godot/assets
-mkdir -p godot/assets
-(cd assets && find . -type f ! -name '*.bin' ! -name '.*' | while read -r f; do
-  mkdir -p "../godot/assets/$(dirname "$f")"
-  cp "$f" "../godot/assets/$f"
-  printf '[remap]\n\nimporter="keep"\n' > "../godot/assets/$f.import"
-done)
+# them from ../assets)
+sh tools/pack_godot_assets.sh
 
 # 4. import, export
 rm -rf godot-web

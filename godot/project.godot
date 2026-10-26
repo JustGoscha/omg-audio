@@ -19,6 +19,8 @@ window/size/viewport_height=900
 
 [rendering]
 
+textures/vram_compression/import_etc2_astc=true
+
 renderer/rendering_method="forward_plus"
 renderer/rendering_method.web="gl_compatibility"
 lights_and_shadows/directional_shadow/size=2048

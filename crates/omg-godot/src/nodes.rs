@@ -74,16 +74,22 @@ fn db(x: f32) -> f32 {
     10f32.powf(x / 20.0)
 }
 
-/// A clip file for the clip bank: natively a path on disk; on the web its
-/// bytes, read through Godot (res:// lives in the .pck, not on a disk).
+/// A clip file for the clip bank: natively a path on disk (from the
+/// checkout); on the web and in exported builds its bytes, read through
+/// Godot (res:// lives in the .pck, not on a disk).
 #[cfg(not(target_os = "emscripten"))]
 fn clip_source(p: &GString) -> clips::Source {
     let s = p.to_string();
-    clips::Source::Path(if s.starts_with("res://") || s.starts_with("user://") {
-        godot::classes::ProjectSettings::singleton().globalize_path(p).to_string()
-    } else {
-        s
-    })
+    if s.starts_with("res://") || s.starts_with("user://") {
+        let g = godot::classes::ProjectSettings::singleton().globalize_path(p).to_string();
+        if std::path::Path::new(&g).exists() {
+            return clips::Source::Path(g);
+        }
+        // an exported build: the file is packed in the .pck
+        let bytes = godot::classes::FileAccess::get_file_as_bytes(p).to_vec();
+        return clips::Source::Bytes { name: s, bytes };
+    }
+    clips::Source::Path(s)
 }
 
 #[cfg(target_os = "emscripten")]
