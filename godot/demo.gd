@@ -9,7 +9,7 @@
 # Esc release mouse.
 #
 # Graphics default to a cheap, low-res "pixel" look: the 3D view renders
-# into a SubViewport 360 px high (width from the window's aspect),
+# into a SubViewport 240 px high (width from the window's aspect),
 # upscaled to fill the window with nearest-neighbour filtering — no
 # anti-aliasing anywhere, nearest-filtered textures, no SSAO/SSIL/
 # volumetric fog; the moon and the lamps cast hard shadows from a small
@@ -40,7 +40,7 @@ var view_cam: Camera3D
 var fine := false
 # 3D internal height in pixel mode (keys [ and ] walk HEIGHTS)
 const HEIGHTS := [180, 240, 270, 360, 480, 540, 720]
-var pixel_h := 360
+var pixel_h := 240
 var loading := true
 var load_layer: CanvasLayer
 var load_label: Label
