@@ -28,8 +28,7 @@ var sounds: DemoSounds
 var hud: Label
 var hint: Control
 var torch: SpotLight3D
-var halos := [] # [halo node, world position]
-var halo_i := 0
+var halos := [] # [halo node, lamp position]
 var labels: Array[Label3D] = []
 var rain_name := "off"
 # OmgWorld.quality: 0 low … 3 ultra. Medium on the CPU walk: ~10–40 ms a
@@ -87,6 +86,7 @@ func _ready() -> void:
 		o.distance_fade_length = 8.0
 	_torch()
 	_halos(level_root)
+	_ground_mist()
 	_apply_graphics()
 
 	world = OmgWorld.new()
@@ -296,15 +296,13 @@ func _apply_graphics() -> void:
 	view_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if fine else CanvasItem.TEXTURE_FILTER_NEAREST
 	env.ssao_enabled = fine
 	env.ssil_enabled = fine
-	# the night air: a faint purple of the sky's horizon, thicker low over
-	# the ground (the tower's top stays clear); a thin volumetric layer so
-	# lamps, floodlights and the flashlight cast visible cones. The pixel
-	# look keeps the volume light (the froxel grid costs the same at any
+	# the night air: the distance fades to darkness; a purple mist lies
+	# low over the town (a fog volume, see _ground_mist); a thin volumetric
+	# layer so lamps, floodlights and the flashlight light the air. The
+	# pixel look keeps the volume (the froxel grid costs the same at any
 	# resolution); glow reaches wider there, its lamps being a few pixels
 	env.volumetric_fog_enabled = true
-	env.volumetric_fog_density = 0.006 if fine else 0.018
-	env.fog_density = 0.0012 if fine else 0.0009
-	env.fog_height_density = 0.0 if fine else 0.22
+	env.volumetric_fog_density = 0.006 if fine else 0.01
 	env.glow_intensity = 0.7 if fine else 1.0
 	env.glow_hdr_threshold = 0.9 if fine else 0.7
 	for lv in 7:
@@ -344,13 +342,13 @@ func _environment() -> void:
 	env.glow_bloom = 0.04
 	env.glow_hdr_threshold = 0.9
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.12, 0.09, 0.22) # the sky's horizon purple
-	env.fog_height = 1.5
-	env.fog_density = 0.0012
+	env.fog_light_color = Color(0.012, 0.012, 0.024) # far away: darkness
+	env.fog_density = 0.0011
 	env.fog_sky_affect = 0.15
-	env.fog_aerial_perspective = 0.4
+	env.fog_aerial_perspective = 0.0
 	env.volumetric_fog_density = 0.006
 	env.volumetric_fog_albedo = Color(0.75, 0.7, 0.9)
+	env.volumetric_fog_ambient_inject = 0.4
 	env.volumetric_fog_anisotropy = 0.5
 	env.volumetric_fog_length = 70.0
 	env.volumetric_fog_sky_affect = 0.0
@@ -468,9 +466,10 @@ func _torch() -> void:
 
 # Every lamp also gets a glowing dot of a fixed few pixels: at 240p a lamp
 # is often smaller than a pixel and drops out of the image, although in
-# the dark it is the brightest thing there. The dots draw over everything
-# and hide when the level blocks the line of sight (a ray, a few lamps a
-# frame); pixel look only.
+# the dark it is the brightest thing there. Each frame the dot sits just
+# in front of its lamp, toward the eye, and is depth-tested like anything
+# else — so trees, walls and rain hide it, but the lamp's own head
+# doesn't; pixel look only.
 func _halos(level_root: Node3D) -> void:
 	var tex := GradientTexture2D.new()
 	tex.fill = GradientTexture2D.FILL_RADIAL
@@ -490,7 +489,6 @@ func _halos(level_root: Node3D) -> void:
 		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
 		m.fixed_size = true
-		m.no_depth_test = true
 		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
 		m.albedo_texture = tex
@@ -509,24 +507,31 @@ var halo_quad: QuadMesh
 
 func _update_halos() -> void:
 	var on := not fine and not shooting
-	if not on:
-		for hp in halos:
-			hp[0].visible = false
-		return
-	var space := get_world_3d().direct_space_state
 	var eye := view_cam.global_position
-	for k in mini(12, halos.size()):
-		halo_i = (halo_i + 1) % halos.size()
-		var h: MeshInstance3D = halos[halo_i][0]
-		var at: Vector3 = halos[halo_i][1]
+	for hp in halos:
+		var h: MeshInstance3D = hp[0]
+		var at: Vector3 = hp[1]
 		var d := eye.distance_to(at)
-		if d > 600.0:
-			h.visible = false
-			continue
-		# stop short of the lamp: its own fixture must not hide it
-		var q := PhysicsRayQueryParameters3D.create(eye, at - (at - eye).normalized() * minf(0.4, d * 0.5))
-		q.exclude = [player.get_rid()]
-		h.visible = space.intersect_ray(q).is_empty()
+		h.visible = on and d < 600.0
+		if h.visible:
+			h.global_position = at + (eye - at) / maxf(d, 1e-3) * minf(0.4, d * 0.5)
+
+# The ground mist: a fog volume over the town and its fields, densest at
+# the grass and gone by ~3 m, glowing faintly in the sky's horizon purple
+# (the volumetric fog reaches 70 m: farther on, the dark distance fog).
+func _ground_mist() -> void:
+	var fv := FogVolume.new()
+	fv.shape = RenderingServer.FOG_VOLUME_SHAPE_BOX
+	fv.size = Vector3(500, 6, 900)
+	fv.position = DemoGeo.P(10, 120, 0)
+	var fm := FogMaterial.new()
+	fm.density = 0.05
+	fm.albedo = Color(0.7, 0.55, 1.0)
+	fm.emission = Color(0.025, 0.016, 0.05) # the sky's horizon purple
+	fm.height_falloff = 1.3
+	fm.edge_fade = 0.3
+	fv.material = fm
+	add_child(fv)
 
 func _hud() -> void:
 	var layer := CanvasLayer.new()
