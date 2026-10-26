@@ -81,30 +81,36 @@ def boom(seconds=2.5):
 
 
 def clap(seconds=0.25):
-    # a hand clap: three or four noise bursts a few ms apart (the palms
-    # meeting unevenly), band-passed around 1-2.5 kHz where a clap's
-    # crack lives, each dying in ~10 ms, plus a short hollow body
+    # a hard hand clap, an impact: one crack with a near-instant onset
+    # (the palms slapping shut squeeze the air out in well under a
+    # millisecond), broadband ~300 Hz-9 kHz, dying in ~3 ms; a smaller
+    # second slap 1.6 ms on (the fingers landing); the cupped hands
+    # ringing at ~1.3 kHz; and a low thwack of the palms' flesh
+    random.seed(7)
     n = int(seconds * FS)
     out = [0.0] * n
-    bursts = [(0.0, 1.0), (0.0042, 0.7), (0.0081, 0.85), (0.0135, 0.4)]
-    for t0, amp in bursts:
+    for t0, amp, tau in [(0.0, 1.0, 0.0028), (0.0016, 0.45, 0.0022)]:
         i0 = int(t0 * FS)
         lp = hp = 0.0
         for i in range(i0, n):
             t = (i - i0) / FS
-            env = amp * math.exp(-t / 0.0065)
-            if env < 1e-4:
+            env = amp * (1.0 - math.exp(-t / 0.00012)) * math.exp(-t / tau)
+            if t > 0.002 and env < 1e-4:
                 break
             w = random.random() * 2 - 1
-            lp += 0.45 * (w - lp)      # top: ~5 kHz
-            hp += 0.06 * (lp - hp)     # bottom: ~450 Hz
+            lp += 0.72 * (w - lp)      # top: ~9 kHz
+            hp += 0.04 * (lp - hp)     # bottom: ~300 Hz
             out[i] += env * (lp - hp)
-    phase = 0.0
+    ph = ph2 = 0.0
     for i in range(n):
         t = i / FS
-        phase += 2 * math.pi * 820.0 / FS
-        out[i] += 0.12 * math.exp(-t / 0.018) * math.sin(phase)  # the cupped hands
-    return out
+        ph += 2 * math.pi * 1300.0 / FS
+        ph2 += 2 * math.pi * 190.0 / FS
+        att = 1.0 - math.exp(-t / 0.0002)
+        out[i] += 0.22 * att * math.exp(-t / 0.006) * math.sin(ph)    # the cupped hands
+        out[i] += 0.30 * att * math.exp(-t / 0.012) * math.sin(ph2)   # the thwack
+    peak = max(abs(x) for x in out)
+    return [0.95 * x / peak for x in out]
 
 
 d = sys.argv[1].rstrip("/")

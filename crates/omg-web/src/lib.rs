@@ -1181,7 +1181,7 @@ pub extern "C" fn eng_fx_play(src: u32, kind: u32) {
 pub extern "C" fn eng_fx_play_var(src: u32, kind: u32, gain: f32, rate: f32) {
     let ctx = eng();
     if let (Some(clip), Some(log)) = (ctx.fx_bufs.get(kind as usize), ctx.logs.get_mut(src as usize)) {
-        log.play(kind, clip.clone(), ctx.clock, gain.clamp(0.0, 4.0), rate.clamp(0.5, 2.0));
+        log.play(kind, clip.clone(), ctx.clock, gain.clamp(0.0, 32.0), rate.clamp(0.5, 2.0));
     }
 }
 

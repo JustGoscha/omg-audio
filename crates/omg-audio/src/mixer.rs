@@ -95,7 +95,8 @@ pub struct Play {
     /// Loop it (one loop per source: a new loop replaces the old one)
     /// or play it once (up to 24 one-shots in flight per source).
     pub looped: bool,
-    /// Amplitude.
+    /// Amplitude (clamped to 0..32: +30 dB over the source's level, e.g.
+    /// a clap on a footsteps source).
     pub gain: f32,
     /// Playback rate (1.03 = 3% faster and a third of a semitone higher).
     pub rate: f32,
@@ -600,7 +601,7 @@ impl Mixer {
 
     pub(crate) fn play_as(&mut self, voice: VoiceId, source: SourceId, clip: &Clip, play: Play) -> VoiceId {
         let i = self.slot_of(source);
-        let (now, gain, rate) = (self.clock, play.gain.clamp(0.0, 16.0), play.rate.clamp(0.25, 4.0));
+        let (now, gain, rate) = (self.clock, play.gain.clamp(0.0, 32.0), play.rate.clamp(0.25, 4.0));
         let sr = self.sample_rate;
         let s = &mut self.slots[i];
         // audible at once (the next frame re-ranks the voices)
