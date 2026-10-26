@@ -2,8 +2,10 @@
 //! iterative, precomputed twiddles; real signals through a half-size
 //! complex transform. No dependencies (the crate builds for wasm).
 
-/// A complex number (f32).
+/// A complex number (f32). `repr(C)`: laid out as `[re, im]`, so a
+/// spectrum is a flat f32 buffer (`dense::DenseKernel::from_flat`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
 pub struct C {
     pub re: f32,
     pub im: f32,
