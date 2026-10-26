@@ -3145,9 +3145,9 @@ function whisperNow() {
 // answers it (the echo canyon south of the town, many times over).
 function clapNow() {
   if (!state.fx) return;
-  // a hard clap is ~30 dB above a footstep (~92 dB SPL at 1 m vs 62):
-  // +28 dB over the feet source's level
-  state.fx(13, 30, 'play', 25 * (0.9 + Math.random() * 0.2), 0.98 + Math.random() * 0.04);
+  // a clap stands well above a footstep: +18 dB over the feet source
+  // (+28, the physical difference, was too loud at the ears)
+  state.fx(13, 30, 'play', 8 * (0.9 + Math.random() * 0.2), 0.98 + Math.random() * 0.04);
 }
 function updateWildlife(t) {
   if (!state.fx || !state.running) return;

@@ -150,9 +150,9 @@ func ring_bells() -> void:
 # A clap (K) at the listener, through the feet source: the room answers
 # it (the echo canyon south of the town, many times over).
 func clap() -> void:
-	# a hard clap is ~30 dB above a footstep (~92 dB SPL at 1 m vs 62):
-	# +28 dB over the feet source's level
-	feet.play_clip(clip["clap"], 25.0 * (0.9 + randf() * 0.2), 0.98 + randf() * 0.04)
+	# a clap stands well above a footstep: +18 dB over the feet source
+	# (+28, the physical difference, was too loud at the ears)
+	feet.play_clip(clip["clap"], 8.0 * (0.9 + randf() * 0.2), 0.98 + randf() * 0.04)
 
 func whisper() -> void:
 	world.whisper(clip["whisper%d" % (randi() % 2)], randf() < 0.5, 0.05 + randf() * 0.07, 0.55 + randf() * 0.25)
