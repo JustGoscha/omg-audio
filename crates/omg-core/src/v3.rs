@@ -101,6 +101,33 @@ const EPS: f32 = 1e-3;
 const LEGACY_UNITS: f32 = 1.0 / 16.0;
 /// Tap key of the direct path; early bins start above it.
 pub const KEY_DIRECT: u32 = 1;
+
+// ---- Engine v4 (ENGINE_V4.md): the traced response, rendered as traced.
+// No early/late split in time: every arrival is kept, at any delay, and
+// split by KIND — coherent arrivals (the direct path, edge bends, exact
+// mirror chains) play as their own taps when they stand out; everything
+// scattered is the dense response (time × band × energy vector), which
+// the renderer convolves.
+/// Longest path followed (s after emission): mountains answer late.
+pub const RESPONSE_MAX_S: f32 = 6.0;
+/// The dense response's time resolution.
+pub const DENSE_BIN_S: f32 = DELAY_BIN_S;
+/// Coherent arrivals play as their own taps, the ones standing out most
+/// first — energy over the dense energy arriving within
+/// `DISTINCT_SPAN_S` of them (one thing louder than the crowd around
+/// it) — up to the renderer's budget; the rest join the dense response,
+/// still at their time. Only a rendering choice: the energy and the
+/// delay are the same either way.
+const DISTINCT_SPAN_S: f32 = 0.004;
+/// Coherent taps per source at most (the renderer's cost).
+pub const MAX_COHERENT_TAPS: usize = 48;
+/// Standing still, each tick's response is averaged in with weight
+/// 1/(ticks still + 1), down to this: the estimate converges instead of
+/// flickering; any move restores the budget's EMA.
+const STILL_ALPHA_FLOOR: f32 = 0.02;
+/// The dense response's target effective sample count per bin (its
+/// relative noise ~ 1/√32 ≈ 18 %), `smooth_dense`.
+const ESS_TARGET: f64 = 32.0;
 const KEY_EARLY_BASE: u32 = 16;
 /// Solved chains past the early window: one tap per chain (its identity
 /// is the path's — exact delay, exact Doppler), keyed by the chain's hash
@@ -310,10 +337,24 @@ const LATE_MAX_SEGMENTS: u32 = 600;
 /// Late rays stop once they have lost this much (60 dB).
 const LATE_FLOOR: f32 = 1e-6;
 
+/// v4: the scattered part of a source's response at the listener, from
+/// its free-field arrival on: per `bin_s` bin, the energy per band and
+/// the mid band's energy vector (Σ E·direction, world frame; its length
+/// over E is how one-sided the arrivals are). Same units as tap gains².
+#[derive(Clone, Debug, Default)]
+pub struct DenseResponse {
+    pub bin_s: f32,
+    /// [E_low, E_mid, E_high, vx, vy, vz] per bin.
+    pub bins: Vec<[f32; 6]>,
+}
+
 /// What one source sounds like at the listener (world frame, unit gain).
 #[derive(Clone, Debug)]
 pub struct SourceField {
     pub taps: Vec<Tap>,
+    /// v4 only: the dense (scattered) response; the taps are then the
+    /// direct path, edge bends and the distinct mirror chains.
+    pub dense: Option<DenseResponse>,
     pub reverb: ReverbParams,
     /// Direction the late energy arrives from, and how one-sided it is.
     pub late_dir: [f32; 3],
@@ -356,6 +397,15 @@ struct SourceState {
     /// Solved chains currently played as discrete taps: one group per
     /// tap, its key first (chains arriving together merge, `ECHO_MERGE_S`).
     echo_on: Vec<Vec<u32>>,
+    /// v4: the averaged dense response (see `DenseResponse::bins`), with
+    /// a 7th channel: Σ of the contributions' squared mid energies (their
+    /// effective number, `ESS_TARGET`).
+    dense: Vec<[f32; 7]>,
+    /// v4: the dense average's last weight (how many ticks it spans).
+    dense_alpha: f32,
+    /// v4: ticks with listener and source unmoved, and where they were.
+    still: u32,
+    at: Option<(Vec3, Vec3)>,
 }
 
 /// The diffuse field's mid-band energy in one echo slot at `rel`: the
@@ -452,6 +502,136 @@ impl SourceState {
         self.echo_on = groups.into_iter().map(|g| g.2).collect();
     }
 
+    /// v4's step 5a: average one tick in. Moving, the budget's EMA (the
+    /// dense response — fewer samples per bin — its slower late EMA);
+    /// standing still (listener and source where they were), a running
+    /// mean that converges instead of flickering.
+    fn fold_v4(&mut self, acc: Acc, budget: Budget, listener: Vec3, source: Vec3) {
+        let first = self.echo.is_none();
+        self.still = if self.at == Some((listener, source)) { self.still + 1 } else { 0 };
+        self.at = Some((listener, source));
+        let settle = |a: f32| {
+            if first {
+                1.0
+            } else if self.still > 0 {
+                (1.0 / (self.still + 1) as f32).max(STILL_ALPHA_FLOOR).min(a)
+            } else {
+                a
+            }
+        };
+        let alpha = settle(budget.ema.clamp(0.0, 1.0));
+        let alpha_dense = settle(budget.late_ema.clamp(0.0, 1.0));
+        // coherent arrivals (solved chains)
+        let mut keys: Vec<u32> = self.early.keys().copied().collect();
+        for k in acc.early.keys() {
+            if !self.early.contains_key(k) {
+                keys.push(*k);
+            }
+        }
+        for k in keys {
+            let f = acc.early.get(&k).copied().unwrap_or_default();
+            let cur = self.early.entry(k).or_default();
+            for b in 0..NBANDS {
+                cur.e[b] += alpha * (f.e[b] - cur.e[b]);
+            }
+            cur.ed += alpha * (f.ed - cur.ed);
+            cur.dir = cur.dir + (f.dir - cur.dir) * alpha;
+            if f.e[1] > 0.0 {
+                cur.last = f.last;
+            }
+        }
+        self.early.retain(|_, b| b.e.iter().any(|&e| e > 1e-12));
+        // the dense response
+        let n = self.dense.len().max(acc.dense.len());
+        self.dense.resize(n, [0.0; 7]);
+        for (i, cur) in self.dense.iter_mut().enumerate() {
+            let f = acc.dense.get(i).copied().unwrap_or([0.0; 7]);
+            for c in 0..7 {
+                cur[c] += alpha_dense * (f[c] - cur[c]);
+            }
+        }
+        self.dense_alpha = alpha_dense;
+        while self.dense.last().is_some_and(|b| b[1] <= 1e-15 && b[0] <= 1e-15 && b[2] <= 1e-15) {
+            self.dense.pop();
+        }
+        match &mut self.echo {
+            Some(e) => e.ema(&acc.echo, alpha_dense),
+            None => self.echo = Some(acc.echo),
+        }
+    }
+
+    /// v4's step 5b: the direct path and edge bends are taps, and so are
+    /// the solved mirror chains standing out most (`MAX_COHERENT_TAPS`);
+    /// the rest join the dense response at their delay. The dense
+    /// response ends 60 dB below its loudest bin.
+    fn field_v4(
+        &self,
+        t_free: f32,
+        direct: Option<Tap>,
+        edge_taps: &mut Vec<Tap>,
+        reflected: [f32; NBANDS],
+    ) -> SourceField {
+        let mut taps: Vec<Tap> = Vec::new();
+        if let Some(t) = direct {
+            taps.push(t);
+        }
+        taps.append(edge_taps);
+        let mut dense = smooth_dense(&self.dense, self.dense_alpha);
+        let span = (DISTINCT_SPAN_S / DENSE_BIN_S).ceil() as usize;
+        let around = |dense: &[[f32; 6]], i: usize| -> f32 {
+            dense.iter().skip(i.saturating_sub(span)).take(2 * span + 1).map(|d| d[1]).sum()
+        };
+        // rank by how far each stands out of the crowd around it
+        let mut chains: Vec<(u32, &Bin, f32)> = self
+            .early
+            .iter()
+            .filter(|(k, b)| **k >= KEY_CHAIN_BASE && b.e[1] > 0.0)
+            .map(|(k, b)| {
+                let i = (b.last.max(0.0) / DENSE_BIN_S) as usize;
+                (*k, b, b.e[1] / around(&dense, i).max(1e-30))
+            })
+            .collect();
+        chains.sort_by(|x, y| y.2.total_cmp(&x.2));
+        for (n, (k, b, _)) in chains.into_iter().enumerate() {
+            let i = (b.last.max(0.0) / DENSE_BIN_S) as usize;
+            let dl = b.dir.length();
+            let dir = if dl > 1e-9 { b.dir * (1.0 / dl) } else { Vec3::new(0.0, 0.0, 1.0) };
+            if n < MAX_COHERENT_TAPS {
+                taps.push(Tap {
+                    key: k,
+                    delay_s: t_free + b.last,
+                    dir: [dir.x, dir.y, dir.z],
+                    gains: core::array::from_fn(|band| b.e[band].max(0.0).sqrt()),
+                });
+            } else {
+                if dense.len() <= i {
+                    dense.resize(i + 1, [0.0; 6]);
+                }
+                for band in 0..NBANDS {
+                    dense[i][band] += b.e[band].max(0.0);
+                }
+                dense[i][3] += dir.x * b.e[1];
+                dense[i][4] += dir.y * b.e[1];
+                dense[i][5] += dir.z * b.e[1];
+            }
+        }
+        let peak = dense.iter().map(|d| d[1]).fold(0.0f32, f32::max);
+        while dense.last().is_some_and(|d| d[1] < peak * 1e-6) {
+            dense.pop();
+        }
+        // the old renderer's and the HUD's readouts, from the response
+        let reverb = estimate_reverb(self.echo.as_ref().unwrap_or(&Echogram::new()));
+        let (mut v, mut e) = (Vec3::new(0.0, 0.0, 0.0), 0.0f32);
+        for d in &dense {
+            v = v + Vec3::new(d[3], d[4], d[5]);
+            e += d[1];
+        }
+        let vl = v.length();
+        let late_dir = if vl > 1e-12 { [v.x / vl, v.y / vl, v.z / vl] } else { [0.0, 0.0, 1.0] };
+        let aniso = if e > 0.0 { (vl / e).min(1.0) } else { 0.0 };
+        SourceField { taps, dense: Some(DenseResponse { bin_s: DENSE_BIN_S, bins: dense }), reverb, late_dir, aniso, reflected }
+    }
+
     /// Step 5b: this source's field from the smoothed state.
     fn field(
         &self,
@@ -538,7 +718,7 @@ impl SourceState {
         }
         let reverb = estimate_reverb(echo);
         let (late_dir, aniso) = echo.late_direction(EARLY_S);
-        SourceField { taps, reverb, late_dir, aniso, reflected }
+        SourceField { taps, dense: None, reverb, late_dir, aniso, reflected }
     }
 }
 
@@ -548,6 +728,19 @@ struct Acc {
     echo: Echogram,
     t_free: f32,
     total: [f32; NBANDS],
+    /// v4: this tick's dense response, 7 channels (empty in v3).
+    dense: Vec<[f32; 7]>,
+    v4: bool,
+    /// Squared-energy weight of the contribution being deposited: 1, or
+    /// n for each of n parts of a spread one (so it still counts as ONE
+    /// sample: n parts of (e/n)² · n = e²/n each, e² over the spread).
+    sq_scale: f32,
+}
+
+impl Acc {
+    fn new(t_free: f32, v4: bool) -> Self {
+        Self { early: HashMap::new(), echo: Echogram::new(), t_free, total: [0.0; NBANDS], dense: Vec::new(), v4, sq_scale: 1.0 }
+    }
 }
 
 
@@ -584,6 +777,9 @@ pub struct Tracer {
     /// Chains that failed to validate (or lost to stronger ones), by the
     /// tick they did: not named or grown again for `CHAIN_REJECT_TICKS`.
     rejected: HashMap<(u32, u64), u64>,
+    /// Engine v4: keep the whole traced response (see `RESPONSE_MAX_S`):
+    /// every SourceField carries `dense`, coherent arrivals are taps.
+    pub v4: bool,
     /// Capture the strongest paths of each tick for the debug view.
     pub debug: bool,
     /// Last tick's strongest paths: (source id, mid energy, polyline
@@ -675,6 +871,7 @@ impl Tracer {
             edge_cache: HashMap::new(),
             chains: HashMap::new(),
             rejected: HashMap::new(),
+            v4: false,
             debug: false,
             debug_paths: Vec::new(),
         }
@@ -737,12 +934,7 @@ impl Tracer {
         let n = budget.rays.max(1);
         let mut accs: Vec<Acc> = sources
             .iter()
-            .map(|s| Acc {
-                early: HashMap::new(),
-                echo: Echogram::new(),
-                t_free: (s.pos - listener).length() / SPEED_OF_SOUND,
-                total: [0.0; NBANDS],
-            })
+            .map(|s| Acc::new((s.pos - listener).length() / SPEED_OF_SOUND, self.v4))
             .collect();
 
         let debug = self.debug;
@@ -775,8 +967,11 @@ impl Tracer {
         // identically): coherent, loud chains within the cap that have
         // more than `bounces` reflections or arrive after the early window
         let bounces = budget.bounces;
+        let v4 = self.v4;
+        // v4: every coherent chain is the solver's — an exact image-source
+        // path, whenever it arrives; v3: only the long and the late ones
         let solver_owns = |refl: u32, coherent: bool, loud: bool, rel: f32| {
-            coherent && loud && refl >= 1 && refl <= MAX_COHERENT_REFL && (refl > bounces || rel >= EARLY_S)
+            coherent && loud && refl >= 1 && refl <= MAX_COHERENT_REFL && (v4 || refl > bounces || rel >= EARLY_S)
         };
         for (dirs, lo, hi, segments, nee) in fams {
         if dirs.is_empty() || lo > hi {
@@ -874,7 +1069,9 @@ impl Tracer {
                         if debug {
                             keep_path(&mut dbg, s.id, e[1], &verts, s.pos);
                         }
-                        deposit(&mut accs[si], &self.cells, e, l_s / SPEED_OF_SOUND, first);
+                        // a sphere hit only knows the path to within the
+                        // sphere: its arrival is spread over r/c each way
+                        deposit_spread(&mut accs[si], &self.cells, e, l_s / SPEED_OF_SOUND, first, r / SPEED_OF_SOUND);
                     }
                 }
 
@@ -929,7 +1126,7 @@ impl Tracer {
                     verts.push(p);
                 }
                 length += t_hit;
-                if length / SPEED_OF_SOUND > MAX_TIME {
+                if length / SPEED_OF_SOUND > if v4 { RESPONSE_MAX_S } else { MAX_TIME } {
                     break;
                 }
                 let mat = hit.material;
@@ -1048,11 +1245,17 @@ impl Tracer {
             let t_free = accs[si].t_free;
             let acc = core::mem::replace(
                 &mut accs[si],
-                Acc { early: HashMap::new(), echo: Echogram::new(), t_free: 0.0, total: [0.0; NBANDS] },
+                Acc::new(0.0, self.v4),
             );
             let st = self.state.entry(s.id).or_default();
-            st.fold(acc.early, acc.echo, budget);
-            out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
+            if self.v4 {
+                let total = acc.total;
+                st.fold_v4(acc, budget, listener, s.pos);
+                out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total));
+            } else {
+                st.fold(acc.early, acc.echo, budget);
+                out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
+            }
         }
         out
     }
@@ -1083,7 +1286,8 @@ impl Tracer {
         }
         let t_free: Vec<f32> = sources.iter().map(|s| (s.pos - listener).length() / SPEED_OF_SOUND).collect();
         // past the echo window of the farthest source, nothing is named
-        let reach = (ECHO_S + t_free.iter().copied().fold(0.0, f32::max)) * SPEED_OF_SOUND;
+        let window = if self.v4 { RESPONSE_MAX_S } else { ECHO_S };
+        let reach = (window + t_free.iter().copied().fold(0.0, f32::max)) * SPEED_OF_SOUND;
         let mut planes: Vec<(Vec3, f32)> = Vec::new();
         for _ in 0..n {
             let mut dir = self.rng.unit_sphere();
@@ -1103,7 +1307,7 @@ impl Tracer {
                         }
                         let l_s = (length + to.length()).max(MIN_DIST);
                         let rel = l_s / SPEED_OF_SOUND - t_free[si];
-                        let owns = refl > budget.bounces || rel >= EARLY_S;
+                        let owns = self.v4 || refl > budget.bounces || rel >= EARLY_S;
                         if owns && (origin + dir * along - s.pos).length() <= CHAIN_FIND_K * l_s {
                             self.name_chain(s.id, &planes, &mut cached);
                         }
@@ -1136,12 +1340,7 @@ impl Tracer {
         self.find_chains(world, listener, sources, budget, chain_finders(budget));
         let mut accs: Vec<Acc> = sources
             .iter()
-            .map(|s| Acc {
-                early: HashMap::new(),
-                echo: Echogram::new(),
-                t_free: (s.pos - listener).length() / SPEED_OF_SOUND,
-                total: [0.0; NBANDS],
-            })
+            .map(|s| Acc::new((s.pos - listener).length() / SPEED_OF_SOUND, self.v4))
             .collect();
         self.solve_chains(world, listener, sources, budget, &mut accs);
         accs
@@ -1179,6 +1378,19 @@ impl Tracer {
                 }
             };
             match result {
+                // v4: every valid chain is a coherent arrival — the field
+                // decides whether it plays as its own tap or joins the
+                // dense response (`SourceState::field_v4`)
+                Some((e, delay, dir)) if self.v4 => {
+                    self.chains.get_mut(&key).expect("listed above").energy = e[1];
+                    let rel = delay - accs[si].t_free;
+                    if rel < RESPONSE_MAX_S {
+                        let k = KEY_CHAIN_BASE + (key.1 % KEY_CHAIN_SPAN as u64) as u32;
+                        let b = accs[si].early.entry(k).or_default();
+                        b.add(e, delay, dir);
+                        b.last = rel;
+                    }
+                }
                 // short and early: the sphere estimate's (see `solver_owns`)
                 Some((_, delay, _)) if !long && delay - accs[si].t_free < EARLY_S => reject.push(key),
                 Some((e, delay, dir)) => {
@@ -1508,6 +1720,32 @@ fn deposit(acc: &mut Acc, cells: &[Vec3], e: [f32; NBANDS], delay: f32, dir: Vec
         acc.total[b] += e[b];
     }
     let rel = (delay - acc.t_free).max(0.0);
+    if acc.v4 {
+        // v4: everything the walk estimates (scattered, bent, quiet
+        // mirror paths) is the dense response; the echogram only feeds
+        // the RT60 readout
+        let i = (rel / DENSE_BIN_S) as usize;
+        if rel < RESPONSE_MAX_S {
+            if acc.dense.len() <= i {
+                acc.dense.resize(i + 1, [0.0; 7]);
+            }
+            let bin = &mut acc.dense[i];
+            for b in 0..NBANDS {
+                bin[b] += e[b];
+            }
+            bin[3] += dir.x * e[1];
+            bin[4] += dir.y * e[1];
+            bin[5] += dir.z * e[1];
+            bin[6] += acc.sq_scale * e[1] * e[1];
+        }
+        let j = (rel / BIN_DT) as usize;
+        if j < acc.echo.bins.len() {
+            for b in 0..NBANDS {
+                acc.echo.bins[j][b] += e[b] * LEGACY_UNITS;
+            }
+        }
+        return;
+    }
     let bin = (rel / BIN_DT) as usize;
     if bin < acc.echo.bins.len() {
         for b in 0..NBANDS {
@@ -1523,6 +1761,67 @@ fn deposit(acc: &mut Acc, cells: &[Vec3], e: [f32; NBANDS], delay: f32, dir: Vec
         let key = KEY_EARLY_BASE + cell_index(cells, dir) as u32 * 256 + dbin.min(255);
         acc.early.entry(key).or_default().add(e, delay, dir);
     }
+}
+
+/// The dense response at the resolution its samples support: each bin
+/// averaged over the narrowest window around it holding `ESS_TARGET`
+/// effective samples — (Σw)²/Σw², the count of equal-weight samples
+/// with the same spread, times the ticks the average spans — so a rare
+/// heavy sample (a ray bouncing right by the source) is diluted where
+/// samples are sparse (late, far), while the well-sampled early part
+/// keeps the full 2 ms. Windows reach back at most a quarter of a bin's
+/// delay (the onset is never smeared).
+fn smooth_dense(d: &[[f32; 7]], alpha: f32) -> Vec<[f32; 6]> {
+    let n = d.len();
+    let mut out = vec![[0.0f32; 6]; n];
+    if n == 0 {
+        return out;
+    }
+    let ticks = if alpha > 0.0 { (2.0 - alpha) / alpha } else { 1.0 };
+    // prefix sums of every channel
+    let mut pre = vec![[0.0f64; 7]; n + 1];
+    for i in 0..n {
+        for c in 0..7 {
+            pre[i + 1][c] = pre[i][c] + d[i][c] as f64;
+        }
+    }
+    let sum = |a: usize, b: usize, c: usize| pre[b][c] - pre[a][c];
+    for i in 0..n {
+        let reach = (i / 4).max(1);
+        let mut h = 0usize;
+        loop {
+            let (a, b) = (i.saturating_sub(h), (i + h + 1).min(n));
+            let w = sum(a, b, 1);
+            let q = sum(a, b, 6);
+            let ess = if q > 0.0 { w * w / q * ticks as f64 } else { f64::INFINITY };
+            if ess >= ESS_TARGET || h >= reach {
+                let len = (b - a) as f32;
+                for c in 0..6 {
+                    out[i][c] = (sum(a, b, c) as f32) / len;
+                }
+                break;
+            }
+            h = (h * 2).max(1);
+        }
+    }
+    out
+}
+
+/// `deposit`, the energy spread evenly over `delay ± half` (v4: an
+/// estimate's own time uncertainty; v3: at `delay`).
+fn deposit_spread(acc: &mut Acc, cells: &[Vec3], e: [f32; NBANDS], delay: f32, dir: Vec3, half: f32) {
+    if !acc.v4 || half < 0.5 * DENSE_BIN_S {
+        deposit(acc, cells, e, delay, dir);
+        return;
+    }
+    let n = (2.0 * half / DENSE_BIN_S).ceil() as usize + 1;
+    let part: [f32; NBANDS] = core::array::from_fn(|b| e[b] / n as f32);
+    acc.sq_scale = n as f32;
+    for i in 0..n {
+        let t = delay - half + 2.0 * half * i as f32 / (n - 1) as f32;
+        deposit(acc, cells, part, t.max(acc.t_free), dir);
+    }
+    acc.sq_scale = 1.0;
 }
 
 /// Exact image-source solve of a mirror chain between `lis` and `src`:
