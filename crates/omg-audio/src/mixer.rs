@@ -176,6 +176,11 @@ struct Slot {
     reapply: bool,
     has_block: bool,
     in_frame: bool,
+    /// Host time of the frame `latest` came from, and the simulated time
+    /// (samples) since the block before it — for the renderer's next
+    /// `set_params_after` (see `Frame::time`).
+    traced_at: Option<f64>,
+    motion: Option<f64>,
     loop_voice: u32,
     share: (usize, usize),
     /// Loudness at the ears for the ranking (path gains × fader).
@@ -341,6 +346,8 @@ impl Mixer {
             reapply: false,
             has_block: false,
             in_frame: false,
+            traced_at: None,
+            motion: None,
             loop_voice: 0,
             share: (usize::MAX, usize::MAX),
             loud: 0.0,
@@ -388,6 +395,8 @@ impl Mixer {
         s.used = true;
         s.has_block = false;
         s.in_frame = false;
+        s.traced_at = None;
+        s.motion = None;
         s.loop_voice = 0;
         s.loud = 0.0;
         s.meter = MeterAcc::default();
@@ -421,11 +430,18 @@ impl Mixer {
         for s in &mut self.slots {
             s.in_frame = false;
         }
+        let sr = self.sample_rate as f64;
         for (id, pb) in &frame.blocks {
             let i = self.slot_of(*id);
             let s = &mut self.slots[i];
             s.in_frame = true;
             if !s.has_block || s.latest.version != pb.version {
+                // traced anew: how much time passed since its last trace
+                s.motion = match (frame.time, s.traced_at) {
+                    (Some(t), Some(t0)) => Some((t - t0) * sr),
+                    _ => None,
+                };
+                s.traced_at = frame.time;
                 copy_block(&mut s.latest, pb);
                 s.has_block = true;
                 s.dirty = true;
@@ -462,7 +478,7 @@ impl Mixer {
                 s.renderer.invalidate_params();
                 s.reapply = false;
             }
-            s.renderer.set_params(&s.filtered);
+            s.renderer.set_params_after(&s.filtered, s.motion.take());
             s.dirty = false;
         }
         let (now, sr) = (self.clock, self.sample_rate);

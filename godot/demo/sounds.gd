@@ -411,6 +411,16 @@ func _rain_particles() -> void:
 	rain_roofs.update_mode = GPUParticlesCollisionHeightField3D.UPDATE_MODE_WHEN_MOVED
 	root.add_child(rain_roofs)
 
+# Moving sources move on physics steps, like the listener (the player):
+# every pose a simulation tick picks up is then from the same step, the
+# one its time stamp names (OmgWorld stamps the listener's pose when it
+# changes) — Doppler is exact for the cars too.
+func _physics_process(dt: float) -> void:
+	if world == null:
+		return
+	_update_balls(dt)
+	_update_cars(dt)
+
 func _process(dt: float) -> void:
 	if world == null:
 		return
@@ -424,8 +434,6 @@ func _process(dt: float) -> void:
 		if stride_acc >= stride_next:
 			_step()
 	_update_wildlife()
-	_update_balls(dt)
-	_update_cars(dt)
 	# rain follows the camera; density follows the weather
 	var target: float = RAIN_LEVELS[rain_level]
 	rain_fx.emitting = target > 0.0

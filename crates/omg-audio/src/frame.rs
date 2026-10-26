@@ -38,6 +38,10 @@ pub struct Frame {
     /// Tick number (increases by one per `Simulation::tick`).
     pub version: u64,
     pub listener: Listener,
+    /// When the listener pose this frame was traced from was current, in
+    /// seconds on the host's clock (`Simulation::set_listener_at`); None
+    /// when the host gave no time. The mixer times path motion by it.
+    pub time: Option<f64>,
     /// Every source's acoustic paths (world frame; the mixer applies the
     /// head orientation). A block keeps its `version` while it is not
     /// re-traced (level of detail), so re-applying it costs nothing.
@@ -48,8 +52,8 @@ pub struct Frame {
 
 /// Flat layout tag ("OMGF") and revision; bump on any layout change.
 const MAGIC: u32 = 0x4f4d_4746;
-const LAYOUT: u32 = 1;
-const HEADER: usize = 12;
+const LAYOUT: u32 = 2;
+const HEADER: usize = 14;
 const SKY_WORDS: usize = 6;
 
 impl Frame {
@@ -74,7 +78,8 @@ impl Frame {
     /// ```text
     /// [0] magic  [1] layout  [2..4] version lo, hi (u32 bits)
     /// [4..7] listener position  [7] yaw  [8] pitch  [9] roll
-    /// [10] sky cells  [11] blocks
+    /// [10] sky cells  [11] blocks  [12..14] time lo, hi (f64 bits; NaN
+    ///                                   = none)
     /// sky cells × 6: dir xyz, energy ×3
     /// per block: id (u32 bits), length n, then n words of
     ///            ParamBlock::write_flat
@@ -93,6 +98,8 @@ impl Frame {
         out.extend_from_slice(&[l.yaw, l.pitch, l.roll]);
         out.push(bits(self.sky.len() as u32));
         out.push(bits(self.blocks.len() as u32));
+        let t = self.time.unwrap_or(f64::NAN).to_bits();
+        out.extend_from_slice(&[bits(t as u32), bits((t >> 32) as u32)]);
         for c in &self.sky {
             out.extend_from_slice(&c.dir);
             out.extend_from_slice(&c.energy);
@@ -121,6 +128,7 @@ impl Frame {
             roll: data[9],
         };
         let (n_sky, n_blocks) = (u(10)? as usize, u(11)? as usize);
+        let time = Some(f64::from_bits(u(12)? as u64 | (u(13)? as u64) << 32)).filter(|t| !t.is_nan());
         let mut o = HEADER;
         let sky_end = o.checked_add(n_sky.checked_mul(SKY_WORDS)?)?;
         let cells = data.get(o..sky_end)?;
@@ -141,6 +149,6 @@ impl Frame {
             blocks.push((SourceId(id), ParamBlock::read_flat(body)));
             o += 2 + n;
         }
-        Some(Frame { version, listener, blocks, sky })
+        Some(Frame { version, listener, time, blocks, sky })
     }
 }

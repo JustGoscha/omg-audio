@@ -31,7 +31,9 @@ let mut mixer = Mixer::new(48_000.0, Hrir::load_dir("assets"));
 mixer.play(radio, &clip(&radio_samples), Play::LOOP); // mono f32 at 48 kHz
 
 // 4. Every game tick: move things, trace, hand the frame over
-sim.set_listener(camera_pos, yaw, pitch, roll);
+//    (with the time the pose is from — e.g. your physics step's — Doppler
+//    stays steady however irregularly the ticks sample the motion)
+sim.set_listener_at(camera_pos, yaw, pitch, roll, physics_time_s);
 sim.set_source(radio, radio_pos, true);
 mixer.apply(&sim.tick());
 

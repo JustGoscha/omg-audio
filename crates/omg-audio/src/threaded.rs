@@ -124,7 +124,7 @@ enum SimCmd {
     ObjectMaterial(ObjectId, Material),
     ObjectEnabled(ObjectId, bool),
     RemoveObject(ObjectId),
-    Listener([f32; 3], f32, f32, f32),
+    Listener([f32; 3], f32, f32, f32, f64),
     Config(Config),
 }
 
@@ -173,6 +173,10 @@ pub struct Engine {
     next_source: u32,
     next_object: u32,
     next_voice: u32,
+    /// The listener stamp clock, and the last position sent with the time
+    /// it was first sent (see `set_listener`).
+    clock: Instant,
+    pose: Option<([f32; 3], f64)>,
 }
 
 /// The audio-thread half: call `render` from your audio callback.
@@ -213,6 +217,8 @@ impl Engine {
             next_source: 0,
             next_object: 0,
             next_voice: 1 << 31, // disjoint from ids the Mixer hands out itself
+            clock: Instant::now(),
+            pose: None,
         };
         (engine, out)
     }
@@ -280,9 +286,24 @@ impl Engine {
 
     /// Listener pose for the simulation; the head orientation reaches
     /// the mixer with the next frame (or call `set_head` for audio-rate
-    /// head tracking).
+    /// head tracking). Call it every frame: the pose is stamped with the
+    /// time it was first sent at this position — a game that renders
+    /// faster than its physics moves the listener sends the same position
+    /// a few times, and it has been there since the physics step (see
+    /// `Simulation::set_listener_at`; Doppler depends on it).
     pub fn set_listener(&mut self, position: [f32; 3], yaw: f32, pitch: f32, roll: f32) {
-        self.sim(SimCmd::Listener(position, yaw, pitch, roll));
+        let time = match self.pose {
+            Some((p, t)) if p == position => t,
+            _ => self.clock.elapsed().as_secs_f64(),
+        };
+        self.set_listener_at(position, yaw, pitch, roll, time);
+    }
+
+    /// `set_listener` with your own time stamp (seconds, a steady clock:
+    /// when the pose was current, e.g. your physics step's time).
+    pub fn set_listener_at(&mut self, position: [f32; 3], yaw: f32, pitch: f32, roll: f32, time: f64) {
+        self.pose = Some((position, time));
+        self.sim(SimCmd::Listener(position, yaw, pitch, roll, time));
     }
 
     fn voice(&mut self) -> VoiceId {
@@ -363,7 +384,7 @@ fn sim_loop(
                 SimCmd::ObjectMaterial(id, m) => sim.set_object_material(id, m),
                 SimCmd::ObjectEnabled(id, e) => sim.set_object_enabled(id, e),
                 SimCmd::RemoveObject(id) => sim.remove_object(id),
-                SimCmd::Listener(p, y, pi, r) => sim.set_listener(p, y, pi, r),
+                SimCmd::Listener(p, y, pi, r, t) => sim.set_listener_at(p, y, pi, r, t),
                 SimCmd::Config(c) => sim.set_config(c),
             }
         }

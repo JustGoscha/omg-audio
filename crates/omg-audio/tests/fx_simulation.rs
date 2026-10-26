@@ -213,13 +213,17 @@ fn frames_round_trip_through_flat_floats() {
     sim.set_geometry(room_with_doorway());
     let a = sim.add_source(SourceDesc::at([14.0, 2.5, 1.5]));
     let b = sim.add_source(SourceDesc::at([3.0, 3.0, 1.2]));
-    sim.set_listener([2.0, 1.5, 1.6], 0.3, -0.1, 0.05);
+    sim.set_listener_at([2.0, 1.5, 1.6], 0.3, -0.1, 0.05, 1234.567_891);
     let f = settle(&mut sim, 3);
     let mut flat = Vec::new();
     f.write_flat(&mut flat);
     let g = Frame::read_flat(&flat).expect("parses");
     assert_eq!(g.version, f.version);
     assert_eq!(g.listener, f.listener);
+    assert_eq!(g.time, Some(1234.567_891), "the pose time survives bit-exact");
+    sim.set_listener([2.0, 1.5, 1.6], 0.3, -0.1, 0.05);
+    sim.tick().write_flat(&mut flat);
+    assert_eq!(Frame::read_flat(&flat).expect("parses").time, None, "no time given: none");
     assert_eq!(g.sky, f.sky);
     for id in [a, b] {
         let (x, y) = (f.block(id).unwrap(), g.block(id).unwrap());

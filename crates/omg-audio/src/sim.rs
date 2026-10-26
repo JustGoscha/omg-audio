@@ -149,6 +149,7 @@ pub struct Simulation {
     sources: Vec<Src>,
     objects: Vec<Obj>,
     listener: Listener,
+    listener_time: Option<f64>,
     tick_no: u64,
     next_source: u32,
     next_object: u32,
@@ -179,6 +180,7 @@ impl Simulation {
             sources: Vec::new(),
             objects: Vec::new(),
             listener: Listener::default(),
+            listener_time: None,
             tick_no: 0,
             next_source: 0,
             next_object: 0,
@@ -341,6 +343,17 @@ impl Simulation {
     /// `Mixer::set_head` directly for the fastest response).
     pub fn set_listener(&mut self, position: [f32; 3], yaw: f32, pitch: f32, roll: f32) {
         self.listener = Listener { position, yaw, pitch, roll };
+        self.listener_time = None;
+    }
+
+    /// `set_listener` with the time (seconds, any steady clock) at which
+    /// the pose was current — for a game, the physics step that moved the
+    /// listener. Frames carry it, and the mixer moves every path's delay
+    /// over the time that really passed between two traced poses: steady
+    /// Doppler even though ticks sample the motion irregularly.
+    pub fn set_listener_at(&mut self, position: [f32; 3], yaw: f32, pitch: f32, roll: f32, time: f64) {
+        self.listener = Listener { position, yaw, pitch, roll };
+        self.listener_time = Some(time);
     }
 
     /// Sources traced in the last tick (≤ `max_traced_sources`).
@@ -441,6 +454,7 @@ impl Simulation {
         Frame {
             version: tick,
             listener: self.listener,
+            time: self.listener_time,
             blocks: self.sources.iter().map(|s| (s.id, s.block.clone())).collect(),
             sky,
         }

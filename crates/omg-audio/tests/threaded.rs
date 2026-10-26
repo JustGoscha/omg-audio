@@ -37,3 +37,34 @@ fn the_engine_renders_a_source_end_to_end() {
     drop(engine); // stops and joins the sim thread
     out.render(&mut l, &mut r); // the audio side keeps working on its own
 }
+
+/// The listener pose is stamped with the time it was first sent at its
+/// position: a game that renders faster than its physics moves the
+/// listener sends the same pose a few times, and it has been there since
+/// the physics step (Doppler is timed by these stamps).
+#[test]
+fn a_repeated_pose_keeps_the_time_it_was_first_sent() {
+    let (mut engine, mut out) = Engine::new(48_000.0, EngineConfig::default());
+    let (mut l, mut r) = (vec![0.0f32; 480], vec![0.0f32; 480]);
+    let mut frame_at = |out: &mut omg_audio::threaded::AudioOut, x: f32| -> f64 {
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_secs(5) {
+            out.render(&mut l, &mut r);
+            if let Some(f) = out.frame().filter(|f| f.listener.position[0] == x) {
+                return f.time.expect("the threaded engine stamps every pose");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("no frame with the listener at x = {x}");
+    };
+    engine.set_listener([0.0, 0.0, 1.7], 0.0, 0.0, 0.0);
+    std::thread::sleep(Duration::from_millis(60));
+    engine.set_listener([0.0, 0.0, 1.7], 0.0, 0.0, 0.0); // the same pose again
+    let first = frame_at(&mut out, 0.0);
+    std::thread::sleep(Duration::from_millis(60));
+    engine.set_listener([1.0, 0.0, 1.7], 0.0, 0.0, 0.0);
+    let moved = frame_at(&mut out, 1.0);
+    eprintln!("stamps: first {first:.3} s, moved {moved:.3} s");
+    assert!(first < 0.03, "a repeated pose keeps its first stamp: {first}");
+    assert!(moved - first > 0.1, "a new pose gets a new stamp: {first} → {moved}");
+}

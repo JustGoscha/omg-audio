@@ -257,3 +257,81 @@ fn constant_speed_is_a_constant_pitch() {
         assert!(worst < limit, "v={v} m/s: pitch wobbles {:.2} % (limit {:.2} %)", worst * 100.0, limit * 100.0);
     }
 }
+
+/// A room's worth of paths, as engine v3 sends them: the direct sound and
+/// reflections at a fixed offset from it, each keyed by its 2 ms delay
+/// bin — a reflection whose relative delay drifts into the next bin is a
+/// NEW path (re-key, crossfade) every few updates. Listener approaching
+/// at `v` m/s; sim time `t`.
+fn room_block(version: u64, t: f32, v: f32) -> ParamBlock {
+    let t_free = (200.0 - v * t) / C;
+    let mut taps = vec![Tap { key: 1, delay_s: t_free, dir: [1.0, 0.0, 0.0], gains: [1.0; 3] }];
+    for j in 0..12u32 {
+        // relative delays 20–78 ms, drifting at up to ±v/2c
+        let drift = (2.0 * ((j as f32 * 0.618).fract()) - 1.0) * 0.5 * v / C;
+        let rel = (0.020 + 0.0053 * j as f32 + drift * t).max(0.001);
+        let bin = (rel / 0.002) as u32;
+        taps.push(Tap {
+            key: 100 + j * 256 + bin,
+            delay_s: t_free + (bin as f32 + 0.5) * 0.002,
+            dir: [0.0, 1.0, 0.0],
+            gains: [0.4; 3],
+        });
+    }
+    ParamBlock { taps, version, ..Default::default() }
+}
+
+/// `room_block`s sampled every 50 ms of sim time, arriving at `updates`.
+fn render_room(n: usize, v: f32, updates: &[usize]) -> Vec<f32> {
+    let mut r = Renderer::new(SR).without_line();
+    let mut log = PlayLog::new();
+    log.set_loop(Clip::from(sine(F0, 4800, 1.0)), 0.0);
+    r.set_params(&room_block(1, 0.0, v));
+    let mut next = updates.iter().enumerate().peekable();
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        while let Some(&(i, &at)) = next.peek() {
+            if at > k {
+                break;
+            }
+            next.next();
+            r.set_params(&room_block(i as u64 + 2, (i + 1) as f32 * 0.05, v));
+        }
+        let mut bus = [0.0f32; NCH];
+        r.process_log(&log, k as f64, 1.0, &mut bus);
+        out.push(bus[0]);
+    }
+    out
+}
+
+/// Paths born mid-motion (re-keyed reflections) move on the same timeline
+/// as the paths already playing, however the updates arrive: arrival
+/// jitter must not turn a room's paths into a warbling chorus. (Each new
+/// path used to start still, wherever its update's arrival put it: with
+/// arrival jitter, paths born at different moments sat at scrambled
+/// relative delays, and the sum's pitch swung.)
+#[test]
+fn reflections_born_mid_motion_stay_in_step() {
+    let n = 192_000;
+    for v in [10.0f32, 27.0] {
+        let want = F0 * (1.0 + v / C);
+        let worst = |y: &[f32]| -> f32 {
+            (48_000..n - 960).step_by(960).map(|w| (zc_freq(&y[w..w + 960]) / want - 1.0).abs()).fold(0.0, f32::max)
+        };
+        let regular: Vec<usize> = (1..80).map(|i| i * 2400).collect();
+        let mut s = 0x9e37_79b9u32;
+        let jittered: Vec<usize> = (1..80)
+            .map(|i| {
+                s ^= s << 13;
+                s ^= s >> 17;
+                s ^= s << 5;
+                ((i * 2400) as i64 + (s % 961) as i64 - 480) as usize
+            })
+            .collect();
+        let (w_reg, w_jit) = (worst(&render_room(n, v, &regular)), worst(&render_room(n, v, &jittered)));
+        eprintln!("v {v} m/s: worst 20 ms pitch deviation, regular {:.3} %, jittered {:.3} %", w_reg * 100.0, w_jit * 100.0);
+        let limit = 0.004 + 0.02 * v / C;
+        assert!(w_reg < limit, "v={v}: regular updates wobble {:.2} % (limit {:.2} %)", w_reg * 100.0, limit * 100.0);
+        assert!(w_jit < limit, "v={v}: jittered updates wobble {:.2} % (limit {:.2} %)", w_jit * 100.0, limit * 100.0);
+    }
+}
