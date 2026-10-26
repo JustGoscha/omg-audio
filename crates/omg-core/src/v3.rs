@@ -38,6 +38,62 @@ const DELAY_BIN_S: f32 = 0.002;
 const N_CELLS: usize = 64;
 /// Taps kept per source (strongest early bins).
 pub const MAX_EARLY_TAPS: usize = 24;
+/// Discrete echoes. A COHERENT chain — every bounce a mirror, nothing
+/// scattered or bent, still loud — that arrives after the early window,
+/// or has more than `Budget::bounces` reflections, is one exact path:
+/// the echo off a cliff across a canyon, the flutter between two bare
+/// parallel walls. Such chains are not estimated by sphere hits (one
+/// exact path per order; in a small room most rays around it hit the
+/// floor or ceiling first) but named by the coherent rays that pass near
+/// a source, cached, and solved exactly — image source, every leg
+/// validated — each tick (`solve_chains`). Looked for up to this long
+/// after the free-field arrival.
+pub const ECHO_S: f32 = 1.0;
+/// Discrete echo taps kept per source: enough for a small room's flutter
+/// train (a ~12 ms period over a few hundred ms).
+pub const MAX_ECHO_TAPS: usize = 32;
+/// A chain is loud while its mirror throughput (absorption, scattering,
+/// transmission along it) stays above this …
+const COHERENT_FLOOR: f32 = 1e-2;
+/// … up to this many reflections.
+pub const MAX_COHERENT_REFL: u32 = 24;
+/// A coherent ray passing within this × path length of a source names
+/// its chain.
+const CHAIN_FIND_K: f32 = 0.25;
+/// Ticks a chain stays cached without being found again (every solve
+/// re-validates it: this only forgets what the finders stopped seeing).
+const CHAIN_TTL: u32 = 200;
+/// A train is regrown from its chains this often (ticks): members that
+/// failed to validate get another chance after the listener moved.
+const TRAIN_REGROW_TICKS: u64 = 40;
+/// A still chain (neither end moved) is re-solved this often all the same.
+const CHAIN_RESOLVE_TICKS: u64 = 10;
+/// A rejected chain (no exact path, or too weak to keep) is not tried
+/// again for this many ticks.
+const CHAIN_REJECT_TICKS: u64 = 40;
+/// Chain-finder rays per tick: a sixteenth of the early budget (chains
+/// stay cached; the finders only have to come across each one once).
+fn chain_finders(budget: Budget) -> usize {
+    (budget.rays as usize / 16).max(32)
+}
+/// Chains cached per source.
+const MAX_CHAINS: usize = 128;
+/// Salience: a solved chain plays as a tap when it is this many times
+/// louder than the diffuse field in its slot — the incoherent energy
+/// arriving from its side (±x, ±y, ±z) within ±`ECHO_SPAN`, per direction
+/// cell of that side and scaled to `ECHO_SLOT_S` — and keeps playing down
+/// to `ECHO_STAY` (hysteresis: a tap that drops and returns is a
+/// crossfade gap). A canyon echo stands thousands of times above the
+/// silence around it; flutter between bare walls a few times above a
+/// live room's tail; anything else sinks into the reverb.
+const ECHO_ENTER: f32 = 2.0;
+const ECHO_STAY: f32 = 1.0;
+const ECHO_SPAN: f32 = 0.02;
+const ECHO_SLOT_S: f32 = 0.012;
+/// Chains arriving within this of each other and within ~25° play as one
+/// tap (the ear hears one arrival; the cap counts arrivals).
+const ECHO_MERGE_S: f32 = 0.0015;
+const ECHO_MERGE_COS: f32 = 0.9;
 /// Distances below this are clamped (a source on a wall is not infinite).
 const MIN_DIST: f32 = 0.3;
 const EPS: f32 = 1e-3;
@@ -46,6 +102,13 @@ const LEGACY_UNITS: f32 = 1.0 / 16.0;
 /// Tap key of the direct path; early bins start above it.
 pub const KEY_DIRECT: u32 = 1;
 const KEY_EARLY_BASE: u32 = 16;
+/// Solved chains past the early window: one tap per chain (its identity
+/// is the path's — exact delay, exact Doppler), keyed by the chain's hash
+/// in [KEY_CHAIN_BASE, KEY_CHAIN_BASE + KEY_CHAIN_SPAN): far past the
+/// edge keys (20 000 + an edge index), and below 2^24 — keys cross to the
+/// web as f32.
+const KEY_CHAIN_BASE: u32 = 9_000_000;
+const KEY_CHAIN_SPAN: u32 = 7_000_000;
 
 /// Geometry for v3: the world mesh plus overlay boxes (door leaves,
 /// panes, furniture) with their own materials.
@@ -266,11 +329,13 @@ struct Bin {
     /// Σ E_mid · delay, Σ E_mid · dir
     ed: f32,
     dir: Vec3,
+    /// A solved chain's arrival after the free field, this tick's.
+    last: f32,
 }
 
 impl Default for Bin {
     fn default() -> Self {
-        Self { e: [0.0; NBANDS], ed: 0.0, dir: Vec3::new(0.0, 0.0, 0.0) }
+        Self { e: [0.0; NBANDS], ed: 0.0, dir: Vec3::new(0.0, 0.0, 0.0), last: 0.0 }
     }
 }
 
@@ -288,13 +353,38 @@ impl Bin {
 struct SourceState {
     early: HashMap<u32, Bin>,
     echo: Option<Echogram>,
+    /// Solved chains currently played as discrete taps: one group per
+    /// tap, its key first (chains arriving together merge, `ECHO_MERGE_S`).
+    echo_on: Vec<Vec<u32>>,
+}
+
+/// The diffuse field's mid-band energy in one echo slot at `rel`: the
+/// echogram within ±`ECHO_SPAN`, less the `coherent` (solved chain)
+/// energy among it, per direction cell, scaled to `ECHO_SLOT_S`.
+fn diffuse_slot(echo: &Echogram, rel: f32, coherent: f32) -> f32 {
+    let lo = ((rel - ECHO_SPAN) / BIN_DT).max(0.0) as usize;
+    let hi = (((rel + ECHO_SPAN) / BIN_DT) as usize).min(echo.bins.len().saturating_sub(1));
+    if hi < lo {
+        return 0.0;
+    }
+    let e: f32 = (lo..=hi).map(|i| echo.bins[i][1]).sum();
+    (e - coherent).max(0.0) / N_CELLS as f32 * ECHO_SLOT_S / ((hi - lo + 1) as f32 * BIN_DT)
 }
 
 impl SourceState {
     /// Step 5a, shared by `trace` and the externally walked fold: smooth
     /// one tick's binned contributions into the running state.
-    fn fold(&mut self, early: HashMap<u32, Bin>, echo: Echogram, budget: Budget) {
-        let alpha = if self.echo.is_none() { 1.0 } else { budget.ema.clamp(0.0, 1.0) };
+    fn fold(
+        &mut self,
+        early: HashMap<u32, Bin>,
+        echo: Echogram,
+        budget: Budget,
+    ) {
+        let first = self.echo.is_none();
+        let alpha_early = if first { 1.0 } else { budget.ema.clamp(0.0, 1.0) };
+        // solved chains are exact, not noisy: averaged like the early bins
+        // only so a chain that just validated fades in rather than pops
+        let alpha_echo = alpha_early;
         let mut keys: Vec<u32> = self.early.keys().copied().collect();
         for k in early.keys() {
             if !self.early.contains_key(k) {
@@ -303,12 +393,16 @@ impl SourceState {
         }
         for k in keys {
             let f = early.get(&k).copied().unwrap_or_default();
+            let alpha = if k >= KEY_CHAIN_BASE { alpha_echo } else { alpha_early };
             let cur = self.early.entry(k).or_default();
             for b in 0..NBANDS {
                 cur.e[b] += alpha * (f.e[b] - cur.e[b]);
             }
             cur.ed += alpha * (f.ed - cur.ed);
             cur.dir = cur.dir + (f.dir - cur.dir) * alpha;
+            if f.e[1] > 0.0 {
+                cur.last = f.last;
+            }
         }
         self.early.retain(|_, b| b.e.iter().any(|&e| e > 1e-12));
         // late echogram: a slower statistic, a slower average
@@ -316,6 +410,46 @@ impl SourceState {
             Some(e) => e.ema(&echo, budget.late_ema.clamp(0.0, 1.0)),
             None => self.echo = Some(echo),
         }
+        // discrete echoes: the salient solved chains (with hysteresis),
+        // the strongest MAX_ECHO_TAPS; each slot's field is measured
+        // without the chains arriving in it
+        let echo = self.echo.as_ref().expect("set above");
+        let chains: Vec<(u32, f32, f32)> = self
+            .early
+            .iter()
+            .filter(|(k, b)| **k >= KEY_CHAIN_BASE && b.e[1] > 0.0)
+            .map(|(k, b)| (*k, b.last, b.e[1]))
+            .collect();
+        let playing = |k: u32| self.echo_on.iter().any(|g| g.contains(&k));
+        let leads = |k: u32| self.echo_on.iter().any(|g| g[0] == k);
+        let mut on: Vec<(u32, f32, f32)> = Vec::new();
+        for &(k, rel, e) in &chains {
+            let mine: f32 =
+                chains.iter().filter(|c| (c.1 - rel).abs() <= ECHO_SPAN + 0.5 * BIN_DT).map(|c| c.2).sum();
+            let salience = e * LEGACY_UNITS / diffuse_slot(echo, rel, mine * LEGACY_UNITS).max(1e-30);
+            if salience >= if playing(k) { ECHO_STAY } else { ECHO_ENTER } {
+                on.push((k, rel, e));
+            }
+        }
+        // chains arriving together from about the same way are one
+        // arrival to the ear: they share a tap (led by the chain that led
+        // it before, else the strongest), and the cap counts arrivals
+        on.sort_by(|x, y| leads(y.0).cmp(&leads(x.0)).then(y.2.total_cmp(&x.2)));
+        let dir_of = |k: u32| {
+            let d = self.early[&k].dir;
+            let l = d.length();
+            if l > 1e-9 { d * (1.0 / l) } else { d }
+        };
+        let mut groups: Vec<(f32, Vec3, Vec<u32>)> = Vec::new();
+        for (k, rel, _) in on {
+            let d = dir_of(k);
+            if let Some(g) = groups.iter_mut().find(|g| (g.0 - rel).abs() <= ECHO_MERGE_S && g.1.dot(d) >= ECHO_MERGE_COS) {
+                g.2.push(k);
+            } else if groups.len() < MAX_ECHO_TAPS {
+                groups.push((rel, d, vec![k]));
+            }
+        }
+        self.echo_on = groups.into_iter().map(|g| g.2).collect();
     }
 
     /// Step 5b: this source's field from the smoothed state.
@@ -332,7 +466,7 @@ impl SourceState {
             taps.push(t);
         }
         taps.append(edge_taps);
-        let mut early: Vec<(&u32, &Bin)> = self.early.iter().collect();
+        let mut early: Vec<(&u32, &Bin)> = self.early.iter().filter(|(k, _)| **k < KEY_CHAIN_BASE).collect();
         early.sort_by(|x, y| y.1.e[1].total_cmp(&x.1.e[1]));
         for (k, b) in early.into_iter().take(MAX_EARLY_TAPS) {
             if b.e[1] <= 0.0 {
@@ -355,13 +489,53 @@ impl SourceState {
             });
         }
         let empty;
-        let echo = match self.echo.as_ref() {
+        let mut echo = match self.echo.as_ref() {
             Some(e) => e,
             None => {
                 empty = Echogram::new();
                 &empty
             }
         };
+        // the discrete echoes (chosen in `fold`), played as taps — and
+        // taken out of the echogram, so the reverb doesn't carry them a
+        // second time
+        let owned;
+        if !self.echo_on.is_empty() {
+            let mut rest = echo.clone();
+            for group in &self.echo_on {
+                // the group's energy at its lead chain's exact arrival
+                let Some(lead) = self.early.get(&group[0]) else { continue };
+                let rel = lead.last;
+                let mut e = [0.0f32; NBANDS];
+                let mut d = Vec3::new(0.0, 0.0, 0.0);
+                for k in group {
+                    if let Some(b) = self.early.get(k) {
+                        for band in 0..NBANDS {
+                            e[band] += b.e[band].max(0.0);
+                        }
+                        d = d + b.dir;
+                        if let Some(bin) = rest.bins.get_mut((b.last / BIN_DT) as usize) {
+                            for band in 0..NBANDS {
+                                bin[band] = (bin[band] - b.e[band] * LEGACY_UNITS).max(0.0);
+                            }
+                        }
+                    }
+                }
+                let dl = d.length();
+                if e[1] <= 0.0 || dl <= 1e-9 {
+                    continue;
+                }
+                let dir = d * (1.0 / dl);
+                taps.push(Tap {
+                    key: group[0],
+                    delay_s: t_free + rel,
+                    dir: [dir.x, dir.y, dir.z],
+                    gains: core::array::from_fn(|band| e[band].sqrt()),
+                });
+            }
+            owned = rest;
+            echo = &owned;
+        }
         let reverb = estimate_reverb(echo);
         let (late_dir, aniso) = echo.late_direction(EARLY_S);
         SourceField { taps, reverb, late_dir, aniso, reflected }
@@ -375,6 +549,7 @@ struct Acc {
     t_free: f32,
     total: [f32; NBANDS],
 }
+
 
 /// The tracer with its persistent per-source state (EMA across ticks).
 pub struct Tracer {
@@ -403,11 +578,58 @@ pub struct Tracer {
     ear_vis: Option<(Vec3, u64, Vec<bool>)>,
     /// Per source id: (listener, source, tick, edge-path taps).
     edge_cache: HashMap<u32, (Vec3, Vec3, u64, Vec<Tap>)>,
+    /// Mirror chains past `bounces`, per (source id, plane-sequence
+    /// hash): found by coherent rays, solved exactly every tick.
+    chains: HashMap<(u32, u64), MirrorChain>,
+    /// Chains that failed to validate (or lost to stronger ones), by the
+    /// tick they did: not named or grown again for `CHAIN_REJECT_TICKS`.
+    rejected: HashMap<(u32, u64), u64>,
     /// Capture the strongest paths of each tick for the debug view.
     pub debug: bool,
     /// Last tick's strongest paths: (source id, mid energy, polyline
     /// ears → bounces → source), strongest first.
     pub debug_paths: Vec<(u32, f32, Vec<Vec3>)>,
+}
+
+/// A coherent chain past `bounces`: the planes its mirrors lie in, in
+/// order from the listener.
+struct MirrorChain {
+    planes: Vec<(Vec3, f32)>,
+    ttl: u32,
+    /// Mid-band energy at the last solve (what eviction ranks by).
+    energy: f32,
+    /// The tick its train was last grown (`grow_trains`; 0 = never).
+    grown_at: u64,
+    /// The last solve: listener, source, tick, (energy, delay, direction)
+    /// — reused while neither end moves (re-solved every
+    /// `CHAIN_RESOLVE_TICKS` all the same: doors open, panes close).
+    solved: Option<(Vec3, Vec3, u64, ([f32; NBANDS], f32, Vec3))>,
+}
+
+/// The plane of a hit, canonical (largest normal component positive).
+fn plane_of(normal: Vec3, p: Vec3) -> (Vec3, f32) {
+    let a = [normal.x, normal.y, normal.z];
+    let i = (0..3).max_by(|&i, &j| a[i].abs().total_cmp(&a[j].abs())).unwrap_or(0);
+    let n = if a[i] < 0.0 { normal * -1.0 } else { normal };
+    (n, n.dot(p))
+}
+
+fn planes_hash(planes: &[(Vec3, f32)]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for (n, d) in planes {
+        for q in [n.x * 1e3, n.y * 1e3, n.z * 1e3, d * 1e3] {
+            h = (h ^ (q.round() as i64 as u64)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    h
+}
+
+fn planes_eq(a: (Vec3, f32), b: (Vec3, f32)) -> bool {
+    a.0.dot(b.0) > 0.999 && (a.1 - b.1).abs() < 1e-3
+}
+
+fn mirror_point(p: Vec3, (n, d): (Vec3, f32)) -> Vec3 {
+    p - n * (2.0 * (n.dot(p) - d))
 }
 
 /// Paths kept per tick for the debug view.
@@ -447,6 +669,8 @@ impl Tracer {
             tick: 0,
             ear_vis: None,
             edge_cache: HashMap::new(),
+            chains: HashMap::new(),
+            rejected: HashMap::new(),
             debug: false,
             debug_paths: Vec::new(),
         }
@@ -472,11 +696,15 @@ impl Tracer {
     /// Forget a source's history (it moved discontinuously, or left).
     pub fn reset(&mut self, id: u32) {
         self.state.remove(&id);
+        self.chains.retain(|k, _| k.0 != id);
+        self.rejected.retain(|k, _| k.0 != id);
     }
 
     /// Forget every average (the listener crossed a surface).
     fn forget_all(&mut self) {
         self.state.clear();
+        self.chains.clear();
+        self.rejected.clear();
         self.sky_primed = false;
         self.epoch = self.epoch.wrapping_add(1);
     }
@@ -526,9 +754,12 @@ impl Tracer {
         let primary = fibonacci_sphere(n as usize);
         let mut picks: Vec<(usize, f32)> = Vec::new();
         let mut imp: Vec<f32> = Vec::new();
-        // Two families, disjoint by reflection count, so every path is
-        // counted exactly once: EARLY rays count paths with 1..=bounces
-        // reflections; LATE rays (fewer, long) count everything beyond.
+        // Three estimators, disjoint per path, so every path is counted
+        // exactly once: EARLY rays count paths with 1..=bounces
+        // reflections, LATE rays (fewer, long) everything beyond — except
+        // the exact chain solver's (`solver_owns`: coherent, loud chains
+        // that are long or arrive late — flutter, canyon echoes), which
+        // `find_chains` names and `solve_chains` counts.
         let late_primary = fibonacci_sphere(budget.late_rays as usize);
         let mut sky_acc: Vec<([f32; NBANDS], Vec3)> =
             vec![([0.0; NBANDS], Vec3::new(0.0, 0.0, 0.0)); N_CELLS];
@@ -536,6 +767,13 @@ impl Tracer {
             (&primary, 0, budget.bounces, budget.bounces + 1 + MAX_BENDS, budget.nee),
             (&late_primary, budget.bounces + 1, u32::MAX, LATE_MAX_SEGMENTS + MAX_BENDS, budget.late_nee),
         ];
+        // the exact solver's paths (both families evaluate it
+        // identically): coherent, loud chains within the cap that have
+        // more than `bounces` reflections or arrive after the early window
+        let bounces = budget.bounces;
+        let solver_owns = |refl: u32, coherent: bool, loud: bool, rel: f32| {
+            coherent && loud && refl >= 1 && refl <= MAX_COHERENT_REFL && (refl > bounces || rel >= EARLY_S)
+        };
         for (dirs, lo, hi, segments, nee) in fams {
         if dirs.is_empty() || lo > hi {
             continue;
@@ -552,6 +790,12 @@ impl Tracer {
             // (only then do sphere hits count — NEE covered diffuse ones)
             let mut refl = 0u32;
             let mut specular = false;
+            // every bounce a mirror so far (nothing scattered or bent),
+            // and that mirror chain's own throughput still above the
+            // floor (latched: once quiet, quiet)
+            let mut coherent = true;
+            let mut loud = true;
+            let mut mirror_thr = 1.0f32;
             // bent around an edge since the last diffuse bounce, and
             // where the ray was when it first bent (gating: a bend only
             // adds what the straight line from there doesn't carry)
@@ -580,7 +824,7 @@ impl Tracer {
                 let t_seg = edge.map_or(t_hit, |(te, _, _, _)| te);
 
                 // 3. specular chains into a source sphere, priced from the
-                // source's REAL position
+                // source's REAL position — except the exact solver's own
                 if (specular || bent) && counts(refl) {
                     for (si, s) in sources.iter().enumerate() {
                         let to = s.pos - origin;
@@ -594,6 +838,9 @@ impl Tracer {
                         let closest = (origin + dir * along - s.pos).length();
                         if closest > r {
                             continue;
+                        }
+                        if solver_owns(refl, coherent && !bent, loud, l_s / SPEED_OF_SOUND - accs[si].t_free) {
+                            continue; // the exact solver counts this one
                         }
                         let t = world.transmission(origin, s.pos, &mut self.hits);
                         let air = air_attenuation(l_s);
@@ -645,6 +892,7 @@ impl Tracer {
                     }
                     bent = true;
                     bends += 1;
+                    coherent = false;
                     continue;
                 }
 
@@ -747,6 +995,8 @@ impl Tracer {
                     for b in 0..NBANDS {
                         thr[b] *= mat.transmission[b] * mat.transmission[b] / pt;
                     }
+                    mirror_thr *= mat.transmission[1] * mat.transmission[1];
+                    loud &= mirror_thr >= COHERENT_FLOOR;
                     origin = p + dir * (2.0 * EPS);
                     continue; // straight on; `specular` unchanged
                 }
@@ -758,6 +1008,8 @@ impl Tracer {
                 }
                 refl += 1;
                 bend_from = None;
+                mirror_thr *= keep[1] * (1.0 - mat.scattering);
+                loud &= mirror_thr >= COHERENT_FLOOR;
                 if self.rng.next_f32() < mat.scattering {
                     dir = (normal + self.rng.unit_sphere()).normalize();
                     if dir.dot(normal) < 1e-3 {
@@ -765,6 +1017,7 @@ impl Tracer {
                     }
                     specular = false;
                     bent = false;
+                    coherent = false;
                 } else {
                     dir = dir - normal * (2.0 * dir.dot(normal));
                     specular = true;
@@ -780,6 +1033,11 @@ impl Tracer {
         }
         self.fold_sky(sky_acc.into_iter(), budget);
 
+        // 4b. the exact solver's chains: named by a few mirror rays,
+        // solved every tick while cached
+        self.find_chains(world, listener, sources, budget, chain_finders(budget));
+        self.solve_chains(world, listener, sources, budget, &mut accs);
+
         // 5. smooth over ticks and build each source's field
         let mut out = Vec::with_capacity(sources.len());
         for (si, s) in sources.iter().enumerate() {
@@ -793,6 +1051,228 @@ impl Tracer {
             out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
         }
         out
+    }
+
+    /// Cache (or refresh) the chain `planes` for source `id`.
+    fn name_chain(&mut self, id: u32, planes: &[(Vec3, f32)], cached: &mut HashMap<u32, usize>) {
+        let key = (id, planes_hash(planes));
+        if self.rejected.get(&key).is_some_and(|&t| self.tick < t + CHAIN_REJECT_TICKS) {
+            return;
+        }
+        if let Some(c) = self.chains.get_mut(&key) {
+            c.ttl = CHAIN_TTL;
+        } else if cached.get(&id).copied().unwrap_or(0) < 2 * MAX_CHAINS {
+            self.chains.insert(key, MirrorChain { planes: planes.to_vec(), ttl: CHAIN_TTL, energy: 0.0, grown_at: 0, solved: None });
+            *cached.entry(id).or_default() += 1;
+        }
+    }
+
+    /// The chain finder (the CPU walk's and the GPU kernel's alike): `n`
+    /// rays from the listener that only mirror — ending where a surface
+    /// scatters, as often as it scatters — naming the chains the solver
+    /// owns (`solver_owns`) as they pass near a source. Directions only:
+    /// no energy is counted here.
+    fn find_chains(&mut self, world: &World, listener: Vec3, sources: &[Source], budget: Budget, n: usize) {
+        let mut cached: HashMap<u32, usize> = HashMap::new();
+        for k in self.chains.keys() {
+            *cached.entry(k.0).or_default() += 1;
+        }
+        let t_free: Vec<f32> = sources.iter().map(|s| (s.pos - listener).length() / SPEED_OF_SOUND).collect();
+        // past the echo window of the farthest source, nothing is named
+        let reach = (ECHO_S + t_free.iter().copied().fold(0.0, f32::max)) * SPEED_OF_SOUND;
+        let mut planes: Vec<(Vec3, f32)> = Vec::new();
+        for _ in 0..n {
+            let mut dir = self.rng.unit_sphere();
+            let mut origin = listener;
+            let mut length = 0.0f32;
+            let mut mirror_thr = 1.0f32;
+            planes.clear();
+            for refl in 0..=MAX_COHERENT_REFL {
+                let hit = world.raycast(origin, dir);
+                let t_seg = hit.as_ref().map_or(f32::MAX, |h| h.t);
+                if refl >= 1 {
+                    for (si, s) in sources.iter().enumerate() {
+                        let to = s.pos - origin;
+                        let along = to.dot(dir);
+                        if along <= 0.0 || along >= t_seg {
+                            continue;
+                        }
+                        let l_s = (length + to.length()).max(MIN_DIST);
+                        let rel = l_s / SPEED_OF_SOUND - t_free[si];
+                        let owns = refl > budget.bounces || rel >= EARLY_S;
+                        if owns && (origin + dir * along - s.pos).length() <= CHAIN_FIND_K * l_s {
+                            self.name_chain(s.id, &planes, &mut cached);
+                        }
+                    }
+                }
+                let Some(hit) = hit else { break };
+                if length + hit.t > reach {
+                    break;
+                }
+                let m = hit.material;
+                mirror_thr *= (1.0 - m.absorption[1] - m.transmission[1] * m.transmission[1]).max(0.0) * (1.0 - m.scattering);
+                // the walk's own odds: a scattering surface ends the
+                // chain as often as it scatters (rough chains are rare)
+                if mirror_thr < COHERENT_FLOOR || self.rng.next_f32() < m.scattering {
+                    break;
+                }
+                let p = origin + dir * hit.t;
+                length += hit.t;
+                planes.push(plane_of(hit.normal, p));
+                dir = dir - hit.normal * (2.0 * dir.dot(hit.normal));
+                origin = p + hit.normal * EPS;
+            }
+        }
+    }
+
+    /// The CPU's share of an externally walked tick: name chains with a
+    /// few mirror rays, solve every cached one, and return what they
+    /// deposit (per source) — merged into the walk's bins by the fold.
+    fn walked_chains(&mut self, world: &World, listener: Vec3, sources: &[Source], budget: Budget) -> Vec<Acc> {
+        self.find_chains(world, listener, sources, budget, chain_finders(budget));
+        let mut accs: Vec<Acc> = sources
+            .iter()
+            .map(|s| Acc {
+                early: HashMap::new(),
+                echo: Echogram::new(),
+                t_free: (s.pos - listener).length() / SPEED_OF_SOUND,
+                total: [0.0; NBANDS],
+            })
+            .collect();
+        self.solve_chains(world, listener, sources, budget, &mut accs);
+        accs
+    }
+
+    /// Every cached mirror chain longer than `bounces`, solved exactly
+    /// for its source: valid ones deposit their image-source energy
+    /// (mirror losses × air / L²) at their exact delay; invalid or
+    /// expired ones leave the cache.
+    fn solve_chains(&mut self, world: &World, listener: Vec3, sources: &[Source], budget: Budget, accs: &mut [Acc]) {
+        self.grow_trains();
+        let mut drop: Vec<(u32, u64)> = Vec::new();
+        let mut reject: Vec<(u32, u64)> = Vec::new();
+        let keys: Vec<(u32, u64)> = self.chains.keys().copied().collect();
+        for key in keys {
+            let Some(si) = sources.iter().position(|s| s.id == key.0) else {
+                drop.push(key);
+                continue;
+            };
+            let c = self.chains.get_mut(&key).expect("listed above");
+            c.ttl = c.ttl.saturating_sub(1);
+            if c.ttl == 0 {
+                drop.push(key);
+                continue;
+            }
+            let long = c.planes.len() as u32 > budget.bounces;
+            let src = sources[si].pos;
+            let tick = self.tick;
+            let result = match c.solved {
+                Some((l, s, t, r)) if l == listener && s == src && tick < t + CHAIN_RESOLVE_TICKS => Some(r),
+                _ => {
+                    let r = solve_chain(world, &c.planes, listener, src, &mut self.hits);
+                    c.solved = r.map(|r| (listener, src, tick, r));
+                    r
+                }
+            };
+            match result {
+                // short and early: the sphere estimate's (see `solver_owns`)
+                Some((_, delay, _)) if !long && delay - accs[si].t_free < EARLY_S => reject.push(key),
+                Some((e, delay, dir)) => {
+                    self.chains.get_mut(&key).expect("listed above").energy = e[1];
+                    // the echogram (and, inside the early window, the
+                    // early bins); past it, the chain's own echo bin
+                    deposit(&mut accs[si], &self.cells, e, delay, dir);
+                    let rel = delay - accs[si].t_free;
+                    if (EARLY_S..ECHO_S).contains(&rel) {
+                        let k = KEY_CHAIN_BASE + (key.1 % KEY_CHAIN_SPAN as u64) as u32;
+                        let b = accs[si].early.entry(k).or_default();
+                        b.add(e, delay, dir);
+                        b.last = rel;
+                    }
+                }
+                None => reject.push(key),
+            }
+        }
+        for k in drop {
+            self.chains.remove(&k);
+        }
+        let tick = self.tick;
+        for k in reject {
+            self.chains.remove(&k);
+            self.rejected.insert(k, tick);
+        }
+        self.rejected.retain(|_, t| tick < *t + CHAIN_REJECT_TICKS);
+        // over the cap (newly named ones get one solve to prove
+        // themselves): keep each source's strongest MAX_CHAINS
+        let mut by_source: HashMap<u32, Vec<((u32, u64), f32)>> = HashMap::new();
+        for (k, c) in &self.chains {
+            by_source.entry(k.0).or_default().push((*k, c.energy));
+        }
+        for (_, mut v) in by_source {
+            if v.len() > MAX_CHAINS {
+                v.sort_by(|a, b| b.1.total_cmp(&a.1));
+                for (k, _) in &v[MAX_CHAINS..] {
+                    self.chains.remove(k);
+                    self.rejected.insert(*k, tick);
+                }
+            }
+        }
+    }
+
+    /// A chain whose last mirrors alternate between two parallel planes
+    /// is one member of a train — the flutter between them: every other
+    /// number of round trips is a path too, as rare for a ray to find as
+    /// this one was. Propose them all (the solve validates each).
+    fn grow_trains(&mut self) {
+        let mut per_source: HashMap<u32, usize> = HashMap::new();
+        for k in self.chains.keys() {
+            *per_source.entry(k.0).or_default() += 1;
+        }
+        let mut new: Vec<((u32, u64), MirrorChain)> = Vec::new();
+        let mut grown: Vec<(u32, u64)> = Vec::new();
+        let tick = self.tick;
+        for (key, c) in &self.chains {
+            let p = &c.planes;
+            let n = p.len();
+            if n < 2 || (c.grown_at != 0 && tick < c.grown_at + TRAIN_REGROW_TICKS) {
+                continue;
+            }
+            grown.push(*key);
+            let (a, b) = (p[n - 2], p[n - 1]);
+            if a.0.dot(b.0) < 0.999 || (a.1 - b.1).abs() < 0.01 {
+                continue; // not a parallel pair: no train
+            }
+            // where the alternation starts
+            let mut start = n - 2;
+            while start > 0 && planes_eq(p[start - 1], p[start + 1]) {
+                start -= 1;
+            }
+            let phase = if (n - 2 - start) % 2 == 0 { (a, b) } else { (b, a) };
+            // this chain's own family (its prefix, then the alternation),
+            // and the pure alternation both ways round (off either wall
+            // first): the train's halves
+            let families = [(start, phase), (0, phase), (0, (phase.1, phase.0))];
+            for &(pre, (first, second)) in &families {
+                for len in pre + 2..=MAX_COHERENT_REFL as usize {
+                    let planes: Vec<(Vec3, f32)> =
+                        (0..len).map(|i| if i < pre { p[i] } else if (i - pre) % 2 == 0 { first } else { second }).collect();
+                    let k = (key.0, planes_hash(&planes));
+                    let count = per_source.entry(key.0).or_default();
+                    let rejected = self.rejected.get(&k).is_some_and(|&t| tick < t + CHAIN_REJECT_TICKS);
+                if *count >= 2 * MAX_CHAINS || rejected || self.chains.contains_key(&k) || new.iter().any(|(nk, _)| *nk == k) {
+                        continue;
+                    }
+                    *count += 1;
+                    new.push((k, MirrorChain { planes, ttl: c.ttl, energy: 0.0, grown_at: 0, solved: None }));
+                }
+            }
+        }
+        for k in grown {
+            if let Some(c) = self.chains.get_mut(&k) {
+                c.grown_at = tick.max(1);
+            }
+        }
+        self.chains.extend(new);
     }
 
     /// Everything before the walk: the exact direct segment per source
@@ -1035,19 +1515,93 @@ fn deposit(acc: &mut Acc, cells: &[Vec3], e: [f32; NBANDS], delay: f32, dir: Vec
         acc.echo.dirs[bin][2] += dir.z * m;
     }
     if rel < EARLY_S {
-        let mut best = 0usize;
-        let mut bd = f32::MIN;
-        for (i, c) in cells.iter().enumerate() {
-            let d = c.dot(dir);
-            if d > bd {
-                bd = d;
-                best = i;
-            }
-        }
         let dbin = (rel / DELAY_BIN_S) as u32;
-        let key = KEY_EARLY_BASE + best as u32 * 256 + dbin.min(255);
+        let key = KEY_EARLY_BASE + cell_index(cells, dir) as u32 * 256 + dbin.min(255);
         acc.early.entry(key).or_default().add(e, delay, dir);
     }
+}
+
+/// Exact image-source solve of a mirror chain between `lis` and `src`:
+/// mirror the source across the planes (last first), unfold from the
+/// listener, and check every leg reaches its plane first. Returns the
+/// path's energy (per band: mirror losses × final-leg transmission ×
+/// air / L²), its delay and its direction at the listener — or None
+/// when the chain doesn't connect (or is quiet past the coherent floor).
+fn solve_chain(
+    world: &World,
+    planes: &[(Vec3, f32)],
+    lis: Vec3,
+    src: Vec3,
+    hits: &mut Vec<SegHit>,
+) -> Option<([f32; NBANDS], f32, Vec3)> {
+    let n = planes.len();
+    if n == 0 || n as u32 > MAX_COHERENT_REFL {
+        return None;
+    }
+    // images[k]: the source mirrored across planes k.. (images[n] = src)
+    let mut images = vec![src; n + 1];
+    for k in (0..n).rev() {
+        images[k] = mirror_point(images[k + 1], planes[k]);
+    }
+    let mut p = lis;
+    let mut first = None;
+    let mut keep = [1.0f32; NBANDS];
+    for k in 0..n {
+        let (nrm, d) = planes[k];
+        let to = images[k] - p;
+        let denom = nrm.dot(to);
+        if denom.abs() < 1e-9 {
+            return None;
+        }
+        let t = (d - nrm.dot(p)) / denom;
+        if !(t > 1e-5 && t < 1.0) {
+            return None;
+        }
+        let q = p + to * t;
+        let len = (q - p).length();
+        if len < 1e-3 {
+            return None;
+        }
+        let dir = (q - p) * (1.0 / len);
+        let skip = if k == 0 { 0.0 } else { EPS };
+        let hit = world.raycast(p + dir * skip, dir)?;
+        if (hit.t + skip - len).abs() > 0.02 || hit.normal.dot(nrm).abs() < 0.999 {
+            return None; // something else first, or not this plane
+        }
+        first.get_or_insert(dir);
+        let m = hit.material;
+        for b in 0..NBANDS {
+            keep[b] *= (1.0 - m.absorption[b] - m.transmission[b] * m.transmission[b]).max(0.0) * (1.0 - m.scattering);
+        }
+        // keep[1] is the chain's mirror throughput: past the floor it is
+        // no longer coherent-loud (the late family's, not ours)
+        if keep[1] < COHERENT_FLOOR {
+            return None;
+        }
+        p = q;
+    }
+    let last = src - p;
+    let last_len = last.length().max(1e-4);
+    let t = world.transmission(p + last * (EPS / last_len), src, hits);
+    let l = (images[0] - lis).length();
+    let lc = l.max(MIN_DIST);
+    let air = air_attenuation(l);
+    let e = core::array::from_fn(|b| keep[b] * t[b] * t[b] * air[b] * air[b] / (lc * lc));
+    Some((e, l / SPEED_OF_SOUND, first?))
+}
+
+/// The direction cell nearest `dir`.
+fn cell_index(cells: &[Vec3], dir: Vec3) -> usize {
+    let mut best = 0usize;
+    let mut bd = f32::MIN;
+    for (i, c) in cells.iter().enumerate() {
+        let d = c.dot(dir);
+        if d > bd {
+            bd = d;
+            best = i;
+        }
+    }
+    best
 }
 
 // ------------------------------------------------------- diffraction

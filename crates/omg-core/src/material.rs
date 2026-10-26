@@ -134,6 +134,14 @@ impl Material {
         scattering: 0.25,
         transmission: [0.08, 0.012, 0.0015],
     };
+    /// Smooth quarried rock — a cliff face, a quarry wall: as hard as
+    /// stone, without masonry's carved relief, so it returns sound
+    /// specularly (echoes stay discrete). Nothing audible passes through.
+    pub const ROCK: Material = Material {
+        absorption: [0.02, 0.03, 0.05],
+        scattering: 0.10,
+        transmission: [0.010, 0.002, 0.0005],
+    };
     /// Heavy draped curtain (velour, ~0.6 kg/m², draped to half area):
     /// 0.14/0.35/0.55/0.72/0.70/0.65 (125 Hz–4 kHz; L. L. Beranek, Noise
     /// and Vibration Control, absorption table). Fabric leaks sound

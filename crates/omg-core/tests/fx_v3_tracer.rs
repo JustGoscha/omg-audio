@@ -162,9 +162,16 @@ fn shadowed_listener_hears_a_lit_facade_behind_them() {
     let e = f.reflected[1];
     eprintln!("shadow fill: {:.1} dB re free field", 10.0 * (e / free).log10());
     assert!(e > 0.01 * free, "the lit facade must reach the shadowed listener: {e:.3e} vs free {free:.3e}");
-    // it comes from behind (−y) and above
-    let best = f.taps.iter().filter(|t| t.key != KEY_DIRECT).max_by(|a, b| a.gains[1].total_cmp(&b.gains[1])).unwrap();
-    assert!(best.dir[1] < 0.0 && best.dir[2] > 0.0, "from the facade behind and above: {:?}", best.dir);
+    // it comes from behind (−y) and above: the energy of the reflected
+    // taps, by direction (a single tap can be a discrete echo between
+    // barrier and facade, arriving from the barrier — the fill is the sum)
+    let mut d = [0.0f32; 3];
+    for t in f.taps.iter().filter(|t| t.key != KEY_DIRECT) {
+        for k in 0..3 {
+            d[k] += t.dir[k] * t.gains[1] * t.gains[1];
+        }
+    }
+    assert!(d[1] < 0.0 && d[2] > 0.0, "from the facade behind and above: {d:?}");
 }
 
 #[test]

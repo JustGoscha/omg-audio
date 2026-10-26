@@ -33,7 +33,7 @@
 // rare edge the grid's 2 m sampling skips — see v3_probe.rs), and the
 // echogram's direction sums start at EARLY_S (the only part read).
 //
-// WALK_LAYOUT_VERSION 3 — must match omg_core::v3::fold and layout.rs:
+// WALK_LAYOUT_VERSION 4 — must match omg_core::v3::fold and layout.rs:
 //   Job {rot0@0, n_early@12, rot1@16, n_late@28, rot2@32, bounces@44,
 //        listener@48, seed@60, k@64, nee@68, late_nee@72, n_sources@76,
 //        n_panels@80, n_pockets@84, has_grade@88, grade@92, debug@96,
@@ -47,6 +47,12 @@
 // CELLS×DELAY_BINS slots | echo ECHO_BINS slots | total ×3, pad]; a slot
 // = (e0, e1, e2, Σe1·dx, Σe1·dy, Σe1·dz), true energy units.
 
+// The exact chain solver's paths (omg_core::v3 `solver_owns`): coherent
+// — every bounce a mirror, nothing scattered or bent — and loud chains
+// with more than `bounces` reflections or arriving after the early
+// window. The CPU names and solves those; sphere hits skip them here.
+const COHERENT_FLOOR: f32 = 1e-2;
+const MAX_COHERENT_REFL: u32 = 24u;
 const N_CELLS: u32 = 64u;
 const DELAY_BINS: u32 = 40u;
 const ECHO_BINS: u32 = 300u;
@@ -821,6 +827,11 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     // then — or after a bend — do sphere hits count)
     var refl = 0u;
     var specular = false;
+    // every bounce a mirror so far (nothing scattered or bent), and that
+    // mirror chain's own throughput still above COHERENT_FLOOR (latched)
+    var mirror_only = true;
+    var loud = true;
+    var mirror_thr = 1.0;
     // bent since the last diffuse bounce; where it first bent since the
     // last reflection; never twice at the same edge in a row
     var bent = false;
@@ -859,6 +870,11 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
                 // one edge, no reflection: the edge next-event path,
                 // already counted exactly on the CPU
                 if (refl == 0u && bends == 1u && !specular) { continue; }
+                // the exact chain solver's (on the CPU)
+                let rel = l_s / SPEED_OF_SOUND - length(sp - job.listener) / SPEED_OF_SOUND;
+                if (mirror_only && loud && refl >= 1u && refl <= MAX_COHERENT_REFL && (refl > job.bounces || rel >= EARLY_S)) {
+                    continue;
+                }
                 let t = seg_transmission(origin, sp);
                 let a = air(l_s);
                 let w = 4.0 * inv_n / (job.k * job.k * l_s * l_s);
@@ -891,6 +907,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
             thr = thr * bend_w;
             bent = true;
             bends += 1u;
+            mirror_only = false;
             continue;
         }
 
@@ -969,6 +986,8 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
         let pt = select(0.0, min(max(p_t, 0.02), 0.5), p_t > 1e-5);
         if (pt > 0.0 && rand_f32() < pt) {
             thr = thr * t2 / pt;
+            mirror_thr = mirror_thr * t2.y;
+            loud = loud && mirror_thr >= COHERENT_FLOOR;
             origin = p + dir * (2.0 * EPS);
             continue; // straight on; `specular` unchanged
         }
@@ -976,12 +995,15 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
         if (all(thr < vec3<f32>(LATE_FLOOR))) { break; }
         refl += 1u;
         have_bend_from = false;
+        mirror_thr = mirror_thr * keep.y * (1.0 - hit.scattering);
+        loud = loud && mirror_thr >= COHERENT_FLOOR;
         if (rand_f32() < hit.scattering) {
             var nd = normalize(normal + unit_sphere());
             if (dot(nd, normal) < 1e-3) { nd = normal; }
             dir = nd;
             specular = false;
             bent = false;
+            mirror_only = false;
         } else {
             dir = dir - normal * (2.0 * dot(dir, normal));
             specular = true;

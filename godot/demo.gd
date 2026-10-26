@@ -4,7 +4,7 @@
 # geometry and traces it — what you see is what the engine hears.
 #
 # Click: capture mouse / throw a ball · WASD walk · Shift run · Space jump
-# C crouch · F fly · E door · B bells · V whisper · R rain · L labels
+# C crouch · F fly · E door · B bells · V whisper · K clap · R rain · L labels
 # Q sound quality · G graphics (pixel ⇄ fine) · [ ] pixel height · H hud
 # Esc release mouse.
 #
@@ -193,6 +193,7 @@ const SHOT_ROOMS := {
 	"kiosk": [Rect2(14.5, 34, 2, 2), 3.5, 0.0, [[Vector3(11.5, 32.5, 1.6), 30.0, 0.0]]],
 	"belfry": [Rect2(7, 318, 6, 6), 26.5, 24.2, [[Vector3(18, 305, 1.7), 115.0, 22.0], [Vector3(12.8, 323.8, 25.8), 225.0, -10.0]]],
 	"town_square": [Rect2(4, 14, 32, 32), 60.0, 0.0, [[Vector3(12, 29, 1.6), 50.0, 4.0], [Vector3(30, 44, 1.6), 235.0, 0.0]]],
+	"echo_canyon": [Rect2(-14, -122, 56, 54), 40.0, 0.0, [[Vector3(14, -64, 1.6), -90.0, 6.0], [Vector3(-4, -95, 1.6), 0.0, 4.0]]],
 }
 
 var shooting := false
@@ -563,7 +564,7 @@ func _hud() -> void:
 	panel.add_child(grid)
 	for row in [["WASD", "walk"], ["mouse", "look (click to capture)"], ["Shift", "run"], ["click", "throw a ball"],
 			["Space", "jump"], ["E", "open the door ahead"], ["C", "crouch"], ["T", "flashlight"],
-			["F", "fly"], ["B", "ring the bells"], ["R", "rain"], ["V", "whisper"],
+			["F", "fly"], ["B", "ring the bells"], ["R", "rain"], ["V", "whisper"], ["K", "clap (echoes)"],
 			["Q", "sound quality"], ["L", "source labels"], ["G", "graphics"], ["[ ]", "pixel size"],
 			["H", "hide the panels"], ["Esc", "release the mouse"]]:
 		var k := Label.new()
@@ -619,6 +620,8 @@ func _unhandled_input(e: InputEvent) -> void:
 				sounds.ring_bells()
 			KEY_V:
 				sounds.whisper()
+			KEY_K:
+				sounds.clap()
 			KEY_R:
 				rain_name = sounds.cycle_rain()
 			KEY_L:

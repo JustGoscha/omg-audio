@@ -377,6 +377,13 @@ pub fn rooms() -> Vec<RoomDef> {
             outdoor: false,
             roof: Roof::Flat,
         },
+        // The echo canyon, south of the town: two sheer stone cliffs,
+        // 40 m apart face to face, 50 m long, 24 m high — solid like the
+        // kiosk. A clap between them comes back as a train of discrete
+        // echoes (one per 2·40 m / c ≈ 233 ms, ping-ponging when you stand
+        // off-centre). See `CANYON`.
+        cliff("West Cliff", CANYON.west),
+        cliff("East Cliff", CANYON.east),
         // Outside must come LAST: enclosed rooms overlap its rectangle and
         // room_of matches in order. It surrounds all buildings.
         RoomDef {
@@ -394,6 +401,37 @@ pub fn rooms() -> Vec<RoomDef> {
     ]
 }
 
+/// The echo canyon's two cliffs, each (min, max) in plan: the inner
+/// faces stand at x = -6 and x = 34, from y = -120 to -70; the canyon
+/// floor and the track from the street are `GROUND` patches.
+pub struct Canyon {
+    pub west: ((f32, f32), (f32, f32)),
+    pub east: ((f32, f32), (f32, f32)),
+    pub height: f32,
+}
+
+pub const CANYON: Canyon = Canyon {
+    west: ((-12.0, -120.0), (-6.0, -70.0)),
+    east: ((34.0, -120.0), (40.0, -70.0)),
+    height: 24.0,
+};
+
+fn cliff(name: &'static str, (min, max): ((f32, f32), (f32, f32))) -> RoomDef {
+    RoomDef {
+        name,
+        min,
+        max,
+        height: CANYON.height,
+        barrier_height: CANYON.height + 0.5,
+        floor_z: 0.0,
+        walls: [Material::ROCK; 6],
+        wall_thickness: 0.5,
+        outdoor: false,
+        roof: Roof::Flat,
+    }
+}
+
+
 pub const LIVING: usize = 0;
 pub const CORRIDOR: usize = 1;
 pub const HALL: usize = 2;
@@ -405,7 +443,9 @@ pub const CATHEDRAL: usize = 9;
 pub const BUNKER: usize = 10;
 pub const BELFRY: usize = 11;
 pub const BUNKER_STAIR: usize = 12;
-pub const OUTSIDE: usize = 13;
+pub const WEST_CLIFF: usize = 13;
+pub const EAST_CLIFF: usize = 14;
+pub const OUTSIDE: usize = 15;
 
 /// A doorway between two rooms. `axis`: 0 = opening in an x=const wall,
 /// 1 = opening in a y=const wall. Arbitrary graph topology (BFS routing).
@@ -1496,6 +1536,15 @@ pub fn layout_json() -> String {
         o.push_str(if k + 1 == listed.len() { "    }\n" } else { "    },\n" });
     }
     o.push_str("  ],\n");
+    o.push_str(&format!(
+        "  \"canyon\": {{ \"height\": {}, \"material\": \"rock\", \"cliffs\": [{}] }},\n",
+        n(CANYON.height),
+        [CANYON.west, CANYON.east]
+            .iter()
+            .map(|(a, b)| format!("{{ \"min\": {}, \"max\": {} }}", arr(&[a.0, a.1]), arr(&[b.0, b.1])))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
     o.push_str("  \"ground\": [\n");
     let out = rooms.iter().find(|r| r.outdoor).expect("an outdoor room");
     for (i, g) in GROUND.iter().enumerate() {
@@ -2234,7 +2283,8 @@ pub const STREET_X: (f32, f32) = (-20.2, -15.8);
 /// rect clips them, and a building standing on one simply covers it.
 pub struct GroundPatch {
     pub name: &'static str,
-    /// Footstep / material name: "paving", "asphalt" or "concrete".
+    /// Footstep / material name: "paving", "asphalt", "stone" or
+    /// "concrete".
     pub surface: &'static str,
     pub min: (f32, f32),
     pub max: (f32, f32),
@@ -2245,6 +2295,7 @@ impl GroundPatch {
         match self.surface {
             "asphalt" => Material::ASPHALT,
             "paving" => Material::PAVING,
+            "stone" => Material::ROCK,
             _ => Material::CONCRETE,
         }
     }
@@ -2268,6 +2319,8 @@ pub const GROUND: &[GroundPatch] = &[
     patch("bunker path", "paving", 24.0, 6.0, 31.4, 8.0),
     patch("bunker lane", "paving", 34.5, 14.0, 37.0, 23.2),
     patch("belfry path", "paving", 8.6, 74.4, 11.4, 316.0),
+    patch("canyon floor", "stone", -6.0, -120.0, 34.0, -62.0),
+    patch("canyon track", "stone", -15.0, -66.0, -6.0, -62.0),
     patch("street", "asphalt", STREET_X.0, -1e4, STREET_X.1, 1e4),
     patch("west kerb", "concrete", -21.0, -1e4, STREET_X.0, 1e4),
     patch("east kerb", "concrete", STREET_X.1, -1e4, -15.0, 1e4),

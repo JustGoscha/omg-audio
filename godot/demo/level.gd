@@ -94,6 +94,7 @@ func build() -> void:
 	_windows()
 	_doors()
 	_street()
+	_canyon()
 	_lamps()
 	_hall_lights()
 	_trees()
@@ -1344,6 +1345,25 @@ func toggle_door_ahead(at: Vector2, dir: Vector2, reach := 2.0) -> int:
 	return best
 
 # ------------------------------------------------------------------ street
+
+# The echo canyon south of the town (layout.json "canyon"): two sheer
+# rock cliffs, faces 40 m apart, on a rock floor reached by a track from
+# the street. A clap (K) between them comes back again and again.
+func _canyon() -> void:
+	var path := DemoAssets.file(LAYOUT)
+	var data = JSON.parse_string(FileAccess.get_file_as_string(path)) if FileAccess.file_exists(path) else null
+	var canyon: Dictionary = data.get("canyon", {}) if data is Dictionary else {}
+	var cliffs: Array = canyon.get("cliffs", [{"min": [-12, -120], "max": [-6, -70]}, {"min": [34, -120], "max": [40, -70]}])
+	var h := float(canyon.get("height", 24.0))
+	var rock := geo.B(DemoMats.sandstone(6.0, Color(0.55, 0.52, 0.48)), "rock")
+	for c in cliffs:
+		rock.box(float(c["min"][0]), float(c["min"][1]), 0.0, float(c["max"][0]), float(c["max"][1]), h)
+	var floor_mat := geo.B(DemoMats.sandstone(4.0, Color(0.45, 0.43, 0.4)), "rock", false)
+	for pv in _layout_ground():
+		if pv["surface"] == "stone":
+			var mn: Vector2 = pv["min"]
+			var mx: Vector2 = pv["max"]
+			floor_mat.box(mn.x, mn.y, 0.0, mx.x, mx.y, 0.02, ["z-"])
 
 func _street() -> void:
 	# acoustic asphalt and curbs along the town (the ground tile's

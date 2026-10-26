@@ -27,6 +27,7 @@ pub const PRESETS: &[(&str, Material)] = &[
     ("earth", Material::EARTH),
     ("acoustic_tile", Material::ACOUSTIC_TILE),
     ("asphalt", Material::ASPHALT),
+    ("rock", Material::ROCK),
     ("paving", Material::PAVING),
     // aliases and extras
     ("plaster", Material::BRICK),

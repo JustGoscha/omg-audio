@@ -272,8 +272,15 @@ fn v3_shadowed_facade_fill_matches_cpu() {
     assert!(gg[0][1] > 0.01 * free, "the lit facade must reach the shadow");
     assert!((db_e(gg[0][1]) - db_e(c[0][1])).abs() < 1.0);
     let f = gpu_tick(&mut g, &mut Tracer::new(3), &w, lis, &one(0, src), shot(8192, 2, 0, 0)).remove(0);
-    let best = f.taps.iter().filter(|t| t.key != KEY_DIRECT).max_by(|a, b| a.gains[1].total_cmp(&b.gains[1])).unwrap();
-    assert!(best.dir[1] < 0.0 && best.dir[2] > 0.0, "from the facade behind and above: {:?}", best.dir);
+    // the fill's energy by direction (a single tap can be a discrete
+    // echo between barrier and facade, arriving from the barrier)
+    let mut d = [0.0f32; 3];
+    for t in f.taps.iter().filter(|t| t.key != KEY_DIRECT) {
+        for k in 0..3 {
+            d[k] += t.dir[k] * t.gains[1] * t.gains[1];
+        }
+    }
+    assert!(d[1] < 0.0 && d[2] > 0.0, "from the facade behind and above: {d:?}");
 }
 
 #[test]
@@ -552,6 +559,49 @@ fn v3_demo_world_fields_match_cpu() {
             assert!((20.0 * (lg / lc).log10()).abs() < 1.5, "source {i} late level");
         }
     }
+}
+
+/// Discrete echoes on the GPU path: the kernel skips the chains the CPU
+/// solves exactly, the CPU names them with its own mirror rays — the
+/// flutter between two bare parallel walls comes out the same train.
+#[test]
+fn v3_flutter_train_matches_cpu() {
+    let mut mb = MeshBuilder::new();
+    let hard = mb.material(Material::CONCRETE);
+    let tile = mb.material(Material::ACOUSTIC_TILE);
+    let carpet = mb.material(Material::CARPET);
+    common::shell(
+        &mut mb,
+        v(0.0, 0.0, 0.0),
+        v(4.0, 6.0, 2.7),
+        [Some(hard), Some(hard), Some(tile), Some(tile), Some(carpet), Some(tile)],
+    );
+    let mesh = mb.build();
+    let Some(mut g) = gpu(&mesh, "v3_flutter") else { return };
+    let w = World::new(&mesh, &[]);
+    let lis = v(1.3, 3.0, 1.6);
+    let src = one(0, lis + v(0.2, 0.15, -0.3));
+    let b = Budget::default();
+    let train = |f: &SourceField| -> Vec<i32> {
+        let t0 = f.taps.iter().map(|t| t.delay_s).fold(f32::MAX, f32::min);
+        let mut v: Vec<i32> =
+            f.taps.iter().filter(|t| t.delay_s > t0 + 0.08).map(|t| (t.delay_s * 2000.0).round() as i32).collect();
+        v.sort();
+        v
+    };
+    let (mut tc, mut tg) = (Tracer::new(5), Tracer::new(5));
+    let (mut fc, mut fg) = (None, None);
+    for _ in 0..80 {
+        fc = Some(cpu_tick(&mut tc, &w, lis, &src, b).remove(0));
+        fg = Some(gpu_tick(&mut g, &mut tg, &w, lis, &src, b).remove(0));
+    }
+    let (c, gg) = (train(&fc.unwrap()), train(&fg.unwrap()));
+    eprintln!("flutter train past 80 ms: cpu {} taps, gpu {} taps", c.len(), gg.len());
+    assert!(gg.len() >= 15, "the GPU path flutters too: {gg:?}");
+    // chains are found at random (and then kept): either path may be a
+    // few orders further along — what both found must be the same
+    let shared = gg.iter().filter(|x| c.contains(x)).count();
+    assert!(shared * 10 >= gg.len().min(c.len()) * 9, "same arrivals (±0.25 ms): cpu {c:?} gpu {gg:?}");
 }
 
 #[test]
