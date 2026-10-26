@@ -28,6 +28,10 @@ const ROOMS = [
   // index-aligned with the sim: the bunker's blockhouse + stair shaft
   // (its walls, roof and steps are built by hand below)
   { name: 'Bunker Stair', min: [31.4, 6], max: [34, 8], h: 2.4, virtual: true },
+  // the echo canyon south of the town (walkthrough::CANYON, layout.json
+  // "canyon"): two sheer rock cliffs, faces 40 m apart
+  { name: 'West Cliff', min: [-12, -120], max: [-6, -70], h: 24, solid: true, rock: true },
+  { name: 'East Cliff', min: [34, -120], max: [40, -70], h: 24, solid: true, rock: true },
   { name: 'Outside', min: [-28, -1900], max: [48, 2000], outdoor: true, floor: 0x1c2a20 },
 ];
 // axis: 0 = opening in an x=const wall, 1 = opening in a y=const wall
@@ -827,9 +831,9 @@ const glassMat = new THREE.MeshLambertMaterial({
 const edgeMat = new THREE.LineBasicMaterial({ color: 0x6a7f9f });
 const ceilMat = new THREE.MeshLambertMaterial({ color: 0x232b38, side: THREE.DoubleSide });
 
-function addBox(cx, cy, cz, sx, sy, sz) {
+function addBox(cx, cy, cz, sx, sy, sz, mat = wallMat) {
   const g = new THREE.BoxGeometry(sx, sz, sy); // (wx, wz, wy) sizes
-  const m = new THREE.Mesh(g, wallMat);
+  const m = new THREE.Mesh(g, mat);
   m.position.copy(v3(cx, cy, cz));
   scene.add(m);
   const e = new THREE.LineSegments(new THREE.EdgesGeometry(g), edgeMat);
@@ -1981,11 +1985,12 @@ function buildWorld() {
       scene.add(pane);
     }
   }
-  // solid street furniture (reflectors/occluders)
+  // solid street furniture (reflectors/occluders) and the canyon's cliffs
+  const rockMat = new THREE.MeshLambertMaterial({ color: 0x5b5650 });
   for (const r of ROOMS.filter((r) => r.solid)) {
     const w = r.max[0] - r.min[0];
     const d = r.max[1] - r.min[1];
-    addBox(r.min[0] + w / 2, r.min[1] + d / 2, r.h / 2, w, d, r.h);
+    addBox(r.min[0] + w / 2, r.min[1] + d / 2, r.h / 2, w, d, r.h, r.rock ? rockMat : wallMat);
     COLLIDERS.push({ axis: 0, plane: r.min[0], lo: r.min[1], hi: r.max[1], h: r.h });
     COLLIDERS.push({ axis: 0, plane: r.max[0], lo: r.min[1], hi: r.max[1], h: r.h });
     COLLIDERS.push({ axis: 1, plane: r.min[1], lo: r.min[0], hi: r.max[0], h: r.h });
@@ -2285,6 +2290,8 @@ async function startAudio() {
     fetchBuf('../assets/whisper/whisper_0.ogg').then(decodeWhisper),
     fetchBuf('../assets/whisper/whisper_1.ogg').then(decodeWhisper),
   ]);
+  // the listener's clap (K): synthesized (tools/make_fx.py), CC0
+  const clapFx = await fetchBuf('../assets/fx_clap.ogg').then((b) => decodeMono(b, 0.6));
   const [owl0, owl1, owl2, bellBig, bellSmall] = await Promise.all([
     fetchBuf('../assets/birds/owl_0.ogg').then((b) => decodeMono(b, 0.5)),
     fetchBuf('../assets/birds/owl_1.ogg').then((b) => decodeMono(b, 0.5)),
@@ -2318,13 +2325,13 @@ async function startAudio() {
                 m0.buffer, m1.buffer, silents[6].buffer],                // cars + feet
       fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
            owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
-           whis0.buffer, whis1.buffer],
+           whis0.buffer, whis1.buffer, clapFx.buffer],
       ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,
      radio.buffer, ...silents.map((b) => b.buffer),
      whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
      owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
-     whis0.buffer, whis1.buffer,
+     whis0.buffer, whis1.buffer, clapFx.buffer,
      ambience.buffer, drops.buffer],
   );
   await new Promise((res, rej) => {
@@ -2630,7 +2637,7 @@ function setupControls() {
   };
 
   if (!isTouch) {
-    hintEl.textContent = 'click: capture mouse · WASD walk · Shift run · Space jump · C crouch · F fly · click throw · E door · B bells · V whisper · R rain';
+    hintEl.textContent = 'click: capture mouse · WASD walk · Shift run · Space jump · C crouch · F fly · click throw · E door · B bells · V whisper · K clap · R rain';
     glCanvas.addEventListener('click', () => {
       if (document.pointerLockElement !== glCanvas) glCanvas.requestPointerLock();
       else throwBall();
@@ -2648,6 +2655,7 @@ function setupControls() {
       else if (e.code === 'KeyQ') cycleQuality();
       else if (e.code === 'KeyB') ringBells();
       else if (e.code === 'KeyV') whisperNow();
+      else if (e.code === 'KeyK') clapNow();
       else state.keys.add(e.code);
     });
     addEventListener('keyup', (e) => state.keys.delete(e.code));
@@ -3066,7 +3074,7 @@ function strideStep(d) {
 
 // -------------------------------------------------- wildlife & carillon
 // fx-bank indices: 0 woosh, 1 thump, 2 boom (unused), 3..22 steps,
-// 23..25 owls, 26 big peal, 27 small peal, 28..29 whispers.
+// 23..25 owls, 26 big peal, 27 small peal, 28..29 whispers, 30 clap.
 const wild = {
   owl1: 8 + Math.random() * 12,
   owl2: 16 + Math.random() * 16,
@@ -3090,6 +3098,12 @@ function whisperNow() {
     dist: 0.05 + Math.random() * 0.07,
     gain: 0.55 + Math.random() * 0.25,
   });
+}
+// A clap (K), played at the listener through the feet source: the room
+// answers it (the echo canyon south of the town, many times over).
+function clapNow() {
+  if (!state.fx) return;
+  state.fx(13, 30, 'play', 0.9 + Math.random() * 0.2, 0.98 + Math.random() * 0.04);
 }
 function updateWildlife(t) {
   if (!state.fx || !state.running) return;

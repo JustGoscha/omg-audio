@@ -101,6 +101,7 @@ func setup(w: OmgWorld, r: Node3D, l: DemoLevel, pl: DemoPlayer) -> void:
 		clip["owl%d" % k] = world.load_clip(A + "birds/owl_%d.ogg" % k, {"peak": 0.5})
 	clip["bell_big"] = world.load_clip(A + "birds/bell_big.ogg", {"peak": 0.6, "max_seconds": 16.0, "fade_out": 2.0})
 	clip["bell_small"] = world.load_clip(A + "birds/bell_small.ogg", {"peak": 0.5, "max_seconds": 10.0, "fade_out": 2.0})
+	clip["clap"] = world.load_clip(A + "fx_clap.ogg", {"peak": 0.6})
 	for k in 2:
 		clip["whisper%d" % k] = world.load_clip(A + "whisper/whisper_%d.ogg" % k,
 			{"peak": 0.5, "trim_start": 0.02, "max_seconds": 7.0, "fade_out": 1.5})
@@ -144,6 +145,11 @@ func _motor_clip(m: int, rate: float) -> int:
 func ring_bells() -> void:
 	wild["bells"] = _now() - t0 + 30.0 + randf() * 90.0
 	sources["bells"].play_clip(clip["bell_big"] if randf() < 0.75 else clip["bell_small"], 1.0, 1.0)
+
+# A clap (K) at the listener, through the feet source: the room answers
+# it (the echo canyon south of the town, many times over).
+func clap() -> void:
+	feet.play_clip(clip["clap"], 0.9 + randf() * 0.2, 0.98 + randf() * 0.04)
 
 func whisper() -> void:
 	world.whisper(clip["whisper%d" % (randi() % 2)], randf() < 0.5, 0.05 + randf() * 0.07, 0.55 + randf() * 0.25)

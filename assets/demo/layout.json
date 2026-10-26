@@ -228,6 +228,7 @@
       ]
     }
   ],
+  "canyon": { "height": 24, "material": "rock", "cliffs": [{ "min": [-12, -120], "max": [-6, -70] }, { "min": [34, -120], "max": [40, -70] }] },
   "ground": [
     { "name": "square", "surface": "paving", "min": [5.5, 24.2], "max": [21.5, 44] },
     { "name": "lane to the old house", "surface": "paving", "min": [21.5, 23.2], "max": [34.5, 26] },
@@ -237,6 +238,8 @@
     { "name": "bunker path", "surface": "paving", "min": [24, 6], "max": [31.4, 8] },
     { "name": "bunker lane", "surface": "paving", "min": [34.5, 14], "max": [37, 23.2] },
     { "name": "belfry path", "surface": "paving", "min": [8.6, 74.4], "max": [11.4, 316] },
+    { "name": "canyon floor", "surface": "stone", "min": [-6, -120], "max": [34, -62] },
+    { "name": "canyon track", "surface": "stone", "min": [-15, -66], "max": [-6, -62] },
     { "name": "street", "surface": "asphalt", "min": [-20.2, -1900], "max": [-15.8, 2000] },
     { "name": "west kerb", "surface": "concrete", "min": [-21, -1900], "max": [-20.2, 2000] },
     { "name": "east kerb", "surface": "concrete", "min": [-15.8, -1900], "max": [-15, 2000] }
@@ -247,8 +250,8 @@
     { "index": 2, "name": "club", "room": 4, "pos": [27, 32, 1.5], "emitters": [[23.5, 27.5], [30.5, 27.5], [23.5, 36.5], [30.5, 36.5]] },
     { "index": 3, "name": "flute", "room": 9, "pos": [8, 66, 1.5], "emitters": [[8, 66]] },
     { "index": 4, "name": "radio", "room": 10, "pos": [37.5, 12.5, -2.1], "emitters": [[37.5, 12.5]] },
-    { "index": 5, "name": "owl·cathedral", "room": 13, "pos": [4, 53, 24.25], "emitters": [[4, 53]] },
-    { "index": 6, "name": "owl·house", "room": 13, "pos": [27.5, 19.5, 6.3], "emitters": [[27.5, 19.5]] },
-    { "index": 7, "name": "bells", "room": 13, "pos": [10, 321, 25.5], "emitters": [[10, 321]] }
+    { "index": 5, "name": "owl·cathedral", "room": 15, "pos": [4, 53, 24.25], "emitters": [[4, 53]] },
+    { "index": 6, "name": "owl·house", "room": 15, "pos": [27.5, 19.5, 6.3], "emitters": [[27.5, 19.5]] },
+    { "index": 7, "name": "bells", "room": 15, "pos": [10, 321, 25.5], "emitters": [[10, 321]] }
   ]
 }

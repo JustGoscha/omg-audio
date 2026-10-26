@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Synthesize projectile FX (CC0 by construction): whistle, thump, boom.
-Pure stdlib. Usage: make_fx.py assets/
+"""Synthesize FX (CC0 by construction): whistle, thump, boom, clap.
+Pure stdlib. Usage: make_fx.py assets/  (then encode, e.g.
+`ffmpeg -i fx_clap.wav -c:a flac fx_clap.ogg`)
 """
 import math
 import random
@@ -79,7 +80,35 @@ def boom(seconds=2.5):
     return out
 
 
+def clap(seconds=0.25):
+    # a hand clap: three or four noise bursts a few ms apart (the palms
+    # meeting unevenly), band-passed around 1-2.5 kHz where a clap's
+    # crack lives, each dying in ~10 ms, plus a short hollow body
+    n = int(seconds * FS)
+    out = [0.0] * n
+    bursts = [(0.0, 1.0), (0.0042, 0.7), (0.0081, 0.85), (0.0135, 0.4)]
+    for t0, amp in bursts:
+        i0 = int(t0 * FS)
+        lp = hp = 0.0
+        for i in range(i0, n):
+            t = (i - i0) / FS
+            env = amp * math.exp(-t / 0.0065)
+            if env < 1e-4:
+                break
+            w = random.random() * 2 - 1
+            lp += 0.45 * (w - lp)      # top: ~5 kHz
+            hp += 0.06 * (lp - hp)     # bottom: ~450 Hz
+            out[i] += env * (lp - hp)
+    phase = 0.0
+    for i in range(n):
+        t = i / FS
+        phase += 2 * math.pi * 820.0 / FS
+        out[i] += 0.12 * math.exp(-t / 0.018) * math.sin(phase)  # the cupped hands
+    return out
+
+
 d = sys.argv[1].rstrip("/")
 write(f"{d}/fx_whistle.wav", whistle())
 write(f"{d}/fx_thump.wav", thump())
 write(f"{d}/fx_boom.wav", boom())
+write(f"{d}/fx_clap.wav", clap())
