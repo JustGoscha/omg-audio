@@ -93,6 +93,7 @@ func build() -> void:
 	_doors()
 	_street()
 	_lamps()
+	_hall_lights()
 	_trees()
 	geo.commit()
 
@@ -693,9 +694,25 @@ func _belfry() -> void:
 	var lamp := OmniLight3D.new()
 	lamp.position = v(c.x, c.y, 25.8)
 	lamp.light_color = Color(1.0, 0.75, 0.45)
-	lamp.light_energy = 2.0
-	lamp.omni_range = 9.0
+	lamp.light_energy = 4.0
+	lamp.omni_range = 12.0
 	root.add_child(lamp)
+	# floodlit at night: a lamp on the ground before each face, aimed up
+	# the brick to the bell stage
+	var flood := geo.B(DemoMats.metal(Color(0.2, 0.21, 0.22)), "", false, false, "floodlight housings")
+	for f in [Vector2(0, -1), Vector2(0, 1), Vector2(-1, 0), Vector2(1, 0)]:
+		var at: Vector2 = c + f * 8.0
+		flood.box(at.x - 0.25, at.y - 0.25, 0.0, at.x + 0.25, at.y + 0.25, 0.35)
+		var s := SpotLight3D.new()
+		var from := v(at.x, at.y, 0.4)
+		var to := v(c.x + f.x * 3.0, c.y + f.y * 3.0, 11.0)
+		s.transform = Transform3D(Basis.looking_at(to - from, Vector3.UP), from)
+		s.light_color = Color(1.0, 0.86, 0.66)
+		s.light_energy = 12.0
+		s.spot_range = 36.0
+		s.spot_angle = 34.0
+		s.spot_attenuation = 0.4
+		root.add_child(s)
 
 # --------------------------------------------- colonnade, kiosk, the square
 
@@ -1100,7 +1117,6 @@ func _props() -> void:
 	_figure(Vector2(8.0, 66.4), 0.0, Color(0.3, 0.28, 0.4))
 	# lamps inside: warm pools in every room
 	for l in [[Vector3(4, 3, 2.4), Color(1.0, 0.78, 0.5), 2.2, 7.0, true], [Vector3(4, 10, 2.2), Color(1.0, 0.85, 0.65), 1.0, 5.0, false],
-			[Vector3(4, 19, 6.2), Color(1.0, 0.9, 0.75), 3.5, 12.0, true], [Vector3(10, 19, 6.2), Color(1.0, 0.9, 0.75), 3.0, 12.0, false],
 			[Vector3(21, 31, 2.3), Color(1.0, 0.5, 0.7), 1.2, 5.0, false], [Vector3(27, 19.5, 2.5), Color(1.0, 0.75, 0.5), 2.0, 7.0, true],
 			[Vector3(27, 19.5, 5.2), Color(1.0, 0.8, 0.6), 1.5, 6.0, false]]:
 		var o := OmniLight3D.new()
@@ -1112,6 +1128,72 @@ func _props() -> void:
 		o.shadow_enabled = l[4]
 		root.add_child(o)
 		geo.B(DemoMats.glow(l[1], 3.0), "", false, false, "lamp shades (light)").box(p.x - 0.15, p.y - 0.15, p.z + 0.1, p.x + 0.15, p.y + 0.15, p.z + 0.18)
+
+# The Great Hall (the seminar room): wall sconces throwing cones of
+# light up the walls onto the ceiling, a small lamp on every table (from
+# the layout) and the presenter's desk, and a faint fill from above.
+func _hall_lights() -> void:
+	var warm := Color(1.0, 0.82, 0.6)
+	var brass := geo.B(DemoMats.metal(Color(0.62, 0.5, 0.3)), "", false, false, "sconce brackets / lamp bases")
+	var bowl := geo.B(DemoMats.glow(warm, 2.2), "", false, false, "sconce bowls / lamp shades (light)")
+	# [x, y, inward normal]: two walls of four, the west wall two; clear of
+	# the doors (4, 14), (7, 24) and the whiteboards on the east wall
+	var sconces := []
+	for x in [1.8, 5.2, 9.2, 12.4]:
+		sconces.append([Vector2(x, 14.0), Vector2(0, 1)])
+		sconces.append([Vector2(x, 24.0), Vector2(0, -1)])
+	for y in [17.0, 21.0]:
+		sconces.append([Vector2(0.0, y), Vector2(1, 0)])
+	for sc in sconces:
+		var w: Vector2 = sc[0]
+		var n: Vector2 = sc[1]
+		var at: Vector2 = w + n * 0.24 # the wall's inner face + the bowl
+		var t := Vector2(-n.y, n.x) * 0.16
+		brass.box(minf(at.x - t.x, w.x + n.x * 0.1), minf(at.y - t.y, w.y + n.y * 0.1), 2.45,
+			maxf(at.x + t.x, w.x + n.x * 0.1), maxf(at.y + t.y, w.y + n.y * 0.1), 2.5)
+		bowl.box(at.x - absf(t.x) - 0.04, at.y - absf(t.y) - 0.04, 2.5, at.x + absf(t.x) + 0.04, at.y + absf(t.y) + 0.04, 2.62)
+		var up := SpotLight3D.new()
+		up.position = v(at.x, at.y, 2.62)
+		up.rotation_degrees = Vector3(90, 0, 0) # the cone points up
+		up.light_color = warm
+		up.light_energy = 4.0
+		up.spot_range = 6.0
+		up.spot_angle = 38.0
+		up.spot_attenuation = 0.6
+		root.add_child(up)
+		var glow := OmniLight3D.new() # the bowl's own soft spill
+		glow.position = v(at.x, at.y, 2.4)
+		glow.light_color = warm
+		glow.light_energy = 0.5
+		glow.omni_range = 2.5
+		glow.set_meta("no_shadow", true)
+		root.add_child(glow)
+	# table lamps: every table and desk standing in the hall
+	for it in _layout_cached():
+		var mn: Vector3 = it["min"]
+		var mx: Vector3 = it["max"]
+		var c := Vector2((mn.x + mx.x) * 0.5, (mn.y + mx.y) * 0.5)
+		if not (it["kind"] in ["table", "desk"]) or c.x < 0.0 or c.x > 14.0 or c.y < 14.0 or c.y > 24.0:
+			continue
+		var top := mx.z
+		brass.box(c.x - 0.06, c.y - 0.06, top, c.x + 0.06, c.y + 0.06, top + 0.02)
+		brass.box(c.x - 0.012, c.y - 0.012, top + 0.02, c.x + 0.012, c.y + 0.012, top + 0.3)
+		bowl.box(c.x - 0.1, c.y - 0.1, top + 0.26, c.x + 0.1, c.y + 0.1, top + 0.4)
+		var tl := OmniLight3D.new()
+		tl.position = v(c.x, c.y, top + 0.33)
+		tl.light_color = warm
+		tl.light_energy = 0.7
+		tl.omni_range = 2.6
+		tl.set_meta("no_shadow", true)
+		root.add_child(tl)
+	# a faint fill from the ceiling (no fixture: the sconces carry the look)
+	var fill := OmniLight3D.new()
+	fill.position = v(7.0, 19.0, 6.0)
+	fill.light_color = Color(1.0, 0.92, 0.8)
+	fill.light_energy = 1.2
+	fill.omni_range = 11.0
+	fill.set_meta("no_shadow", true)
+	root.add_child(fill)
 
 func _figure(at: Vector2, _yaw: float, c: Color) -> void:
 	var body := geo.B(DemoMats.fabric(c))

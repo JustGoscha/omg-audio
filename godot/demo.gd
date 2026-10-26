@@ -75,6 +75,8 @@ func _ready() -> void:
 	# render shadow maps
 	for l in level_root.find_children("*", "OmniLight3D", true, false):
 		var o := l as OmniLight3D
+		if o.has_meta("no_shadow"): # small accent lights: no shadow maps
+			continue
 		o.shadow_enabled = true
 		o.distance_fade_enabled = true
 		o.distance_fade_begin = 4000.0
