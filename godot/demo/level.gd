@@ -712,6 +712,7 @@ func _belfry() -> void:
 		s.spot_range = 36.0
 		s.spot_angle = 34.0
 		s.spot_attenuation = 0.4
+		s.light_volumetric_fog_energy = 3.0 # the beams show in the night air
 		root.add_child(s)
 
 # --------------------------------------------- colonnade, kiosk, the square
@@ -1160,6 +1161,7 @@ func _hall_lights() -> void:
 		up.spot_range = 6.0
 		up.spot_angle = 38.0
 		up.spot_attenuation = 0.6
+		up.light_volumetric_fog_energy = 2.5
 		root.add_child(up)
 		var glow := OmniLight3D.new() # the bowl's own soft spill
 		glow.position = v(at.x, at.y, 2.4)

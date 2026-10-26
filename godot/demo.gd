@@ -296,7 +296,19 @@ func _apply_graphics() -> void:
 	view_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if fine else CanvasItem.TEXTURE_FILTER_NEAREST
 	env.ssao_enabled = fine
 	env.ssil_enabled = fine
-	env.volumetric_fog_enabled = fine
+	# the night air: a faint purple of the sky's horizon, thicker low over
+	# the ground (the tower's top stays clear); a thin volumetric layer so
+	# lamps, floodlights and the flashlight cast visible cones. The pixel
+	# look keeps the volume light (the froxel grid costs the same at any
+	# resolution); glow reaches wider there, its lamps being a few pixels
+	env.volumetric_fog_enabled = true
+	env.volumetric_fog_density = 0.006 if fine else 0.018
+	env.fog_density = 0.0012 if fine else 0.0009
+	env.fog_height_density = 0.0 if fine else 0.22
+	env.glow_intensity = 0.7 if fine else 1.0
+	env.glow_hdr_threshold = 0.9 if fine else 0.7
+	for lv in 7:
+		env.set_glow_level(lv, 1.0 if (lv in [2, 4] or (not fine and lv in [1, 3, 5])) else 0.0)
 	view.positional_shadow_atlas_size = 4096 if fine else 2048
 	if halo_quad != null:
 		# ~3 low-res pixels at any distance (fixed_size: units at 1 m;
@@ -332,12 +344,13 @@ func _environment() -> void:
 	env.glow_bloom = 0.04
 	env.glow_hdr_threshold = 0.9
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.09, 0.11, 0.17)
+	env.fog_light_color = Color(0.12, 0.09, 0.22) # the sky's horizon purple
+	env.fog_height = 1.5
 	env.fog_density = 0.0012
 	env.fog_sky_affect = 0.15
 	env.fog_aerial_perspective = 0.4
 	env.volumetric_fog_density = 0.006
-	env.volumetric_fog_albedo = Color(0.7, 0.75, 0.85)
+	env.volumetric_fog_albedo = Color(0.75, 0.7, 0.9)
 	env.volumetric_fog_anisotropy = 0.5
 	env.volumetric_fog_length = 70.0
 	env.volumetric_fog_sky_affect = 0.0
@@ -449,6 +462,7 @@ func _torch() -> void:
 	torch.spot_angle = 24.0
 	torch.spot_attenuation = 0.8
 	torch.shadow_enabled = true
+	torch.light_volumetric_fog_energy = 4.0 # a visible beam in the night air
 	torch.visible = false
 	player.cam.add_child(torch)
 
