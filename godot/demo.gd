@@ -351,7 +351,7 @@ func _environment() -> void:
 	env.fog_aerial_perspective = 0.0
 	env.volumetric_fog_density = 0.006
 	env.volumetric_fog_albedo = Color(0.75, 0.7, 0.9)
-	env.volumetric_fog_ambient_inject = 0.4
+	env.volumetric_fog_ambient_inject = 0.0 # sky light in the mist piles up with distance
 	env.volumetric_fog_anisotropy = 0.5
 	env.volumetric_fog_length = 70.0
 	env.volumetric_fog_sky_affect = 0.0
@@ -362,7 +362,7 @@ func _environment() -> void:
 	var moon := DirectionalLight3D.new()
 	moon.light_color = Color(0.62, 0.72, 1.0)
 	moon.light_energy = 0.45
-	moon.light_volumetric_fog_energy = 0.6
+	moon.light_volumetric_fog_energy = 0.0 # moonlit mist brightens with distance
 	moon.shadow_enabled = true
 	moon.shadow_blur = 1.5
 	moon.directional_shadow_max_distance = 120.0
@@ -520,7 +520,7 @@ func _update_halos() -> void:
 			h.global_position = at + (eye - at) / maxf(d, 1e-3) * minf(0.4, d * 0.5)
 
 # The ground mist: a fog volume over the town and its fields, densest at
-# the grass and gone by ~3 m, glowing faintly in the sky's horizon purple
+# the grass and gone by ~3 m, scattering lamplight with a purple tint
 # (the volumetric fog reaches 70 m: farther on, the dark distance fog).
 func _ground_mist() -> void:
 	var fv := FogVolume.new()
@@ -529,8 +529,10 @@ func _ground_mist() -> void:
 	fv.position = DemoGeo.P(10, 120, 0)
 	var fm := FogMaterial.new()
 	fm.density = 0.05
+	# no glow of its own (it would add up with distance into a bright far
+	# band): the mist swallows the distance and shows only where a lamp
+	# lights it, tinted purple
 	fm.albedo = Color(0.7, 0.55, 1.0)
-	fm.emission = Color(0.025, 0.016, 0.05) # the sky's horizon purple
 	fm.height_falloff = 1.3
 	fm.edge_fade = 0.3
 	fv.material = fm
