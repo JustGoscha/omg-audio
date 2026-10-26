@@ -947,12 +947,9 @@ impl Tracer {
         let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
         let mut verts: Vec<Vec3> = Vec::new();
 
-        let prof = std::env::var_os("OMG_PROF").is_some();
-        let tp0 = std::time::Instant::now();
         // 1. direct, visibility, edge next-event paths (shared with the
         // externally walked tick, fold.rs)
         let (direct, vis, mut edge_taps) = self.prepare(world, listener, sources, budget, &mut dbg);
-        let tp1 = std::time::Instant::now();
 
         // 2. rays: stratified (Fibonacci) and randomly rotated per tick
         let rot = random_rotation(&mut self.rng);
@@ -1243,13 +1240,10 @@ impl Tracer {
         }
         self.fold_sky(sky_acc.into_iter(), budget);
 
-        let tp2 = std::time::Instant::now();
         // 4b. the exact solver's chains: named by a few mirror rays,
         // solved every tick while cached
         self.find_chains(world, listener, sources, budget, chain_finders(budget));
-        let tp3 = std::time::Instant::now();
         self.solve_chains(world, listener, sources, budget, &mut accs);
-        let tp4 = std::time::Instant::now();
 
         // v4: the world changed (an object moved, a door closed)? Then no
         // source is standing still in it any more
@@ -1281,14 +1275,6 @@ impl Tracer {
                 st.fold(acc.early, acc.echo, budget);
                 out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
             }
-        }
-        if prof {
-            let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f32() * 1000.0;
-            let tp5 = std::time::Instant::now();
-            eprintln!(
-                "prof: prepare {:.1} walk {:.1} find {:.1} solve {:.1} ({} chains) fold+field {:.1} ms",
-                ms(tp0, tp1), ms(tp1, tp2), ms(tp2, tp3), ms(tp3, tp4), self.chains.len(), ms(tp4, tp5)
-            );
         }
         out
     }
