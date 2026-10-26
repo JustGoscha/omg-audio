@@ -463,12 +463,25 @@ pub struct OmgWorld {
     #[export]
     #[init(val = 2)]
     quality: i32,
+    /// Pin single levers of the tracer budget over the quality tier
+    /// (0 = the tier's own): rays from the listener per tick, early
+    /// reflections per ray, late (reverb) rays per tick.
+    #[export]
+    rays: i32,
+    #[export]
+    bounces: i32,
+    #[export]
+    late_rays: i32,
+    /// Sound bends around edges (knife-edge diffraction).
+    #[export]
+    #[init(val = true)]
+    diffraction: bool,
 
     started: bool,
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 5],
+    sent: [f32; 10],
     amb_clip: Option<(usize, bool)>,
     rain_clip: Option<(usize, bool)>,
     scratch: Vec<(f32, f32)>,
@@ -639,6 +652,19 @@ impl OmgWorld {
         d
     }
 
+    /// The tracer budget in effect (tier + pinned levers): rays, bounces,
+    /// late_rays, diffraction — what a settings screen shows.
+    #[func]
+    fn effective_budget(&self) -> Dictionary<Variant, Variant> {
+        let b = self.sim_config().quality.budget(self.use_gpu);
+        let mut d = Dictionary::new();
+        d.set("rays", b.rays as i64);
+        d.set("bounces", b.bounces as i64);
+        d.set("late_rays", b.late_rays as i64);
+        d.set("diffraction", b.diffraction);
+        d
+    }
+
     /// Acoustic material preset names.
     #[func]
     fn material_presets() -> PackedStringArray {
@@ -657,16 +683,31 @@ impl OmgWorld {
 
 impl OmgWorld {
     fn sim_config(&self) -> Config {
-        Config {
-            quality: match self.quality {
-                0 => Quality::Low,
-                1 => Quality::Medium,
-                3 => Quality::Ultra,
-                _ => Quality::High,
-            },
-            compute: if self.use_gpu { Compute::Gpu } else { Compute::Cpu },
-            ..Config::default()
-        }
+        let tier = match self.quality {
+            0 => Quality::Low,
+            1 => Quality::Medium,
+            3 => Quality::Ultra,
+            _ => Quality::High,
+        };
+        // pinned levers: the tier's budget with them overridden
+        let pinned = self.rays > 0 || self.bounces > 0 || self.late_rays > 0 || !self.diffraction;
+        let quality = if pinned {
+            let mut b = tier.budget(self.use_gpu);
+            if self.rays > 0 {
+                b.rays = self.rays as u32;
+            }
+            if self.bounces > 0 {
+                b.bounces = self.bounces as u32;
+            }
+            if self.late_rays > 0 {
+                b.late_rays = self.late_rays as u32;
+            }
+            b.diffraction = self.diffraction;
+            Quality::Custom(b)
+        } else {
+            tier
+        };
+        Config { quality, compute: if self.use_gpu { Compute::Gpu } else { Compute::Cpu }, ..Config::default() }
     }
 
     fn start(&mut self) {
@@ -687,7 +728,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 5];
+        self.sent = [f32::NAN; 10];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -892,7 +933,18 @@ impl OmgWorld {
     }
 
     fn sync_mix(&mut self) {
-        let vals = [self.ambience_db, self.rain_db, self.rain_intensity, self.master_db, self.quality as f32];
+        let vals = [
+            self.ambience_db,
+            self.rain_db,
+            self.rain_intensity,
+            self.master_db,
+            self.quality as f32,
+            self.use_gpu as i32 as f32,
+            self.rays as f32,
+            self.bounces as f32,
+            self.late_rays as f32,
+            self.diffraction as i32 as f32,
+        ];
         let cfg = self.sim_config();
         let mut g = host();
         let Some(h) = g.as_mut() else { return };
@@ -906,7 +958,11 @@ impl OmgWorld {
                 1 => h.send(OutCmd::RainGain(db(*v))),
                 2 => h.send(OutCmd::Rain(v.clamp(0.0, 1.0))),
                 3 => h.engine.set_master(db(*v)),
-                _ => h.engine.set_config(cfg),
+                _ => {
+                    // quality, compute and the pinned levers: one config
+                    h.engine.set_config(cfg);
+                    h.gpu = self.use_gpu;
+                }
             }
         }
         if let Some((id, false)) = self.amb_clip {

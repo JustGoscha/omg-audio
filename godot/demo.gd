@@ -28,6 +28,7 @@ var sounds: DemoSounds
 var hud: Label
 var hint: Control
 var torch: SpotLight3D
+var settings: DemoSettings
 var halos := [] # [halo node, lamp position]
 var labels: Array[Label3D] = []
 var rain_name := "off"
@@ -110,6 +111,8 @@ func _ready() -> void:
 	sounds.setup(world, level_root, level, player)
 	_hud()
 	_labels()
+	settings = DemoSettings.new(self, world)
+	add_child(settings)
 	_load()
 	var args := OS.get_cmdline_user_args()
 	# `-- --stats` (web: `?stats` in the page URL): the engine stats in the
@@ -568,7 +571,7 @@ func _hud() -> void:
 			["Space", "jump"], ["E", "open the door ahead"], ["C", "crouch"], ["T", "flashlight"],
 			["F", "fly"], ["B", "ring the bells"], ["R", "rain"], ["V", "whisper"], ["K", "clap (echoes)"],
 			["Q", "sound quality"], ["L", "source labels"], ["G", "graphics"], ["[ ]", "pixel size"],
-			["H", "hide the panels"], ["Esc", "release the mouse"]]:
+			["H", "hide the panels"], ["Esc", "settings"]]:
 		var k := Label.new()
 		k.text = row[0]
 		k.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -605,6 +608,12 @@ func _labels() -> void:
 		labels.append(l)
 
 func _unhandled_input(e: InputEvent) -> void:
+	if e is InputEventKey and e.pressed and not e.echo and e.keycode == KEY_ESCAPE:
+		if not loading:
+			settings.toggle()
+		return
+	if settings.open:
+		return
 	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -612,8 +621,6 @@ func _unhandled_input(e: InputEvent) -> void:
 			sounds.throw_ball()
 	elif e is InputEventKey and e.pressed and not e.echo:
 		match e.keycode:
-			KEY_ESCAPE:
-				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 			KEY_E:
 				var p := player.plan()
 				var ld := player.look_dir()
