@@ -480,7 +480,8 @@ func _unhandled_input(e: InputEvent) -> void:
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 			KEY_E:
 				var p := player.plan()
-				level.toggle_nearest_door(p.x, p.y)
+				var ld := player.look_dir()
+				level.toggle_door_ahead(Vector2(p.x, p.y), Vector2(ld.x, -ld.z).normalized())
 			KEY_B:
 				sounds.ring_bells()
 			KEY_V:

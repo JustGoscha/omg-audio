@@ -1368,12 +1368,27 @@ function updateDoors(dt) {
   }
 }
 
-function toggleNearestDoor() {
+// The door you look at: the doorway (its opening in the wall plane) the
+// horizontal view ray passes through within 2 m — or the one you stand
+// in. Not just the nearest door around you.
+function toggleDoorAhead(reach = 2.0) {
+  const { x, y } = state.pose;
+  const dir = [Math.cos(state.heading), Math.sin(state.heading)];
   let best = -1;
-  let bestD = 2.2; // reach
-  state.doorMeshes.forEach((dm, i) => {
-    const d = Math.hypot(dm.pos[0] - state.pose.x, dm.pos[1] - state.pose.y);
-    if (d < bestD) { bestD = d; best = i; }
+  let bestT = Infinity;
+  DOORS.forEach((d, i) => {
+    const hw = d.hw ?? DOOR_HALF;
+    // axis 0: the wall is the plane x = pos[0] (the opening runs along y)
+    const [n, u] = d.axis === 0 ? [0, 1] : [1, 0];
+    const dist = d.pos[n] - [x, y][n];
+    const lat = [x, y][u] - d.pos[u];
+    let t = 0;
+    if (Math.abs(dist) > 0.35 || Math.abs(lat) > hw + 0.1) {
+      if (Math.abs(dir[n]) < 1e-3) return;
+      t = dist / dir[n];
+      if (t < 0 || t > reach || Math.abs([x, y][u] + dir[u] * t - d.pos[u]) > hw + 0.15) return;
+    }
+    if (t < bestT) { bestT = t; best = i; }
   });
   if (best < 0) return;
   state.doors[best] = !state.doors[best];
@@ -2644,7 +2659,7 @@ function setupControls() {
       if (e.code === 'Space') { e.preventDefault(); state.wantJump = true; state.keys.add(e.code); }
       else if (e.code === 'KeyF') toggleFly();
       else if (e.code === 'KeyR') cycleRain();
-      else if (e.code === 'KeyE') toggleNearestDoor();
+      else if (e.code === 'KeyE') toggleDoorAhead();
       else if (e.code === 'KeyQ') cycleQuality();
       else if (e.code === 'KeyB') ringBells();
       else if (e.code === 'KeyV') whisperNow();

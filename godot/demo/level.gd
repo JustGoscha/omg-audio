@@ -69,7 +69,7 @@ static func v(x: float, y: float, z: float) -> Vector3:
 var geo: DemoGeo
 var root: Node3D
 # filled while building, used by the demo
-var door_nodes := []        # [{hinge, leaf_body, omg, pos, open, target}]
+var door_nodes := []        # [{hinge, shape, omg, pos, hw, open, target, axis}]
 var markers := {}           # decorative objects the demo animates
 var labels := false         # name furniture kinds in the scene (shots)
 var lights := []
@@ -1207,7 +1207,7 @@ func _doors() -> void:
 		var open: float = 1.0 if DOOR_OPEN[i] else 0.0
 		omg.openness = open
 		root.add_child(omg)
-		door_nodes.append({"hinge": hinge, "shape": cs, "omg": omg, "pos": p, "open": open, "target": open, "axis": d[1]})
+		door_nodes.append({"hinge": hinge, "shape": cs, "omg": omg, "pos": p, "hw": hw, "open": open, "target": open, "axis": d[1]})
 		_pose_door(door_nodes[-1])
 
 func update_doors(dt: float) -> void:
@@ -1224,13 +1224,31 @@ func _pose_door(dn: Dictionary) -> void:
 	# passable once it has swung well out of the frame
 	(dn["shape"] as CollisionShape3D).disabled = o > 0.45
 
-func toggle_nearest_door(x: float, y: float) -> int:
+# The door you look at: the doorway (its opening in the wall plane) your
+# horizontal view ray `dir` from `at` (plan coordinates) passes through
+# within `reach` metres — or the one you stand in. Not just the nearest
+# door around you (a door behind your back stays as it is).
+func toggle_door_ahead(at: Vector2, dir: Vector2, reach := 2.0) -> int:
 	var best := -1
-	var best_d := 2.2
+	var best_t := INF
 	for i in door_nodes.size():
-		var d: float = (door_nodes[i]["pos"] as Vector2).distance_to(Vector2(x, y))
-		if d < best_d:
-			best_d = d
+		var dn: Dictionary = door_nodes[i]
+		var p: Vector2 = dn["pos"]
+		var hw: float = dn["hw"]
+		# axis 0: the wall is the plane x = p.x (the opening runs along y)
+		var n := Vector2(1, 0) if dn["axis"] == 0 else Vector2(0, 1)
+		var u := Vector2(0, 1) if dn["axis"] == 0 else Vector2(1, 0)
+		var dist := (p - at).dot(n)
+		var t := 0.0
+		if absf(dist) > 0.35 or absf((at - p).dot(u)) > hw + 0.1:
+			var dn_dir := dir.dot(n)
+			if absf(dn_dir) < 1e-3:
+				continue
+			t = dist / dn_dir
+			if t < 0.0 or t > reach or absf((at + dir * t - p).dot(u)) > hw + 0.15:
+				continue
+		if t < best_t:
+			best_t = t
 			best = i
 	if best >= 0:
 		door_nodes[best]["target"] = 0.0 if door_nodes[best]["target"] > 0.5 else 1.0
