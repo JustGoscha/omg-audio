@@ -55,7 +55,7 @@
 use super::*;
 
 /// Bump on ANY change to the flat formats above or in v3_walk.wgsl.
-pub const WALK_LAYOUT_VERSION: u32 = 3;
+pub const WALK_LAYOUT_VERSION: u32 = 4;
 /// Direction cells for early binning (and the sky).
 pub const CELLS: usize = N_CELLS;
 /// Early delay bins: the early window over the delay bin width.
@@ -322,7 +322,10 @@ impl Tracer {
             Walk::Pending => None,
             Walk::Fresh(w) => Some(w),
         };
-        Some(self.fold_walked(listener, sources, budget, direct, edge_taps, dbg, walked))
+        // the mirror chains the kernel leaves to the CPU (named by a few
+        // mirror rays here, solved exactly), folded in with a fresh walk
+        let chains = walked.as_ref().map(|_| self.walked_chains(world, listener, sources, budget));
+        Some(self.fold_walked(listener, sources, budget, direct, edge_taps, dbg, walked, chains))
     }
 
     /// Fold a walk's binned contributions (or none, while one is in
@@ -337,6 +340,7 @@ impl Tracer {
         mut edge_taps: Vec<Vec<Tap>>,
         mut dbg: Vec<(u32, f32, Vec<Vec3>)>,
         walked: Option<Walked>,
+        chains: Option<Vec<Acc>>,
     ) -> Vec<SourceField> {
         // a walk launched before the listener crossed a surface describes
         // the other side: drop it, the next one is from here
@@ -398,6 +402,7 @@ impl Tracer {
                                 // to the bin; kept for the EMA's symmetry)
                                 ed: e[1] * (t_free + (db as f32 + 0.5) * DELAY_BIN_S),
                                 dir: Vec3::new(blk[o + 3], blk[o + 4], blk[o + 5]),
+                                last: 0.0,
                             },
                         );
                     }
@@ -414,6 +419,29 @@ impl Tracer {
                 }
                 let o = EARLY_WORDS + ECHO_WORDS;
                 total = [blk[o], blk[o + 1], blk[o + 2]];
+                // the CPU-solved chains on top (the kernel skipped them)
+                if let Some(acc) = chains.as_ref().and_then(|c| c.get(si)) {
+                    for (k, b) in &acc.early {
+                        let cur = early.entry(*k).or_default();
+                        for band in 0..NBANDS {
+                            cur.e[band] += b.e[band];
+                            total[band] += b.e[band];
+                        }
+                        cur.ed += b.ed;
+                        cur.dir = cur.dir + b.dir;
+                        cur.last = b.last;
+                    }
+                    for (bin, add) in echo.bins.iter_mut().zip(acc.echo.bins.iter()) {
+                        for band in 0..NBANDS {
+                            bin[band] += add[band];
+                        }
+                    }
+                    for (d, add) in echo.dirs.iter_mut().zip(acc.echo.dirs.iter()) {
+                        for k in 0..3 {
+                            d[k] += add[k];
+                        }
+                    }
+                }
 
                 st.fold(early, echo, budget);
             }

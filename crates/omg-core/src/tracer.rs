@@ -15,6 +15,7 @@ const NBINS: usize = (MAX_TIME / BIN_DT) as usize;
 const RECEIVER_RADIUS: f32 = 0.5;
 const WALL_EPS: f32 = 1e-3;
 
+#[derive(Clone)]
 pub struct Echogram {
     pub bins: Vec<[f32; NBANDS]>,
     /// Energy-weighted arrival direction per bin (mid band), pointing from
