@@ -350,6 +350,27 @@ pub struct DenseResponse {
     pub bins: Vec<[f32; 6]>,
 }
 
+impl DenseResponse {
+    /// How far `other`'s mid-band envelope is from this one's: L1 over
+    /// the larger total (0 = the same, 2 = disjoint), compared in ~20 ms
+    /// groups — the scale a listener hears a tail change on, where a
+    /// still scene's estimator noise (2 ms bins) averages out but a door
+    /// or a step into another room does not.
+    pub fn change_from(&self, other: &DenseResponse) -> f32 {
+        let g = ((0.02 / self.bin_s.max(1e-6)).round() as usize).max(1);
+        let n = self.bins.len().max(other.bins.len()).div_ceil(g);
+        let sum = |d: &DenseResponse, k: usize| -> f32 { d.bins.iter().skip(k * g).take(g).map(|v| v[1]).sum() };
+        let (mut diff, mut ta, mut tb) = (0.0f32, 0.0f32, 0.0f32);
+        for k in 0..n {
+            let (x, y) = (sum(self, k), sum(other, k));
+            diff += (x - y).abs();
+            ta += x;
+            tb += y;
+        }
+        diff / ta.max(tb).max(1e-30)
+    }
+}
+
 /// What one source sounds like at the listener (world frame, unit gain).
 #[derive(Clone, Debug)]
 pub struct SourceField {

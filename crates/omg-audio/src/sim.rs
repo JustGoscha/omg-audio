@@ -237,21 +237,6 @@ const KERNEL_BUDGET_MS: f32 = 4.0;
 /// Builds queued on the kernel thread at once.
 const KERNEL_QUEUE: usize = 4;
 
-/// How far `b`'s mid-band envelope is from `a`'s (L1 over the larger
-/// total; 0 = the same, 2 = disjoint).
-fn dense_change(a: &DenseResponse, b: &DenseResponse) -> f32 {
-    let n = a.bins.len().max(b.bins.len());
-    let (mut diff, mut ta, mut tb) = (0.0f32, 0.0f32, 0.0f32);
-    for i in 0..n {
-        let x = a.bins.get(i).map_or(0.0, |v| v[1]);
-        let y = b.bins.get(i).map_or(0.0, |v| v[1]);
-        diff += (x - y).abs();
-        ta += x;
-        tb += y;
-    }
-    diff / ta.max(tb).max(1e-30)
-}
-
 /// A moved source counts as this many ticks overdue for a re-trace.
 const MOVED_BOOST: f32 = 4.0;
 /// Displacement (m) that makes a source's last trace stale.
@@ -525,7 +510,7 @@ impl Simulation {
                 None => f32::INFINITY,
                 Some((_, from, g, at)) => {
                     let gain = if *g > 0.0 { (s.gain / g - 1.0).abs() } else { 1.0 };
-                    let c = dense_change(from, d).max(gain);
+                    let c = from.change_from(d).max(gain);
                     // small drifts still land, just later
                     if c > KERNEL_CHANGE || (c > KERNEL_CHANGE / 4.0 && tick > at + KERNEL_REFRESH_TICKS) {
                         c

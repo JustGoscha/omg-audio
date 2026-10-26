@@ -66,6 +66,11 @@ pub struct WorldSim {
     early_world: Option<WorldEarly>,
     /// Engine v3 listener tracer (early = 3), with its per-source EMA.
     v3_tracer: Option<omg_core::v3::Tracer>,
+    /// Engine v4: each source's dense (scattered) response of the last
+    /// trace — unit source, WORLD frame (a kernel lives for many ticks:
+    /// the host turns its output with the listener, see
+    /// `Renderer::set_dense_yaw`), its emitters summed. None outside v4.
+    dense: Vec<Option<omg_core::v3::DenseResponse>>,
     /// Furniture in world coordinates (authored per-room, lifted once).
     furniture_world: Vec<Aabb>,
     /// The same pieces with their FULL material (absorption, scattering,
@@ -209,6 +214,7 @@ impl WorldSim {
             auto,
             paths_buf: Vec::new(),
             v3_tracer: None,
+            dense: Vec::new(),
             early_world: None,
             furniture_world: {
                 let mut f = Vec::new();
@@ -1227,6 +1233,15 @@ impl WorldSim {
     /// exact direct segment. Door leaves, panes and large furniture are
     /// overlay boxes with their real transmission. Fills `out[si]` with a
     /// unit-gain block for every audible source (rig emitters power-split).
+    /// Engine v4: source `si`'s dense response of the last trace (unit
+    /// source, world frame — turn its output by the listener's yaw, which
+    /// the taps already carry; its emitters summed). The host convolves it
+    /// (`omg_dsp::dense`); the block's parametric reverb is the fallback
+    /// for a source it doesn't.
+    pub fn dense(&self, si: usize) -> Option<&omg_core::v3::DenseResponse> {
+        self.dense.get(si).and_then(|d| d.as_ref())
+    }
+
     fn v3_blocks(&mut self, st: &walkthrough::WalkState, eye: Vec3, out: &mut [Option<ParamBlock>]) {
         use omg_core::v3::{Budget, Source, Tracer, World};
         // overlay boxes: closed/ajar door leaves and panes, big furniture
@@ -1274,6 +1289,8 @@ impl WorldSim {
             diffraction: crate::quality::diffraction_on(),
         };
         let tracer = self.v3_tracer.get_or_insert_with(|| Tracer::new(0x0e3_5eed));
+        let v4 = crate::quality::early_v4();
+        tracer.v4 = v4;
         // the bunker is an air pocket in solid ground
         let pockets: Vec<(Vec3, Vec3)> = self
             .rooms
@@ -1296,9 +1313,23 @@ impl WorldSim {
         let mut wet2 = vec![[0.0f32; NBANDS]; out.len()];
         let mut rem2 = vec![[0.0f32; NBANDS]; out.len()];
         let mut rem_dir = vec![[0.0f32; 3]; out.len()];
+        // v4: the dense responses, per source (emitters summed in energy)
+        let mut dense: Vec<Option<omg_core::v3::DenseResponse>> = vec![None; out.len()];
         for (&(si, ei, n_em), f) in owner.iter().zip(fields) {
             let pb = out[si].get_or_insert_with(ParamBlock::default);
             let w = 1.0 / (n_em as f32).sqrt();
+            if let Some(d) = &f.dense {
+                let e = 1.0 / n_em as f32;
+                let sum = dense[si].get_or_insert_with(|| omg_core::v3::DenseResponse { bin_s: d.bin_s, bins: Vec::new() });
+                if sum.bins.len() < d.bins.len() {
+                    sum.bins.resize(d.bins.len(), [0.0; 6]);
+                }
+                for (acc, b) in sum.bins.iter_mut().zip(&d.bins) {
+                    for k in 0..6 {
+                        acc[k] += b[k] * e;
+                    }
+                }
+            }
             for t in f.taps {
                 pb.taps.push(Tap {
                     key: t.key + ei as u32 * 32768,
@@ -1321,6 +1352,7 @@ impl WorldSim {
                 rem_dir[si][k] += f.late_dir[k] * a;
             }
         }
+        self.dense = if v4 { dense } else { Vec::new() };
         for si in 0..out.len() {
             let Some(pb) = out[si].as_mut() else { continue };
             pb.reverb.level = core::array::from_fn(|b| wet2[si][b].sqrt());

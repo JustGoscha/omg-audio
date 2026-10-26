@@ -56,6 +56,8 @@ onmessage = async (e) => {
     const { instance } = await WebAssembly.instantiate(m.bytes, {});
     w = instance.exports;
     w.sim_setup();
+    // v4 kernels are built for the worklet's rate
+    if (m.sampleRate && w.sim_set_rate) w.sim_set_rate(m.sampleRate);
     try {
       const { initGpu } = await import('./gpu.js');
       gpu = await initGpu(w);
@@ -135,6 +137,20 @@ function tick() {
     const src = new Float32Array(w.memory.buffer, w.sim_params_ptr(i), len);
     blocks.push(src.slice().buffer);
   }
+  // engine v4: a finished kernel (at most one a tick) and the sources
+  // whose kernel the worklet drops — sent with this tick's blocks, so a
+  // block that lost its parametric reverb never arrives before its kernel
+  let kernel = null;
+  let clears = [];
+  if (w.sim_kernel_src) {
+    const ks = w.sim_kernel_src();
+    if (ks >= 0) {
+      const buf = new Float32Array(w.memory.buffer, w.sim_kernel_ptr(), w.sim_kernel_len()).slice().buffer;
+      kernel = { src: ks, buf };
+    }
+    const nc = w.sim_kernel_clears_len();
+    if (nc) clears = Array.from(new Uint32Array(w.memory.buffer, w.sim_kernel_clears_ptr(), nc));
+  }
   const state = new Float32Array(w.memory.buffer, w.sim_state_ptr(), w.sim_state_len()).slice();
   let rays = null;
   if (debugOn) {
@@ -148,6 +164,6 @@ function tick() {
     early: w.sim_early_mode(), ptMs: gpu ? gpu.stats().ptMs : 0, ptN: gpu ? gpu.stats().ptN : 0,
     wdMs: gpu ? gpu.stats().wdMs : 0, wdN: gpu ? gpu.stats().wdN : 0,
     v3Ms: gpu ? gpu.stats().v3Ms : 0, v3N: gpu ? gpu.stats().v3N : 0,
-    rays,
-  }, rays ? [...blocks, state.buffer, rays] : [...blocks, state.buffer]);
+    rays, kernel, clears, yaw: pose.yaw || 0, dense: w.sim_dense_count ? w.sim_dense_count() : 0,
+  }, [...blocks, state.buffer, ...(rays ? [rays] : []), ...(kernel ? [kernel.buf] : [])]);
 }

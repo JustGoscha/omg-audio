@@ -263,12 +263,12 @@ const QUAL_SLIDERS = [
     tip: 'Rays sampling the outdoor-ambience dome against the real geometry every tick (how rain and city noise find windows and doorways). Fewer rays = noisier direction bins under the dome’s own smoothing.' },
   { key: 'domeEvents', id: 3, modes: [0, 1], label: 'dome events', min: 2, max: 6, step: 1,
     tip: 'Bounces and glass panes a dome ray may cross before giving up. Deep events carry little energy (every surface multiplies the loss), so trimming them mostly cuts cost, not sound.' },
-  { key: 'v3Rays', id: 5, modes: [3], label: 'v3 rays', min: 64, max: 65536, step: 64, section: 'engine v3 · listener tracer',
-    tip: 'Rays leaving your ears each 20 Hz tick (early family). Every surface they hit connects to the sources it can see. More rays = steadier early reflections; the cost scales linearly. Only used when early refl = v3. With compute = gpu the walk runs on the GPU at 8× the tier budget.' },
-  { key: 'v3Bounces', id: 6, modes: [3], label: 'reflections', min: 1, max: 24, step: 1,
+  { key: 'v3Rays', id: 5, modes: [3, 4], label: 'v3 rays', min: 64, max: 65536, step: 64, section: 'engine v3 / v4 · listener tracer',
+    tip: 'Rays leaving your ears each 20 Hz tick (early family). Every surface they hit connects to the sources it can see. More rays = steadier early reflections; the cost scales linearly. Only used when early refl = v3 or v4. With compute = gpu the walk runs on the GPU at 8× the tier budget.' },
+  { key: 'v3Bounces', id: 6, modes: [3, 4], label: 'reflections', min: 1, max: 24, step: 1,
     tip: 'Reflections each early ray follows. Paths up to this order become discrete echoes (taps); everything beyond is carried by the late rays. Raising it moves more of the room into precise early echoes at linear cost.' },
-  { key: 'v3Late', id: 7, modes: [3], label: 'late rays', min: 16, max: 8192, step: 16,
-    tip: 'Long rays per tick that keep bouncing until the path is 3 s long or has lost 60 dB — the traced reverb tail. Averaged over ~10 ticks, so even a few dozen give a stable decay; more = steadier reverb time and level.' },
+  { key: 'v3Late', id: 7, modes: [3, 4], label: 'late rays', min: 16, max: 8192, step: 16,
+    tip: 'Long rays per tick that keep bouncing until the path is 3 s (v4: 4.8 s) long or has lost 60 dB — the traced reverb tail. Averaged over ~10 ticks, so even a few dozen give a stable decay; more = steadier reverb time and level.' },
   { key: 'points', label: 'point hrtf', min: 0, max: 32, step: 1, audio: true, scale: 4, section: 'audio render · per sample',
     tip: 'EVERY path is binaural: bus taps encode at their arrival direction into order-2 ambisonics decoded through 20 virtual speakers, each with its measured KEMAR HRIR — full ILD/ITD, slightly blurred (±20–30°). The strongest N paths additionally get a dedicated nearest-HRIR convolution (710-direction grid): pin-sharp. The precedence effect means the loudest early paths carry localization, so sharpness goes where hearing can use it; the weak tail reads as envelopment either way. Each point tap is a per-sample convolution on the AUDIO thread — the one place the GPU cannot help — hence the budget. Mix-wide: 4× this many across all sources, given to the loudest paths at your ears.' },
   { key: 'ceiling', label: 'tap budget', min: 16, max: 160, step: 8, audio: true, scale: 4,
@@ -285,7 +285,7 @@ const QUAL_STAT_TIPS = {
   'render load': 'Audio-thread render time as a share of realtime. Above 85% the worklet governor sheds to its floor.',
   gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
   'late field': 'Where the reverb ray traces run, with the wall-clock cost of the last trace dispatch (incl. readback). GPU runs 8× the ray budget for a fraction of the CPU cost — flip it under engine modules → compute. In v3 the reverb is traced by the same listener walk as the early field — see the early cell.',
-  early: 'The ACTIVE early-reflections engine as the sim reports it. In v3 with compute = gpu: the wall-clock of the last listener walk on the GPU (dispatch to readback; it folds into the sim one tick later). The sim tick then only pays for the exact direct and edge paths and the fold. “v3 · cpu” with compute = gpu means the walk fell back (the world exceeded the GPU job caps). In traced mode early is CPU-side by design: discovery is a few hundred rays per tick (~1 ms) and every found path is then solved EXACTLY by mirror reconstruction — tiny, branchy work the GPU can’t win. The heavy ray budgets (the reverb traces) are what the compute switch moves. ism and traced sound identical in open space; behind furniture only traced shadows.',
+  early: 'The ACTIVE early-reflections engine as the sim reports it; in v4 also how many sources the audio thread convolves (the 4 loudest at most). In v3/v4 with compute = gpu: the wall-clock of the last listener walk on the GPU (dispatch to readback; it folds into the sim one tick later). The sim tick then only pays for the exact direct and edge paths and the fold. “v3 · cpu” with compute = gpu means the walk fell back (the world exceeded the GPU job caps). In traced mode early is CPU-side by design: discovery is a few hundred rays per tick (~1 ms) and every found path is then solved EXACTLY by mirror reconstruction — tiny, branchy work the GPU can’t win. The heavy ray budgets (the reverb traces) are what the compute switch moves. ism and traced sound identical in open space; behind furniture only traced shadows.',
 };
 
 // Movable config panels: drag by the title bar, double-click it to send
@@ -378,7 +378,7 @@ function buildQuality() {
   panel.append(seg);
 
   // Only what the ACTIVE early engine uses is shown (state.earlyMode:
-  // 0 ism, 1/2 traced, 3 v3); a section disappears with all its rows.
+  // 0 ism, 1/2 traced, 3 v3, 4 v4); a section disappears with all its rows.
   const modeOf = () => (state.earlyMode === 2 ? 1 : (state.earlyMode || 0));
   const sections = [];
   let curSection = null;
@@ -471,6 +471,10 @@ function buildQuality() {
         tip: 'Engine v3 (ENGINE_V3.md): one tracer for everything. Rays from your ears bounce through the world; every surface they hit connects to the sources it can see, through whatever walls are in the way. Early AND late, indoors and out, from one mechanism; rays passing close to an edge bend around it.',
         set: () => state.setEarly?.(3),
         active: () => state.earlyMode === 3 },
+      { name: 'v4',
+        tip: 'Engine v4: the same rays, and the response rendered as traced — no early/late split in time. Exact mirror paths (wall reflections, a canyon\u2019s echo seconds later, the flutter between bare walls) play as their own echoes; everything scattered is the traced reverb itself, convolved (for the 4 loudest sources; the rest keep v3\u2019s parametric reverb from the same trace).',
+        set: () => state.setEarly?.(4),
+        active: () => state.earlyMode === 4 },
     ]);
 
   mkSwitch('compute',
@@ -610,13 +614,15 @@ function buildQuality() {
     cells[2].classList.toggle('hot', (state.debug.gaps || 0) > 0);
     // v3 traces early AND late in one listener walk: in the sim tick on
     // the CPU, or on the GPU (compute = gpu) folding in a tick late
-    const v3 = state.debug.early === 3;
+    const v3 = state.debug.early === 3 || state.debug.early === 4;
+    const vn = state.debug.early === 4 ? 'v4' : 'v3';
     const v3gpu = v3 && state.debug.gpu && state.debug.v3N;
-    cells[3].textContent = v3 ? (v3gpu ? 'v3 · gpu walk' : 'v3 · in sim tick')
+    const conv = state.debug.early === 4 ? ` · ${state.debug.dense || 0} conv` : '';
+    cells[3].textContent = v3 ? (v3gpu ? `${vn} · gpu walk` : `${vn} · in sim tick`)
       : state.debug.gpu
         ? `gpu · ${(state.debug.gpuMs || 0).toFixed(1)}ms`
         : 'cpu';
-    cells[4].textContent = v3 ? (v3gpu ? `v3 · gpu ${(state.debug.v3Ms || 0).toFixed(1)}ms` : 'v3 · cpu')
+    cells[4].textContent = v3 ? (v3gpu ? `${vn} · gpu ${(state.debug.v3Ms || 0).toFixed(1)}ms${conv}` : `${vn} · cpu${conv}`)
       : !state.debug.early ? 'ism'
         : state.debug.gpu && state.debug.wdN
           ? `traced · gpu ${(state.debug.wdMs || 0).toFixed(1)}ms` : 'traced · cpu';
@@ -2465,7 +2471,7 @@ async function startAudio() {
   });
 
   const worker = new Worker('worker.js');
-  worker.postMessage({ type: 'init', bytes: wasm2 }, [wasm2]);
+  worker.postMessage({ type: 'init', bytes: wasm2, sampleRate: audio.sampleRate }, [wasm2]);
   // Sim-side quality ladder (GPU_PLAN.md Track B): ?q=high|med|low pins a
   // tier, ?q=auto (default) walks it from the measured tick cost. The
   // audio-side ladder (point budget + tap ceiling) lives in the worklet's
@@ -2510,7 +2516,7 @@ async function startAudio() {
     state.setDebugRays = (on) => worker.postMessage({ type: 'debug', on });
     state.setEarly = (mode) => {
       state.earlyMode = mode;
-      try { localStorage.setItem('omg-early-v3', ['ism', 'traced', 'traced', 'v3'][mode] || 'traced'); } catch (_) {}
+      try { localStorage.setItem('omg-early-v4', ['ism', 'traced', 'traced', 'v3', 'v4'][mode] || 'v4'); } catch (_) {}
       worker.postMessage({ type: 'early', mode });
     };
     state.setMute = (srcs, on) => worker.postMessage({ type: 'mute', srcs, on });
@@ -2519,18 +2525,19 @@ async function startAudio() {
       try { localStorage.setItem('omg-mod' + id, on ? '1' : '0'); } catch (_) {}
       worker.postMessage({ type: 'module', id, on });
     };
-    // a real setting: ?early=v3|traced|ism wins, else the remembered
-    // choice, else v3 (the one listener tracer; traced and ism stay
-    // selectable as fallbacks). The storage key is versioned: choices
-    // remembered under an older default reset once.
+    // a real setting: ?early=v4|v3|traced|ism wins, else the remembered
+    // choice, else v4 (the traced response rendered as traced; v3,
+    // traced and ism stay selectable). The storage key is versioned:
+    // choices remembered under an older default reset once.
     {
       const p = (new URLSearchParams(location.search).get('early') || '').toLowerCase();
       let stored = null;
-      try { stored = localStorage.getItem('omg-early-v3'); } catch (_) {}
+      try { stored = localStorage.getItem('omg-early-v4'); } catch (_) {}
       const pick = p === 'traced' || p === 'pt' ? 1
         : p === 'ism' ? 0
           : p === 'v3' ? 3
-            : stored === 'ism' ? 0 : stored === 'traced' ? 1 : 3;
+            : p === 'v4' ? 4
+              : stored === 'ism' ? 0 : stored === 'traced' ? 1 : stored === 'v3' ? 3 : 4;
       state.earlyMode = pick;
       if (pick) worker.postMessage({ type: 'early', mode: pick });
       // remembered module switches (default on)
@@ -2547,7 +2554,11 @@ async function startAudio() {
   }
   worker.onmessage = (e) => {
     if (e.data.type !== 'tick') return;
-    node.port.postMessage({ type: 'params', blocks: e.data.blocks }, e.data.blocks);
+    const k = e.data.kernel;
+    node.port.postMessage({
+      type: 'params', blocks: e.data.blocks, kernel: k, clears: e.data.clears, yaw: e.data.yaw,
+    }, k ? [...e.data.blocks, k.buf] : e.data.blocks);
+    state.debug.dense = e.data.dense || 0;
     state.simState = new Float32Array(e.data.state);
     state.debug.tickMs = Math.max(state.debug.tickMs || 0, e.data.tickMs || 0) * 0.9
       + (e.data.tickMs || 0) * 0.1; // decaying peak-ish: spikes stay visible
