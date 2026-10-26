@@ -89,6 +89,12 @@ func _ready() -> void:
 	_row(v, "flashlight", _choice_box("torch", ["off", "on"], 1 if demo.torch.visible else 0, func(i: int) -> void:
 		demo.torch.visible = i == 1))
 
+	_section(v, "debug")
+	_row(v, "performance graph", _choice_box("perf", ["off", "on"], 0, func(i: int) -> void:
+		demo.debug.set_perf(i == 1)))
+	_row(v, "audio spectrum", _choice_box("spectrum", ["off", "on"], 0, func(i: int) -> void:
+		demo.debug.set_spectrum(i == 1)))
+
 	v.add_child(HSeparator.new())
 	stats_label = _label("", 15, INK)
 	v.add_child(stats_label)

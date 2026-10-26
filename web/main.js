@@ -2510,7 +2510,7 @@ async function startAudio() {
     state.setDebugRays = (on) => worker.postMessage({ type: 'debug', on });
     state.setEarly = (mode) => {
       state.earlyMode = mode;
-      try { localStorage.setItem('omg-early-v2', ['ism', 'traced', 'traced', 'v3'][mode] || 'traced'); } catch (_) {}
+      try { localStorage.setItem('omg-early-v3', ['ism', 'traced', 'traced', 'v3'][mode] || 'traced'); } catch (_) {}
       worker.postMessage({ type: 'early', mode });
     };
     state.setMute = (srcs, on) => worker.postMessage({ type: 'mute', srcs, on });
@@ -2519,18 +2519,18 @@ async function startAudio() {
       try { localStorage.setItem('omg-mod' + id, on ? '1' : '0'); } catch (_) {}
       worker.postMessage({ type: 'module', id, on });
     };
-    // a real setting: ?early=traced|ism wins, else the remembered
-    // choice, else traced (one world mesh, no room/portal special cases;
-    // ism stays selectable as the classic fallback). The storage key is
-    // versioned: choices remembered while ism was the default reset once.
+    // a real setting: ?early=v3|traced|ism wins, else the remembered
+    // choice, else v3 (the one listener tracer; traced and ism stay
+    // selectable as fallbacks). The storage key is versioned: choices
+    // remembered under an older default reset once.
     {
       const p = (new URLSearchParams(location.search).get('early') || '').toLowerCase();
       let stored = null;
-      try { stored = localStorage.getItem('omg-early-v2'); } catch (_) {}
+      try { stored = localStorage.getItem('omg-early-v3'); } catch (_) {}
       const pick = p === 'traced' || p === 'pt' ? 1
         : p === 'ism' ? 0
           : p === 'v3' ? 3
-            : stored === 'ism' ? 0 : stored === 'v3' ? 3 : 1;
+            : stored === 'ism' ? 0 : stored === 'traced' ? 1 : 3;
       state.earlyMode = pick;
       if (pick) worker.postMessage({ type: 'early', mode: pick });
       // remembered module switches (default on)

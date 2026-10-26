@@ -29,6 +29,7 @@ var hud: Label
 var hint: Control
 var torch: SpotLight3D
 var settings: DemoSettings
+var debug: DemoDebug
 var halos := [] # [halo node, lamp position]
 var labels: Array[Label3D] = []
 var rain_name := "off"
@@ -111,6 +112,8 @@ func _ready() -> void:
 	sounds.setup(world, level_root, level, player)
 	_hud()
 	_labels()
+	debug = DemoDebug.new(world)
+	add_child(debug)
 	settings = DemoSettings.new(self, world)
 	add_child(settings)
 	_load()
