@@ -293,7 +293,8 @@ fn doorways_and_windows_stay_clear() {
 fn no_source_sits_inside_furniture() {
     let rooms = walkthrough::rooms();
     let mut errs = Vec::new();
-    for s in walkthrough::sources().iter().take(14 - walkthrough::DYN_SLOTS) {
+    let srcs = walkthrough::sources();
+    for s in (0..srcs.len()).filter(|&i| walkthrough::dyn_slot(i).is_none()).map(|i| &srcs[i]) {
         for ri in 0..walkthrough::ROOM_COUNT {
             let r = &rooms[ri];
             for e in s.emitters {

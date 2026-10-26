@@ -78,6 +78,8 @@ const SOURCES = [
   { name: 'owl', pos: [4, 53], z: 24.25, color: 0xcfd8e6 }, // on the nave roof
   { name: 'owl', pos: [27.5, 19.5], z: 5.6, color: 0xcfd8e6 },
   { name: 'bells', pos: [10, 321], z: 25.5, color: 0xf0d890 },
+  // appended after the sim's dynamic slots (balls, cars, feet = 8..13)
+  { name: 'fountain', index: 14, pos: [14.2, 199], z: 0.8, color: 0x7fd8ff },
 ];
 // the room sources stand where the layout puts them (the piano, the
 // lectern, the bunker table …); index-aligned with the sim's sources()
@@ -163,8 +165,9 @@ const MIXER = [
   { name: 'balls', srcs: [8, 9, 10], base: 89, def: 89, meters: [8, 9, 10], spl: true },
   { name: 'cars', srcs: [11, 12], base: 92, def: 86, meters: [11, 12], spl: true },
   { name: 'steps', srcs: [13], base: 78, def: 62, meters: [13], spl: true },
-  { name: 'ambience', target: 'ambient', def: -16, meters: [14] },
-  { name: 'rain', target: 'rainGain', def: 0, meters: [15] },
+  { name: 'fountain', srcs: [14], base: 76, def: 76, meters: [14], spl: true },
+  { name: 'ambience', target: 'ambient', def: -16, meters: [15] },
+  { name: 'rain', target: 'rainGain', def: 0, meters: [16] },
   { name: 'master', target: 'master', def: 0, meters: 'lr' },
 ];
 const SPL_MIN = 20, SPL_MAX = 130, TRIM_MIN = -30, TRIM_MAX = 12;
@@ -770,6 +773,26 @@ const v3 = (wx, wy, wz) => new THREE.Vector3(wx, wz, -wy);
   spire.rotation.y = Math.PI / 4;
   g.add(shaft, cornice, spire);
   scene.add(g);
+}
+
+// A small garden fountain beside the belfry path (sim source 14 sits in
+// its jet): a stone basin, the water lit from below, the jet glowing.
+{
+  const [fx, fy] = [14.2, 199];
+  const stone = new THREE.MeshLambertMaterial({ color: 0x8c877c });
+  const rim = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.5, 0.5, 12), stone);
+  rim.position.copy(v3(fx, fy, 0.25));
+  const water = new THREE.Mesh(new THREE.CylinderGeometry(1.22, 1.22, 0.04, 12),
+    new THREE.MeshBasicMaterial({ color: 0x2f7fa8 }));
+  water.position.copy(v3(fx, fy, 0.47));
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.24, 0.7, 8), stone);
+  post.position.copy(v3(fx, fy, 0.35));
+  const jet = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.09, 0.9, 6),
+    new THREE.MeshBasicMaterial({ color: 0xbfeaff, transparent: true, opacity: 0.85 }));
+  jet.position.copy(v3(fx, fy, 1.15));
+  const glow = new THREE.PointLight(0x7fd8ff, 1.6, 9, 1.5);
+  glow.position.copy(v3(fx, fy, 0.9));
+  scene.add(rim, water, post, jet, glow);
 }
 
 function fit() {
@@ -2149,7 +2172,7 @@ async function startAudio() {
     return r.arrayBuffer();
   };
   statusEl.textContent = 'loading…';
-  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxT, fxB, ambRaw, dropsRaw, mot0, mot1, mot2, mot3] =
+  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxT, fxB, ambRaw, dropsRaw, mot0, mot1, mot2, mot3, fountainRaw] =
     await Promise.all([
     fetchBuf('omg_web.wasm'),
     fetchBuf('omg_web.wasm'),
@@ -2168,6 +2191,7 @@ async function startAudio() {
     fetchBuf('../assets/motor148.ogg'),
     fetchBuf('../assets/motor248.ogg'),
     fetchBuf('../assets/motor348.ogg'),
+    fetchBuf('../assets/fountain48.ogg'),
   ]);
 
   // Sources go to the engine raw — import loudness is normalized there
@@ -2212,7 +2236,7 @@ async function startAudio() {
     for (let i = 0; i < n; i++) out[i] *= 0.12 / p;
     return out;
   };
-  const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops, m0, m1, m2, m3, ambience] = await Promise.all([
+  const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops, m0, m1, m2, m3, ambience, fountain] = await Promise.all([
     decodeMono(ariaRaw),
     decodeMono(aliceRaw),
     decodeMono(clubRaw),
@@ -2242,6 +2266,7 @@ async function startAudio() {
       }
       return out;
     })(),
+    decodeMono(fountainRaw), // source 14: the garden fountain (synthesized loop)
   ]);
   state.motors = [m0, m1, m2, m3]; // CC0 motor loops, swapped per spawn
   // Footsteps (CC0, Kenney "Impact Sounds"): 4 surfaces × 5 variants,
@@ -2330,13 +2355,14 @@ async function startAudio() {
       sources: [aria.buffer, alice.buffer, club.buffer, flute.buffer, radio.buffer,
                 silents[0].buffer, silents[1].buffer, silents[2].buffer, // owls + bells
                 silents[3].buffer, silents[4].buffer, silents[5].buffer, // balls
-                m0.buffer, m1.buffer, silents[6].buffer],                // cars + feet
+                m0.buffer, m1.buffer, silents[6].buffer,                 // cars + feet
+                fountain.buffer],                                        // 14: fountain
       fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
            owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
            whis0.buffer, whis1.buffer],
       ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,
-     radio.buffer, ...silents.map((b) => b.buffer),
+     radio.buffer, ...silents.map((b) => b.buffer), fountain.buffer,
      whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
      owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
      whis0.buffer, whis1.buffer,
@@ -2372,7 +2398,8 @@ async function startAudio() {
           const now = performance.now() / 1000;
           const peak = Math.max(e.data.l, e.data.r);
           let srcRms = 0;
-          for (let i = 0; i < 28; i += 2) srcRms = Math.max(srcRms, e.data.chans[i + 1]);
+          // the source channels: everything but the ambience + rain pairs
+          for (let i = 0; i < e.data.chans.length - 4; i += 2) srcRms = Math.max(srcRms, e.data.chans[i + 1]);
           bb.ring.push({
             t: +now.toFixed(2), peak: +peak.toFixed(5), agc: +e.data.agc.toFixed(3),
             tts: +(e.data.tts || 0).toFixed(2), src: +srcRms.toFixed(5),
@@ -3213,17 +3240,18 @@ function frame(t) {
 // scrolling history of the totals — pile-ups, leaks and perf spikes are
 // visible at a glance instead of reconstructed from ear-memory.
 
-const NSRC_UI = 14; // keep in sync with wasm sim_nsrc()
+const NSRC_UI = 15; // keep in sync with wasm sim_nsrc()
 const DBG_NAMES = ['music', 'voice', 'club', 'flute', 'radio',
   'owl·c', 'owl·h', 'bells',
-  'ball0', 'ball1', 'ball2', 'car0', 'car1', 'feet', 'amb', 'rain'];
+  'ball0', 'ball1', 'ball2', 'car0', 'car1', 'feet', 'fount', 'amb', 'rain'];
 const DBG_COLORS = ['#ffaa3c', '#6ee0a0', '#ff5a9e', '#9ad2ff', '#d2b06e',
   '#cfd8e6', '#cfd8e6', '#f0d890',
-  '#fff1a8', '#fff1a8', '#fff1a8', '#7ad7ff', '#7ad7ff', '#ddd6c9', '#8a95ff', '#59c9e8'];
+  '#fff1a8', '#fff1a8', '#fff1a8', '#7ad7ff', '#7ad7ff', '#ddd6c9', '#7fd8ff', '#8a95ff', '#59c9e8'];
 
 function dbgSourceDist(i) {
-  if (i < 8) {
-    const s = SOURCES[i];
+  if (i < 8 || i > 13) { // static sources (the dynamic slots are 8..13)
+    const s = SOURCES.find((q) => (q.index ?? SOURCES.indexOf(q)) === i);
+    if (!s) return null;
     return Math.hypot(s.pos[0] - state.pose.x, s.pos[1] - state.pose.y);
   }
   if (i < 11) {
@@ -3257,7 +3285,7 @@ function drawDebug() {
     g.fillStyle = audible ? DBG_COLORS[i] : '#3a4456';
     let line = DBG_NAMES[i].padEnd(7)
       + db(rms).toFixed(0).padStart(5);
-    if (i < 11) {
+    if (i < 11 || i === 14) { // the playing sources (not cars/feet/amb/rain)
       const live = dbg[i * 5] || 0;
       const pts = dbg[i * 5 + 1] || 0;
       const fdn = dbg[i * 5 + 3] || 0;

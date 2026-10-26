@@ -624,7 +624,7 @@ pub struct SourceDef {
 pub const CLUB_SPEAKERS: [(f32, f32); 4] =
     [(23.5, 27.5), (30.5, 27.5), (23.5, 36.5), (30.5, 36.5)];
 
-pub fn sources() -> [SourceDef; 14] {
+pub fn sources() -> [SourceDef; 15] {
     [
         // the living room's grand piano: the sound rises off its
         // soundboard, half a meter above the case
@@ -717,10 +717,33 @@ pub fn sources() -> [SourceDef; 14] {
         // level under the walker, so steps pick up each room's acoustics
         // (parquet knock + hall reverb) with zero special-casing.
         SourceDef { name: "feet", pos: (0.0, 0.0), room: OUTSIDE, gain: 1.0, z: 0.3, emitters: &[(0.0, 0.0)] },
+        // Static sources added after the dynamic slots (appended, so every
+        // earlier index stays as the frontends know it).
+        // A small garden fountain beside the belfry path, halfway to the
+        // tower: the jet's splash a little above the basin rim.
+        SourceDef {
+            name: "fountain",
+            pos: FOUNTAIN,
+            room: OUTSIDE,
+            gain: 0.2,
+            z: 0.8,
+            emitters: &[FOUNTAIN],
+        },
     ]
 }
 
+/// The garden fountain beside the belfry path (basin centre).
+pub const FOUNTAIN: (f32, f32) = (14.2, 199.0);
+
+/// Sources `DYN_BASE .. DYN_BASE + DYN_SLOTS` are the dynamic slots
+/// (positions set per tick by the frontend); every other source is static.
+pub const DYN_BASE: usize = 8;
 pub const DYN_SLOTS: usize = 6;
+
+/// The dynamic slot of source `si`, if it is one.
+pub fn dyn_slot(si: usize) -> Option<usize> {
+    (DYN_BASE..DYN_BASE + DYN_SLOTS).contains(&si).then(|| si - DYN_BASE)
+}
 
 // ------------------------------------------------------------ interiors
 //
@@ -1488,8 +1511,9 @@ pub fn layout_json() -> String {
     o.push_str("  ],\n");
     o.push_str("  \"sources\": [\n");
     let srcs = sources();
-    let n_static = srcs.len() - DYN_SLOTS;
-    for (i, s) in srcs.iter().take(n_static).enumerate() {
+    let statics: Vec<usize> = (0..srcs.len()).filter(|&i| dyn_slot(i).is_none()).collect();
+    for (k, &i) in statics.iter().enumerate() {
+        let s = &srcs[i];
         let em: Vec<String> = s.emitters.iter().map(|e| arr(&[e.0, e.1])).collect();
         o.push_str(&format!(
             "    {{ \"index\": {i}, \"name\": \"{}\", \"room\": {}, \"pos\": {}, \"emitters\": [{}] }}{}\n",
@@ -1497,7 +1521,7 @@ pub fn layout_json() -> String {
             s.room,
             arr(&[s.pos.0, s.pos.1, s.z]),
             em.join(", "),
-            if i + 1 == n_static { "" } else { "," }
+            if k + 1 == statics.len() { "" } else { "," }
         ));
     }
     o.push_str("  ]\n}\n");

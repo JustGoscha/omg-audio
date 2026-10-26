@@ -249,6 +249,7 @@
     { "index": 4, "name": "radio", "room": 10, "pos": [37.5, 12.5, -2.1], "emitters": [[37.5, 12.5]] },
     { "index": 5, "name": "owl·cathedral", "room": 13, "pos": [4, 53, 24.25], "emitters": [[4, 53]] },
     { "index": 6, "name": "owl·house", "room": 13, "pos": [27.5, 19.5, 6.3], "emitters": [[27.5, 19.5]] },
-    { "index": 7, "name": "bells", "room": 13, "pos": [10, 321, 25.5], "emitters": [[10, 321]] }
+    { "index": 7, "name": "bells", "room": 13, "pos": [10, 321, 25.5], "emitters": [[10, 321]] },
+    { "index": 14, "name": "fountain", "room": 13, "pos": [14.2, 199, 0.8], "emitters": [[14.2, 199]] }
   ]
 }

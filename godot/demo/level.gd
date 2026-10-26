@@ -54,6 +54,8 @@ const WIN_H := 1.4
 
 # Club PA: four corner speakers (walkthrough CLUB_SPEAKERS).
 const CLUB_SPEAKERS := [Vector2(23.5, 27.5), Vector2(30.5, 27.5), Vector2(23.5, 36.5), Vector2(30.5, 36.5)]
+# The garden fountain beside the belfry path (walkthrough FOUNTAIN).
+const FOUNTAIN := Vector2(14.2, 199.0)
 
 static func room_at(x: float, y: float, z: float) -> Array:
 	for r in ROOMS:
@@ -95,6 +97,7 @@ func build() -> void:
 	_lamps()
 	_hall_lights()
 	_trees()
+	_fountain()
 	geo.commit()
 
 # ------------------------------------------------------------------ ground
@@ -1389,6 +1392,62 @@ func _lamps() -> void:
 
 # Decor only (the engine's plain is open grass): trunks and layered
 # crowns on the outskirts, a row along the road and the cathedral path.
+# A small lit fountain beside the belfry path, halfway to the tower: a
+# square stone basin (acoustic stone, solid), a pedestal with a small
+# upper bowl, water glowing faintly, a cool light in the basin and a jet
+# of droplets. The water's sound is the "fountain" source in sounds.gd.
+func _fountain() -> void:
+	var c := FOUNTAIN
+	var stone := geo.B(DemoMats.sandstone(1.6, Color(0.8, 0.78, 0.72)), "stone")
+	var h := 1.3 # outer half-width
+	var t := 0.22 # rim thickness
+	stone.box(c.x - h, c.y - h, 0.0, c.x + h, c.y - h + t, 0.5)
+	stone.box(c.x - h, c.y + h - t, 0.0, c.x + h, c.y + h, 0.5)
+	stone.box(c.x - h, c.y - h + t, 0.0, c.x - h + t, c.y + h - t, 0.5)
+	stone.box(c.x + h - t, c.y - h + t, 0.0, c.x + h, c.y + h - t, 0.5)
+	stone.box(c.x - h + t, c.y - h + t, 0.0, c.x + h - t, c.y + h - t, 0.1) # the floor of the basin
+	stone.box(c.x - 0.17, c.y - 0.17, 0.1, c.x + 0.17, c.y + 0.17, 0.9) # pedestal
+	stone.box(c.x - 0.45, c.y - 0.45, 0.9, c.x + 0.45, c.y + 0.45, 1.02) # upper bowl
+	var water_c := Color(0.3, 0.62, 0.8)
+	geo.B(DemoMats.glow(water_c, 0.5), "", false, false, "fountain water (light)").box(
+		c.x - h + t, c.y - h + t, 0.36, c.x + h - t, c.y + h - t, 0.4)
+	geo.B(DemoMats.glow(water_c, 0.7), "", false, false, "fountain bowl water (light)").box(
+		c.x - 0.4, c.y - 0.4, 1.02, c.x + 0.4, c.y + 0.4, 1.04)
+	# the light in the water, cool, washing the basin and the jet
+	var l := OmniLight3D.new()
+	l.position = v(c.x, c.y, 0.6)
+	l.light_color = Color(0.55, 0.85, 1.0)
+	l.light_energy = 1.8
+	l.omni_range = 6.0
+	l.set_meta("no_shadow", true)
+	root.add_child(l)
+	# the jet: droplets thrown up from the bowl, falling back into the basin
+	var jet := GPUParticles3D.new()
+	jet.amount = 320
+	jet.lifetime = 0.95
+	jet.visibility_aabb = AABB(Vector3(-1.5, -1.2, -1.5), Vector3(3, 2.6, 3))
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = 0.04
+	pm.direction = Vector3(0, 1, 0)
+	pm.spread = 13.0
+	pm.initial_velocity_min = 2.6
+	pm.initial_velocity_max = 3.3
+	pm.gravity = Vector3(0, -9.8, 0)
+	jet.process_material = pm
+	var drop := QuadMesh.new()
+	drop.size = Vector2(0.035, 0.07)
+	var dm := StandardMaterial3D.new()
+	dm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	dm.albedo_color = Color(0.7, 0.92, 1.0, 0.8)
+	dm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	dm.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	dm.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	drop.material = dm
+	jet.draw_pass_1 = drop
+	jet.position = v(c.x, c.y, 1.06)
+	root.add_child(jet)
+
 func _trees() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 42
