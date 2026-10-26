@@ -50,6 +50,8 @@ pub enum OutCmd {
 struct Shared {
     ring: Mutex<VecDeque<(f32, f32)>>,
     ring_target: AtomicUsize,
+    /// The largest mix callback seen (frames): the ring keeps twice that.
+    read_max: AtomicUsize,
     underruns: AtomicUsize,
     stop: AtomicBool,
     // stats published by whoever renders
@@ -74,6 +76,13 @@ impl OutputReader {
     /// bigger than the ring, a stalled output thread) the rest is rendered
     /// right here instead of played as silence, and counted as `late`.
     pub fn read(&self, out: &mut [(f32, f32)]) {
+        // a host whose callbacks pull more than the ring holds (the web's
+        // audio worklet bridge asks for big chunks) would find it short on
+        // every call: grow the ring to two callbacks
+        if out.len() > self.sh.read_max.fetch_max(out.len(), Ordering::Relaxed) {
+            let want = (2 * out.len()).div_ceil(BLOCK) * BLOCK;
+            self.sh.ring_target.fetch_max(want, Ordering::Relaxed);
+        }
         let take = |out: &mut [(f32, f32)]| {
             let mut ring = self.sh.ring.lock().unwrap();
             let n = out.len().min(ring.len());
@@ -218,6 +227,9 @@ pub struct Stats {
     pub enclosure: f32,
     pub rt60: f32,
     pub underruns: usize,
+    /// Largest mix callback (frames) and the ring kept ahead of it.
+    pub read_max: usize,
+    pub ring: usize,
 }
 
 pub struct Host {
@@ -351,6 +363,8 @@ impl Host {
             enclosure: f(&self.sh.enclosure),
             rt60: f(&self.sh.rt60),
             underruns: self.sh.underruns.load(Ordering::Relaxed),
+            read_max: self.sh.read_max.load(Ordering::Relaxed),
+            ring: self.sh.ring_target.load(Ordering::Relaxed),
         }
     }
 }

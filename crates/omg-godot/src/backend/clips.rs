@@ -21,6 +21,9 @@ enum Entry {
 struct Bank {
     entries: Vec<Entry>,
     keys: HashMap<String, usize>,
+    /// Clips a loading screen need not wait for (long ambience beds that
+    /// fade in whenever they are ready).
+    background: Vec<usize>,
 }
 
 fn bank() -> &'static (Mutex<Bank>, Condvar) {
@@ -145,6 +148,24 @@ pub fn state(id: usize) -> (i32, String) {
         Some(Entry::Failed(e)) => (-1, e.clone()),
         None => (-1, "no such clip".into()),
     }
+}
+
+/// Leave clip `id` out of `progress` (it may finish after a level starts).
+pub fn set_background(id: usize) {
+    bank().0.lock().unwrap().background.push(id);
+}
+
+/// (decoded or failed, total) over every clip queued so far, background
+/// clips aside.
+pub fn progress() -> (usize, usize) {
+    let b = bank().0.lock().unwrap();
+    let fg = (0..b.entries.len()).filter(|i| !b.background.contains(i));
+    let (mut done, mut total) = (0, 0);
+    for i in fg {
+        total += 1;
+        done += !matches!(b.entries[i], Entry::Loading) as usize;
+    }
+    (done, total)
 }
 
 /// Block until nothing is loading (or `timeout_s` passes); true if done.

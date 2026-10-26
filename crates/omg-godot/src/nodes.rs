@@ -542,6 +542,16 @@ impl OmgWorld {
         s as i64
     }
 
+    /// Clips decoded (or failed) and queued so far: a loading screen's
+    /// progress (the ambience bed is left out: it fades in when ready).
+    /// Sources queue their files on the first frames after they enter the
+    /// tree.
+    #[func]
+    fn clips_progress(&self) -> Vector2i {
+        let (done, total) = clips::progress();
+        Vector2i::new(done as i32, total as i32)
+    }
+
     /// Wait (blocking) until every queued clip has decoded.
     #[func]
     fn wait_for_clips(&self, timeout_s: f32) -> bool {
@@ -596,7 +606,8 @@ impl OmgWorld {
     /// tick_ms / ticks, gpu, load (render time / audio time), budget
     /// (taps, points, voices), rendering (sources), paths, sources,
     /// peak, late (frames the audio thread found missing and rendered
-    /// itself).
+    /// itself), callback (largest mix callback, frames), ring (frames
+    /// rendered ahead).
     #[func]
     fn stats(&self) -> Dictionary<Variant, Variant> {
         let mut d = Dictionary::new();
@@ -616,6 +627,8 @@ impl OmgWorld {
             d.set("sources", self.sources.len() as i64);
             d.set("peak", s.peak);
             d.set("late", s.underruns as i64);
+            d.set("callback", s.read_max as i64);
+            d.set("ring", s.ring as i64);
         }
         d
     }
@@ -673,7 +686,9 @@ impl OmgWorld {
             let mut imp = Import::default();
             imp.opts.stereo = true;
             imp.opts.max_seconds = self.ambience_seconds;
-            self.amb_clip = Some((clips::load(clip_source(&self.ambience_file), sr, imp), false));
+            let id = clips::load(clip_source(&self.ambience_file), sr, imp);
+            clips::set_background(id); // a long bed: it fades in when decoded
+            self.amb_clip = Some((id, false));
         }
         if !self.rain_bank_file.is_empty() {
             self.rain_clip = Some((clips::load(clip_source(&self.rain_bank_file), sr, Import::default()), false));

@@ -41,6 +41,12 @@ var fine := false
 # 3D internal height in pixel mode (keys [ and ] walk HEIGHTS)
 const HEIGHTS := [180, 240, 270, 360, 480, 540, 720]
 var pixel_h := 360
+var loading := true
+var load_layer: CanvasLayer
+var load_label: Label
+var stats_log := false
+var stats_t := 0.0
+signal loaded
 
 func _ready() -> void:
 	_environment()
@@ -97,7 +103,13 @@ func _ready() -> void:
 	sounds.setup(world, level_root, level, player)
 	_hud()
 	_labels()
+	_load()
 	var args := OS.get_cmdline_user_args()
+	# `-- --stats` (web: `?stats` in the page URL): the engine stats in the
+	# console once a second
+	stats_log = "--stats" in args
+	if OS.has_feature("web"):
+		stats_log = str(JavaScriptBridge.eval("location.search")).contains("stats")
 	if "--labels" in args:
 		for l in labels:
 			l.visible = true
@@ -116,6 +128,8 @@ func _ready() -> void:
 # `-- --print-fps`: ~10 s of frame rate (start room, then the square,
 # slowly turning), printed, then quit.
 func _print_fps() -> void:
+	if loading:
+		await loaded
 	player.set_physics_process(false)
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED) # measure headroom
 	for i in 60:
@@ -177,6 +191,8 @@ const SHOT_ROOMS := {
 var shooting := false
 
 func _shots(dir: String) -> void:
+	if loading:
+		await loaded
 	DirAccess.make_dir_recursive_absolute(dir)
 	shooting = true
 	player.set_physics_process(false)
@@ -329,6 +345,89 @@ func _environment() -> void:
 	moon.rotation_degrees = Vector3(-38, 140, 0)
 	add_child(moon)
 
+# Loading: nothing plays and nothing moves until every sound has
+# decoded, every material's shader has compiled (each drawn once in front
+# of the camera, behind this overlay — the web renderer compiles shaders
+# on first use, a visible hitch each), and the engine has traced the
+# rooms a few times; then the sound fades in.
+func _load() -> void:
+	load_layer = CanvasLayer.new()
+	load_layer.layer = 10
+	add_child(load_layer)
+	var bg := ColorRect.new()
+	bg.color = Color(0.03, 0.03, 0.06)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	load_layer.add_child(bg)
+	load_label = Label.new()
+	load_label.set_anchors_preset(Control.PRESET_CENTER)
+	load_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	load_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	load_label.grow_vertical = Control.GROW_DIRECTION_BOTH
+	load_label.add_theme_color_override("font_color", Color(0.8, 0.85, 0.95))
+	load_label.add_theme_font_size_override("font_size", 22)
+	load_layer.add_child(load_label)
+	var bus := AudioServer.get_bus_index("Master")
+	AudioServer.set_bus_volume_db(bus, -80.0)
+	player.set_physics_process(false)
+	player.set_process_unhandled_input(false)
+	set_process_unhandled_input(false)
+	var t0 := Time.get_ticks_msec()
+	# 1. sounds: sources queue their files on their first frames, so wait
+	# for the count to settle as well as for the decodes
+	var settled := 0
+	while settled < 10:
+		await get_tree().process_frame
+		var pr: Vector2i = world.clips_progress()
+		load_label.text = "loading sounds  %d / %d" % [pr.x, pr.y]
+		settled = settled + 1 if pr.x == pr.y else 0
+	var t_sounds := Time.get_ticks_msec()
+	# 2. shaders: every material once, a grid of small quads before the
+	# camera, two frames
+	load_label.text = "preparing graphics"
+	await get_tree().process_frame
+	var mats := {}
+	for n in find_children("*", "MeshInstance3D", true, false):
+		var mi := n as MeshInstance3D
+		if mi.material_override != null:
+			mats[mi.material_override] = true
+		if mi.mesh != null:
+			for k in mi.mesh.get_surface_count():
+				var m := mi.get_active_material(k)
+				if m != null:
+					mats[m] = true
+	var warm := Node3D.new()
+	view_cam.add_child(warm)
+	var quad := QuadMesh.new()
+	quad.size = Vector2(0.05, 0.05)
+	var i := 0
+	for m in mats:
+		var q := MeshInstance3D.new()
+		q.mesh = quad
+		q.material_override = m
+		q.position = Vector3(-0.5 + 0.06 * (i % 16), -0.3 + 0.06 * (i / 16), -1.0)
+		warm.add_child(q)
+		i += 1
+	for f in 3:
+		await get_tree().process_frame
+	warm.queue_free()
+	var t_shaders := Time.get_ticks_msec()
+	# 3. the engine's first traces
+	load_label.text = "tracing the rooms"
+	var ticks: int = world.stats().get("ticks", 0)
+	while world.stats().get("ticks", 0) < ticks + 4 and Time.get_ticks_msec() - t0 < 60000:
+		await get_tree().process_frame
+	print("demo: loaded in %.1f s: sounds %.1f s, shaders %.1f s (%d materials), first traces %.1f s" % [
+		(Time.get_ticks_msec() - t0) / 1000.0, (t_sounds - t0) / 1000.0, (t_shaders - t_sounds) / 1000.0,
+		mats.size(), (Time.get_ticks_msec() - t_shaders) / 1000.0])
+	load_layer.queue_free()
+	loading = false
+	if not shooting:
+		player.set_physics_process(true)
+		player.set_process_unhandled_input(true)
+		set_process_unhandled_input(true)
+	create_tween().tween_method(func(db: float) -> void: AudioServer.set_bus_volume_db(bus, db), -40.0, 0.0, 0.8)
+	loaded.emit()
+
 func _hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
@@ -423,6 +522,11 @@ func _process(dt: float) -> void:
 	for l in level.markers.get("club_lights", []):
 		(l as OmniLight3D).light_energy = 2.0 + 1.6 * maxf(0.0, sin(t_flicker * TAU * 124.0 / 60.0 + i * PI / 2.0))
 		i += 1
+	if stats_log:
+		stats_t += dt
+		if stats_t >= 1.0:
+			stats_t = 0.0
+			print("stats %d fps " % Engine.get_frames_per_second(), world.stats())
 	if hud.visible:
 		var p := player.plan()
 		var room: String = DemoLevel.room_at(p.x, p.y, p.z + 0.5)[0]
