@@ -236,3 +236,65 @@ fn frames_round_trip_through_flat_floats() {
     assert!(Frame::read_flat(&flat[..flat.len() - 1]).is_none(), "truncated input is rejected");
     assert!(Frame::read_flat(&[0.0; 16]).is_none());
 }
+
+/// The debug view's paths are the traced geometry: each starts at the
+/// listener, ends at the source, and crosses the doorway wall only
+/// through the opening (an opaque room: nothing passes through a wall).
+/// Off by default, and off again leaves nothing behind.
+#[test]
+fn debug_paths_follow_the_geometry() {
+    let mut g = Geometry::new();
+    let w = g.material(OPAQUE);
+    let t = 0.2;
+    g.add_box([-t, -t, -t], [6.0 + t, 5.0 + t, 0.0], w); // floor
+    g.add_box([-t, -t, 3.0], [6.0 + t, 5.0 + t, 3.0 + t], w); // ceiling
+    g.add_box([-t, -t, 0.0], [0.0, 5.0 + t, 3.0], w); // -x
+    g.add_box([-t, -t, 0.0], [6.0 + t, 0.0, 3.0], w); // -y
+    g.add_box([-t, 5.0, 0.0], [6.0 + t, 5.0 + t, 3.0], w); // +y
+    g.add_box([6.0, 0.0, 0.0], [6.0 + t, 2.0, 3.0], w); // +x, doorway y 2..3, z 0..2.1
+    g.add_box([6.0, 3.0, 0.0], [6.0 + t, 5.0, 3.0], w);
+    g.add_box([6.0, 2.0, 2.1], [6.0 + t, 3.0, 3.0], w);
+    g.ground_plane(-t, w);
+    let mut sim = Simulation::new(Config::default());
+    sim.set_geometry(g);
+    let (lis, at) = ([2.0, 1.5, 1.6], [9.0, 3.5, 1.5]);
+    let src = sim.add_source(SourceDesc::at(at));
+    sim.set_listener(lis, 0.0, 0.0, 0.0);
+
+    settle(&mut sim, 3);
+    assert!(sim.debug_paths().is_empty(), "off by default: no paths");
+
+    sim.set_debug_paths(true);
+    settle(&mut sim, 5);
+    let paths = sim.debug_paths();
+    assert!(!paths.is_empty(), "paths through the doorway");
+    assert!(paths.len() <= 64);
+    assert!(paths.windows(2).all(|p| p[0].energy >= p[1].energy), "strongest first");
+    let d = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    for p in &paths {
+        assert_eq!(p.source, src);
+        assert!(p.points.len() >= 2);
+        let (first, last) = (p.points[0], *p.points.last().unwrap());
+        assert!(d(first, lis) < 0.15, "starts at the ears: {first:?}");
+        let len: f32 = p.points.windows(2).map(|s| d(s[0], s[1])).sum();
+        assert!(d(last, at) < 0.1 + 0.06 * len, "ends at the source: {last:?} (path {len:.1} m)");
+        for s in p.points.windows(2) {
+            let (a, b) = (s[0], s[1]);
+            // crossing the doorway wall's mid-plane x = 6.1: inside the opening
+            if (a[0] - 6.1) * (b[0] - 6.1) < 0.0 {
+                let k = (6.1 - a[0]) / (b[0] - a[0]);
+                let (y, z) = (a[1] + k * (b[1] - a[1]), a[2] + k * (b[2] - a[2]));
+                assert!(
+                    (1.95..=3.05).contains(&y) && z <= 2.15,
+                    "a segment through the wall at y {y:.2} z {z:.2}: {:?}",
+                    p.points
+                );
+            }
+        }
+    }
+
+    sim.set_debug_paths(false);
+    assert!(sim.debug_paths().is_empty());
+    settle(&mut sim, 2);
+    assert!(sim.debug_paths().is_empty(), "off again: nothing recorded");
+}

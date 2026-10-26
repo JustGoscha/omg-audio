@@ -635,23 +635,27 @@ fn mirror_point(p: Vec3, (n, d): (Vec3, f32)) -> Vec3 {
 /// Paths kept per tick for the debug view.
 const DEBUG_PATHS: usize = 64;
 
-/// Keep `path` if it is among the strongest DEBUG_PATHS so far.
+/// Keep `path` if it is among the strongest DEBUG_PATHS so far. Once the
+/// list is full its weakest entry sits at index 0, so a path that cannot
+/// make the cut is turned away with one comparison (this runs for every
+/// next-event connection of every ray while debugging).
 fn keep_path(list: &mut Vec<(u32, f32, Vec<Vec3>)>, id: u32, e: f32, verts: &[Vec3], end: Vec3) {
-    if list.len() >= DEBUG_PATHS {
-        let (mi, me) = list
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (i, p.1))
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .unwrap();
-        if e <= me {
-            return;
-        }
-        list.swap_remove(mi);
+    let full = list.len() >= DEBUG_PATHS;
+    if full && e <= list[0].1 {
+        return;
     }
     let mut v = verts.to_vec();
     v.push(end);
-    list.push((id, e, v));
+    if full {
+        list[0] = (id, e, v);
+    } else {
+        list.push((id, e, v));
+        if list.len() < DEBUG_PATHS {
+            return;
+        }
+    }
+    let weakest = list.iter().enumerate().min_by(|a, b| a.1 .1.total_cmp(&b.1 .1)).map_or(0, |(i, _)| i);
+    list.swap(0, weakest);
 }
 
 impl Tracer {
