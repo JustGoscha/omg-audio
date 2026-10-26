@@ -2645,8 +2645,14 @@ async function startAudio() {
         ...state.projs.map((p) => [p.slot, p.x, p.y, p.z]),
         ...state.cars.map((c) => [c.slot, c.x, c.y, 0.7, c.vol]),
         // feet: always-active silent source at ground level under the
-        // body (step one-shots mix into it as fx voices)
-        [5, state.pose.x, state.pose.y, Math.max(0.2, (state.pose.z || 0) + 0.2), 1],
+        // body (step one-shots mix into it as fx voices); for a moment
+        // after a clap it is the hands instead — chest height, 0.4 m
+        // ahead (the sim's source set is fixed; at the feet a clap
+        // doubled with its floor reflection, loudest crouched)
+        performance.now() < (state.clapUntil || 0)
+          ? [5, state.pose.x + Math.cos(state.heading) * 0.4, state.pose.y + Math.sin(state.heading) * 0.4,
+            EYE - 0.45 + (state.pose.z || 0) + (state.airZ || 0) - 0.7 * (state.crouch || 0), 1]
+          : [5, state.pose.x, state.pose.y, Math.max(0.2, (state.pose.z || 0) + 0.2), 1],
       ],
     });
   }, 50);
@@ -3145,9 +3151,15 @@ function whisperNow() {
 // answers it (the echo canyon south of the town, many times over).
 function clapNow() {
   if (!state.fx) return;
+  // the feet source moves to the hands for the clap and its echoes; the
+  // clap waits until the sim has traced it there (a move under a playing
+  // clap would glide its pitch)
+  state.clapUntil = performance.now() + 1650;
   // a clap stands well above a footstep: +18 dB over the feet source
   // (+28, the physical difference, was too loud at the ears)
-  state.fx(13, 30, 'play', 8 * (0.9 + Math.random() * 0.2), 0.98 + Math.random() * 0.04);
+  const gain = 8 * (0.9 + Math.random() * 0.2);
+  const rate = 0.98 + Math.random() * 0.04;
+  setTimeout(() => state.fx(13, 30, 'play', gain, rate), 150);
 }
 function updateWildlife(t) {
   if (!state.fx || !state.running) return;

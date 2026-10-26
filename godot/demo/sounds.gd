@@ -43,6 +43,7 @@ var sources := {}       # name → OmgSource
 var balls: Array[OmgSource] = []
 var cars_src: Array[OmgSource] = []
 var feet: OmgSource
+var hands: OmgSource # the clap: chest height, a little in front
 var clip := {}          # name → clip id
 var steps := []         # [surface][variant] → clip id
 var t0 := 0.0
@@ -87,6 +88,7 @@ func setup(w: OmgWorld, r: Node3D, l: DemoLevel, pl: DemoPlayer) -> void:
 	for k in 2:
 		cars_src.append(_src("car%d" % k, Vector2(-18, 0), 0.7, "", CAR_LEVEL, false))
 	feet = _src("feet", Vector2(3, 3), 0.2, "", FEET_LEVEL)
+	hands = _src("hands", Vector2(3, 3), 1.2, "", FEET_LEVEL)
 
 	# fx bank, shaped on import as the web shapes it on decode
 	clip["woosh"] = world.add_clip(_woosh(world.sample_rate()))
@@ -147,12 +149,12 @@ func ring_bells() -> void:
 	wild["bells"] = _now() - t0 + 30.0 + randf() * 90.0
 	sources["bells"].play_clip(clip["bell_big"] if randf() < 0.75 else clip["bell_small"], 1.0, 1.0)
 
-# A clap (K) at the listener, through the feet source: the room answers
-# it (the echo canyon south of the town, many times over).
+# A clap (K) from the player's hands: the room answers it (the echo
+# canyon south of the town, many times over).
 func clap() -> void:
-	# a clap stands well above a footstep: +18 dB over the feet source
+	# a clap stands well above a footstep: +18 dB over the footstep level
 	# (+28, the physical difference, was too loud at the ears)
-	feet.play_clip(clip["clap"], 8.0 * (0.9 + randf() * 0.2), 0.98 + randf() * 0.04)
+	hands.play_clip(clip["clap"], 8.0 * (0.9 + randf() * 0.2), 0.98 + randf() * 0.04)
 
 func whisper() -> void:
 	world.whisper(clip["whisper%d" % (randi() % 2)], randf() < 0.5, 0.05 + randf() * 0.07, 0.55 + randf() * 0.25)
@@ -460,6 +462,11 @@ func _process(dt: float) -> void:
 	# the feet: always on, at ground level under the body
 	var g := player.global_position
 	feet.global_position = g + Vector3(0, 0.2, 0)
+	# the hands: chest height, 0.4 m ahead of the eyes (not the feet: a
+	# clap down there doubled with its floor reflection, loudest crouched)
+	var ahead := player.look_dir()
+	ahead.y = 0.0
+	hands.global_position = player.cam.global_position + ahead.normalized() * 0.4 + Vector3(0, -0.45, 0)
 	if player.landed:
 		_step(true)
 	elif player.stepped > 0.0:
