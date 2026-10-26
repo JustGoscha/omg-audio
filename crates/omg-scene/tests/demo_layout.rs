@@ -69,6 +69,33 @@ fn layout_json_is_fresh() {
     );
 }
 
+/// The paved ground patches tile without overlapping (each is one
+/// ground surface; overlaps would be coplanar double ground) and lie on
+/// the outdoor ground.
+#[test]
+fn ground_patches_are_disjoint_and_outdoors() {
+    let rooms = walkthrough::rooms();
+    let out = rooms.iter().find(|r| r.outdoor).unwrap();
+    let g = walkthrough::GROUND;
+    for (i, a) in g.iter().enumerate() {
+        assert!(
+            a.min.0 >= out.min.0 && a.max.0 <= out.max.0 && a.min.0 < a.max.0 && a.min.1 < a.max.1,
+            "{} lies off the outdoor ground",
+            a.name
+        );
+        for b in &g[i + 1..] {
+            let overlap = a.min.0 < b.max.0 - 1e-3
+                && b.min.0 < a.max.0 - 1e-3
+                && a.min.1 < b.max.1 - 1e-3
+                && b.min.1 < a.max.1 - 1e-3;
+            assert!(!overlap, "ground patches {} and {} overlap", a.name, b.name);
+        }
+    }
+    assert_eq!(walkthrough::ground_surface(-18.0, 20.0), "asphalt");
+    assert_eq!(walkthrough::ground_surface(12.0, 30.0), "paving");
+    assert_eq!(walkthrough::ground_surface(-25.0, 20.0), "grass");
+}
+
 #[test]
 fn acoustic_tables_derive_from_the_layout() {
     for room in 0..walkthrough::ROOM_COUNT {

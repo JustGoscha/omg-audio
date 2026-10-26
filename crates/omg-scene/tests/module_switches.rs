@@ -75,8 +75,13 @@ fn module_switches_shape_the_field_and_restore() {
         for _ in 0..settle {
             let _ = w.tick_at(6.0, 2.0, 0.0);
         }
-        let (blocks, _) = w.tick_at(6.0, 2.0, 0.0);
-        blocks[PIANO].reverb.rt60[1]
+        // the traced estimate wobbles tick to tick: read a 20-tick mean
+        let mut sum = 0.0;
+        for _ in 0..20 {
+            let (blocks, _) = w.tick_at(6.0, 2.0, 0.0);
+            sum += blocks[PIANO].reverb.rt60[1];
+        }
+        sum / 20.0
     };
     let rt_on = rt60_at(&mut w, 120);
     quality::set_module(1, false);

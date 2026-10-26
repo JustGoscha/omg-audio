@@ -26,13 +26,12 @@ pub const PRESETS: &[(&str, Material)] = &[
     ("grass", Material::GRASS),
     ("earth", Material::EARTH),
     ("acoustic_tile", Material::ACOUSTIC_TILE),
+    ("asphalt", Material::ASPHALT),
+    ("paving", Material::PAVING),
     // aliases and extras
     ("plaster", Material::BRICK),
     ("wood_door", Material::DOOR),
     ("marble", m([0.01, 0.01, 0.02], 0.08, [0.08, 0.01, 0.001])),
-    ("asphalt", m([0.02, 0.04, 0.06], 0.10, [0.05, 0.01, 0.001])),
-    // cobbles / setts: hard, the joints scatter
-    ("paving", m([0.02, 0.04, 0.06], 0.25, [0.08, 0.012, 0.0015])),
     // furniture (the walkthrough scene's furniture materials)
     ("soft", m([0.35, 0.60, 0.70], 0.65, [0.5, 0.25, 0.1])),
     ("furniture_wood", m([0.10, 0.10, 0.12], 0.40, [0.5, 0.3, 0.15])),

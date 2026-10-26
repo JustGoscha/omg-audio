@@ -1473,6 +1473,19 @@ pub fn layout_json() -> String {
         o.push_str(if k + 1 == listed.len() { "    }\n" } else { "    },\n" });
     }
     o.push_str("  ],\n");
+    o.push_str("  \"ground\": [\n");
+    let out = rooms.iter().find(|r| r.outdoor).expect("an outdoor room");
+    for (i, g) in GROUND.iter().enumerate() {
+        o.push_str(&format!(
+            "    {{ \"name\": \"{}\", \"surface\": \"{}\", \"min\": {}, \"max\": {} }}{}\n",
+            g.name,
+            g.surface,
+            arr(&[g.min.0, g.min.1.max(out.min.1)]),
+            arr(&[g.max.0, g.max.1.min(out.max.1)]),
+            if i + 1 == GROUND.len() { "" } else { "," }
+        ));
+    }
+    o.push_str("  ],\n");
     o.push_str("  \"sources\": [\n");
     let srcs = sources();
     let n_static = srcs.len() - DYN_SLOTS;
@@ -2185,9 +2198,61 @@ mod tests {
     }
 }
 
-/// The street's asphalt strip (x range): cars pass on it, and it is the
-/// one outdoor ground that is not grass (web/main.js draws it the same).
+/// The street's asphalt strip (x range): cars pass on it (its ground
+/// patch is in `GROUND`).
 pub const STREET_X: (f32, f32) = (-20.2, -15.8);
+
+/// Outdoor ground that is not grass: the paved square and paths, the
+/// street and its kerbs. Each patch is its own ground surface with its
+/// own material (`dome::build_world_mesh`), keeps the crickets out
+/// (`ambient_emitters`), picks the footstep sound, and is drawn by both
+/// demos from layout.json. Patches never overlap each other; the outdoor
+/// rect clips them, and a building standing on one simply covers it.
+pub struct GroundPatch {
+    pub name: &'static str,
+    /// Footstep / material name: "paving", "asphalt" or "concrete".
+    pub surface: &'static str,
+    pub min: (f32, f32),
+    pub max: (f32, f32),
+}
+
+impl GroundPatch {
+    pub fn material(&self) -> Material {
+        match self.surface {
+            "asphalt" => Material::ASPHALT,
+            "paving" => Material::PAVING,
+            _ => Material::CONCRETE,
+        }
+    }
+
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.min.0 && x <= self.max.0 && y >= self.min.1 && y <= self.max.1
+    }
+}
+
+const fn patch(name: &'static str, surface: &'static str, x0: f32, y0: f32, x1: f32, y1: f32) -> GroundPatch {
+    GroundPatch { name, surface, min: (x0, y0), max: (x1, y1) }
+}
+
+/// The street and kerbs run the whole outdoor length (clipped to it).
+pub const GROUND: &[GroundPatch] = &[
+    patch("square", "paving", 5.5, 24.2, 21.5, 44.0),
+    patch("lane to the old house", "paving", 21.5, 23.2, 34.5, 26.0),
+    patch("lane, west end", "paving", 14.0, 23.2, 21.5, 24.2),
+    patch("path to the cathedral", "paving", 6.0, 44.0, 10.0, 51.8),
+    patch("path to the street", "paving", -15.0, 26.0, 5.5, 29.0),
+    patch("bunker path", "paving", 24.0, 6.0, 31.4, 8.0),
+    patch("bunker lane", "paving", 34.5, 14.0, 37.0, 23.2),
+    patch("belfry path", "paving", 8.6, 74.4, 11.4, 316.0),
+    patch("street", "asphalt", STREET_X.0, -1e4, STREET_X.1, 1e4),
+    patch("west kerb", "concrete", -21.0, -1e4, STREET_X.0, 1e4),
+    patch("east kerb", "concrete", STREET_X.1, -1e4, -15.0, 1e4),
+];
+
+/// The outdoor ground's surface at (x, y): a patch's, else "grass".
+pub fn ground_surface(x: f32, y: f32) -> &'static str {
+    GROUND.iter().find(|g| g.contains(x, y)).map_or("grass", |g| g.surface)
+}
 
 /// Where the ambience recording was "made": ear height on open grass,
 /// south of the town. The shaped emitters are calibrated so their free
@@ -2199,7 +2264,7 @@ pub const CRICKET_Z: f32 = 0.1;
 
 /// The demo's ambience bed as shaped emitters: crickets in the grass —
 /// the outdoor ground (GRASS) minus every building footprint standing on
-/// it and the asphalt street. Fly up and they come from below; walk off
+/// it and every paved patch (`GROUND`). Fly up and they come from below; walk off
 /// and they collapse toward the meadow (`ambient.rs`).
 pub fn ambient_emitters(rooms: &[RoomDef]) -> Vec<crate::ambient::AmbientEmitter> {
     use crate::ambient::{AmbientEmitter, AmbientShape, Rect};
@@ -2217,7 +2282,10 @@ pub fn ambient_emitters(rooms: &[RoomDef]) -> Vec<crate::ambient::AmbientEmitter
     for r in rooms.iter().filter(|r| !r.outdoor && r.floor_z < 0.5 && r.floor_z + r.height > 0.2) {
         add((r.min.0, r.max.0, r.min.1, r.max.1), &mut holes);
     }
-    add((STREET_X.0, STREET_X.1, out.min.1, out.max.1), &mut holes);
+    for g in GROUND {
+        let (y0, y1) = (g.min.1.max(out.min.1), g.max.1.min(out.max.1));
+        add((g.min.0, g.max.0, y0, y1), &mut holes);
+    }
     vec![AmbientEmitter {
         shape: AmbientShape::GroundArea { min: out.min, max: out.max, z: CRICKET_Z, holes },
         level: 1.0,

@@ -111,13 +111,19 @@ func _ground() -> void:
 	g = geo.B(DemoMats.grass(), "", true, false, "far ground: kept out of the tracer BVH")
 	for r in [[-far, -far, far, t[1]], [-far, t[3], far, far], [-far, t[1], t[0], t[3]], [t[2], t[1], far, t[3]]]:
 		g.quad(Vector3(r[0], r[1], 0), Vector3(r[2], r[1], 0), Vector3(r[2], r[3], 0), Vector3(r[0], r[3], 0), Vector3(0, 0, 1))
-	# paving: the square, the paths — acoustic paving slabs on the grass
+	# paving: the square, the paths — acoustic paving slabs on the grass,
+	# from layout.json's "ground" (the street and kerbs: _street)
 	var c := geo.B(DemoMats.cobbles(), "auto", false)
-	for r in [[5.5, 24.2, 21.5, 44.0], [14.0, 23.2, 34.5, 26.0], [16.6, 26.0, 21.5, 44.0], [6.0, 44.0, 10.0, 51.8],
-			[-15.6, 26.0, 5.5, 29.0], [24.0, 6.0, 31.4, 8.0], [34.5, 14.0, 37.0, 23.2]]:
-		c.box(r[0], r[1], 0.0, r[2], r[3], 0.025, ["z-"])
 	var path := geo.B(DemoMats.cobbles(3.0, Color(0.75, 0.72, 0.65)), "auto", false)
-	path.box(8.6, 74.4, 0.0, 11.4, 316.0, 0.02, ["z-"])
+	for pv in _layout_ground():
+		if pv["surface"] != "paving":
+			continue
+		var mn: Vector2 = pv["min"]
+		var mx: Vector2 = pv["max"]
+		if pv["name"] == "belfry path":
+			path.box(mn.x, mn.y, 0.0, mx.x, mx.y, 0.02, ["z-"])
+		else:
+			c.box(mn.x, mn.y, 0.0, mx.x, mx.y, 0.025, ["z-"])
 
 # ------------------------------------------------- living room, corridor, hall
 
@@ -795,6 +801,55 @@ func _furniture() -> void:
 		_piece(it)
 
 var _layout_cache = null
+
+# The paved outdoor patches of layout.json: [{name, surface, min, max}]
+# (min/max as Vector2); the town's own set when the file is missing.
+func _layout_ground() -> Array:
+	var path := ProjectSettings.globalize_path(LAYOUT)
+	var data = JSON.parse_string(FileAccess.get_file_as_string(path)) if FileAccess.file_exists(path) else null
+	var raw: Array = data.get("ground", []) if data is Dictionary else []
+	if raw.is_empty():
+		for r in [["square", 5.5, 24.2, 21.5, 44.0], ["lane", 21.5, 23.2, 34.5, 26.0], ["lane", 14.0, 23.2, 21.5, 24.2],
+				["path", 6.0, 44.0, 10.0, 51.8], ["path", -15.0, 26.0, 5.5, 29.0], ["path", 24.0, 6.0, 31.4, 8.0],
+				["path", 34.5, 14.0, 37.0, 23.2], ["belfry path", 8.6, 74.4, 11.4, 316.0]]:
+			raw.append({"name": r[0], "surface": "paving", "min": [r[1], r[2]], "max": [r[3], r[4]]})
+	var out := []
+	for g in raw:
+		out.append({"name": str(g["name"]), "surface": str(g["surface"]),
+			"min": Vector2(g["min"][0], g["min"][1]), "max": Vector2(g["max"][0], g["max"][1])})
+	return out
+
+# The paved patch under (x, y) — "paving", "asphalt", "concrete" — or ""
+# (the slabs are thin and not collidable: the floor ray finds the grass).
+func ground_at(x: float, y: float) -> String:
+	if _ground_cache == null:
+		_ground_cache = _layout_ground()
+	for pv in _ground_cache:
+		var mn: Vector2 = pv["min"]
+		var mx: Vector2 = pv["max"]
+		if x >= mn.x and x <= mx.x and y >= mn.y and y <= mx.y:
+			return pv["surface"]
+	return ""
+
+var _ground_cache = null
+
+# A rug from the layout under (x, y) at floor height z (plan coordinates):
+# the footsteps' carpet (rugs are decor, the floor ray passes them).
+func rug_at(x: float, y: float, z: float) -> bool:
+	for it in _layout_cached():
+		if it["kind"] != "rug":
+			continue
+		var mn: Vector3 = it["min"]
+		var mx: Vector3 = it["max"]
+		# into the rug's own frame (min/max are its unturned extents)
+		var c := Vector2((mn.x + mx.x) * 0.5, (mn.y + mx.y) * 0.5)
+		var h := Vector2(mx.x - mn.x, mx.y - mn.y) * 0.5
+		var d := Vector2(x, y) - c
+		var yaw: float = it["yaw"]
+		var local := Vector2(d.x * cos(yaw) + d.y * sin(yaw), -d.x * sin(yaw) + d.y * cos(yaw))
+		if absf(local.x) <= h.x and absf(local.y) <= h.y and absf(mn.z - z) < 0.5:
+			return true
+	return false
 
 func _layout_cached() -> Array:
 	if _layout_cache == null:

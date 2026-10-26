@@ -22,6 +22,7 @@
 //! flicker to smooth away, and motion changes the estimate continuously.
 
 use crate::walkthrough::{glass_transmission, Door, Roof, RoomDef, DOOR_PANEL_TRANSMISSION, HEAVY_PANEL_TRANSMISSION};
+use omg_core::material::Material;
 use omg_core::mesh::{Mesh, MeshBuilder, SegHit};
 use omg_core::vec3::Vec3;
 use omg_core::NBANDS;
@@ -130,22 +131,27 @@ pub fn build_world_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>)
     let mut glass = Vec::new();
 
     let outdoor = rooms.iter().find(|r| r.outdoor).expect("an outdoor room");
-    let ground = b.material(outdoor.walls[4]);
-    b.begin_surface(); // the ground plane (one surface, shaft holes and all)
+    let grass = b.material(outdoor.walls[4]);
     // holes where vertical shafts pierce the grade (the bunker stairs)
     let shafts: Vec<(f32, f32, f32, f32)> = doors
         .iter()
         .filter(|d| d.zc < 0.0)
         .map(|d| (d.pos.0 - 1.5, d.pos.0 + 0.8, d.pos.1 - d.half, d.pos.1 + d.half))
         .collect();
+    // the paved patches (square, paths, street), clipped to the ground
+    let out_r = (outdoor.min.0, outdoor.max.0, outdoor.min.1, outdoor.max.1);
+    let clip = |r: (f32, f32, f32, f32)| (r.0.max(out_r.0), r.1.min(out_r.1), r.2.max(out_r.2), r.3.min(out_r.3));
+    let patches: Vec<((f32, f32, f32, f32), Material)> = crate::walkthrough::GROUND
+        .iter()
+        .map(|g| (clip((g.min.0, g.max.0, g.min.1, g.max.1)), g.material()))
+        .filter(|(r, _)| r.1 > r.0 && r.3 > r.2)
+        .collect();
     // Tessellation bands: the town and its surroundings get wall-grade
     // 4 m patches (rays live here); the street to the horizon packs at
     // 64 m. Before banding, 99.3% of the world's BVH primitives were
     // far-field ground no ray ever visited.
     let town = (-40.0f32, 120.0f32); // y-extent of the ray-active world
-    for (u0, u1, v0, v1) in
-        subrects((outdoor.min.0, outdoor.max.0, outdoor.min.1, outdoor.max.1), &shafts)
-    {
+    let lay = |b: &mut MeshBuilder, (u0, u1, v0, v1): (f32, f32, f32, f32), mat: u16| {
         let mut bands: Vec<(f32, f32, f32)> = Vec::new(); // (y0, y1, max_edge)
         let (n0, n1) = (v0.max(town.0), v1.min(town.1));
         if v0 < town.0 {
@@ -164,10 +170,25 @@ pub fn build_world_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>)
                 Vec3::new(u1, y0, 0.0),
                 Vec3::new(u1, y1, 0.0),
                 Vec3::new(u0, y1, 0.0),
-                ground,
+                mat,
             );
         }
         b.coarse(0.0);
+    };
+    // the grass: one surface, shaft and patch holes and all
+    b.begin_surface();
+    let mut holes = shafts.clone();
+    holes.extend(patches.iter().map(|(r, _)| *r));
+    for r in subrects(out_r, &holes) {
+        lay(&mut b, r, grass);
+    }
+    // each patch its own surface and material
+    for (r, m) in &patches {
+        let mat = b.material(*m);
+        b.begin_surface();
+        for sr in subrects(*r, &shafts) {
+            lay(&mut b, sr, mat);
+        }
     }
 
     for r in rooms.iter().filter(|r| !r.outdoor) {
@@ -569,6 +590,27 @@ mod tests {
 
     fn probe() -> DomeProbe {
         DomeProbe::new(&walkthrough::rooms(), &walkthrough::doors())
+    }
+
+    /// The paved patches are ground of their own material: a ray
+    /// dropped on the street lands on asphalt, on the square on paving,
+    /// in the meadow on grass.
+    #[test]
+    fn the_ground_carries_its_patches() {
+        let (mesh, _) = build_world_mesh(&walkthrough::rooms(), &walkthrough::doors());
+        let under = |x: f32, y: f32| {
+            let mut hits = Vec::new();
+            mesh.segment_hits(Vec3::new(x, y, 1.0), Vec3::new(x, y, -1.0), &mut hits);
+            let h = hits.iter().min_by(|a, b| a.t.total_cmp(&b.t)).expect("ground under the feet");
+            mesh.materials[h.material as usize]
+        };
+        let same = |a: Material, b: Material| a.absorption == b.absorption && a.scattering == b.scattering;
+        assert!(same(under(-18.0, 20.0), Material::ASPHALT), "the street is asphalt");
+        assert!(same(under(-18.0, 900.0), Material::ASPHALT), "far down the street too");
+        assert!(same(under(12.0, 30.0), Material::PAVING), "the square is paved");
+        assert!(same(under(10.0, 200.0), Material::PAVING), "the belfry path is paved");
+        assert!(same(under(-25.0, 20.0), Material::GRASS), "the verge is grass");
+        assert!(same(under(40.0, -20.0), Material::GRASS), "the meadow is grass");
     }
 
     fn total_mid(bins: &[DomeBin; DOME_BINS]) -> f32 {

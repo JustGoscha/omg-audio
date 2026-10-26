@@ -228,6 +228,19 @@
       ]
     }
   ],
+  "ground": [
+    { "name": "square", "surface": "paving", "min": [5.5, 24.2], "max": [21.5, 44] },
+    { "name": "lane to the old house", "surface": "paving", "min": [21.5, 23.2], "max": [34.5, 26] },
+    { "name": "lane, west end", "surface": "paving", "min": [14, 23.2], "max": [21.5, 24.2] },
+    { "name": "path to the cathedral", "surface": "paving", "min": [6, 44], "max": [10, 51.8] },
+    { "name": "path to the street", "surface": "paving", "min": [-15, 26], "max": [5.5, 29] },
+    { "name": "bunker path", "surface": "paving", "min": [24, 6], "max": [31.4, 8] },
+    { "name": "bunker lane", "surface": "paving", "min": [34.5, 14], "max": [37, 23.2] },
+    { "name": "belfry path", "surface": "paving", "min": [8.6, 74.4], "max": [11.4, 316] },
+    { "name": "street", "surface": "asphalt", "min": [-20.2, -1900], "max": [-15.8, 2000] },
+    { "name": "west kerb", "surface": "concrete", "min": [-21, -1900], "max": [-20.2, 2000] },
+    { "name": "east kerb", "surface": "concrete", "min": [-15.8, -1900], "max": [-15, 2000] }
+  ],
   "sources": [
     { "index": 0, "name": "music", "room": 0, "pos": [2, 3, 1.5], "emitters": [[2, 3]] },
     { "index": 1, "name": "voice", "room": 2, "pos": [10.5, 20.5, 1.5], "emitters": [[10.5, 20.5]] },

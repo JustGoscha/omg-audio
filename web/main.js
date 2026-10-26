@@ -52,6 +52,9 @@ const LAYOUT = await fetch('../assets/demo/layout.json')
   .catch(() => null);
 if (!LAYOUT) console.warn('layout.json missing: interiors stay empty');
 const PIECES = LAYOUT ? LAYOUT.rooms.flatMap((r) => r.furniture) : [];
+// paved outdoor ground (square, paths, street, kerbs): drawn below,
+// and what the footsteps land on; the sim's ground mesh has the same
+const GROUND = LAYOUT && LAYOUT.ground ? LAYOUT.ground : [];
 // walk colliders: [min x,y,z, max x,y,z] of everything a walker bumps
 // into (rugs lie flat)
 const FURNITURE = PIECES.filter((p) => p.kind !== 'rug').map((p) => [...p.min, ...p.max]);
@@ -1892,6 +1895,40 @@ function buildWorld() {
   asphalt.rotation.x = -Math.PI / 2;
   asphalt.position.copy(v3(-18, 50, 0.01));
   scene.add(asphalt);
+  // the paved patches of layout.json (the street itself is the strip
+  // above, which runs on past the acoustic ground): setts on the square
+  // and the paths, concrete kerbs along the street
+  const settsC = document.createElement('canvas');
+  settsC.width = settsC.height = 128;
+  const st = settsC.getContext('2d');
+  st.fillStyle = '#3a3733'; st.fillRect(0, 0, 128, 128);
+  for (let j = 0; j < 8; j++) {
+    for (let i = -1; i < 8; i++) {
+      const l = 74 + ((i * 37 + j * 53) % 23);
+      st.fillStyle = `rgb(${l}, ${l - 4}, ${l - 10})`;
+      st.fillRect(i * 16 + (j % 2) * 8 + 1, j * 16 + 1, 14, 14);
+    }
+  }
+  const setts = new THREE.CanvasTexture(settsC);
+  setts.wrapS = setts.wrapT = THREE.RepeatWrapping;
+  for (const g of GROUND) {
+    if (g.surface === 'asphalt') continue;
+    const w = g.max[0] - g.min[0];
+    const d = Math.min(g.max[1], 400) - Math.max(g.min[1], -400);
+    let mat;
+    if (g.surface === 'paving') {
+      const tex = setts.clone();
+      tex.needsUpdate = true;
+      tex.repeat.set(w / 2, d / 2); // a 2 m tile of 16 setts
+      mat = new THREE.MeshLambertMaterial({ map: tex, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+    } else {
+      mat = new THREE.MeshLambertMaterial({ color: 0x6d6d68 });
+    }
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.copy(v3(g.min[0] + w / 2, Math.max(g.min[1], -400) + d / 2, g.surface === 'paving' ? 0.005 : 0.012));
+    scene.add(m);
+  }
   const dashMat = new THREE.MeshBasicMaterial({ color: 0x8a8f7a });
   for (let y = -300; y < 360; y += 6) {
     const dash = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 2.2), dashMat);
@@ -2976,7 +3013,7 @@ function movePose(t) {
 // Distance-driven, not time-driven: every ~stride of actual horizontal
 // travel lands one step at the feet source (dyn slot 5, source 13),
 // which sits at ground level under the body — the engine gives each
-// step the room's own acoustics for free. Surface from the room map.
+// step the room's own acoustics for free. Surface: surfaceUnderfoot().
 const STEP_SURFACES = ['wood', 'carpet', 'concrete', 'grass'];
 const ROOM_SURFACE = {
   'Living Room': 'wood', Corridor: 'wood', 'Great Hall': 'concrete',
@@ -2984,6 +3021,22 @@ const ROOM_SURFACE = {
   'Old House Upper': 'carpet', Cathedral: 'concrete', Bunker: 'concrete',
   Outside: 'grass',
 };
+// What the feet land on: a rug, else the room's floor; outdoors the
+// paved patch underfoot (setts, asphalt and kerbs all step as hard
+// ground), else grass.
+const GROUND_STEP = { paving: 'concrete', asphalt: 'concrete', concrete: 'concrete' };
+function surfaceUnderfoot() {
+  const { x, y } = state.pose;
+  const z = state.pose.z || 0;
+  const room = state.simState ? ROOMS[state.simState[2] | 0] : null;
+  if (room && !room.outdoor) {
+    const onRug = PIECES.some((p) => p.kind === 'rug'
+      && x >= p.min[0] && x <= p.max[0] && y >= p.min[1] && y <= p.max[1] && Math.abs(p.min[2] - z) < 0.5);
+    return onRug ? 'carpet' : ROOM_SURFACE[room.name] || 'concrete';
+  }
+  const g = GROUND.find((p) => x >= p.min[0] && x <= p.max[0] && y >= p.min[1] && y <= p.max[1]);
+  return g ? GROUND_STEP[g.surface] || 'concrete' : 'grass';
+}
 let strideAcc = 0;
 let strideNext = 1.5;
 let lastStepT = 0;
@@ -2999,8 +3052,7 @@ function strideStep(d) {
   lastStepT = now;
   strideAcc = 0;
   strideNext = 1.35 + Math.random() * 0.3; // no metronome feet
-  const room = state.simState ? ROOMS[state.simState[2] | 0] : null;
-  const surf = ROOM_SURFACE[room ? room.name : 'Outside'] || 'concrete';
+  const surf = surfaceUnderfoot();
   let v = (Math.random() * 5) | 0;
   if (v === lastVariant) v = (v + 1) % 5; // never the same step twice
   lastVariant = v;

@@ -118,6 +118,22 @@ impl Material {
         scattering: 0.10,
         transmission: [0.10, 0.03, 0.01],
     };
+    /// Asphalt road surface: dense and smooth, a near-mirror ground
+    /// (absorption ≈ 0.02/0.03/0.03/0.05/0.05/0.07, 125 Hz–4 kHz, the
+    /// usual "asphalt, smooth" table row). Transmission: a road slab on
+    /// earth passes nothing audible.
+    pub const ASPHALT: Material = Material {
+        absorption: [0.02, 0.04, 0.06],
+        scattering: 0.10,
+        transmission: [0.05, 0.01, 0.001],
+    };
+    /// Cobbles / setts / paving slabs: as hard as asphalt, but the joints
+    /// and the relief scatter a quarter of the energy.
+    pub const PAVING: Material = Material {
+        absorption: [0.02, 0.04, 0.06],
+        scattering: 0.25,
+        transmission: [0.08, 0.012, 0.0015],
+    };
     /// Heavy draped curtain (velour, ~0.6 kg/m², draped to half area):
     /// 0.14/0.35/0.55/0.72/0.70/0.65 (125 Hz–4 kHz; L. L. Beranek, Noise
     /// and Vibration Control, absorption table). Fabric leaks sound

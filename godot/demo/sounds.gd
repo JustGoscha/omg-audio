@@ -159,8 +159,7 @@ func _step(force := false) -> void:
 	last_step = _now()
 	stride_acc = 0.0
 	stride_next = 1.35 + randf() * 0.3
-	var p := player.plan()
-	var surf: String = DemoLevel.room_at(p.x, p.y, p.z + 0.5)[5]
+	var surf := _surface_underfoot()
 	var v := randi() % 5
 	if v == last_variant:
 		v = (v + 1) % 5
@@ -168,6 +167,31 @@ func _step(force := false) -> void:
 	var gain := pow(10.0, (randf() * 3.0 - 1.5) / 20.0)
 	var rate := 0.97 + randf() * 0.06
 	feet.play_clip(steps[SURFACES.find(surf)][v], gain, rate)
+
+# What the feet land on: a rug, else the material of the floor right
+# under them (a ray against the level's collision; every surface
+# material declares its acoustics) — on the grass, a paved patch of
+# layout.json if one is there — else the room table.
+const STEP_OF := {"grass": "grass", "earth": "grass", "wood": "wood", "furniture_wood": "wood",
+	"cabinet": "wood", "door": "wood", "carpet": "carpet", "soft": "carpet", "curtain": "carpet"}
+
+func _surface_underfoot() -> String:
+	var p := player.plan()
+	if level.rug_at(p.x, p.y, p.z):
+		return "carpet"
+	var from := player.global_position + Vector3(0, 0.3, 0)
+	var q := PhysicsRayQueryParameters3D.create(from, from + Vector3(0, -0.8, 0))
+	q.exclude = [player.get_rid()]
+	var hit := player.get_world_3d().direct_space_state.intersect_ray(q)
+	if not hit.is_empty():
+		var mi = hit["collider"].get_parent()
+		if mi is MeshInstance3D:
+			var a := DemoMats.acoustic_of(mi.material_override)
+			if a == "grass" and level.ground_at(p.x, p.y) != "":
+				return "concrete" # setts, asphalt, kerbs: hard ground
+			if a != "":
+				return STEP_OF.get(a, "concrete")
+	return DemoLevel.room_at(p.x, p.y, p.z + 0.5)[5]
 
 func throw_ball() -> void:
 	if projs.size() >= 3:
