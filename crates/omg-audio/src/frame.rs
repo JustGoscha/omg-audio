@@ -4,6 +4,8 @@
 //! or a SharedArrayBuffer, without a serialization library.
 
 use omg_core::params::ParamBlock;
+use omg_dsp::dense::DenseKernel;
+use std::sync::Arc;
 
 /// A sound source in a `Simulation` (and its channel in the `Mixer`).
 /// Ids are never reused within one simulation.
@@ -48,6 +50,10 @@ pub struct Frame {
     pub blocks: Vec<(SourceId, ParamBlock)>,
     /// The outdoor field (see `SkyCell`); empty before the first trace.
     pub sky: Vec<SkyCell>,
+    /// Engine v4: every source's current dense-response kernel (shared,
+    /// not copied; the mixer swaps one in when it changes). Not part of
+    /// the flat layout: a web host builds them on its own side.
+    pub kernels: Vec<(SourceId, Arc<DenseKernel>)>,
 }
 
 /// Flat layout tag ("OMGF") and revision; bump on any layout change.
@@ -149,6 +155,6 @@ impl Frame {
             blocks.push((SourceId(id), ParamBlock::read_flat(body)));
             o += 2 + n;
         }
-        Some(Frame { version, listener, time, blocks, sky })
+        Some(Frame { version, listener, time, blocks, sky, kernels: Vec::new() })
     }
 }

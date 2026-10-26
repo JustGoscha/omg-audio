@@ -165,6 +165,8 @@ struct Slot {
     /// Voice virtualization ramp: 1 = among the `max_voices` loudest.
     audible: Smoothed,
     latest: ParamBlock,
+    /// v4: the dense kernel the renderer convolves (as the frame had it).
+    kernel: Option<std::sync::Arc<omg_dsp::dense::DenseKernel>>,
     /// What the renderer gets: `latest` cut to this source's share of
     /// the tap budget, with hysteresis (see `select`).
     filtered: ParamBlock,
@@ -190,6 +192,9 @@ struct Slot {
     /// (play/stop, apply) and after each block it rendered — a channel
     /// that does not render costs nothing per block.
     quiet_at: f64,
+    /// When its last sound ended (emission clock), kept after the log
+    /// forgets it.
+    sounded_until: f64,
     audible_next: bool,
     meter: MeterAcc,
 }
@@ -197,8 +202,16 @@ struct Slot {
 impl Slot {
     /// Emission-clock time after which nothing it plays can still be
     /// heard: its last sound + the longest path + the reverb's ring.
-    fn quiet_after(&self, sample_rate: f32) -> f64 {
+    fn quiet_after(&mut self, sample_rate: f32) -> f64 {
+        // the last sound, remembered past the log forgetting it (the log
+        // only keeps what a path can still read; the reverb and the dense
+        // convolution ring on from their own state)
         let end = self.log.sounds_until();
+        if end == f64::INFINITY {
+            return end;
+        }
+        self.sounded_until = self.sounded_until.max(end);
+        let end = self.sounded_until;
         if !end.is_finite() {
             return end;
         }
@@ -207,7 +220,8 @@ impl Slot {
         if let Some(r) = &pb.remote {
             rt = r.rt60.iter().fold(rt, |a, &b| a.max(b));
         }
-        end + self.renderer.horizon() + (rt.min(20.0) as f64 * 1.5 + 0.1) * sample_rate as f64
+        let tail = (rt.min(20.0) as f64 * 1.5 + 0.1) * sample_rate as f64;
+        end + self.renderer.horizon() + tail.max(self.renderer.dense_tail())
     }
 
     /// Cut `latest` to `k` paths for the renderer, with hysteresis: the
@@ -340,6 +354,7 @@ impl Mixer {
             fader: Smoothed::new(1.0, 0.02, self.sample_rate),
             audible: Smoothed::new(1.0, 0.02, self.sample_rate),
             latest: ParamBlock::default(),
+            kernel: None,
             filtered: ParamBlock { taps: Vec::with_capacity(2 * SOURCE_TAPS), ..Default::default() },
             admitted: Vec::with_capacity(2 * SOURCE_TAPS),
             admitted_next: Vec::with_capacity(2 * SOURCE_TAPS),
@@ -353,6 +368,7 @@ impl Mixer {
             share: (usize::MAX, usize::MAX),
             loud: 0.0,
             quiet_at: f64::NEG_INFINITY,
+            sounded_until: f64::NEG_INFINITY,
             audible_next: false,
             meter: MeterAcc::default(),
         }
@@ -377,6 +393,7 @@ impl Mixer {
                 // crossfades from whatever it last played (silence)
                 let s = &mut self.slots[i];
                 s.log = PlayLog::preallocated();
+                s.sounded_until = f64::NEG_INFINITY;
                 s.fader.snap(1.0);
                 s.audible.snap(1.0);
                 s.renderer.invalidate_params();
@@ -436,6 +453,18 @@ impl Mixer {
             let i = self.slot_of(*id);
             let s = &mut self.slots[i];
             s.in_frame = true;
+            // v4: its dense kernel, swapped in when it changed (absent:
+            // none — a v3 frame, or the source went quiet)
+            let k = frame.kernels.iter().find(|(kid, _)| kid == id).map(|(_, k)| k);
+            let same = match (k, &s.kernel) {
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            };
+            if !same {
+                s.kernel = k.cloned();
+                s.renderer.set_dense_kernel(s.kernel.clone());
+            }
             if !s.has_block || s.latest.version != pb.version {
                 // traced anew: how much time passed since its last trace
                 s.motion = match (frame.time, s.traced_at) {
@@ -463,6 +492,9 @@ impl Mixer {
             if s.quiet_at < self.clock {
                 s.used = false;
                 self.index.remove(&s.id.0);
+                if s.kernel.take().is_some() {
+                    s.renderer.set_dense_kernel(None);
+                }
             }
         }
         if self.head_from_frames {

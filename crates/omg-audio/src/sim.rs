@@ -17,7 +17,9 @@ use omg_core::material::Material;
 use omg_core::mesh::{Mesh, MeshBuilder};
 use omg_core::params::{ParamBlock, RemoteReverb, Tap};
 use omg_core::v3::walker::{trace_with, V3Walker};
-use omg_core::v3::{Budget, Source, Tracer, World};
+use omg_core::v3::{Budget, DenseResponse, Source, Tracer, World};
+use omg_dsp::dense::{build_kernel, DenseKernel};
+use std::sync::Arc;
 use omg_core::vec3::Vec3;
 
 /// How much ray tracing a tick may do. Each step roughly doubles the
@@ -86,11 +88,29 @@ pub struct Config {
     /// Seed of the tracer's random numbers (same seed, same inputs →
     /// same frames on the CPU).
     pub seed: u64,
+    /// Engine v4 (ENGINE_V4.md): render the traced response as traced —
+    /// coherent arrivals as taps at any delay, the scattered rest as a
+    /// convolved dense response (no early/late split, no parametric
+    /// reverb). CPU and GPU walks alike.
+    pub v4: bool,
+    /// The mixer's sample rate (v4 builds its convolution kernels for it).
+    pub sample_rate: f32,
+    /// v4: build convolution kernels on a thread of their own (off the
+    /// tick); false builds them in the tick (within `KERNEL_BUDGET_MS`).
+    pub kernel_thread: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { quality: Quality::High, compute: Compute::Cpu, max_traced_sources: 64, seed: 0x0e3_5eed }
+        Self {
+            quality: Quality::High,
+            compute: Compute::Cpu,
+            max_traced_sources: 64,
+            seed: 0x0e3_5eed,
+            v4: true,
+            sample_rate: 48_000.0,
+            kernel_thread: true,
+        }
     }
 }
 
@@ -139,6 +159,10 @@ struct Src {
     block: ParamBlock,
     /// Position and tick of its last trace (None = never traced).
     traced: Option<(Vec3, u64)>,
+    /// v4: the latest dense response (unit source), and the kernel built
+    /// from one (with the response, gain and tick it was built from).
+    dense: Option<DenseResponse>,
+    kernel: Option<(Arc<DenseKernel>, DenseResponse, f32, u64)>,
 }
 
 struct Obj {
@@ -167,10 +191,65 @@ pub struct Simulation {
     picks: Vec<(f32, usize)>,
     traced_last: usize,
     debug_paths: bool,
+    /// v4: the kernel-building thread (when `Config::kernel_thread` and
+    /// threads are available), started at the first build.
+    kernels: Option<KernelWorker>,
+}
+
+/// v4's kernel builder on a thread of its own: responses in, kernels out.
+struct KernelWorker {
+    jobs: std::sync::mpsc::Sender<(SourceId, DenseResponse, f32, f32, u64)>,
+    done: std::sync::mpsc::Receiver<(SourceId, Arc<DenseKernel>, DenseResponse, f32, u64)>,
+    /// Sources with a build in flight.
+    busy: Vec<SourceId>,
+}
+
+impl KernelWorker {
+    fn start() -> Option<Self> {
+        let (jt, jr) = std::sync::mpsc::channel::<(SourceId, DenseResponse, f32, f32, u64)>();
+        let (dt, dr) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("omg-kernels".into())
+            .spawn(move || {
+                while let Ok((id, resp, gain, sr, tick)) = jr.recv() {
+                    let k = Arc::new(build_kernel(&resp, sr, gain, id.0));
+                    if dt.send((id, k, resp, gain, tick)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .ok()?;
+        Some(Self { jobs: jt, done: dr, busy: Vec::new() })
+    }
 }
 
 fn v3(p: [f32; 3]) -> Vec3 {
     Vec3::new(p[0], p[1], p[2])
+}
+
+/// v4 kernel rebuilds: a dense response whose envelope moved by this
+/// share (L1 of the mid band over its total, ~0.6 dB) is rebuilt; a
+/// quarter of it still lands after `KERNEL_REFRESH_TICKS`. At most
+/// `KERNEL_BUDGET_MS` of a tick goes to building (always one).
+const KERNEL_CHANGE: f32 = 0.15;
+const KERNEL_REFRESH_TICKS: u64 = 40;
+const KERNEL_BUDGET_MS: f32 = 4.0;
+/// Builds queued on the kernel thread at once.
+const KERNEL_QUEUE: usize = 4;
+
+/// How far `b`'s mid-band envelope is from `a`'s (L1 over the larger
+/// total; 0 = the same, 2 = disjoint).
+fn dense_change(a: &DenseResponse, b: &DenseResponse) -> f32 {
+    let n = a.bins.len().max(b.bins.len());
+    let (mut diff, mut ta, mut tb) = (0.0f32, 0.0f32, 0.0f32);
+    for i in 0..n {
+        let x = a.bins.get(i).map_or(0.0, |v| v[1]);
+        let y = b.bins.get(i).map_or(0.0, |v| v[1]);
+        diff += (x - y).abs();
+        ta += x;
+        tb += y;
+    }
+    diff / ta.max(tb).max(1e-30)
 }
 
 /// A moved source counts as this many ticks overdue for a re-trace.
@@ -186,7 +265,11 @@ impl Simulation {
             cfg,
             mesh: MeshBuilder::new().build(),
             grade: None,
-            tracer: Tracer::new(cfg.seed),
+            tracer: {
+                let mut t = Tracer::new(cfg.seed);
+                t.v4 = cfg.v4;
+                t
+            },
             walker: None,
             sources: Vec::new(),
             objects: Vec::new(),
@@ -199,6 +282,7 @@ impl Simulation {
             picks: Vec::new(),
             traced_last: 0,
             debug_paths: false,
+            kernels: None,
         };
         s.make_walker();
         s
@@ -210,8 +294,9 @@ impl Simulation {
 
     /// Change quality or compute on the fly (takes effect next tick).
     pub fn set_config(&mut self, cfg: Config) {
-        let rebuild = cfg.compute != self.cfg.compute;
+        let rebuild = cfg.compute != self.cfg.compute || cfg.v4 != self.cfg.v4;
         self.cfg = cfg;
+        self.tracer.v4 = cfg.v4;
         if rebuild {
             self.make_walker();
         }
@@ -225,6 +310,7 @@ impl Simulation {
         self.grade = grade;
         // the smoothed fields belong to the old world
         self.tracer = Tracer::new(self.cfg.seed);
+        self.tracer.v4 = self.cfg.v4;
         self.tracer.debug = self.debug_paths;
         for s in &mut self.sources {
             s.traced = None;
@@ -280,6 +366,8 @@ impl Simulation {
             active: desc.active,
             block: ParamBlock::default(),
             traced: None,
+            dense: None,
+            kernel: None,
         });
     }
 
@@ -403,6 +491,93 @@ impl Simulation {
             .collect()
     }
 
+    /// v4: a source's latest dense (scattered) response, unit source
+    /// (see `DenseResponse`); None in v3 or before its first trace.
+    pub fn dense_response(&self, id: SourceId) -> Option<&DenseResponse> {
+        self.sources.iter().find(|s| s.id == id).and_then(|s| s.dense.as_ref())
+    }
+
+    /// v4: (re)build the convolution kernels of the sources whose dense
+    /// response changed audibly since theirs was built — the most changed
+    /// (× loudness) first, within `KERNEL_BUDGET_MS` of this tick (at
+    /// least one). A kernel lags its response by a few ticks at most.
+    fn build_kernels(&mut self, tick: u64) {
+        // finished builds land first
+        if let Some(w) = &mut self.kernels {
+            while let Ok((id, k, resp, gain, at)) = w.done.try_recv() {
+                w.busy.retain(|b| *b != id);
+                if let Some(s) = self.sources.iter_mut().find(|s| s.id == id && s.dense.is_some()) {
+                    s.kernel = Some((k, resp, gain, at));
+                }
+            }
+        } else if self.cfg.kernel_thread {
+            self.kernels = KernelWorker::start();
+        }
+        let ear = v3(self.listener.position);
+        let busy: &[SourceId] = self.kernels.as_ref().map_or(&[], |w| &w.busy);
+        let mut todo: Vec<(f32, usize)> = Vec::new();
+        for (i, s) in self.sources.iter().enumerate() {
+            let Some(d) = &s.dense else { continue };
+            if busy.contains(&s.id) {
+                continue;
+            }
+            let change = match &s.kernel {
+                None => f32::INFINITY,
+                Some((_, from, g, at)) => {
+                    let gain = if *g > 0.0 { (s.gain / g - 1.0).abs() } else { 1.0 };
+                    let c = dense_change(from, d).max(gain);
+                    // small drifts still land, just later
+                    if c > KERNEL_CHANGE || (c > KERNEL_CHANGE / 4.0 && tick > at + KERNEL_REFRESH_TICKS) {
+                        c
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            let loud = s.gain / (s.pos - ear).length().max(1.0);
+            todo.push((change.min(1e6) * loud, i));
+        }
+        todo.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let sr = self.cfg.sample_rate;
+        if let Some(w) = &mut self.kernels {
+            // the thread's queue stays short: the most needed first
+            for &(_, i) in &todo {
+                if w.busy.len() >= KERNEL_QUEUE {
+                    break;
+                }
+                let s = &self.sources[i];
+                let d = s.dense.clone().expect("listed above");
+                if w.jobs.send((s.id, d, s.gain, sr, tick)).is_ok() {
+                    w.busy.push(s.id);
+                }
+            }
+            return;
+        }
+        let t0 = std::time::Instant::now();
+        for (n, &(_, i)) in todo.iter().enumerate() {
+            if n > 0 && t0.elapsed().as_secs_f32() * 1000.0 > KERNEL_BUDGET_MS {
+                break;
+            }
+            let s = &mut self.sources[i];
+            let d = s.dense.clone().expect("listed above");
+            let k = build_kernel(&d, sr, s.gain, s.id.0);
+            s.kernel = Some((Arc::new(k), d, s.gain, tick));
+        }
+    }
+
+    /// v4: wait for every kernel build in flight and take it in (offline
+    /// renders and tests: the next `tick` carries them).
+    pub fn flush_kernels(&mut self) {
+        let Some(w) = &mut self.kernels else { return };
+        while !w.busy.is_empty() {
+            let Ok((id, k, resp, gain, at)) = w.done.recv() else { break };
+            w.busy.retain(|b| *b != id);
+            if let Some(s) = self.sources.iter_mut().find(|s| s.id == id && s.dense.is_some()) {
+                s.kernel = Some((k, resp, gain, at));
+            }
+        }
+    }
+
     // ---- the tick --------------------------------------------------------
 
     /// Trace once and return every source's paths.
@@ -467,6 +642,14 @@ impl Simulation {
                 pb.taps.push(Tap { gains: core::array::from_fn(|b| t.gains[b] * g), ..t });
             }
             pb.reverb.rt60 = f.reverb.rt60;
+            if let Some(d) = f.dense {
+                // v4: the scattered response is convolved (`kernels`), no
+                // parametric reverb
+                s.dense = Some(d);
+                s.block = pb;
+                s.traced = Some((s.pos, tick));
+                continue;
+            }
             // a one-sided late field plays from where it comes (the
             // doorway, the lit facade); the rest feeds the diffuse FDN
             let a = f.aniso.clamp(0.0, 0.9);
@@ -490,6 +673,13 @@ impl Simulation {
                 s.block = ParamBlock { version: tick, ..Default::default() };
                 s.traced = None;
             }
+            if !self.cfg.v4 || !s.active {
+                s.dense = None;
+                s.kernel = None;
+            }
+        }
+        if self.cfg.v4 {
+            self.build_kernels(tick);
         }
 
         let sky = self.tracer.sky().into_iter().map(|(dir, energy)| SkyCell { dir, energy }).collect();
@@ -498,6 +688,7 @@ impl Simulation {
             listener: self.listener,
             time: self.listener_time,
             blocks: self.sources.iter().map(|s| (s.id, s.block.clone())).collect(),
+            kernels: self.sources.iter().filter_map(|s| s.kernel.as_ref().map(|k| (s.id, k.0.clone()))).collect(),
             sky,
         }
     }

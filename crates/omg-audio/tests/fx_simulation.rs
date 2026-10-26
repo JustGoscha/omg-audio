@@ -35,6 +35,26 @@ fn energy(pb: &ParamBlock) -> [f32; 3] {
     })
 }
 
+/// v4: the dense response's energy per band (0 in v3).
+fn dense_energy(sim: &Simulation, id: omg_audio::SourceId) -> [f32; 3] {
+    let d = sim.dense_response(id);
+    core::array::from_fn(|b| d.map_or(0.0, |d| d.bins.iter().map(|x| x[b]).sum()))
+}
+
+/// v4: RT60 (mid) of the dense response from its Schroeder curve (the
+/// -5 to -25 dB slope).
+fn dense_rt60(d: &omg_audio::DenseResponse) -> f32 {
+    let mut sch: Vec<f64> = d.bins.iter().map(|x| x[1] as f64).collect();
+    for i in (0..sch.len().saturating_sub(1)).rev() {
+        sch[i] += sch[i + 1];
+    }
+    let tot = sch.first().copied().unwrap_or(0.0).max(1e-30);
+    let db = |i: usize| 10.0 * (sch[i] / tot).max(1e-30).log10();
+    let i5 = (0..sch.len()).find(|&i| db(i) <= -5.0).unwrap_or(0);
+    let i25 = (0..sch.len()).find(|&i| db(i) <= -25.0).unwrap_or(sch.len().max(1) - 1);
+    3.0 * (i25.saturating_sub(i5)) as f32 * d.bin_s
+}
+
 #[test]
 fn free_field_is_one_direct_path() {
     let mut sim = Simulation::new(Config::default());
@@ -103,8 +123,10 @@ fn mean_energy(sim: &mut Simulation, id: omg_audio::SourceId) -> [f32; 3] {
     let mut acc = [0.0f32; 3];
     for _ in 0..60 {
         let e = energy(sim.tick().block(id).unwrap());
+        // v4: the scattered energy is the dense response's
+        let d = dense_energy(sim, id);
         for b in 0..3 {
-            acc[b] += e[b] / 60.0;
+            acc[b] += (e[b] + d[b]) / 60.0;
         }
     }
     acc
@@ -153,10 +175,15 @@ fn a_closed_shoebox_rings_like_sabine() {
     let pb = f.block(src).unwrap();
     let (v, s) = (lx * ly * lz, 2.0 * (lx * ly + lx * lz + ly * lz));
     let sabine = 0.161 * v / (s * 0.1);
-    let rt = pb.reverb.rt60[1];
+    // v4: the decay of the traced dense response; v3: the fitted RT60
+    let rt = match sim.dense_response(src) {
+        Some(d) => dense_rt60(d),
+        None => pb.reverb.rt60[1],
+    };
     eprintln!("shoebox rt60 {rt:.2} s, Sabine {sabine:.2} s, reverb level {:?}", pb.reverb.level);
     assert!((rt / sabine - 1.0).abs() < 0.35, "rt60 {rt:.2} vs Sabine {sabine:.2}");
-    assert!(pb.reverb.level[1] > 0.0 || pb.remote.is_some(), "a closed room has a late field");
+    let dense = sim.dense_response(src).is_some_and(|d| !d.bins.is_empty());
+    assert!(dense || pb.reverb.level[1] > 0.0 || pb.remote.is_some(), "a closed room has a late field");
 }
 
 #[test]

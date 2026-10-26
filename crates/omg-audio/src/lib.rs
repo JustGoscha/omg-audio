@@ -40,7 +40,7 @@ pub use mixer::{clip, normalize, Clip, Hrir, Meter, Mixer, Play, VoiceId};
 pub use omg_core::material::Material;
 pub use omg_core::params::{ParamBlock, Tap};
 pub use omg_core::v3::walker::V3Walker;
-pub use omg_core::v3::Budget;
+pub use omg_core::v3::{Budget, DenseResponse};
 pub use sim::{Compute, Config, DebugPath, ObjectId, Quality, Simulation, SourceDesc};
 
 /// Speed of sound the engine uses (m/s).

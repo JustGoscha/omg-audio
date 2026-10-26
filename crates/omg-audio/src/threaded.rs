@@ -207,7 +207,7 @@ impl Engine {
             let paths = paths.clone();
             std::thread::Builder::new()
                 .name("omg-audio-sim".into())
-                .spawn(move || sim_loop(Simulation::new(sim_cfg), sim_rx, slot, stats, paths, stop, period))
+                .spawn(move || sim_loop(Simulation::new(Config { sample_rate, ..sim_cfg }), sim_rx, slot, stats, paths, stop, period))
                 .expect("spawn the simulation thread")
         };
         let mixer = Mixer::with_capacity(sample_rate, cfg.hrir, cfg.mixer_capacity);

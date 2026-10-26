@@ -692,3 +692,39 @@ fn v3_walk_speed_probe() {
     assert!(gpu8_ms < 250.0, "GPU v3 tick {gpu8_ms:.1} ms");
     assert!(fresh >= ticks / 2, "async walks must land most ticks: {fresh}/{ticks}");
 }
+
+/// Engine v4 on the GPU: the same dense response as the CPU walk — total
+/// scattered energy within 1.5 dB, the same decay (the energy past 100 ms
+/// in the same share within 1.5 dB) — and the same coherent arrivals (the
+/// CPU solves the mirror chains for both).
+#[test]
+fn v4_dense_response_matches_cpu() {
+    let mesh = shoebox(0.08, 0.3);
+    let Some(mut g) = gpu(&mesh, "v4_dense_response_matches_cpu") else { return };
+    let panels = [];
+    let w = World::new(&mesh, &panels);
+    let lis = v(2.0, 2.5, 1.6);
+    let srcs = one(1, v(6.0, 3.5, 1.5));
+    let b = Budget { rays: 1024, bounces: 4, late_rays: 256, ..Budget::default() };
+    let (mut tc, mut tg) = (Tracer::new(11), Tracer::new(12));
+    tc.v4 = true;
+    tg.v4 = true;
+    let (mut fc, mut fg) = (None, None);
+    for _ in 0..30 {
+        fc = Some(cpu_tick(&mut tc, &w, lis, &srcs, b).remove(0));
+        fg = Some(gpu_tick(&mut g, &mut tg, &w, lis, &srcs, b).remove(0));
+    }
+    let (fc, fg) = (fc.unwrap(), fg.unwrap());
+    let (dc, dg) = (fc.dense.as_ref().expect("cpu dense"), fg.dense.as_ref().expect("gpu dense"));
+    let sum = |d: &omg_core::v3::DenseResponse, from: usize| d.bins.iter().skip(from).map(|x| x[1]).sum::<f32>();
+    let late = (0.1 / dc.bin_s) as usize;
+    let (tc_, tg_) = (sum(dc, 0), sum(dg, 0));
+    let (lc, lg) = (sum(dc, late) / tc_, sum(dg, late) / tg_);
+    eprintln!(
+        "v4 dense: total cpu {:.2} dB gpu {:.2} dB · past 100 ms cpu {:.2} dB gpu {:.2} dB · taps cpu {} gpu {}",
+        db_e(tc_), db_e(tg_), db_e(lc), db_e(lg), fc.taps.len(), fg.taps.len()
+    );
+    assert!((db_e(tc_) - db_e(tg_)).abs() < 1.5, "dense totals differ");
+    assert!((db_e(lc) - db_e(lg)).abs() < 1.5, "decays differ");
+    assert!(fg.taps.len() >= 3 && fc.taps.len().abs_diff(fg.taps.len()) <= fc.taps.len() / 3 + 2, "coherent taps differ");
+}

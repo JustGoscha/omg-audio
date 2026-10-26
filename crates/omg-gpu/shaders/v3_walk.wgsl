@@ -33,12 +33,12 @@
 // rare edge the grid's 2 m sampling skips — see v3_probe.rs), and the
 // echogram's direction sums start at EARLY_S (the only part read).
 //
-// WALK_LAYOUT_VERSION 4 — must match omg_core::v3::fold and layout.rs:
+// WALK_LAYOUT_VERSION 5 — must match omg_core::v3::fold and layout.rs:
 //   Job {rot0@0, n_early@12, rot1@16, n_late@28, rot2@32, bounces@44,
 //        listener@48, seed@60, k@64, nee@68, late_nee@72, n_sources@76,
 //        n_panels@80, n_pockets@84, has_grade@88, grade@92, debug@96,
 //        n_edges@100, off_panels@104, off_pockets@108, edge_lo@112,
-//        off_edges@124, edge_hi@128}                              160 B
+//        off_edges@124, edge_hi@128, v4@140}                      160 B
 //   scene (u32 words): sources ×12 {pos, weight, t_free, id, vis, norm},
 //        panels ×16 {pmin, scattering, pmax, -, absorption, -,
 //        transmission, -}, pockets ×8 {min, -, max, -}, edges ×8 {a, -, b, -}
@@ -46,6 +46,8 @@
 // Output (resolve, f32): SKY_WORDS sky, then per source [early
 // CELLS×DELAY_BINS slots | echo ECHO_BINS slots | total ×3, pad]; a slot
 // = (e0, e1, e2, Σe1·dx, Σe1·dy, Σe1·dz), true energy units.
+// v4 (job.v4): per source [dense DENSE_BINS slots of 7 (the six above +
+// Σe1²) | total ×3, pad] — the whole response, no early/late split.
 
 // The exact chain solver's paths (omg_core::v3 `solver_owns`): coherent
 // — every bounce a mirror, nothing scattered or bent — and loud chains
@@ -61,6 +63,12 @@ const SLOT: u32 = 6u;
 const EARLY_WORDS: u32 = 15360u; // N_CELLS * DELAY_BINS * SLOT
 const ECHO_WORDS: u32 = 1800u; // ECHO_BINS * SLOT
 const SOURCE_WORDS: u32 = 17164u; // EARLY_WORDS + ECHO_WORDS + 4
+// engine v4 (omg_core::v3 RESPONSE_MAX_S, DENSE_BIN_S; fold DENSE_*)
+const DENSE_BINS: u32 = 2400u;
+const DENSE_SLOT: u32 = 7u;
+const DENSE_WORDS: u32 = 16800u;
+const DENSE_BIN_S: f32 = 0.002;
+const RESPONSE_MAX_S: f32 = 4.8;
 const SKY_WORDS: u32 = 384u; // N_CELLS * SLOT
 const MAX_SOURCES: u32 = 64u;
 const SRC_WORDS: u32 = 12u;
@@ -121,7 +129,7 @@ struct Job {
     edge_lo: vec3<f32>,
     off_edges: u32,
     edge_hi: vec3<f32>,
-    _r0: u32,
+    v4: u32,
     _r1: vec4<u32>,
 }
 
@@ -719,12 +727,48 @@ fn push_vert(p: vec3<f32>) {
 // v3.rs `deposit`: the echogram relative to the free-field arrival; the
 // early bins (first-direction cell × 2 ms) inside 80 ms.
 fn deposit(si: u32, e: vec3<f32>, delay: f32) {
+    deposit_sq(si, e, delay, 1.0);
+}
+
+// v3.rs `deposit_spread`: v4 spreads a sphere hit over its own r/c
+// time uncertainty (each part one n-th, its square counted n times so the
+// spread hit stays ONE sample); v3 deposits at `delay`.
+fn deposit_spread(si: u32, e: vec3<f32>, delay: f32, half: f32) {
+    if (job.v4 == 0u || half < 0.5 * DENSE_BIN_S) {
+        deposit(si, e, delay);
+        return;
+    }
+    let n = u32(ceil(2.0 * half / DENSE_BIN_S)) + 1u;
+    let part = e / f32(n);
+    let t_free = src_t_free(si);
+    for (var i = 0u; i < n; i++) {
+        let t = delay - half + 2.0 * half * f32(i) / f32(n - 1u);
+        deposit_sq(si, part, max(t, t_free), f32(n));
+    }
+}
+
+fn deposit_sq(si: u32, e: vec3<f32>, delay: f32, sq_scale: f32) {
     if (!(e.x > 0.0 || e.y > 0.0 || e.z > 0.0)) { return; }
     let sc = src_norm(si) * FX_SCALE;
     let es = e * sc;
     let dm = ray_first * es.y;
     let base = SKY_WORDS + si * SOURCE_WORDS;
     let rel = max(delay - src_t_free(si), 0.0);
+    if (job.v4 != 0u) {
+        // v4: everything the walk estimates is the dense response
+        let bin = u32(rel / DENSE_BIN_S);
+        if (rel < RESPONSE_MAX_S && bin < DENSE_BINS) {
+            let o = base + bin * DENSE_SLOT;
+            add_fx(o, es.x);
+            add_fx(o + 1u, es.y);
+            add_fx(o + 2u, es.z);
+            add_fx(o + 3u, dm.x);
+            add_fx(o + 4u, dm.y);
+            add_fx(o + 5u, dm.z);
+            add_fx(o + 6u, sq_scale * es.y * e.y);
+        }
+        return;
+    }
     if (rel < MAX_TIME) {
         let bin = u32(rel / BIN_DT);
         if (bin < ECHO_BINS) {
@@ -872,7 +916,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
                 if (refl == 0u && bends == 1u && !specular) { continue; }
                 // the exact chain solver's (on the CPU)
                 let rel = l_s / SPEED_OF_SOUND - length(sp - job.listener) / SPEED_OF_SOUND;
-                if (mirror_only && loud && refl >= 1u && refl <= MAX_COHERENT_REFL && (refl > job.bounces || rel >= EARLY_S)) {
+                if (mirror_only && loud && refl >= 1u && refl <= MAX_COHERENT_REFL && (job.v4 != 0u || refl > job.bounces || rel >= EARLY_S)) {
                     continue;
                 }
                 let t = seg_transmission(origin, sp);
@@ -888,7 +932,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
                         gate = clamp(vec3<f32>(1.0) - seg_transmission(bend_from, sp), vec3<f32>(0.0), vec3<f32>(1.0));
                     }
                 }
-                deposit(si, thr * t * t * a * a * w * gate, l_s / SPEED_OF_SOUND);
+                deposit_spread(si, thr * t * t * a * a * w * gate, l_s / SPEED_OF_SOUND, r / SPEED_OF_SOUND);
             }
         }
 
@@ -930,7 +974,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
         let p = origin + dir * t_hit;
         push_vert(p);
         length_m += t_hit;
-        if (length_m / SPEED_OF_SOUND > MAX_TIME) { break; }
+        if (length_m / SPEED_OF_SOUND > select(MAX_TIME, RESPONSE_MAX_S, job.v4 != 0u)) { break; }
         let normal = hit.normal;
         let t2 = hit.transmission * hit.transmission;
         let keep = max(vec3<f32>(1.0) - hit.absorption - t2, vec3<f32>(0.0));
@@ -1027,6 +1071,22 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
     let si = (w - SKY_WORDS) / SOURCE_WORDS;
     let local = (w - SKY_WORDS) % SOURCE_WORDS;
     let sc = src_norm(si) * FX_SCALE;
+    if (job.v4 != 0u) {
+        if (local < DENSE_WORDS) {
+            out[w] = read_fx(w) / sc;
+            return;
+        }
+        let b = local - DENSE_WORDS;
+        var sum = 0.0;
+        if (b < 3u) {
+            let base = SKY_WORDS + si * SOURCE_WORDS;
+            for (var bin = 0u; bin < DENSE_BINS; bin++) {
+                sum += read_fx(base + bin * DENSE_SLOT + b);
+            }
+        }
+        out[w] = sum / sc;
+        return;
+    }
     if (local < EARLY_WORDS + ECHO_WORDS) {
         out[w] = read_fx(w) / sc;
         return;

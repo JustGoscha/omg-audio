@@ -527,6 +527,8 @@ pub struct Renderer {
     /// and the remote wet are fed the source as heard THEN, so a far
     /// source's reverb never starts before its direct sound.
     onset: PathDelay,
+    /// Engine v4: the dense (scattered) response, convolved.
+    dense: crate::dense::DenseConv,
     /// Samples since the last applied ParamBlock (retarget window).
     since_params: u32,
     /// Average samples between fresh ParamBlocks (simulation updates):
@@ -632,6 +634,7 @@ impl Renderer {
                 .collect(),
             grid,
             onset: PathDelay::new(1.0),
+            dense: crate::dense::DenseConv::new(),
             since_params: 0,
             update_interval: 0.05 * sample_rate as f64,
             window_lead: 0.0,
@@ -681,6 +684,18 @@ impl Renderer {
     /// How far back (samples) any path may still read, now or once its
     /// delay has glided to target. A PlayLog may forget what lies before
     /// `now − horizon()`.
+    /// Engine v4: the source's dense response as a convolution kernel
+    /// (`dense::build_kernel`, built off the audio thread); None stops it.
+    pub fn set_dense_kernel(&mut self, k: Option<std::sync::Arc<crate::dense::DenseKernel>>) {
+        self.dense.set_kernel(k);
+    }
+
+    /// How long the source keeps sounding after its last sample, beyond
+    /// the paths' delays: the dense kernel's length (samples).
+    pub fn dense_tail(&self) -> f64 {
+        self.dense.kernel_len() as f64
+    }
+
     pub fn horizon(&self) -> f64 {
         let mut h = self.onset.current().max(self.onset.target_val());
         for &i in &self.active {
@@ -1098,7 +1113,8 @@ impl Renderer {
             && self.send_eq.quiet(1e-9)
             && self.remote_eq.quiet(1e-9)
             && self.remote_lp.state.abs() < 1e-9;
-        if quiet {
+        let dense = self.dense.has_kernel();
+        if quiet && !dense {
             for _ in 0..m {
                 self.onset.tick();
             }
@@ -1119,7 +1135,25 @@ impl Renderer {
             let mut x = [0.0f32; BLOCK];
             PathDelay::tick_lanes(core::array::from_mut(&mut self.onset), &mut d[..m]);
             src.block(off, &d[..m], 0, &mut x[..m]);
-            self.late_block(&x[..m], off, bus);
+            if quiet {
+                for g in [
+                    &mut self.fdn_level,
+                    &mut self.send_low,
+                    &mut self.send_high,
+                    &mut self.remote_level,
+                    &mut self.remote_low,
+                    &mut self.remote_high,
+                    &mut self.remote_lp_coef,
+                ] {
+                    advance_n(core::slice::from_mut(g), m);
+                }
+            } else {
+                self.late_block(&x[..m], off, bus);
+            }
+            // engine v4: the traced dense response, convolved
+            if dense {
+                self.dense.process(&x[..m], bus, off);
+            }
         }
         // the remote direction smoothers are only read at re-selection
         let pm = self.remote_sh[0].coef().powi(m as i32);

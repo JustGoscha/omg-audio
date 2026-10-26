@@ -55,7 +55,7 @@
 use super::*;
 
 /// Bump on ANY change to the flat formats above or in v3_walk.wgsl.
-pub const WALK_LAYOUT_VERSION: u32 = 4;
+pub const WALK_LAYOUT_VERSION: u32 = 5;
 /// Direction cells for early binning (and the sky).
 pub const CELLS: usize = N_CELLS;
 /// Early delay bins: the early window over the delay bin width.
@@ -68,6 +68,13 @@ pub const EARLY_WORDS: usize = CELLS * DELAY_BINS * SLOT;
 pub const ECHO_WORDS: usize = ECHO_BINS * SLOT;
 /// One source's output block: early slots, echogram, totals (+ pad).
 pub const SOURCE_WORDS: usize = EARLY_WORDS + ECHO_WORDS + 4;
+/// v4 (header word 35 set): the block is the dense response instead —
+/// `DENSE_BINS` slots of (e₀, e₁, e₂, Σe₁·dx, Σe₁·dy, Σe₁·dz, Σe₁²) at
+/// `DENSE_BIN_S` from the free-field arrival, then the totals.
+pub const DENSE_BINS: usize = (RESPONSE_MAX_S / DENSE_BIN_S + 0.5) as usize;
+pub const DENSE_SLOT: usize = 7;
+pub const DENSE_WORDS: usize = DENSE_BINS * DENSE_SLOT;
+const _: () = assert!(DENSE_WORDS + 4 <= SOURCE_WORDS);
 pub const SKY_WORDS: usize = CELLS * SLOT;
 pub const HEADER_WORDS: usize = 40;
 pub const SRC_WORDS: usize = 12;
@@ -123,6 +130,12 @@ impl WalkJob {
     /// (from `prepare`); `edges`: the diffraction edge set with this
     /// tick's fill mask, None when diffraction is off.
     #[allow(clippy::too_many_arguments)]
+    /// Mark the job as an engine-v4 walk (the dense response is binned).
+    pub fn v4(mut self, on: bool) -> Self {
+        self.words[35] = on as u32;
+        self
+    }
+
     pub fn build(
         world: &World,
         listener: Vec3,
@@ -157,6 +170,7 @@ impl WalkJob {
         w[22] = world.grade.is_some() as u32;
         w[23] = f(world.grade.unwrap_or(0.0));
         w[24] = debug as u32;
+        // w[35]: v4 (set by the tracer, `WalkJob::v4`)
         for (si, s) in sources.iter().enumerate() {
             let d = (s.pos - listener).length();
             let v = vis.get(si).copied().unwrap_or([0.0; NBANDS]);
@@ -315,7 +329,7 @@ impl Tracer {
         let rot = random_rotation(&mut self.rng);
         let seed = (self.rng.next_u64() >> 32) as u32;
         let edges = if budget.diffraction { self.edges.as_ref() } else { None };
-        let mut job = WalkJob::build(world, listener, sources, budget, rot, seed, self.debug, &vis, edges);
+        let mut job = WalkJob::build(world, listener, sources, budget, rot, seed, self.debug, &vis, edges).v4(self.v4);
         job.epoch = self.epoch;
         let walked = match walk(&job) {
             Walk::Refused => return None,
@@ -383,6 +397,46 @@ impl Tracer {
             });
             let st = self.state.entry(s.id).or_default();
             let mut total = [0.0f32; NBANDS];
+            if self.v4 {
+                if let Some(blk) = block {
+                    // the walk's dense response, as `deposit` bins it, and
+                    // the echogram (the RT60 readout) summed from it
+                    let mut acc = Acc::new(t_free, true);
+                    let mut last = 0;
+                    for bin in 0..DENSE_BINS {
+                        let o = bin * DENSE_SLOT;
+                        if blk[o..o + DENSE_SLOT].iter().any(|&x| x != 0.0) {
+                            last = bin + 1;
+                        }
+                    }
+                    acc.dense = (0..last)
+                        .map(|bin| core::array::from_fn(|c| blk[bin * DENSE_SLOT + c]))
+                        .collect();
+                    for (bin, d) in acc.dense.iter().enumerate() {
+                        let j = (bin as f32 * DENSE_BIN_S / BIN_DT) as usize;
+                        if j < acc.echo.bins.len() {
+                            for b in 0..NBANDS {
+                                acc.echo.bins[j][b] += d[b] * LEGACY_UNITS;
+                            }
+                        }
+                    }
+                    let o = DENSE_WORDS;
+                    acc.total = [blk[o], blk[o + 1], blk[o + 2]];
+                    // the CPU-solved chains on top (the kernel skipped them)
+                    if let Some(c) = chains.as_ref().and_then(|c| c.get(si)) {
+                        for (k, b) in &c.early {
+                            acc.early.insert(*k, *b);
+                            for band in 0..NBANDS {
+                                acc.total[band] += b.e[band];
+                            }
+                        }
+                    }
+                    total = acc.total;
+                    st.fold_v4(acc, budget, listener, s.pos);
+                }
+                out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total));
+                continue;
+            }
             if let Some(blk) = block {
                 // the walk's accumulators, as `deposit` would have built them
                 let mut early: HashMap<u32, Bin> = HashMap::new();

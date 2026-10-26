@@ -109,7 +109,9 @@ pub const KEY_DIRECT: u32 = 1;
 // scattered is the dense response (time × band × energy vector), which
 // the renderer convolves.
 /// Longest path followed (s after emission): mountains answer late.
-pub const RESPONSE_MAX_S: f32 = 6.0;
+/// Past it a diffuse tail only decays; the renderer continues it along
+/// its own measured slope (`omg_dsp::dense`).
+pub const RESPONSE_MAX_S: f32 = 4.8;
 /// The dense response's time resolution.
 pub const DENSE_BIN_S: f32 = DELAY_BIN_S;
 /// Coherent arrivals play as their own taps, the ones standing out most
@@ -780,6 +782,9 @@ pub struct Tracer {
     /// Engine v4: keep the whole traced response (see `RESPONSE_MAX_S`):
     /// every SourceField carries `dense`, coherent arrivals are taps.
     pub v4: bool,
+    /// v4: a signature of the world's movable parts (panels) last tick: a
+    /// door closing ends every source's settled average.
+    world_sig: u64,
     /// Capture the strongest paths of each tick for the debug view.
     pub debug: bool,
     /// Last tick's strongest paths: (source id, mid energy, polyline
@@ -872,6 +877,7 @@ impl Tracer {
             chains: HashMap::new(),
             rejected: HashMap::new(),
             v4: false,
+            world_sig: 0,
             debug: false,
             debug_paths: Vec::new(),
         }
@@ -941,9 +947,12 @@ impl Tracer {
         let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
         let mut verts: Vec<Vec3> = Vec::new();
 
+        let prof = std::env::var_os("OMG_PROF").is_some();
+        let tp0 = std::time::Instant::now();
         // 1. direct, visibility, edge next-event paths (shared with the
         // externally walked tick, fold.rs)
         let (direct, vis, mut edge_taps) = self.prepare(world, listener, sources, budget, &mut dbg);
+        let tp1 = std::time::Instant::now();
 
         // 2. rays: stratified (Fibonacci) and randomly rotated per tick
         let rot = random_rotation(&mut self.rng);
@@ -1234,10 +1243,26 @@ impl Tracer {
         }
         self.fold_sky(sky_acc.into_iter(), budget);
 
+        let tp2 = std::time::Instant::now();
         // 4b. the exact solver's chains: named by a few mirror rays,
         // solved every tick while cached
         self.find_chains(world, listener, sources, budget, chain_finders(budget));
+        let tp3 = std::time::Instant::now();
         self.solve_chains(world, listener, sources, budget, &mut accs);
+        let tp4 = std::time::Instant::now();
+
+        // v4: the world changed (an object moved, a door closed)? Then no
+        // source is standing still in it any more
+        if self.v4 {
+            let sig = panels_sig(world.panels);
+            if sig != self.world_sig {
+                self.world_sig = sig;
+                for st in self.state.values_mut() {
+                    st.still = 0;
+                    st.at = None;
+                }
+            }
+        }
 
         // 5. smooth over ticks and build each source's field
         let mut out = Vec::with_capacity(sources.len());
@@ -1256,6 +1281,14 @@ impl Tracer {
                 st.fold(acc.early, acc.echo, budget);
                 out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
             }
+        }
+        if prof {
+            let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f32() * 1000.0;
+            let tp5 = std::time::Instant::now();
+            eprintln!(
+                "prof: prepare {:.1} walk {:.1} find {:.1} solve {:.1} ({} chains) fold+field {:.1} ms",
+                ms(tp0, tp1), ms(tp1, tp2), ms(tp2, tp3), ms(tp3, tp4), self.chains.len(), ms(tp4, tp5)
+            );
         }
         out
     }
@@ -1807,6 +1840,21 @@ fn smooth_dense(d: &[[f32; 7]], alpha: f32) -> Vec<[f32; 6]> {
     out
 }
 
+/// A hash of the panels (boxes and their materials) for change detection.
+fn panels_sig(panels: &[(Vec3, Vec3, Material)]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut eat = |x: f32| {
+        h ^= x.to_bits() as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    };
+    for (a, b, m) in panels {
+        for v in [a.x, a.y, a.z, b.x, b.y, b.z, m.transmission[1], m.absorption[1]] {
+            eat(v);
+        }
+    }
+    h
+}
+
 /// `deposit`, the energy spread evenly over `delay ± half` (v4: an
 /// estimate's own time uncertainty; v3: at `delay`).
 fn deposit_spread(acc: &mut Acc, cells: &[Vec3], e: [f32; NBANDS], delay: f32, dir: Vec3, half: f32) {
@@ -1867,11 +1915,21 @@ fn solve_chain(
         }
         let dir = (q - p) * (1.0 / len);
         let skip = if k == 0 { 0.0 } else { EPS };
-        let hit = world.raycast(p + dir * skip, dir)?;
+        // the fixed geometry decides the path; movable boxes on a leg (a
+        // door leaf, a pane) pass it with their transmission, as the walk
+        // does — a closed door muffles a mirror path, it doesn't erase it
+        let hit = world.mesh.raycast_hit(p + dir * skip, dir)?;
         if (hit.t + skip - len).abs() > 0.02 || hit.normal.dot(nrm).abs() < 0.999 {
             return None; // something else first, or not this plane
         }
         first.get_or_insert(dir);
+        for (mn, mx, pm) in world.panels {
+            if segment_crosses_box(p, q, *mn, *mx) {
+                for b in 0..NBANDS {
+                    keep[b] *= pm.transmission[b] * pm.transmission[b];
+                }
+            }
+        }
         let m = hit.material;
         for b in 0..NBANDS {
             keep[b] *= (1.0 - m.absorption[b] - m.transmission[b] * m.transmission[b]).max(0.0) * (1.0 - m.scattering);

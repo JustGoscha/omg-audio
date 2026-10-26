@@ -51,7 +51,7 @@ fn sources(sim: &mut Simulation, n: usize) {
 }
 
 fn bench_sim(n: usize, compute: Compute) -> Option<(f64, usize, Vec<Frame>)> {
-    let mut sim = Simulation::new(Config { compute, ..Config::default() });
+    let mut sim = Simulation::new(Config { compute, v4: std::env::var_os("OMG_V3").is_none(), ..Config::default() });
     sim.set_geometry(town());
     if compute != Compute::Cpu && !sim.gpu_active() {
         return None;
