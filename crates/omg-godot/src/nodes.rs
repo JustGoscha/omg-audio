@@ -476,6 +476,12 @@ pub struct OmgWorld {
     #[export]
     #[init(val = true)]
     diffraction: bool,
+    /// Engine v4 (the traced response rendered as traced: taps at any
+    /// delay, the scattered rest convolved) vs v3 (early taps + a
+    /// parametric reverb).
+    #[export]
+    #[init(val = true)]
+    engine_v4: bool,
     /// Record each tick's strongest traced paths for `paths()` (a debug
     /// view). Off: the tracer records nothing.
     #[export]
@@ -485,7 +491,7 @@ pub struct OmgWorld {
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 11],
+    sent: [f32; 12],
     amb_clip: Option<(usize, bool)>,
     rain_clip: Option<(usize, bool)>,
     scratch: Vec<(f32, f32)>,
@@ -747,7 +753,13 @@ impl OmgWorld {
         } else {
             tier
         };
-        Config { quality, compute: if self.use_gpu { Compute::Gpu } else { Compute::Cpu }, ..Config::default() }
+        Config {
+            quality,
+            compute: if self.use_gpu { Compute::Gpu } else { Compute::Cpu },
+            v4: self.engine_v4,
+            sample_rate: engine_rate(),
+            ..Config::default()
+        }
     }
 
     fn start(&mut self) {
@@ -768,7 +780,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 11];
+        self.sent = [f32::NAN; 12];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -985,6 +997,7 @@ impl OmgWorld {
             self.late_rays as f32,
             self.diffraction as i32 as f32,
             self.debug_paths as i32 as f32,
+            self.engine_v4 as i32 as f32,
         ];
         let cfg = self.sim_config();
         let mut g = host();
