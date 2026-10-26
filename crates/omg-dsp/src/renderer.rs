@@ -42,6 +42,10 @@ const RETARGET_MS: f32 = 6.0;
 /// 20 Hz updates moves its delay ~25 ms per tick and must still be
 /// Doppler, not a crossfade every tick); a teleport still crossfades.
 const RETARGET_FRACTION_OF_TICK: f64 = 0.5;
+/// How fast the shared update clock follows the updates' arrivals (per
+/// update): slow, so arrival jitter barely moves it, and drift between
+/// the host's clock and the sample clock is still followed.
+const CLOCK_PULL: f64 = 1.0 / 16.0;
 /// Delay line length for live / generated sources (`process`). Paths
 /// longer than this clamp to its end; recorded sources use a `PlayLog`
 /// and have no such limit.
@@ -528,6 +532,10 @@ pub struct Renderer {
     /// Average samples between fresh ParamBlocks (simulation updates):
     /// the interval path delays plan their constant-rate motion over.
     update_interval: f64,
+    /// The shared update clock every path delay is timed on: how many
+    /// samples after its arrival the current update's window starts (one
+    /// motion after the previous window, pulled gently toward arrivals).
+    window_lead: f64,
     /// Version of the last FRESH block (re-applied blocks — budget
     /// changes — must not restart the delay motion).
     last_version: u64,
@@ -626,6 +634,7 @@ impl Renderer {
             onset: PathDelay::new(1.0),
             since_params: 0,
             update_interval: 0.05 * sample_rate as f64,
+            window_lead: 0.0,
             last_version: u64::MAX,
             updates_seen: 0,
             fdn: Fdn::new(sample_rate),
@@ -736,6 +745,15 @@ impl Renderer {
 
     /// Called from the audio thread whenever a new ParamBlock is available.
     pub fn set_params(&mut self, pb: &ParamBlock) {
+        self.set_params_after(pb, None);
+    }
+
+    /// `set_params` for a block traced `motion` samples of simulated time
+    /// after the previous one. Path velocities are the delay changes over
+    /// that time instead of over the average update interval — exact
+    /// Doppler when the simulation samples the motion irregularly (game
+    /// physics steps, simulation ticks that run long or get superseded).
+    pub fn set_params_after(&mut self, pb: &ParamBlock, motion: Option<f64>) {
         if pb.version == self.version_seen {
             return;
         }
@@ -743,9 +761,11 @@ impl Renderer {
         // judged against the TYPICAL interval too: an update arriving
         // early must not turn fast motion into a crossfade
         let thresh = (self.retarget_thresh as f64).max(
-            RETARGET_FRACTION_OF_TICK * (self.since_params as f64).max(self.update_interval),
+            RETARGET_FRACTION_OF_TICK
+                * (self.since_params as f64).max(self.update_interval).max(motion.unwrap_or(0.0)),
         );
         let fresh = pb.version != self.last_version;
+        let arrived_after = self.since_params as f64;
         if fresh {
             if !self.first_params {
                 let since = (self.since_params as f64).clamp(64.0, 0.5 * self.sample_rate as f64);
@@ -760,6 +780,20 @@ impl Renderer {
             self.since_params = 0;
         }
         let interval = self.update_interval;
+        // a host time far off the cadence (a pause, a stalled clock) says
+        // nothing about this update's motion
+        let motion = motion.filter(|m| *m >= 0.25 * interval && *m <= 4.0 * interval).unwrap_or(interval);
+        // where this update's window starts on the shared clock (as the
+        // samples already into it): every path alive now and every path
+        // born later moves on the same timeline, whenever updates arrive
+        let age = if fresh && !self.first_params {
+            let lead = self.window_lead + motion - arrived_after;
+            // a stall or a pause: start over at the arrivals
+            self.window_lead = if lead.abs() > 2.0 * interval { 0.0 } else { lead * (1.0 - CLOCK_PULL) };
+            -self.window_lead
+        } else {
+            0.0
+        };
 
         // CPU ceiling: keep only the strongest incoming taps (see
         // `DEFAULT_TAP_CEILING`; the load governor lowers it live).
@@ -788,6 +822,9 @@ impl Renderer {
             point_keys.extend(top.iter().take(self.point_budget).map(|(_, k)| *k));
         }
 
+        // paths that glide on (their slots), and paths born this update
+        let mut moved: Vec<usize> = Vec::new();
+        let mut born: Vec<&omg_core::params::Tap> = Vec::new();
         for t in incoming {
             let tg = targets_of(t, self.sample_rate);
             let want_point = self.grid.is_some() && point_keys.contains(&t.key);
@@ -800,6 +837,7 @@ impl Renderer {
                             || (self.taps[i].delay.target_val() - tg.delay).abs() < thresh) =>
                 {
                     // Same path: glide (motion → Doppler).
+                    moved.push(i);
                     let slot = &mut self.taps[i];
                     slot.base_dir = t.dir;
                     if self.first_params {
@@ -812,7 +850,7 @@ impl Renderer {
                         }
                     } else {
                         if fresh {
-                            slot.delay.retarget(tg.delay, interval);
+                            slot.delay.retarget_over(tg.delay, motion, interval, age);
                         }
                         slot.g_low.set(tg.g_low);
                         slot.g_high.set(tg.g_high);
@@ -827,39 +865,56 @@ impl Renderer {
                     if let Some(i) = other {
                         self.taps[i].release();
                     }
-                    if let Some(j) = self.taps.iter().position(|s| s.free()) {
-                        if !self.active.contains(&(j as u16)) {
-                            self.active.push(j as u16);
-                        }
-                        let slot = &mut self.taps[j];
-                        slot.key = Some(t.key);
-                        slot.point = want_point;
-                        slot.base_dir = t.dir;
-                        slot.delay.snap(tg.delay);
-                        slot.g_low.snap(tg.g_low);
-                        slot.g_high.snap(tg.g_high);
-                        slot.lp_coef.snap(tg.lp_coef);
-                        slot.lp = OnePoleLp::default();
-                        slot.eq = TapEq::default();
-                        if want_point {
-                            if let Some(g) = &self.grid {
-                                let rot = HeadRotation::new(
-                                    self.head[0].target_val(),
-                                    self.head[1].target_val(),
-                                    self.head[2].target_val(),
-                                );
-                                slot.conv.reset(g.nearest(rot.rotate_dir(t.dir)));
-                            }
-                        }
-                        for k in 0..NCH {
-                            slot.g_sh[k].snap(0.0);
-                            slot.g_sh[k].set(tg.g_sh[k]);
-                        }
-                    }
-                    // Pool exhausted: drop the tap this update; a slot frees
-                    // up within ~1 smoothing constant.
+                    born.push(t);
                 }
             }
+        }
+
+        // A path born mid-motion joins the timeline of the earliest path
+        // that glides on — the direct sound, most often: the listener's
+        // and the source's motion, which most of a source's paths share
+        // (see `PathDelay::join`). Nothing glides on: it starts still.
+        let like = moved
+            .iter()
+            .map(|&i| self.taps[i].delay)
+            .min_by(|a, b| a.target_val().total_cmp(&b.target_val()));
+        for t in born {
+            let tg = targets_of(t, self.sample_rate);
+            let want_point = self.grid.is_some() && point_keys.contains(&t.key);
+            if let Some(j) = self.taps.iter().position(|s| s.free()) {
+                if !self.active.contains(&(j as u16)) {
+                    self.active.push(j as u16);
+                }
+                let slot = &mut self.taps[j];
+                slot.key = Some(t.key);
+                slot.point = want_point;
+                slot.base_dir = t.dir;
+                match &like {
+                    Some(l) if !self.first_params => slot.delay.join(tg.delay, l),
+                    _ => slot.delay.snap(tg.delay),
+                }
+                slot.g_low.snap(tg.g_low);
+                slot.g_high.snap(tg.g_high);
+                slot.lp_coef.snap(tg.lp_coef);
+                slot.lp = OnePoleLp::default();
+                slot.eq = TapEq::default();
+                if want_point {
+                    if let Some(g) = &self.grid {
+                        let rot = HeadRotation::new(
+                            self.head[0].target_val(),
+                            self.head[1].target_val(),
+                            self.head[2].target_val(),
+                        );
+                        slot.conv.reset(g.nearest(rot.rotate_dir(t.dir)));
+                    }
+                }
+                for k in 0..NCH {
+                    slot.g_sh[k].snap(0.0);
+                    slot.g_sh[k].set(tg.g_sh[k]);
+                }
+            }
+            // Pool exhausted: drop the tap this update; a slot frees
+            // up within ~1 smoothing constant.
         }
 
         if let Some(first) = pb.taps.iter().map(|t| t.delay_s as f64 * self.sample_rate as f64).reduce(f64::min) {
@@ -867,7 +922,7 @@ impl Renderer {
                 self.onset.snap(first);
             } else {
                 if fresh {
-                    self.onset.retarget(first, interval);
+                    self.onset.retarget_over(first, motion, interval, age);
                 }
             }
         }
