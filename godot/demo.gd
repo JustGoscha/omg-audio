@@ -12,12 +12,14 @@
 # into a SubViewport 360 px high (width from the window's aspect),
 # upscaled to fill the window with nearest-neighbour filtering — no
 # anti-aliasing anywhere, nearest-filtered textures, no SSAO/SSIL/
-# volumetric fog, one shadowed light (the moon). [ and ] change the
-# height; G switches to the fine look (full resolution, MSAA, SSAO,
-# SSIL, volumetric fog, shadowed lamps).
+# volumetric fog; the moon and the lamps cast hard shadows from a small
+# shadow atlas (chunky, like the pixels). [ and ] change the height; G
+# switches to the fine look (full resolution, MSAA, SSAO, SSIL,
+# volumetric fog, soft shadows from a 4096 atlas).
 extends Node3D
 
 const SKY := "res://../assets/sky/night.jpg"
+const LAMP_SHADOW_M := 30.0 # lamp shadows fade out beyond this distance
 
 var world: OmgWorld
 var level: DemoLevel
@@ -39,7 +41,6 @@ var fine := false
 # 3D internal height in pixel mode (keys [ and ] walk HEIGHTS)
 const HEIGHTS := [180, 240, 270, 360, 480, 540, 720]
 var pixel_h := 360
-var shadow_lights: Array[Light3D] = []
 
 func _ready() -> void:
 	_environment()
@@ -63,10 +64,16 @@ func _ready() -> void:
 	add_child(player)
 	player.global_position = DemoGeo.P(3.0, 3.0, 0.05)
 	player.set_heading(PI / 2.0)
-	# shadowed lamps the fine look switches on
+	# every lamp casts shadows in both looks; past LAMP_SHADOW_M the
+	# shadow fades out (the light stays), so only the lamps around you
+	# render shadow maps
 	for l in level_root.find_children("*", "OmniLight3D", true, false):
-		if (l as OmniLight3D).shadow_enabled:
-			shadow_lights.append(l)
+		var o := l as OmniLight3D
+		o.shadow_enabled = true
+		o.distance_fade_enabled = true
+		o.distance_fade_begin = 4000.0
+		o.distance_fade_shadow = LAMP_SHADOW_M
+		o.distance_fade_length = 8.0
 	_apply_graphics()
 
 	world = OmgWorld.new()
@@ -267,8 +274,7 @@ func _apply_graphics() -> void:
 	env.ssao_enabled = fine
 	env.ssil_enabled = fine
 	env.volumetric_fog_enabled = fine
-	for l in shadow_lights:
-		l.shadow_enabled = fine
+	view.positional_shadow_atlas_size = 4096 if fine else 2048
 	var q := RenderingServer.SHADOW_QUALITY_SOFT_MEDIUM if fine else RenderingServer.SHADOW_QUALITY_HARD
 	RenderingServer.directional_soft_shadow_filter_set_quality(q)
 	RenderingServer.positional_soft_shadow_filter_set_quality(q)

@@ -55,6 +55,7 @@ var projs := []
 var cars := []
 var next_car := 0.0
 var rain_fx: GPUParticles3D
+var rain_roofs: GPUParticlesCollisionHeightField3D
 
 func _now() -> float:
 	return Time.get_ticks_msec() / 1000.0
@@ -388,6 +389,8 @@ func _rain_particles() -> void:
 	pm.initial_velocity_min = 11.0
 	pm.initial_velocity_max = 14.0
 	pm.gravity = Vector3(0, -4, 0)
+	# drops end on the first surface below them — roofs keep the rain out
+	pm.collision_mode = ParticleProcessMaterial.COLLISION_HIDE_ON_CONTACT
 	rain_fx.process_material = pm
 	var drop := QuadMesh.new()
 	drop.size = Vector2(0.012, 0.45)
@@ -400,6 +403,13 @@ func _rain_particles() -> void:
 	rain_fx.draw_pass_1 = drop
 	rain_fx.emitting = false
 	root.add_child(rain_fx)
+	# what the drops collide with: the level seen from above (roofs, eaves,
+	# canopies), re-captured only when it snaps to a new cell
+	rain_roofs = GPUParticlesCollisionHeightField3D.new()
+	rain_roofs.size = Vector3(40, 80, 40)
+	rain_roofs.resolution = GPUParticlesCollisionHeightField3D.RESOLUTION_512
+	rain_roofs.update_mode = GPUParticlesCollisionHeightField3D.UPDATE_MODE_WHEN_MOVED
+	root.add_child(rain_roofs)
 
 func _process(dt: float) -> void:
 	if world == null:
@@ -421,3 +431,5 @@ func _process(dt: float) -> void:
 	rain_fx.emitting = target > 0.0
 	rain_fx.amount_ratio = maxf(0.05, target)
 	rain_fx.global_position = player.cam.global_position + Vector3(0, 14, 0)
+	rain_roofs.visible = rain_fx.emitting
+	rain_roofs.global_position = (player.cam.global_position / 4.0).round() * 4.0
