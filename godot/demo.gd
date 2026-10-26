@@ -18,7 +18,7 @@
 # volumetric fog, soft shadows from a 4096 atlas).
 extends Node3D
 
-const SKY := "res://../assets/sky/night.jpg"
+const SKY := "sky/night.jpg"
 const LAMP_SHADOW_M := 30.0 # lamp shadows fade out beyond this distance
 
 var world: OmgWorld
@@ -284,7 +284,7 @@ func _environment() -> void:
 	env = Environment.new()
 	var sky := Sky.new()
 	var pano := PanoramaSkyMaterial.new()
-	var img := Image.load_from_file(ProjectSettings.globalize_path(SKY))
+	var img := Image.load_from_file(DemoAssets.file(SKY))
 	if img != null and not img.is_empty():
 		pano.panorama = ImageTexture.create_from_image(img)
 	pano.energy_multiplier = 0.55

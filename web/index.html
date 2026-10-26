@@ -164,6 +164,13 @@
     text-transform: uppercase; margin-top: 6px;
     transition: background .18s, color .18s; }
   #start:hover { background: var(--ink); color: #111; }
+  #pick { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+  #godot { color: var(--dim); border: 1px solid var(--line); border-radius: 4px;
+    padding: 13px 28px; font-size: 12px; letter-spacing: .28em; text-transform: uppercase;
+    margin-top: 6px; text-decoration: none; transition: color .18s, border-color .18s; }
+  #godot:hover { color: var(--ink); border-color: var(--ink); }
+  #godot[hidden], #godotnote[hidden] { display: none; }
+  #godotnote { font-size: 11px !important; }
   #err { color: var(--bad); }
 </style>
 </head>
@@ -224,8 +231,46 @@
   <p id="browsernote"><b>Best on Google Chrome.</b>
      Other browsers (Firefox, Safari, Arc) currently stutter or fail —
      the AudioWorklet needs Chrome's wasm scheduling.</p>
-  <button id="start">start</button>
+  <div id="pick">
+    <button id="start">start</button>
+    <a id="godot" href="../godot-web/" hidden
+       title="The same town and sound engine, as the Godot demo exported to the web.">start in godot</a>
+  </div>
+  <p id="godotnote" hidden>three.js (this page) or the Godot build — experimental:
+     the Godot demo's web export, the engine on the CPU, a ~35 MB download,
+     Chrome only.</p>
   <p id="err"></p>
+  <script>
+    // offer the Godot web export only where it is deployed (godot-web/,
+    // built by tools/build_godot_web.sh)
+    fetch('../godot-web/index.html', { method: 'HEAD' }).then((r) => {
+      if (!r.ok) return;
+      document.getElementById('godot').hidden = false;
+      document.getElementById('godotnote').hidden = false;
+    }).catch(() => {});
+    // Godot's threads need cross-origin isolation, which GitHub Pages
+    // can't send as headers: the export's service worker adds them. Left
+    // to the Godot page, a first visit installs it, reloads before it
+    // controls the page and stalls; installed from here and activated
+    // first, the Godot page loads isolated on the first try.
+    document.getElementById('godot').addEventListener('click', async (e) => {
+      if (!('serviceWorker' in navigator)) return;
+      e.preventDefault();
+      const a = e.currentTarget;
+      a.textContent = 'loading…';
+      try {
+        const reg = await navigator.serviceWorker.register('../godot-web/index.service.worker.js',
+          { scope: '../godot-web/' });
+        const sw = reg.installing || reg.waiting || reg.active;
+        if (sw && sw.state !== 'activated') {
+          await new Promise((r) => sw.addEventListener('statechange', () => sw.state === 'activated' && r()));
+        }
+      } catch (err) {
+        console.warn('godot service worker:', err);
+      }
+      location.href = a.href;
+    });
+  </script>
   <p style="margin-top:14px; font-size:12px;"><a href="engine.html"
      style="color:var(--dim); border-bottom:1px dotted var(--faint); text-decoration:none;"
      title="Every simulation layer of the engine, explained with its measured proof.">how

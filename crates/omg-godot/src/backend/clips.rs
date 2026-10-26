@@ -37,11 +37,23 @@ pub struct Import {
     pub normalize_rms: bool,
 }
 
-/// Queue a decode of `path` at engine rate `sr`; returns its id (the same
-/// id for the same path + options).
-pub fn load(path: &str, sr: f32, imp: Import) -> usize {
-    let key = format!("{path}|{sr}|{imp:?}");
-    let (m, cv) = bank();
+/// Where a clip's bytes come from: a file on disk, or bytes the host
+/// already read (the web build reads res:// through Godot — there is no
+/// file system for std::fs to see).
+pub enum Source {
+    Path(String),
+    Bytes { name: String, bytes: Vec<u8> },
+}
+
+/// Queue a decode of `src` at engine rate `sr`; returns its id (the same
+/// id for the same file + options).
+pub fn load(src: Source, sr: f32, imp: Import) -> usize {
+    let name = match &src {
+        Source::Path(p) => p.as_str(),
+        Source::Bytes { name, .. } => name.as_str(),
+    };
+    let key = format!("{name}|{sr}|{imp:?}");
+    let (m, _) = bank();
     let id = {
         let mut b = m.lock().unwrap();
         if let Some(&id) = b.keys.get(&key) {
@@ -52,11 +64,14 @@ pub fn load(path: &str, sr: f32, imp: Import) -> usize {
         b.keys.insert(key, id);
         id
     };
-    let path = path.to_string();
-    std::thread::spawn(move || {
+    spawn_decode(Box::new(move || {
         let o = &imp.opts;
         let limit = if o.max_seconds > 0.0 { o.max_seconds * o.rate.max(1.0) + 3.0 } else { 0.0 };
-        let entry = match decode::decode_file(&path, limit) {
+        let pcm = match src {
+            Source::Path(path) => decode::decode_file(&path, limit),
+            Source::Bytes { name, bytes } => decode::decode_bytes(bytes, limit).map_err(|e| format!("{name}: {e}")),
+        };
+        let entry = match pcm {
             Ok(pcm) => {
                 let mut x = decode::import(&pcm, sr, o);
                 if imp.normalize_rms && !o.stereo {
@@ -69,9 +84,41 @@ pub fn load(path: &str, sr: f32, imp: Import) -> usize {
         let (m, cv) = bank();
         m.lock().unwrap().entries[id] = entry;
         cv.notify_all();
-    });
-    let _ = cv;
+    }));
     id
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Natively: a thread per clip, all decoding at once.
+#[cfg(not(target_os = "emscripten"))]
+fn spawn_decode(job: Job) {
+    std::thread::spawn(job);
+}
+
+/// Web: two decode workers fed from a queue. Every thread is a Web Worker
+/// from the page's small pthread pool (the engine's sim and render
+/// threads need theirs); a thread per clip would exhaust it.
+#[cfg(target_os = "emscripten")]
+fn spawn_decode(job: Job) {
+    use std::sync::mpsc::{channel, Sender};
+    static QUEUE: OnceLock<Mutex<Sender<Job>>> = OnceLock::new();
+    let q = QUEUE.get_or_init(|| {
+        let (tx, rx) = channel::<Job>();
+        let rx = Arc::new(Mutex::new(rx));
+        for _ in 0..2 {
+            let rx = rx.clone();
+            std::thread::spawn(move || loop {
+                let next = rx.lock().unwrap().recv();
+                match next {
+                    Ok(job) => job(),
+                    Err(_) => return,
+                }
+            });
+        }
+        Mutex::new(tx)
+    });
+    let _ = q.lock().unwrap().send(job);
 }
 
 /// Add samples made elsewhere (synthesised in a script) as a clip.

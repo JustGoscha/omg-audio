@@ -775,7 +775,7 @@ const FURNITURE := [
 	[28.6, 20.6, 3.0, 29.2, 21.2, 3.25, "soft", "pillow"],
 ]
 
-const LAYOUT := "res://../assets/demo/layout.json"
+const LAYOUT := "demo/layout.json"
 
 # Furniture: from the shared demo layout (assets/demo/layout.json, the
 # same data the web loads) when present, else the FURNITURE table. Each
@@ -816,7 +816,7 @@ func _layout_item(kind: String) -> Dictionary:
 # frame) + "yaw"; its "min"/"max" are the TURNED world box, used only
 # when no own-frame size is given.
 func _layout_items() -> Array:
-	var path := ProjectSettings.globalize_path(LAYOUT)
+	var path := DemoAssets.file(LAYOUT)
 	if not FileAccess.file_exists(path):
 		return []
 	var data = JSON.parse_string(FileAccess.get_file_as_string(path))
@@ -863,7 +863,7 @@ func _layout_items() -> Array:
 			continue
 		out.append(it)
 	if not out.is_empty():
-		print("demo: %d furniture pieces from %s" % [out.size(), LAYOUT])
+		print("demo: %d furniture pieces from %s" % [out.size(), DemoAssets.root + LAYOUT])
 	return out
 
 static func _vec(a) -> Vector3:

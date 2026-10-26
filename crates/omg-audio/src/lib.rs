@@ -29,7 +29,9 @@ pub mod frame;
 pub mod geometry;
 pub mod mixer;
 pub mod sim;
-#[cfg(all(feature = "threaded", not(target_arch = "wasm32")))]
+// threads: native, and wasm under Emscripten (pthreads as Web Workers);
+// not bare wasm32-unknown-unknown
+#[cfg(all(feature = "threaded", any(not(target_arch = "wasm32"), target_os = "emscripten")))]
 pub mod threaded;
 
 pub use frame::{Frame, Listener, SkyCell, SourceId};
