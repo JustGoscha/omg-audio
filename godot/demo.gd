@@ -303,10 +303,14 @@ func _apply_graphics() -> void:
 	# resolution); glow reaches wider there, its lamps being a few pixels
 	env.volumetric_fog_enabled = true
 	env.volumetric_fog_density = 0.006 if fine else 0.01
-	env.glow_intensity = 0.7 if fine else 1.0
-	env.glow_hdr_threshold = 0.9 if fine else 0.7
+	# only light sources glow: a threshold above what lamp-lit walls reach
+	# (at 0.7 the wall beside a lamp bloomed into a veil the closer you
+	# came) and no threshold-free bloom
+	env.glow_intensity = 0.7 if fine else 0.8
+	env.glow_hdr_threshold = 2.0
+	env.glow_bloom = 0.0
 	for lv in 7:
-		env.set_glow_level(lv, 1.0 if (lv in [2, 4] or (not fine and lv in [1, 3, 5])) else 0.0)
+		env.set_glow_level(lv, 1.0 if (lv in ([2, 4] if fine else [1, 2, 3])) else 0.0)
 	view.positional_shadow_atlas_size = 4096 if fine else 2048
 	if halo_quad != null:
 		# ~3 low-res pixels at any distance (fixed_size: units at 1 m;
@@ -339,8 +343,6 @@ func _environment() -> void:
 	env.ssao_intensity = 2.0
 	env.glow_enabled = true
 	env.glow_intensity = 0.7
-	env.glow_bloom = 0.04
-	env.glow_hdr_threshold = 0.9
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.012, 0.012, 0.024) # far away: darkness
 	env.fog_density = 0.0011

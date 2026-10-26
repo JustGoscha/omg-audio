@@ -1364,7 +1364,7 @@ func _lamp(x: float, y: float, h := 4.2, shadow := false) -> void:
 	var pole := geo.B(DemoMats.metal(Color(0.12, 0.13, 0.14)), "", true, false, "lamp posts: 12 cm poles")
 	pole.box(x - 0.06, y - 0.06, 0.0, x + 0.06, y + 0.06, h)
 	pole.box(x - 0.22, y - 0.22, h, x + 0.22, y + 0.22, h + 0.08)
-	geo.B(DemoMats.glow(Color(1.0, 0.78, 0.48), 5.0), "", false, false, "lamp heads (light)").box(x - 0.15, y - 0.15, h - 0.3, x + 0.15, y + 0.15, h)
+	geo.B(DemoMats.glow(Color(1.0, 0.78, 0.48), 2.5), "", false, false, "lamp heads (light)").box(x - 0.15, y - 0.15, h - 0.3, x + 0.15, y + 0.15, h)
 	var l := OmniLight3D.new()
 	l.position = v(x, y, h - 0.4)
 	l.light_color = Color(1.0, 0.74, 0.45)
