@@ -26,7 +26,10 @@ var level: DemoLevel
 var player: DemoPlayer
 var sounds: DemoSounds
 var hud: Label
-var hint: Label
+var hint: Control
+var torch: SpotLight3D
+var halos := [] # [halo node, world position]
+var halo_i := 0
 var labels: Array[Label3D] = []
 var rain_name := "off"
 # OmgWorld.quality: 0 low … 3 ultra. Medium on the CPU walk: ~10–40 ms a
@@ -82,6 +85,8 @@ func _ready() -> void:
 		o.distance_fade_begin = 4000.0
 		o.distance_fade_shadow = LAMP_SHADOW_M
 		o.distance_fade_length = 8.0
+	_torch()
+	_halos(level_root)
 	_apply_graphics()
 
 	world = OmgWorld.new()
@@ -293,6 +298,10 @@ func _apply_graphics() -> void:
 	env.ssil_enabled = fine
 	env.volumetric_fog_enabled = fine
 	view.positional_shadow_atlas_size = 4096 if fine else 2048
+	if halo_quad != null:
+		# ~3 low-res pixels at any distance (fixed_size: units at 1 m;
+		# the view spans 2·tan(fov/2) ≈ 1.53 m there at 75°)
+		halo_quad.size = Vector2.ONE * 3.0 * 1.53 / pixel_h
 	var q := RenderingServer.SHADOW_QUALITY_SOFT_MEDIUM if fine else RenderingServer.SHADOW_QUALITY_HARD
 	RenderingServer.directional_soft_shadow_filter_set_quality(q)
 	RenderingServer.positional_soft_shadow_filter_set_quality(q)
@@ -430,6 +439,81 @@ func _load() -> void:
 	create_tween().tween_method(func(db: float) -> void: AudioServer.set_bus_volume_db(bus, db), -40.0, 0.0, 0.8)
 	loaded.emit()
 
+# T: a flashlight in the player's hand (right of and below the eyes).
+func _torch() -> void:
+	torch = SpotLight3D.new()
+	torch.position = Vector3(0.18, -0.22, 0.0)
+	torch.light_color = Color(0.95, 0.97, 1.0)
+	torch.light_energy = 3.0
+	torch.spot_range = 30.0
+	torch.spot_angle = 24.0
+	torch.spot_attenuation = 0.8
+	torch.shadow_enabled = true
+	torch.visible = false
+	player.cam.add_child(torch)
+
+# Every lamp also gets a glowing dot of a fixed few pixels: at 240p a lamp
+# is often smaller than a pixel and drops out of the image, although in
+# the dark it is the brightest thing there. The dots draw over everything
+# and hide when the level blocks the line of sight (a ray, a few lamps a
+# frame); pixel look only.
+func _halos(level_root: Node3D) -> void:
+	var tex := GradientTexture2D.new()
+	tex.fill = GradientTexture2D.FILL_RADIAL
+	tex.fill_from = Vector2(0.5, 0.5)
+	tex.fill_to = Vector2(0.5, 0.0)
+	var g := Gradient.new()
+	g.set_color(0, Color(1, 1, 1, 1))
+	g.set_color(1, Color(1, 1, 1, 0))
+	g.add_point(0.45, Color(1, 1, 1, 0.9))
+	tex.gradient = g
+	var quad := QuadMesh.new()
+	for l in level_root.find_children("*", "Light3D", true, false):
+		var light := l as Light3D
+		if light.has_meta("no_halo"):
+			continue
+		var m := StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+		m.fixed_size = true
+		m.no_depth_test = true
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		m.albedo_texture = tex
+		m.albedo_color = Color(light.light_color.r, light.light_color.g, light.light_color.b) * 1.6
+		var h := MeshInstance3D.new()
+		h.mesh = quad
+		h.material_override = m
+		h.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		h.set_meta("omg_material", "none")
+		level_root.add_child(h)
+		h.global_position = light.global_position
+		halos.append([h, light.global_position])
+	halo_quad = quad
+
+var halo_quad: QuadMesh
+
+func _update_halos() -> void:
+	var on := not fine and not shooting
+	if not on:
+		for hp in halos:
+			hp[0].visible = false
+		return
+	var space := get_world_3d().direct_space_state
+	var eye := view_cam.global_position
+	for k in mini(12, halos.size()):
+		halo_i = (halo_i + 1) % halos.size()
+		var h: MeshInstance3D = halos[halo_i][0]
+		var at: Vector3 = halos[halo_i][1]
+		var d := eye.distance_to(at)
+		if d > 600.0:
+			h.visible = false
+			continue
+		# stop short of the lamp: its own fixture must not hide it
+		var q := PhysicsRayQueryParameters3D.create(eye, at - (at - eye).normalized() * minf(0.4, d * 0.5))
+		q.exclude = [player.get_rid()]
+		h.visible = space.intersect_ray(q).is_empty()
+
 func _hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
@@ -439,15 +523,41 @@ func _hud() -> void:
 	hud.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	hud.add_theme_constant_override("outline_size", 4)
 	layer.add_child(hud)
-	hint = Label.new()
-	hint.text = "click: capture mouse / throw · WASD walk · Shift run · Space jump · C crouch · F fly · E door · B bells · V whisper · R rain · L labels · Q sound quality · G graphics · [ ] pixel height · H hud"
-	hint.add_theme_color_override("font_color", Color(0.75, 0.8, 0.9, 0.85))
-	hint.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	hint.add_theme_constant_override("outline_size", 4)
-	hint.anchor_top = 1.0
-	hint.anchor_bottom = 1.0
-	hint.position = Vector2(14, -34)
-	layer.add_child(hint)
+	# the controls: a panel in the bottom left
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.02, 0.03, 0.06, 0.62)
+	sb.set_corner_radius_all(8)
+	sb.set_content_margin_all(14)
+	panel.add_theme_stylebox_override("panel", sb)
+	panel.anchor_top = 1.0
+	panel.anchor_bottom = 1.0
+	panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	panel.offset_left = 16
+	panel.offset_bottom = -16
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 14)
+	grid.add_theme_constant_override("v_separation", 4)
+	panel.add_child(grid)
+	for row in [["WASD", "walk"], ["mouse", "look (click to capture)"], ["Shift", "run"], ["click", "throw a ball"],
+			["Space", "jump"], ["E", "open the door ahead"], ["C", "crouch"], ["T", "flashlight"],
+			["F", "fly"], ["B", "ring the bells"], ["R", "rain"], ["V", "whisper"],
+			["Q", "sound quality"], ["L", "source labels"], ["G", "graphics"], ["[ ]", "pixel size"],
+			["H", "hide the panels"], ["Esc", "release the mouse"]]:
+		var k := Label.new()
+		k.text = row[0]
+		k.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		k.add_theme_font_size_override("font_size", 18)
+		k.add_theme_color_override("font_color", Color(1.0, 0.86, 0.6))
+		grid.add_child(k)
+		var a := Label.new()
+		a.text = row[1]
+		a.add_theme_font_size_override("font_size", 18)
+		a.add_theme_color_override("font_color", Color(0.85, 0.88, 0.95))
+		grid.add_child(a)
+	hint = panel
+	layer.add_child(panel)
 	var cross := Label.new()
 	cross.text = "·"
 	cross.set_anchors_preset(Control.PRESET_CENTER)
@@ -493,6 +603,8 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_L:
 				for l in labels:
 					l.visible = not l.visible
+			KEY_T:
+				torch.visible = not torch.visible
 			KEY_H:
 				hud.visible = not hud.visible
 				hint.visible = hud.visible
@@ -517,6 +629,7 @@ func _process(dt: float) -> void:
 		view_cam.near = player.cam.near
 		view_cam.far = player.cam.far
 	level.update_doors(dt)
+	_update_halos()
 	# candle flicker in the apse, club wash breathing to the beat
 	t_flicker += dt
 	for c in level.markers.get("candles", []):

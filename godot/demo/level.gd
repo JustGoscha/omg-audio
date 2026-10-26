@@ -1167,6 +1167,7 @@ func _hall_lights() -> void:
 		glow.light_energy = 0.5
 		glow.omni_range = 2.5
 		glow.set_meta("no_shadow", true)
+		glow.set_meta("no_halo", true) # the sconce's uplight has its dot
 		root.add_child(glow)
 	# table lamps: every table and desk standing in the hall
 	for it in _layout_cached():
@@ -1193,6 +1194,7 @@ func _hall_lights() -> void:
 	fill.light_energy = 1.2
 	fill.omni_range = 11.0
 	fill.set_meta("no_shadow", true)
+	fill.set_meta("no_halo", true)
 	root.add_child(fill)
 
 func _figure(at: Vector2, _yaw: float, c: Color) -> void:

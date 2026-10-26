@@ -50,7 +50,7 @@ pub enum OutCmd {
 struct Shared {
     ring: Mutex<VecDeque<(f32, f32)>>,
     ring_target: AtomicUsize,
-    /// The largest mix callback seen (frames): the ring keeps twice that.
+    /// The largest mix callback seen (frames): the ring keeps three.
     read_max: AtomicUsize,
     underruns: AtomicUsize,
     stop: AtomicBool,
@@ -78,9 +78,10 @@ impl OutputReader {
     pub fn read(&self, out: &mut [(f32, f32)]) {
         // a host whose callbacks pull more than the ring holds (the web's
         // audio worklet bridge asks for big chunks) would find it short on
-        // every call: grow the ring to two callbacks
+        // every call: keep three callbacks ahead (two left no slack for a
+        // busy machine: the output thread naps 1.5 ms between blocks)
         if out.len() > self.sh.read_max.fetch_max(out.len(), Ordering::Relaxed) {
-            let want = (2 * out.len()).div_ceil(BLOCK) * BLOCK;
+            let want = (3 * out.len()).div_ceil(BLOCK) * BLOCK;
             self.sh.ring_target.fetch_max(want, Ordering::Relaxed);
         }
         let take = |out: &mut [(f32, f32)]| {
