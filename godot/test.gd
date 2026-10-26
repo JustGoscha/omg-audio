@@ -131,6 +131,20 @@ func _run() -> String:
 		diff = maxf(diff, absf(v.x - v.y))
 	if diff <= 1e-4: return "no interaural difference after a head turn"
 
+	# the debug view: the traced paths, from the ears to their sources
+	world.debug_paths = true
+	_settle(world, 300)
+	var paths := world.paths()
+	world.debug_paths = false
+	world.update_now()
+	print("debug paths: %d" % paths.size())
+	if paths.is_empty(): return "debug_paths on but paths() is empty"
+	var p0: Dictionary = paths[0]
+	var pts: PackedVector3Array = p0["points"]
+	if p0["source"] == null or pts.size() < 2: return "a debug path without its source node or points: %s" % [p0]
+	if pts[0].distance_to(player.cam.global_position) > 0.3:
+		return "debug paths start at %s, the ears are at %s" % [pts[0], player.cam.global_position]
+
 	# real-time budget with every demo source live: the output thread must
 	# render faster than real time with headroom (the game thread only copies)
 	var t0 := Time.get_ticks_usec()

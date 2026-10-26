@@ -47,6 +47,12 @@ pub fn from_y_up(p: [f32; 3]) -> [f32; 3] {
     [p[0], -p[2], p[1]]
 }
 
+/// The inverse of `from_y_up`: engine (z-up) back to a y-up engine's
+/// coordinates (e.g. a debug path drawn in Godot or three.js).
+pub fn to_y_up(p: [f32; 3]) -> [f32; 3] {
+    [p[0], p[2], -p[1]]
+}
+
 fn v3(p: [f32; 3]) -> Vec3 {
     Vec3::new(p[0], p[1], p[2])
 }

@@ -68,3 +68,30 @@ fn a_repeated_pose_keeps_the_time_it_was_first_sent() {
     assert!(first < 0.03, "a repeated pose keeps its first stamp: {first}");
     assert!(moved - first > 0.1, "a new pose gets a new stamp: {first} → {moved}");
 }
+
+/// Debug paths cross from the simulation thread to the game thread only
+/// while enabled.
+#[test]
+fn debug_paths_reach_the_game_thread_while_enabled() {
+    let (mut engine, _out) = Engine::new(48_000.0, EngineConfig::default());
+    let mut g = Geometry::new();
+    let floor = g.material(Material::WOOD);
+    g.add_box([-10.0, -10.0, -0.2], [10.0, 10.0, 0.0], floor);
+    engine.set_geometry(g);
+    let src = engine.add_source(SourceDesc::at([4.0, 1.0, 1.5]));
+    engine.set_listener([0.0, 0.0, 1.7], 0.0, 0.0, 0.0);
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(engine.debug_paths().is_empty(), "off by default");
+    engine.set_debug_paths(true);
+    let t0 = Instant::now();
+    let mut paths = Vec::new();
+    while paths.is_empty() && t0.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(20));
+        paths = engine.debug_paths();
+    }
+    assert!(!paths.is_empty(), "paths while enabled");
+    assert!(paths.iter().all(|p| p.source == src && p.points.len() >= 2));
+    engine.set_debug_paths(false);
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(engine.debug_paths().is_empty(), "none once disabled");
+}

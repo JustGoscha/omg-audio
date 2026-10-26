@@ -24,14 +24,14 @@
 use crate::frame::{Frame, SourceId};
 use crate::geometry::Geometry;
 use crate::mixer::{Clip, Hrir, Mixer, Play, VoiceId};
-use crate::sim::{Config, ObjectId, Simulation, SourceDesc};
+use crate::sim::{Config, DebugPath, ObjectId, Simulation, SourceDesc};
 use omg_core::material::Material;
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -126,6 +126,7 @@ enum SimCmd {
     RemoveObject(ObjectId),
     Listener([f32; 3], f32, f32, f32, f64),
     Config(Config),
+    DebugPaths(bool),
 }
 
 /// Latest-value handoff of frames, plus the return path that sends a
@@ -170,6 +171,8 @@ pub struct Engine {
     stats: Arc<Stats>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    /// The sim thread's last debug paths (written only while enabled).
+    paths: Arc<Mutex<Vec<DebugPath>>>,
     next_source: u32,
     next_object: u32,
     next_voice: u32,
@@ -198,11 +201,13 @@ impl Engine {
         let stats = Arc::new(Stats::default());
         let stop = Arc::new(AtomicBool::new(false));
         let period = Duration::from_secs_f32(1.0 / cfg.tick_hz.clamp(1.0, 200.0));
+        let paths = Arc::new(Mutex::new(Vec::new()));
         let thread = {
             let (slot, stats, stop, sim_cfg) = (slot.clone(), stats.clone(), stop.clone(), cfg.sim);
+            let paths = paths.clone();
             std::thread::Builder::new()
                 .name("omg-audio-sim".into())
-                .spawn(move || sim_loop(Simulation::new(sim_cfg), sim_rx, slot, stats, stop, period))
+                .spawn(move || sim_loop(Simulation::new(sim_cfg), sim_rx, slot, stats, paths, stop, period))
                 .expect("spawn the simulation thread")
         };
         let mixer = Mixer::with_capacity(sample_rate, cfg.hrir, cfg.mixer_capacity);
@@ -214,6 +219,7 @@ impl Engine {
             stats,
             stop,
             thread: Some(thread),
+            paths,
             next_source: 0,
             next_object: 0,
             next_voice: 1 << 31, // disjoint from ids the Mixer hands out itself
@@ -239,6 +245,20 @@ impl Engine {
 
     pub fn set_config(&mut self, cfg: Config) {
         self.sim(SimCmd::Config(cfg));
+    }
+
+    /// Record each tick's strongest traced paths for a debug view (see
+    /// `Simulation::set_debug_paths`); read them with `debug_paths`.
+    pub fn set_debug_paths(&mut self, on: bool) {
+        self.sim(SimCmd::DebugPaths(on));
+        if !on {
+            self.paths.lock().unwrap().clear();
+        }
+    }
+
+    /// The simulation's latest debug paths (empty while disabled).
+    pub fn debug_paths(&self) -> Vec<DebugPath> {
+        self.paths.lock().unwrap().clone()
     }
 
     pub fn add_source(&mut self, desc: SourceDesc) -> SourceId {
@@ -367,6 +387,7 @@ fn sim_loop(
     rx: mpsc::Receiver<SimCmd>,
     slot: Arc<FrameSlot>,
     stats: Arc<Stats>,
+    paths: Arc<Mutex<Vec<DebugPath>>>,
     stop: Arc<AtomicBool>,
     period: Duration,
 ) {
@@ -386,12 +407,16 @@ fn sim_loop(
                 SimCmd::RemoveObject(id) => sim.remove_object(id),
                 SimCmd::Listener(p, y, pi, r, t) => sim.set_listener_at(p, y, pi, r, t),
                 SimCmd::Config(c) => sim.set_config(c),
+                SimCmd::DebugPaths(on) => sim.set_debug_paths(on),
             }
         }
         let t0 = Instant::now();
         let frame = Box::new(sim.tick());
         stats.tick_us.store(t0.elapsed().as_micros().min(u32::MAX as u128) as u32, Ordering::Relaxed);
         stats.ticks.fetch_add(1, Ordering::Relaxed);
+        if sim.debug_paths_enabled() {
+            *paths.lock().unwrap() = sim.debug_paths();
+        }
         // free what the audio side handed back, then publish
         slot.reclaim();
         let old = slot.latest.swap(Box::into_raw(frame), Ordering::AcqRel);

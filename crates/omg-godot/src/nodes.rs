@@ -39,7 +39,7 @@ use godot::classes::{
 use godot::meta::conv::RawPtr;
 use godot::prelude::*;
 
-use omg_audio::{from_y_up, Compute, Config, Geometry, Material, MaterialId, ObjectId, Play, Quality, SourceDesc, SourceId, VoiceId};
+use omg_audio::{from_y_up, to_y_up, Compute, Config, Geometry, Material, MaterialId, ObjectId, Play, Quality, SourceDesc, SourceId, VoiceId};
 
 use crate::backend::clips::{self, Import};
 use crate::backend::decode::ClipOptions;
@@ -476,12 +476,16 @@ pub struct OmgWorld {
     #[export]
     #[init(val = true)]
     diffraction: bool,
+    /// Record each tick's strongest traced paths for `paths()` (a debug
+    /// view). Off: the tracer records nothing.
+    #[export]
+    debug_paths: bool,
 
     started: bool,
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 10],
+    sent: [f32; 11],
     amb_clip: Option<(usize, bool)>,
     rain_clip: Option<(usize, bool)>,
     scratch: Vec<(f32, f32)>,
@@ -652,6 +656,42 @@ impl OmgWorld {
         d
     }
 
+    /// The last tick's strongest traced paths (with `debug_paths` on;
+    /// empty otherwise), strongest first: each {source: the OmgSource node
+    /// (null if gone), energy: mid-band, relative, points:
+    /// PackedVector3Array from the listener's ears through every
+    /// reflection or edge bend to the source, in world coordinates}.
+    #[func]
+    fn paths(&self) -> VarArray {
+        let mut out = VarArray::new();
+        // copy out under the host lock, build the Variants after it
+        let paths = match host().as_ref() {
+            Some(h) => h.engine.debug_paths(),
+            None => return out,
+        };
+        for p in paths {
+            let node = self
+                .sources
+                .iter()
+                .find(|(_, r)| r.id == p.source)
+                .and_then(|(k, _)| Gd::<Node>::try_from_instance_id(*k).ok());
+            let pts: PackedVector3Array = p
+                .points
+                .iter()
+                .map(|q| {
+                    let g = to_y_up(*q);
+                    Vector3::new(g[0], g[1], g[2])
+                })
+                .collect();
+            let mut d: Dictionary<Variant, Variant> = Dictionary::new();
+            d.set("source", &node.map_or(Variant::nil(), |n| n.to_variant()));
+            d.set("energy", p.energy);
+            d.set("points", &pts);
+            out.push(&d.to_variant());
+        }
+        out
+    }
+
     /// The tracer budget in effect (tier + pinned levers): rays, bounces,
     /// late_rays, diffraction — what a settings screen shows.
     #[func]
@@ -728,7 +768,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 10];
+        self.sent = [f32::NAN; 11];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -944,6 +984,7 @@ impl OmgWorld {
             self.bounces as f32,
             self.late_rays as f32,
             self.diffraction as i32 as f32,
+            self.debug_paths as i32 as f32,
         ];
         let cfg = self.sim_config();
         let mut g = host();
@@ -958,6 +999,7 @@ impl OmgWorld {
                 1 => h.send(OutCmd::RainGain(db(*v))),
                 2 => h.send(OutCmd::Rain(v.clamp(0.0, 1.0))),
                 3 => h.engine.set_master(db(*v)),
+                10 => h.engine.set_debug_paths(*v > 0.5),
                 _ => {
                     // quality, compute and the pinned levers: one config
                     h.engine.set_config(cfg);

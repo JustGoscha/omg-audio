@@ -121,6 +121,16 @@ impl SourceDesc {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ObjectId(pub u32);
 
+/// One traced sound path, for a debug view: the listener's ears, then
+/// every reflection or edge bend, then the source (world coordinates).
+#[derive(Clone, Debug)]
+pub struct DebugPath {
+    pub source: SourceId,
+    /// Mid-band energy arriving along it (relative: ranks the paths).
+    pub energy: f32,
+    pub points: Vec<[f32; 3]>,
+}
+
 struct Src {
     id: SourceId,
     pos: Vec3,
@@ -156,6 +166,7 @@ pub struct Simulation {
     panels: Vec<(Vec3, Vec3, Material)>,
     picks: Vec<(f32, usize)>,
     traced_last: usize,
+    debug_paths: bool,
 }
 
 fn v3(p: [f32; 3]) -> Vec3 {
@@ -187,6 +198,7 @@ impl Simulation {
             panels: Vec::new(),
             picks: Vec::new(),
             traced_last: 0,
+            debug_paths: false,
         };
         s.make_walker();
         s
@@ -213,6 +225,7 @@ impl Simulation {
         self.grade = grade;
         // the smoothed fields belong to the old world
         self.tracer = Tracer::new(self.cfg.seed);
+        self.tracer.debug = self.debug_paths;
         for s in &mut self.sources {
             s.traced = None;
         }
@@ -359,6 +372,35 @@ impl Simulation {
     /// Sources traced in the last tick (≤ `max_traced_sources`).
     pub fn traced_last_tick(&self) -> usize {
         self.traced_last
+    }
+
+    /// Keep each tick's strongest traced paths (up to 64, early
+    /// reflections, edge bends and solved echo chains) for a debug view.
+    /// Off by default: then the tracer records nothing.
+    pub fn set_debug_paths(&mut self, on: bool) {
+        self.debug_paths = on;
+        self.tracer.debug = on;
+        if !on {
+            self.tracer.debug_paths = Vec::new();
+        }
+    }
+
+    pub fn debug_paths_enabled(&self) -> bool {
+        self.debug_paths
+    }
+
+    /// The last tick's strongest paths, strongest first (empty when off).
+    /// Sources that did not trace that tick keep no paths in it.
+    pub fn debug_paths(&self) -> Vec<DebugPath> {
+        self.tracer
+            .debug_paths
+            .iter()
+            .map(|(id, e, pts)| DebugPath {
+                source: SourceId(*id),
+                energy: *e,
+                points: pts.iter().map(|p| [p.x, p.y, p.z]).collect(),
+            })
+            .collect()
     }
 
     // ---- the tick --------------------------------------------------------

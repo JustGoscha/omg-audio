@@ -30,6 +30,7 @@ var hint: Control
 var torch: SpotLight3D
 var settings: DemoSettings
 var debug: DemoDebug
+var paths_view: DemoPathsView
 var halos := [] # [halo node, lamp position]
 var labels: Array[Label3D] = []
 var rain_name := "off"
@@ -114,6 +115,8 @@ func _ready() -> void:
 	_labels()
 	debug = DemoDebug.new(world)
 	add_child(debug)
+	paths_view = DemoPathsView.new(world)
+	add_child(paths_view)
 	settings = DemoSettings.new(self, world)
 	add_child(settings)
 	_load()
