@@ -55,7 +55,7 @@
 use super::*;
 
 /// Bump on ANY change to the flat formats above or in v3_walk.wgsl.
-pub const WALK_LAYOUT_VERSION: u32 = 2;
+pub const WALK_LAYOUT_VERSION: u32 = 3;
 /// Direction cells for early binning (and the sky).
 pub const CELLS: usize = N_CELLS;
 /// Early delay bins: the early window over the delay bin width.
@@ -77,7 +77,9 @@ pub const EDGE_WORDS: usize = 8;
 /// Per-dispatch caps. A world beyond them traces on the CPU instead — a
 /// silently clamped input would change the physics.
 pub const MAX_SOURCES: usize = 64;
-pub const MAX_PANELS: usize = 64;
+/// Panels: door leaves and panes plus every large piece of furniture (the
+/// demo town carries ~90).
+pub const MAX_PANELS: usize = 256;
 pub const MAX_POCKETS: usize = 8;
 pub const MAX_EDGES: usize = 16384;
 pub const DEBUG_VERTS: usize = 8;

@@ -1944,6 +1944,30 @@ mod tests {
         }
     }
 
+    /// The v3 GPU walk takes a world only within its flat caps; beyond
+    /// them every tick silently walks on the CPU (the web panel then reads
+    /// "v3 · cpu" with compute = gpu). The town must fit: every door/pane
+    /// box plus every large furniture piece, all sources, the pockets.
+    #[test]
+    fn town_fits_the_v3_gpu_walk_caps() {
+        use omg_core::v3::fold::{MAX_PANELS, MAX_POCKETS, MAX_SOURCES};
+        let w = WorldSim::new();
+        let furn = w
+            .furn_full
+            .iter()
+            .filter(|(mn, mx, _)| {
+                let d = *mx - *mn;
+                d.x * d.y * d.z > walkthrough::FURN_REFLECTOR_MIN_VOL
+            })
+            .count();
+        let panels = w.doors.len() + furn;
+        assert!(panels <= MAX_PANELS, "{panels} overlay panels > MAX_PANELS {MAX_PANELS}");
+        let sources: usize = w.defs.iter().map(|d| d.emitters.len().max(1)).sum();
+        assert!(sources <= MAX_SOURCES, "{sources} v3 sources > MAX_SOURCES {MAX_SOURCES}");
+        let pockets = w.rooms.iter().filter(|r| !r.outdoor && r.floor_z < -0.05).count();
+        assert!(pockets <= MAX_POCKETS, "{pockets} pockets > MAX_POCKETS {MAX_POCKETS}");
+    }
+
     /// Closing a door turns the portal into a wood panel: markedly
     /// quieter, bass-favoring (mass law), and fully reversible.
     #[test]
