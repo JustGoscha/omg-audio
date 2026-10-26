@@ -34,7 +34,7 @@ use std::sync::{Mutex, MutexGuard};
 use godot::classes::native::AudioFrame;
 use godot::classes::{
     AudioServer, AudioStream, AudioStreamPlayback, AudioStreamPlayer, IAudioStream, IAudioStreamPlayback, INode3D,
-    Mesh, MeshInstance3D, Node, Node3D, PhysicsRayQueryParameters3D, ProjectSettings,
+    Mesh, MeshInstance3D, Node, Node3D, PhysicsRayQueryParameters3D,
 };
 use godot::meta::conv::RawPtr;
 use godot::prelude::*;
@@ -74,13 +74,22 @@ fn db(x: f32) -> f32 {
     10f32.powf(x / 20.0)
 }
 
-fn global_path(p: &GString) -> String {
+/// A clip file for the clip bank: natively a path on disk; on the web its
+/// bytes, read through Godot (res:// lives in the .pck, not on a disk).
+#[cfg(not(target_os = "emscripten"))]
+fn clip_source(p: &GString) -> clips::Source {
     let s = p.to_string();
-    if s.starts_with("res://") || s.starts_with("user://") {
-        ProjectSettings::singleton().globalize_path(p).to_string()
+    clips::Source::Path(if s.starts_with("res://") || s.starts_with("user://") {
+        godot::classes::ProjectSettings::singleton().globalize_path(p).to_string()
     } else {
         s
-    }
+    })
+}
+
+#[cfg(target_os = "emscripten")]
+fn clip_source(p: &GString) -> clips::Source {
+    let bytes = godot::classes::FileAccess::get_file_as_bytes(p).to_vec();
+    clips::Source::Bytes { name: p.to_string(), bytes }
 }
 
 fn band3(v: &Variant) -> Option<[f32; 3]> {
@@ -514,7 +523,7 @@ impl OmgWorld {
     /// trim_start, trim_end, max_seconds, fade_in, fade_out.
     #[func]
     fn load_clip(&self, path: GString, options: Dictionary<Variant, Variant>) -> i64 {
-        clips::load(&global_path(&path), engine_rate(), options_of(&options)) as i64
+        clips::load(clip_source(&path), engine_rate(), options_of(&options)) as i64
     }
 
     /// A clip from samples made in a script (mono, engine rate).
@@ -664,10 +673,10 @@ impl OmgWorld {
             let mut imp = Import::default();
             imp.opts.stereo = true;
             imp.opts.max_seconds = self.ambience_seconds;
-            self.amb_clip = Some((clips::load(&global_path(&self.ambience_file), sr, imp), false));
+            self.amb_clip = Some((clips::load(clip_source(&self.ambience_file), sr, imp), false));
         }
         if !self.rain_bank_file.is_empty() {
-            self.rain_clip = Some((clips::load(&global_path(&self.rain_bank_file), sr, Import::default()), false));
+            self.rain_clip = Some((clips::load(clip_source(&self.rain_bank_file), sr, Import::default()), false));
         }
     }
 
@@ -773,7 +782,7 @@ impl OmgWorld {
             if file != rec.file {
                 rec.file = file.clone();
                 rec.file_clip = (!file.is_empty())
-                    .then(|| clips::load(&global_path(&file), sr, Import { normalize_rms: true, ..Default::default() }));
+                    .then(|| clips::load(clip_source(&file), sr, Import { normalize_rms: true, ..Default::default() }));
             }
             // what should loop: the script's loop clip, else the file
             let want = if playing { loop_clip.map(|c| c as usize).or(rec.file_clip) } else { None };

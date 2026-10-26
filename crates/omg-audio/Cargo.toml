@@ -8,8 +8,8 @@ description = "Geometric game audio: put your level's triangles and materials in
 [features]
 default = ["threaded"]
 # `threaded::Engine`: a sim thread + latest-frame handoff + command ring
-# (native only; on wasm the host runs Simulation in a worker and Mixer in
-# an AudioWorklet itself).
+# (native, and wasm under Emscripten pthreads; on bare wasm the host runs
+# Simulation in a worker and Mixer in an AudioWorklet itself).
 threaded = []
 # `Compute::Gpu`: the v3 ray walk on the GPU through wgpu (omg-gpu).
 gpu = ["dep:omg-gpu"]

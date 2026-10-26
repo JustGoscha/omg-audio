@@ -10,8 +10,7 @@ license = "Apache-2.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# the engine; `gpu`: the v3 ray walk on the GPU (wgpu), CPU fallback
-omg-audio = { path = "../omg-audio", features = ["gpu"] }
+omg-audio = { path = "../omg-audio" }
 omg-dsp = { path = "../omg-dsp" }
 # experimental-threads: the output stream's mix() runs on Godot's audio
 # thread (thread-safe instance storage for those objects)
@@ -20,3 +19,14 @@ godot = { version = "0.5", features = ["experimental-threads"] }
 # via a pure-Rust Opus decoder (symphonia ships no Opus codec)
 symphonia = { version = "0.6", default-features = false, features = ["ogg", "flac", "vorbis", "wav", "pcm"] }
 opus-decoder = "0.1"
+
+# native: the engine with `gpu` (the v3 ray walk on the GPU via wgpu, CPU
+# fallback)
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+omg-audio = { path = "../omg-audio", features = ["gpu"] }
+
+# the web build (wasm32-unknown-emscripten, tools/build_godot_web.sh): the
+# walk stays on the CPU; gdext's wasm support, with 32-bit bindings
+# generated from the installed Godot (api-custom, GODOT4_BIN)
+[target.'cfg(target_os = "emscripten")'.dependencies]
+godot = { version = "0.5", features = ["experimental-threads", "experimental-wasm", "api-custom"] }

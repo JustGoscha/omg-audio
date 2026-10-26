@@ -7,7 +7,7 @@
 class_name DemoSounds
 extends Node
 
-const A := "res://../assets/"
+static var A: String = DemoAssets.root
 
 # The web mixer (web/main.js MIXER) sets each source's real SPL:
 # level = 90 dB + 20·log10(authored gain) + (fader default − anchor).

@@ -10,6 +10,7 @@ config/features=PackedStringArray("4.7")
 [audio]
 
 driver/mix_rate=48000
+general/default_playback_type.web=0
 
 [display]
 
@@ -19,6 +20,7 @@ window/size/viewport_height=900
 [rendering]
 
 renderer/rendering_method="forward_plus"
+renderer/rendering_method.web="gl_compatibility"
 lights_and_shadows/directional_shadow/size=2048
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0
 lights_and_shadows/positional_shadow/soft_shadow_filter_quality=0

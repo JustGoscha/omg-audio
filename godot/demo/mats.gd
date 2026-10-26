@@ -10,7 +10,7 @@
 class_name DemoMats
 extends RefCounted
 
-const TEX_DIR := "res://../assets/textures/"
+const TEX_DIR := "textures/"
 
 static var _cache := {}
 static var _tex := {}
@@ -18,7 +18,7 @@ static var _tex := {}
 static func _texture(file: String) -> Texture2D:
 	if _tex.has(file):
 		return _tex[file]
-	var img := Image.load_from_file(ProjectSettings.globalize_path(TEX_DIR + file))
+	var img := Image.load_from_file(DemoAssets.file(TEX_DIR + file))
 	var t: Texture2D = null
 	if img != null and not img.is_empty():
 		img.generate_mipmaps()
