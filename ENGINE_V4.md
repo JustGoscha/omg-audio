@@ -108,10 +108,29 @@ solving the mirror chains for both.
   real time (v3 4.5×); Godot demo GPU tick 0.7 ms, render 4.9× real time,
   a 66-source stress 2.6×.
 
+## The web demo
+
+v4 is the default there too (early refl = v4). The worklet has no
+threads, so it gets a budget: the four loudest sources at the ears are
+convolved (with hysteresis), their kernels capped at 2.5 s, built in the
+worker a few partitions per tick and handed over at most every 10 ticks;
+every other source keeps v3's parametric reverb, so nothing goes dry.
+The convolver's tail work is spread over the callbacks after each tail
+block (no spike). Worklet render: 15 % of real time in v4 vs 37 % in v3.
+
+## Level
+
+v4's reverb is about 10 dB louder than v3's. v4 is the consistent one:
+its dense energy is in the taps' units, and a 6×5×3 m concrete room heard
+at 2.6 m puts the reverberant field +13 dB over the direct sound (diffuse
+theory from the critical distance: ~+15 dB). v3's parametric level
+carried the old 1/16 echogram scale.
+
 ## What is left
 
-- The web demo (wasm, no threads in the worklet): kernels built in the
-  worker and transferred, a budget of convolved sources.
-- Kernel memory for very long tails (a 10 s kernel is ~15 MB).
+- Kernel memory for very long tails (a 10 s kernel is ~15 MB); the web's
+  2.5 s cap fades a big hall's tail out early.
+- In a still scene kernels are still refreshed every couple of seconds
+  (well inside the budget).
 - The v3 echo special case (salience gates, merge rules) stays for v3
   mode only.
