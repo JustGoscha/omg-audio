@@ -90,9 +90,12 @@ static EARLY: AtomicU32 = AtomicU32::new(0);
 
 /// Early-field engine: 0 = ism, 1 = traced (v2), 2 = hybrid (reserved,
 /// runs traced), 3 = v3 — the one listener tracer (ENGINE_V3.md), which
-/// replaces early AND late, routing, bends and blending for every source.
+/// replaces early AND late, routing, bends and blending for every source
+/// — and 4 = v4: v3's tracer keeping the whole traced response
+/// (ENGINE_V4: coherent taps at any delay, the scattered rest a dense
+/// response the host convolves; `WorldSim::dense`).
 pub fn set_early(mode: u32) {
-    EARLY.store(mode.min(3), Ordering::Relaxed);
+    EARLY.store(mode.min(4), Ordering::Relaxed);
 }
 
 /// The v2 world-mesh early pipeline (traced or hybrid).
@@ -100,9 +103,15 @@ pub fn early_traced() -> bool {
     matches!(EARLY.load(Ordering::Relaxed), 1 | 2)
 }
 
-/// Engine v3: one listener trace per tick serves every source.
+/// Engine v3 (or v4, which runs on it): one listener trace per tick
+/// serves every source.
 pub fn early_v3() -> bool {
-    EARLY.load(Ordering::Relaxed) == 3
+    matches!(EARLY.load(Ordering::Relaxed), 3 | 4)
+}
+
+/// Engine v4: the v3 tracer keeping the whole response.
+pub fn early_v4() -> bool {
+    EARLY.load(Ordering::Relaxed) == 4
 }
 
 pub fn early() -> u32 {

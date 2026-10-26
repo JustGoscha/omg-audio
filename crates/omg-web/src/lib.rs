@@ -23,6 +23,9 @@ use omg_dsp::renderer::{BusBlock, BLOCK};
 use omg_dsp::{PlayLog, Renderer};
 use omg_scene::world::WorldSim;
 
+mod dense_budget;
+use dense_budget::DenseBudget;
+
 const NSRC: usize = 15; // = omg_scene::walkthrough::sources().len()
 const MAX_FLAT: usize = 4096; // f32s per param buffer (~450 taps headroom)
 /// State layout: [0..4] pose/room/rt60, then NSRC route-viz entries of
@@ -57,6 +60,10 @@ struct SimCtx {
     /// JS-written door states (1 = open), indices into the scene doors.
     door_in: &'static mut [f32],
     flat_tmp: Vec<f32>,
+    /// Engine v4: which sources the worklet convolves, and their kernels.
+    dense: DenseBudget,
+    /// Source gains (the scene's: v4 kernels carry them, like the taps).
+    gains: Vec<f32>,
 }
 
 static mut SIM: Option<SimCtx> = None;
@@ -82,6 +89,8 @@ pub extern "C" fn sim_setup() {
             b
         },
         flat_tmp: Vec::with_capacity(MAX_FLAT),
+        dense: DenseBudget::new(NSRC),
+        gains: omg_scene::walkthrough::sources().iter().map(|s| s.gain).collect(),
     };
     unsafe { *(&raw mut SIM) = Some(ctx) };
 }
@@ -921,8 +930,38 @@ pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
         );
     }
     let (blocks, info) = ctx.world.tick_at_z(lx, ly, lz, yaw);
+    // engine v4: the dense budget (which sources the worklet convolves,
+    // their kernels a few partitions a tick)
+    {
+        let SimCtx { world, dense, gains, .. } = &mut *ctx;
+        if omg_scene::quality::early_v4() {
+            let loud: Vec<f32> = blocks
+                .iter()
+                .take(NSRC)
+                .map(|pb| {
+                    pb.taps.iter().map(|t| t.gains[1] * t.gains[1]).sum::<f32>()
+                        + pb.reverb.level[1] * pb.reverb.level[1]
+                        + pb.remote.as_ref().map_or(0.0, |r| r.send[1] * r.send[1])
+                })
+                .collect();
+            dense.tick(&|i| world.dense(i).cloned(), &loud, gains);
+        } else if dense.count() > 0 {
+            dense.clear_all();
+        } else {
+            dense.ready = None;
+            dense.clears.clear();
+        }
+    }
     for (i, pb) in blocks.iter().enumerate().take(NSRC) {
-        pb.write_flat(&mut ctx.flat_tmp);
+        if ctx.dense.convolving(i) {
+            // the kernel carries the scattered energy: no parametric reverb
+            let mut pb = pb.clone();
+            pb.reverb.level = [0.0; 3];
+            pb.remote = None;
+            pb.write_flat(&mut ctx.flat_tmp);
+        } else {
+            pb.write_flat(&mut ctx.flat_tmp);
+        }
         let n = ctx.flat_tmp.len().min(MAX_FLAT);
         ctx.params[i][..n].copy_from_slice(&ctx.flat_tmp[..n]);
         ctx.param_lens[i] = n;
@@ -948,6 +987,47 @@ pub extern "C" fn sim_tick(lx: f32, ly: f32, lz: f32, yaw: f32) {
         }
         o += (4 - n) * 2;
     }
+}
+
+/// The audio sample rate the worklet runs at (v4 kernels are built for it).
+#[no_mangle]
+pub extern "C" fn sim_set_rate(sample_rate: f32) {
+    sim().dense.sample_rate = sample_rate;
+}
+
+/// Engine v4: this tick's finished kernel — its source, or -1 for none;
+/// its flat words at `sim_kernel_ptr` (`sim_kernel_len` f32s), for the
+/// worklet's `eng_kernel_alloc` / `eng_set_kernel`.
+#[no_mangle]
+pub extern "C" fn sim_kernel_src() -> i32 {
+    sim().dense.ready.as_ref().map_or(-1, |r| r.0 as i32)
+}
+
+#[no_mangle]
+pub extern "C" fn sim_kernel_ptr() -> *const f32 {
+    sim().dense.ready.as_ref().map_or(core::ptr::null(), |r| r.1.as_ptr())
+}
+
+#[no_mangle]
+pub extern "C" fn sim_kernel_len() -> u32 {
+    sim().dense.ready.as_ref().map_or(0, |r| r.1.len() as u32)
+}
+
+/// Sources whose kernel the worklet must drop this tick (`eng_clear_kernel`).
+#[no_mangle]
+pub extern "C" fn sim_kernel_clears_len() -> u32 {
+    sim().dense.clears.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn sim_kernel_clears_ptr() -> *const u32 {
+    sim().dense.clears.as_ptr()
+}
+
+/// How many sources the worklet convolves (the panel's readout).
+#[no_mangle]
+pub extern "C" fn sim_dense_count() -> u32 {
+    sim().dense.count() as u32
 }
 
 #[no_mangle]
@@ -1032,6 +1112,8 @@ struct EngCtx {
     meter_out: &'static mut [f32],
     /// Field-debug snapshot buffer (eng_debug_render).
     debug_out: &'static mut [f32],
+    /// A v4 kernel JS is writing (eng_kernel_alloc → words → eng_set_kernel).
+    kernel_buf: Vec<f32>,
 }
 
 static mut ENG: Option<EngCtx> = None;
@@ -1068,6 +1150,7 @@ pub extern "C" fn eng_init(sample_rate: f32) {
         meter_acc: [(0.0, 0.0, 0); NSRC + 2],
         meter_out: leak_f32(2 * (NSRC + 2)),
         debug_out: leak_f32(NSRC * 5),
+        kernel_buf: Vec::new(),
     };
     unsafe { *(&raw mut ENG) = Some(ctx) };
 }
@@ -1307,6 +1390,45 @@ pub extern "C" fn eng_set_env(len: u32) {
 #[no_mangle]
 pub extern "C" fn eng_param_buf_ptr() -> *mut f32 {
     eng().param_buf.as_mut_ptr()
+}
+
+/// Engine v4: room for a kernel's `len` flat words (the worker's
+/// `sim_kernel_*`); JS fills it, then `eng_set_kernel` adopts it (no copy).
+#[no_mangle]
+pub extern "C" fn eng_kernel_alloc(len: u32) -> *mut f32 {
+    let ctx = eng();
+    ctx.kernel_buf = vec![0.0; len as usize];
+    ctx.kernel_buf.as_mut_ptr()
+}
+
+/// Source `src` convolves the kernel just written (`len` words).
+#[no_mangle]
+pub extern "C" fn eng_set_kernel(src: u32, len: u32) {
+    let ctx = eng();
+    let words = core::mem::take(&mut ctx.kernel_buf);
+    if words.len() != len as usize {
+        return;
+    }
+    if let (Some(k), Some(r)) = (omg_dsp::dense::DenseKernel::from_flat(words), ctx.renderers.get_mut(src as usize)) {
+        r.set_dense_kernel(Some(Arc::new(k)));
+    }
+}
+
+/// Source `src` stops convolving (its parametric reverb is back).
+#[no_mangle]
+pub extern "C" fn eng_clear_kernel(src: u32) {
+    if let Some(r) = eng().renderers.get_mut(src as usize) {
+        r.set_dense_kernel(None);
+    }
+}
+
+/// The listener's walk yaw: v4 kernels are in the world frame, the bus
+/// in the listener's (the taps arrive pre-turned).
+#[no_mangle]
+pub extern "C" fn eng_set_listener_yaw(yaw: f32) {
+    for r in &mut eng().renderers {
+        r.set_dense_yaw(yaw);
+    }
 }
 
 /// Apply the flat ParamBlock currently staged in the param buffer.

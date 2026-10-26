@@ -105,6 +105,17 @@ class OmgProcessor extends AudioWorkletProcessor {
       this.ready = true;
       this.port.postMessage({ type: 'ready' });
     } else if (m.type === 'params' && this.ready) {
+      // engine v4: kernels first (the blocks below may have dropped the
+      // parametric reverb they replace), then the listener's yaw (v4
+      // kernels are in the world frame, the bus in the listener's)
+      if (m.clears && this.w.eng_clear_kernel) m.clears.forEach((s) => this.w.eng_clear_kernel(s));
+      if (m.kernel && this.w.eng_kernel_alloc) {
+        const f = new Float32Array(m.kernel.buf);
+        const ptr = this.w.eng_kernel_alloc(f.length);
+        new Float32Array(this.w.memory.buffer, ptr, f.length).set(f);
+        this.w.eng_set_kernel(m.kernel.src, f.length);
+      }
+      if (m.yaw !== undefined && this.w.eng_set_listener_yaw) this.w.eng_set_listener_yaw(m.yaw);
       let incoming = 0;
       m.blocks.forEach((buf, i) => {
         const f = new Float32Array(buf);

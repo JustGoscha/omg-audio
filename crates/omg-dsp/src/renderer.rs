@@ -529,6 +529,10 @@ pub struct Renderer {
     onset: PathDelay,
     /// Engine v4: the dense (scattered) response, convolved.
     dense: crate::dense::DenseConv,
+    /// Turn the dense output about z by this (a host whose bus is in the
+    /// listener's yaw frame while its kernels are in the world's: the
+    /// web), smoothed. 0: the bus and the kernels share a frame.
+    dense_yaw: Smoothed,
     /// Samples since the last applied ParamBlock (retarget window).
     since_params: u32,
     /// Average samples between fresh ParamBlocks (simulation updates):
@@ -635,6 +639,7 @@ impl Renderer {
             grid,
             onset: PathDelay::new(1.0),
             dense: crate::dense::DenseConv::new(),
+            dense_yaw: Smoothed::new(0.0, 0.03, sample_rate),
             since_params: 0,
             update_interval: 0.05 * sample_rate as f64,
             window_lead: 0.0,
@@ -688,6 +693,19 @@ impl Renderer {
     /// (`dense::build_kernel`, built off the audio thread); None stops it.
     pub fn set_dense_kernel(&mut self, k: Option<std::sync::Arc<crate::dense::DenseKernel>>) {
         self.dense.set_kernel(k);
+    }
+
+    /// The listener's yaw for the dense output (see `dense_yaw`).
+    pub fn set_dense_yaw(&mut self, yaw: f32) {
+        // the shorter way round
+        let cur = self.dense_yaw.target_val();
+        let mut d = (yaw - cur) % core::f32::consts::TAU;
+        if d > core::f32::consts::PI {
+            d -= core::f32::consts::TAU;
+        } else if d < -core::f32::consts::PI {
+            d += core::f32::consts::TAU;
+        }
+        self.dense_yaw.set(cur + d);
     }
 
     /// How long the source keeps sounding after its last sample, beyond
@@ -1150,9 +1168,26 @@ impl Renderer {
             } else {
                 self.late_block(&x[..m], off, bus);
             }
-            // engine v4: the traced dense response, convolved
+            // engine v4: the traced dense response, convolved (turned into
+            // the bus's frame when that is the listener's)
             if dense {
-                self.dense.process(&x[..m], bus, off);
+                let yaw = self.dense_yaw.current();
+                let turning = yaw != 0.0 || self.dense_yaw.target_val() != 0.0;
+                if !turning {
+                    self.dense.process(&x[..m], bus, off);
+                } else {
+                    let mut t: BusBlock = [[0.0; BLOCK]; NCH];
+                    self.dense.process(&x[..m], &mut t, off);
+                    advance_n(core::slice::from_mut(&mut self.dense_yaw), m);
+                    let (s, c) = yaw.sin_cos();
+                    for j in off..off + m {
+                        let (y, z, x) = (t[1][j], t[2][j], t[3][j]);
+                        bus[0][j] += t[0][j];
+                        bus[1][j] += -s * x + c * y;
+                        bus[2][j] += z;
+                        bus[3][j] += c * x + s * y;
+                    }
+                }
             }
         }
         // the remote direction smoothers are only read at re-selection

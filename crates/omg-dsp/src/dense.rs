@@ -181,8 +181,18 @@ pub fn impulse_response(resp: &DenseResponse, sample_rate: f32, gain: f32, seed:
 /// continued tail) fades out over its last 10 % (a cost cap: the web's
 /// convolution budget), never cut.
 pub fn impulse_response_max(resp: &DenseResponse, sample_rate: f32, gain: f32, seed: u32, max_s: f32) -> [Vec<f32>; FOA] {
-    let extended = continue_tail(resp, max_s);
-    let mut resp = extended.unwrap_or_else(|| resp.clone());
+    let resp = prepare(resp, max_s);
+    let len = ir_len(&resp, sample_rate);
+    let mut out: [Vec<f32>; FOA] = core::array::from_fn(|_| vec![0.0; len]);
+    synth(&resp, sample_rate, gain, seed, 0, len, &mut out);
+    out
+}
+
+/// The response as the kernel renders it: continued past the traced
+/// window (`continue_tail`), at most `max_s` long with a fade over its
+/// last 10 %.
+fn prepare(resp: &DenseResponse, max_s: f32) -> DenseResponse {
+    let mut resp = continue_tail(resp, max_s).unwrap_or_else(|| resp.clone());
     let cap = (max_s / resp.bin_s.max(1e-6)) as usize;
     if resp.bins.len() > cap {
         resp.bins.truncate(cap);
@@ -194,19 +204,29 @@ pub fn impulse_response_max(resp: &DenseResponse, sample_rate: f32, gain: f32, s
             }
         }
     }
-    let resp = &resp;
+    resp
+}
+
+/// Kernel samples of a prepared response (it starts `HEAD_B` in).
+fn ir_len(resp: &DenseResponse, sample_rate: f32) -> usize {
+    let spb = (resp.bin_s * sample_rate).max(1.0);
+    ((resp.bins.len() as f32 * spb) as usize).saturating_sub(HEAD_B)
+}
+
+/// Kernel samples `from..to` of a prepared response into `out[c][0..]`.
+fn synth(resp: &DenseResponse, sample_rate: f32, gain: f32, seed: u32, from: usize, to: usize, out: &mut [Vec<f32>; FOA]) {
+    for o in out.iter_mut() {
+        o[..to - from].iter_mut().for_each(|v| *v = 0.0);
+    }
+    if resp.bins.is_empty() || to <= from {
+        return;
+    }
     let bank = bank(sample_rate);
     let spb = (resp.bin_s * sample_rate).max(1.0);
-    let total = (resp.bins.len() as f32 * spb) as usize;
-    let len = total.saturating_sub(HEAD_B);
-    let mut out: [Vec<f32>; FOA] = core::array::from_fn(|_| vec![0.0; len]);
-    if len == 0 {
-        return out;
-    }
     let off = (seed as usize).wrapping_mul(0x9e37_79b9) % BANK_LEN;
     let g2 = gain * gain;
     let diffuse_g = [1.0f32, 0.577_350_3, 0.577_350_3, 0.577_350_3];
-    for s in 0..len {
+    for s in from..to {
         let t = s + HEAD_B;
         // the envelope, linear between bin centres
         let pos = t as f32 / spb - 0.5;
@@ -228,11 +248,10 @@ pub fn impulse_response_max(resp: &DenseResponse, sample_rate: f32, gain: f32, s
             let amp_dir = (e[b] * a).sqrt() * bank.n[0][b][k];
             let amp_dif = (e[b] * (1.0 - a)).sqrt();
             for c in 0..FOA {
-                out[c][s] += amp_dir * enc[c] + amp_dif * diffuse_g[c] * bank.n[1 + c][b][k];
+                out[c][s - from] += amp_dir * enc[c] + amp_dif * diffuse_g[c] * bank.n[1 + c][b][k];
             }
         }
     }
-    out
 }
 
 /// Longest kernel (s): a continued tail stops here even if it is still
@@ -303,35 +322,93 @@ pub fn build_kernel(resp: &DenseResponse, sample_rate: f32, gain: f32, seed: u32
 
 /// `build_kernel` at most `max_s` long (see `impulse_response_max`).
 pub fn build_kernel_max(resp: &DenseResponse, sample_rate: f32, gain: f32, seed: u32, max_s: f32) -> DenseKernel {
-    let ir = impulse_response_max(resp, sample_rate, gain, seed, max_s);
-    let len = ir[0].len();
-    let n_head = len.div_ceil(HEAD_B).min(HEAD_PARTS);
-    let n_mid = len.saturating_sub(HEAD_LEN).div_ceil(MID_B).min(MID_PARTS);
-    let n_tail = len.saturating_sub(MID_END).div_ceil(TAIL_B);
-    let mut data = vec![C::default(); DenseKernel::flat_len(n_head, n_mid, n_tail) / 2];
-    data[0] = C::new(len as f32, n_head as f32);
-    data[1] = C::new(n_mid as f32, n_tail as f32);
-    let mut o = 2;
-    let stage = |b: usize, from: usize, parts: usize, data: &mut Vec<C>, o: &mut usize| {
-        let mut fft = RealFft::new(2 * b);
-        let mut buf = vec![0.0f32; 2 * b];
-        for p in 0..parts {
-            let start = from + p * b;
-            for ch in &ir {
-                buf.iter_mut().for_each(|x| *x = 0.0);
-                let end = (start + b).min(len);
-                if start < end {
-                    buf[..end - start].copy_from_slice(&ch[start..end]);
-                }
-                fft.forward(&buf, &mut data[*o..*o + b + 1]);
-                *o += b + 1;
-            }
+    let mut b = KernelBuilder::new(resp, sample_rate, gain, seed, max_s);
+    while !b.step(usize::MAX) {}
+    b.finish()
+}
+
+/// A kernel built a few partitions at a time (a host with no thread to
+/// spare — the web worker, between its ticks): each `step` synthesizes
+/// and transforms partitions worth at most a work budget (in samples of
+/// impulse response: a tail partition is `TAIL_B`), `finish` hands over
+/// the kernel. The same kernel `build_kernel` makes.
+pub struct KernelBuilder {
+    resp: DenseResponse,
+    sample_rate: f32,
+    gain: f32,
+    seed: u32,
+    kernel: DenseKernel,
+    /// Next partition to build, counted over head, mid, tail.
+    next: usize,
+    /// Write position in `kernel.data`.
+    at: usize,
+    ir: [Vec<f32>; FOA],
+    buf: Vec<f32>,
+    ffts: [RealFft; 3],
+}
+
+impl KernelBuilder {
+    pub fn new(resp: &DenseResponse, sample_rate: f32, gain: f32, seed: u32, max_s: f32) -> Self {
+        let resp = prepare(resp, max_s);
+        let len = ir_len(&resp, sample_rate);
+        let n_head = len.div_ceil(HEAD_B).min(HEAD_PARTS);
+        let n_mid = len.saturating_sub(HEAD_LEN).div_ceil(MID_B).min(MID_PARTS);
+        let n_tail = len.saturating_sub(MID_END).div_ceil(TAIL_B);
+        let mut data = vec![C::default(); DenseKernel::flat_len(n_head, n_mid, n_tail) / 2];
+        data[0] = C::new(len as f32, n_head as f32);
+        data[1] = C::new(n_mid as f32, n_tail as f32);
+        Self {
+            resp,
+            sample_rate,
+            gain,
+            seed,
+            kernel: DenseKernel { data, n_head, n_mid, n_tail, len },
+            next: 0,
+            at: 2,
+            ir: core::array::from_fn(|_| vec![0.0; TAIL_B]),
+            buf: vec![0.0; 2 * TAIL_B],
+            ffts: [RealFft::new(2 * HEAD_B), RealFft::new(2 * MID_B), RealFft::new(2 * TAIL_B)],
         }
-    };
-    stage(HEAD_B, 0, n_head, &mut data, &mut o);
-    stage(MID_B, HEAD_LEN, n_mid, &mut data, &mut o);
-    stage(TAIL_B, MID_END, n_tail, &mut data, &mut o);
-    DenseKernel { data, n_head, n_mid, n_tail, len }
+    }
+
+    /// Build partitions worth up to `budget` impulse-response samples
+    /// (at least one); true when the kernel is complete.
+    pub fn step(&mut self, budget: usize) -> bool {
+        let (n_head, n_mid, n_tail, len) = (self.kernel.n_head, self.kernel.n_mid, self.kernel.n_tail, self.kernel.len);
+        let total = n_head + n_mid + n_tail;
+        let mut spent = 0usize;
+        while self.next < total && (spent == 0 || spent < budget) {
+            let (stage, b, start) = if self.next < n_head {
+                (0, HEAD_B, self.next * HEAD_B)
+            } else if self.next < n_head + n_mid {
+                (1, MID_B, HEAD_LEN + (self.next - n_head) * MID_B)
+            } else {
+                (2, TAIL_B, MID_END + (self.next - n_head - n_mid) * TAIL_B)
+            };
+            let end = (start + b).min(len);
+            synth(&self.resp, self.sample_rate, self.gain, self.seed, start, end.max(start), &mut self.ir);
+            for c in 0..FOA {
+                let buf = &mut self.buf[..2 * b];
+                buf.iter_mut().for_each(|x| *x = 0.0);
+                buf[..end.saturating_sub(start)].copy_from_slice(&self.ir[c][..end.saturating_sub(start)]);
+                let at = self.at;
+                self.ffts[stage].forward(buf, &mut self.kernel.data[at..at + b + 1]);
+                self.at += b + 1;
+            }
+            self.next += 1;
+            spent += b;
+        }
+        self.next >= total
+    }
+
+    pub fn done(&self) -> bool {
+        self.next >= self.kernel.n_head + self.kernel.n_mid + self.kernel.n_tail
+    }
+
+    pub fn finish(self) -> DenseKernel {
+        debug_assert!(self.done(), "finish before the last step");
+        self.kernel
+    }
 }
 
 /// One stage's frequency-domain delay line: the input spectra, the
@@ -701,6 +778,25 @@ mod tests {
             }
             assert!(err < 1e-6 * sig.max(1e-12), "channel {c}: error {err:.3e} vs signal {sig:.3e}");
         }
+    }
+
+    /// Built a few partitions at a time, the kernel is the one-shot one.
+    #[test]
+    fn a_kernel_built_in_steps_is_the_same_kernel() {
+        let bins: Vec<[f32; 6]> = (0..600).map(|i| {
+            let e = (-(i as f32) / 150.0).exp();
+            [e, e * 0.6, e * 0.2, 0.1 * e, 0.0, -0.2 * e]
+        }).collect();
+        let r = resp(bins);
+        let once = build_kernel_max(&r, 48_000.0, 1.3, 2, 2.5);
+        let mut b = KernelBuilder::new(&r, 48_000.0, 1.3, 2, 2.5);
+        let mut steps = 0;
+        while !b.step(3 * TAIL_B) {
+            steps += 1;
+        }
+        assert!(steps > 3, "several steps: {steps}");
+        assert_eq!(b.finish().to_flat(), once.to_flat());
+        assert!(once.len as f32 <= 2.5 * 48_000.0, "capped at 2.5 s: {}", once.len);
     }
 
     /// A kernel survives `to_flat` / `from_flat` bit for bit (the web
