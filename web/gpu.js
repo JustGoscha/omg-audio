@@ -131,13 +131,13 @@ export async function initGpu(wasm) {
   // SAME uploaded world BVH. Two passes per job (walk into 64-bit
   // fixed-point accumulators, resolve to f32), one job in flight; the
   // wasm-side proxy registers only when this built.
-  const V3_VERSION = 2; // omg_core::v3::fold::WALK_LAYOUT_VERSION
+  const V3_VERSION = 3; // omg_core::v3::fold::WALK_LAYOUT_VERSION
   const V3_SKY = 384;
   const V3_SRC = 17164; // SOURCE_WORDS
   const V3_MAX_SRC = 64;
   const V3_DEBUG_WORDS = 28;
   const V3_DEBUG_KEEP = 64;
-  const V3_SCENE_WORDS = 64 * 12 + 64 * 16 + 8 * 8 + 16384 * 8; // fold MAX_SCENE_WORDS
+  const V3_SCENE_WORDS = 64 * 12 + 256 * 16 + 8 * 8 + 16384 * 8; // fold MAX_SCENE_WORDS
   let v3 = null;
   try {
     if (mesh && wasm.sim_v3_version && wasm.sim_v3_version() === V3_VERSION) {

@@ -33,7 +33,7 @@
 // rare edge the grid's 2 m sampling skips — see v3_probe.rs), and the
 // echogram's direction sums start at EARLY_S (the only part read).
 //
-// WALK_LAYOUT_VERSION 2 — must match omg_core::v3::fold and layout.rs:
+// WALK_LAYOUT_VERSION 3 — must match omg_core::v3::fold and layout.rs:
 //   Job {rot0@0, n_early@12, rot1@16, n_late@28, rot2@32, bounces@44,
 //        listener@48, seed@60, k@64, nee@68, late_nee@72, n_sources@76,
 //        n_panels@80, n_pockets@84, has_grade@88, grade@92, debug@96,
