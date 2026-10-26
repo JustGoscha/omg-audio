@@ -23,7 +23,7 @@ use omg_dsp::renderer::{BusBlock, BLOCK};
 use omg_dsp::{PlayLog, Renderer};
 use omg_scene::world::WorldSim;
 
-const NSRC: usize = 14;
+const NSRC: usize = 15; // = omg_scene::walkthrough::sources().len()
 const MAX_FLAT: usize = 4096; // f32s per param buffer (~450 taps headroom)
 /// State layout: [0..4] pose/room/rt60, then NSRC route-viz entries of
 /// 9 floats each, then the flat Environment block (see omg_dsp::env).
@@ -1585,6 +1585,13 @@ pub extern "C" fn eng_process(n: u32) {
 mod tests {
     use super::*;
 
+    /// One param buffer, fader and meter per scene source: a source the
+    /// scene grows must not fall off the end of the bridge.
+    #[test]
+    fn nsrc_covers_every_scene_source() {
+        assert_eq!(NSRC, omg_scene::walkthrough::sources().len());
+    }
+
     /// Every dynamic slot JS can write must reach the sim. The feet ride
     /// the LAST slot (5); a bridge that only forwarded slots 0..5 left
     /// source 13 with an empty param block, so every footstep fx voice
@@ -1594,7 +1601,7 @@ mod tests {
         sim_setup();
         let n = omg_scene::walkthrough::DYN_SLOTS;
         let feet_slot = n - 1;
-        let feet_src = NSRC - 1;
+        let feet_src = omg_scene::walkthrough::DYN_BASE + feet_slot;
         let (lx, ly) = (3.0, 3.0);
         let dy = unsafe { core::slice::from_raw_parts_mut(sim_dyn_ptr(), n * 4) };
         dy[feet_slot * 4..feet_slot * 4 + 4].copy_from_slice(&[lx, ly, 0.2, 1.0]);

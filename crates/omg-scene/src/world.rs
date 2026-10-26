@@ -177,7 +177,7 @@ impl WorldSim {
             muted: defs.iter().map(|_| false).collect(),
             src_z: defs.iter().map(|d| d.z).collect(),
             dynamic_active: [false; walkthrough::DYN_SLOTS],
-            dyn_base: defs[defs.len() - walkthrough::DYN_SLOTS..]
+            dyn_base: defs[walkthrough::DYN_BASE..walkthrough::DYN_BASE + walkthrough::DYN_SLOTS]
                 .iter()
                 .map(|d| d.gain)
                 .collect(),
@@ -382,7 +382,7 @@ impl WorldSim {
         if slot >= walkthrough::DYN_SLOTS {
             return;
         }
-        let i = self.defs.len() - walkthrough::DYN_SLOTS + slot;
+        let i = walkthrough::DYN_BASE + slot;
         self.defs[i].pos = (x, y);
         self.defs[i].room = walkthrough::room_of_z(&self.rooms, x, y, z);
         self.defs[i].gain = self.dyn_base[slot] * gain.max(0.0);
@@ -476,11 +476,10 @@ impl WorldSim {
             // The skip rules mirror the render loop's own (muted,
             // inactive dynamics, LOD-quiet off-beat); a source the
             // batch misses just takes the CPU solve as before.
-            let n_static = self.defs.len() - walkthrough::DYN_SLOTS;
             let mut batch_srcs: Vec<(u16, Vec3)> = Vec::new();
             for si in 0..self.defs.len() {
                 let def = &self.defs[si];
-                if self.muted[si] || (si >= n_static && !self.dynamic_active[si - n_static]) {
+                if self.muted[si] || walkthrough::dyn_slot(si).is_some_and(|k| !self.dynamic_active[k]) {
                     continue;
                 }
                 if self.last_level[si] < LOD_QUIET && (self.tick_no + si as u64) % 4 != 0 {
@@ -516,10 +515,9 @@ impl WorldSim {
         // per-source gates — reverb is a slow statistic, the EMA absorbs
         // the staleness, and the tick cost stays flat everywhere.
         let mut late_budget: i32 = 1;
-        let n_static = self.defs.len() - walkthrough::DYN_SLOTS;
         for si in 0..self.defs.len() {
             let def = self.defs[si]; // Copy — frees `self` for &mut queries
-            if self.muted[si] || (si >= n_static && !self.dynamic_active[si - n_static]) {
+            if self.muted[si] || walkthrough::dyn_slot(si).is_some_and(|k| !self.dynamic_active[k]) {
                 let mut pb = ParamBlock::default();
                 pb.version = self.tick_no;
                 blocks.push(pb);
@@ -1248,11 +1246,10 @@ impl WorldSim {
                 }
             }
         }
-        let n_static = self.defs.len() - walkthrough::DYN_SLOTS;
         let mut srcs: Vec<Source> = Vec::new();
         let mut owner: Vec<(usize, usize, usize)> = Vec::new();
         for si in 0..self.defs.len() {
-            if self.muted[si] || (si >= n_static && !self.dynamic_active[si - n_static]) {
+            if self.muted[si] || walkthrough::dyn_slot(si).is_some_and(|k| !self.dynamic_active[k]) {
                 continue;
             }
             let def = &self.defs[si];
