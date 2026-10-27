@@ -654,6 +654,7 @@ impl OmgWorld {
             d.set("rt60", s.rt60);
             d.set("enclosure", s.enclosure);
             d.set("tick_ms", s.tick_ms);
+            d.set("gpu_ms", s.gpu_ms);
             d.set("ticks", s.ticks as i64);
             d.set("gpu", h.gpu);
             d.set("load", s.load);

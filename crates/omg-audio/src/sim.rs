@@ -334,6 +334,12 @@ impl Simulation {
         self.walker.is_some()
     }
 
+    /// Wall-clock of the last finished GPU walk, submit to read-back (ms;
+    /// 0 on the CPU).
+    pub fn gpu_walk_ms(&self) -> f32 {
+        self.walker.as_ref().map_or(0.0, |w| w.last_ms())
+    }
+
     fn make_walker(&mut self) {
         self.walker = None;
         if matches!(self.cfg.compute, Compute::Gpu | Compute::GpuSync) {
