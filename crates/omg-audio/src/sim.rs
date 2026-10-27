@@ -367,6 +367,13 @@ impl Simulation {
         self.walker.is_some()
     }
 
+    /// The acoustic mesh the tracer walks (its BVH), as built from the
+    /// geometry — for a host driving the walk on its own GPU (the web's
+    /// WebGPU, through `set_walker`).
+    pub fn mesh(&self) -> &omg_core::mesh::Mesh {
+        &self.mesh
+    }
+
     /// Wall-clock of the last finished GPU walk, submit to read-back (ms;
     /// 0 on the CPU).
     pub fn gpu_walk_ms(&self) -> f32 {

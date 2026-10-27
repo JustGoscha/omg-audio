@@ -62,6 +62,24 @@ pub fn aperture(d: &Door) -> Option<([f32; 3], [f32; 3], Material)> {
     })
 }
 
+/// Per logical source (the walkthrough's), its engine sources — one, or a
+/// speaker rig's sample-locked emitters — in the order `Town::new` adds
+/// them to a fresh simulation: the mixer's side knows them without one.
+pub fn source_map() -> Vec<Vec<SourceId>> {
+    let mut next = 0u32;
+    walkthrough::sources()
+        .iter()
+        .map(|s| {
+            (0..s.emitters.len().max(1))
+                .map(|_| {
+                    next += 1;
+                    SourceId(next - 1)
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// The town in a simulation: its geometry, an object per aperture, the
 /// sources.
 pub struct Town {
@@ -72,6 +90,10 @@ pub struct Town {
     objects: Vec<Option<ObjectId>>,
     /// Per logical source: its engine sources (one, or a speaker rig's).
     pub sources: Vec<Vec<SourceId>>,
+    /// Per logical source: muted on the mixer (not traced at all), and a
+    /// dynamic slot's state (position, loudness factor; None: idle).
+    muted: Vec<bool>,
+    dynamic: Vec<Option<([f32; 3], f32)>>,
 }
 
 impl Town {
@@ -88,7 +110,7 @@ impl Town {
             .map(|d| aperture(d).map(|(mn, mx, m)| sim.add_object(mn, mx, m)))
             .collect();
         let dyn_slots = walkthrough::DYN_BASE..walkthrough::DYN_BASE + walkthrough::DYN_SLOTS;
-        let sources = defs
+        let sources: Vec<Vec<SourceId>> = defs
             .iter()
             .enumerate()
             .map(|(i, s)| {
@@ -101,7 +123,65 @@ impl Town {
                     .collect()
             })
             .collect();
-        Self { rooms, doors, defs, objects, sources }
+        debug_assert_eq!(sources, source_map(), "the mixer's side counts the same ids");
+        let n = defs.len();
+        Self { rooms, doors, defs, objects, sources, muted: vec![false; n], dynamic: vec![None; n] }
+    }
+
+    fn base_gain(&self, i: usize) -> f32 {
+        let s = &self.defs[i];
+        s.gain / (s.emitters.len().max(1) as f32).sqrt()
+    }
+
+    fn is_dynamic(i: usize) -> bool {
+        (walkthrough::DYN_BASE..walkthrough::DYN_BASE + walkthrough::DYN_SLOTS).contains(&i)
+    }
+
+    /// A dynamic slot (a ball, a car, the footsteps) moves, at `gain` × its
+    /// authored loudness; None: idle (not traced).
+    pub fn set_dynamic(&mut self, sim: &mut Simulation, slot: usize, at: Option<([f32; 3], f32)>) {
+        let i = walkthrough::DYN_BASE + slot;
+        if i >= self.defs.len() {
+            return;
+        }
+        let was = self.dynamic[i].map(|d| d.1);
+        self.dynamic[i] = at;
+        let base = self.base_gain(i);
+        let on = at.is_some() && !self.muted[i];
+        for &id in &self.sources[i] {
+            let p = at.map_or([self.defs[i].pos.0, self.defs[i].pos.1, self.defs[i].z], |a| a.0);
+            sim.set_source(id, p, on);
+            if let Some((_, g)) = at {
+                if was != Some(g) {
+                    sim.set_source_gain(id, base * g.max(0.0));
+                }
+            }
+        }
+    }
+
+    /// Mute a logical source on the mixer: it is not traced at all.
+    pub fn set_muted(&mut self, sim: &mut Simulation, i: usize, on: bool) {
+        if i >= self.defs.len() || self.muted[i] == on {
+            return;
+        }
+        self.muted[i] = on;
+        let active = !on && (!Self::is_dynamic(i) || self.dynamic[i].is_some());
+        let s = &self.defs[i];
+        for (k, &id) in self.sources[i].iter().enumerate() {
+            let p = match self.dynamic[i] {
+                Some((p, _)) => p,
+                None => {
+                    let e = s.emitters.get(k).copied().unwrap_or(s.pos);
+                    [e.0, e.1, s.z]
+                }
+            };
+            sim.set_source(id, p, active);
+        }
+    }
+
+    /// The logical source an engine source belongs to.
+    pub fn logical(&self, id: SourceId) -> Option<usize> {
+        self.sources.iter().position(|v| v.contains(&id))
     }
 
     /// Door `i`'s leaf openness 0 (closed) … 1 (open): its object moves

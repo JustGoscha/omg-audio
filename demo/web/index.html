@@ -233,7 +233,7 @@
      the AudioWorklet needs Chrome's wasm scheduling.</p>
   <div id="pick">
     <button id="start">start</button>
-    <a id="godot" href="../godot-web/" hidden
+    <a id="godot" href="../../godot-web/" hidden
        title="The same town and sound engine, as the Godot demo exported to the web.">start in godot</a>
   </div>
   <p id="godotnote" hidden>three.js (this page) or the Godot build — experimental:
@@ -243,7 +243,7 @@
   <script>
     // offer the Godot web export only where it is deployed (godot-web/,
     // built by tools/build_godot_web.sh)
-    fetch('../godot-web/index.html', { method: 'HEAD' }).then((r) => {
+    fetch('../../godot-web/index.html', { method: 'HEAD' }).then((r) => {
       if (!r.ok) return;
       document.getElementById('godot').hidden = false;
       document.getElementById('godotnote').hidden = false;
@@ -259,8 +259,8 @@
       const a = e.currentTarget;
       a.textContent = 'loading…';
       try {
-        const reg = await navigator.serviceWorker.register('../godot-web/index.service.worker.js',
-          { scope: '../godot-web/' });
+        const reg = await navigator.serviceWorker.register('../../godot-web/index.service.worker.js',
+          { scope: '../../godot-web/' });
         const sw = reg.installing || reg.waiting || reg.active;
         if (sw && sw.state !== 'activated') {
           await new Promise((r) => sw.addEventListener('statechange', () => sw.state === 'activated' && r()));

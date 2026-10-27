@@ -892,6 +892,11 @@ impl Mixer {
         self.out.agc_gain()
     }
 
+    /// Hearing fatigue after sustained loudness, 0 (fresh) … 1 (dulled).
+    pub fn ear_fatigue(&self) -> f32 {
+        self.out.ear_fatigue()
+    }
+
     /// The ambience bed's and the rain's levels since the last call.
     pub fn take_env_meters(&mut self) -> (Meter, Meter) {
         (self.env_meters[0].take(), self.env_meters[1].take())

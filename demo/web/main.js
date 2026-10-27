@@ -2183,12 +2183,11 @@ async function startAudio() {
     return r.arrayBuffer();
   };
   statusEl.textContent = 'loading…';
-  const [wasm1, wasm2, grid, speakers, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxT, fxB, ambRaw, dropsRaw, mot0, mot1, mot2, mot3, fountainRaw] =
+  // (the HRIRs are built into the engine's wasm)
+  const [wasm1, wasm2, ariaRaw, aliceRaw, clubRaw, fluteRaw, radioRaw, fxT, fxB, ambRaw, dropsRaw, mot0, mot1, mot2, mot3, fountainRaw] =
     await Promise.all([
     fetchBuf('omg_web.wasm'),
     fetchBuf('omg_web.wasm'),
-    fetchBuf('../../crates/omg-audio/hrir/hrir_grid.bin'),
-    fetchBuf('../../crates/omg-audio/hrir/hrir_dodeca20.bin'),
     fetchBuf('../assets/aria48.ogg'),
     fetchBuf('../assets/alice48.ogg'),
     fetchBuf('../assets/club48.ogg'),
@@ -2364,7 +2363,7 @@ async function startAudio() {
   state.analyser = analyser;
   state.specBins = new Uint8Array(analyser.frequencyBinCount);
   node.port.postMessage(
-    { type: 'wasm', bytes: wasm1, grid, speakers,
+    { type: 'wasm', bytes: wasm1,
       sources: [aria.buffer, alice.buffer, club.buffer, flute.buffer, radio.buffer,
                 silents[0].buffer, silents[1].buffer, silents[2].buffer, // owls + bells
                 silents[3].buffer, silents[4].buffer, silents[5].buffer, // balls
@@ -2374,7 +2373,7 @@ async function startAudio() {
            owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
            whis0.buffer, whis1.buffer, clapFx.buffer],
       ambient: ambience.buffer, drops: drops.buffer },
-    [wasm1, grid, speakers, aria.buffer, alice.buffer, club.buffer, flute.buffer,
+    [wasm1, aria.buffer, alice.buffer, club.buffer, flute.buffer,
      radio.buffer, ...silents.map((b) => b.buffer), fountain.buffer,
      whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
      owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
@@ -2554,10 +2553,10 @@ async function startAudio() {
   }
   worker.onmessage = (e) => {
     if (e.data.type !== 'tick') return;
-    const k = e.data.kernel;
+    // the frame and the kernels built with it, straight on to the mixer
     node.port.postMessage({
-      type: 'params', blocks: e.data.blocks, kernel: k, clears: e.data.clears, yaw: e.data.yaw,
-    }, k ? [...e.data.blocks, k.buf] : e.data.blocks);
+      type: 'frame', frame: e.data.frame, kernels: e.data.kernels, clears: e.data.clears,
+    }, [e.data.frame, ...e.data.kernels.map((k) => k.buf)]);
     state.debug.dense = e.data.dense || 0;
     state.simState = new Float32Array(e.data.state);
     state.debug.tickMs = Math.max(state.debug.tickMs || 0, e.data.tickMs || 0) * 0.9
@@ -2618,12 +2617,9 @@ async function startAudio() {
         q.calm = 0;
       }
     }
-    // environment block — offset comes from the sim (ONE source of
-    // truth for the state layout; a hardcoded 58 once parsed car
-    // positions as ambience gains)
+    // the environment block (the ambience line reads it from the state;
+    // the mixer gets it inside the frame)
     state.envOff = e.data.envOff;
-    const env = state.simState.slice(e.data.envOff).buffer;
-    node.port.postMessage({ type: 'env', env }, [env]);
   };
 
   state.fx = (src, kind, action = 'play', gain, rate) =>
