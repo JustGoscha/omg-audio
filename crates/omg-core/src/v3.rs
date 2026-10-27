@@ -369,6 +369,73 @@ impl DenseResponse {
         }
         diff / ta.max(tb).max(1e-30)
     }
+
+    /// Reverberation time per band (s), as measured from an impulse
+    /// response: Schroeder's backward-integrated decay, its slope from −5
+    /// to −25 dB (T20) taken to 60 dB. A response still ringing at the
+    /// window's end (`RESPONSE_MAX_S`) gets the energy past it along the
+    /// decay of its last second (as the renderer continues it), so a
+    /// long tail isn't cut short by the window. 0 where there is none.
+    pub fn rt60(&self) -> [f32; NBANDS] {
+        let n = self.bins.len();
+        let dt = self.bin_s as f64;
+        core::array::from_fn(|b| {
+            if n < 8 || dt <= 0.0 {
+                return 0.0;
+            }
+            // ln E per bin over the last second: slope k (< 0), end level
+            let fit_from = n.saturating_sub((1.0 / dt) as usize);
+            let (mut sx, mut sy, mut sxx, mut sxy, mut m) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            for (i, v) in self.bins.iter().enumerate().skip(fit_from) {
+                if v[b] > 0.0 {
+                    let (x, y) = (i as f64, (v[b] as f64).ln());
+                    sx += x;
+                    sy += y;
+                    sxx += x * x;
+                    sxy += x * y;
+                    m += 1.0;
+                }
+            }
+            let fit = (m >= 8.0).then(|| (m * sxy - sx * sy) / (m * sxx - sx * sx)).filter(|k| *k < 0.0);
+            let ringing = (n as f32) * self.bin_s >= RESPONSE_MAX_S - 0.05;
+            let beyond = match (ringing, fit) {
+                (true, Some(k)) => {
+                    let end = ((sy - k * sx) / m + k * (n - 1) as f64).exp();
+                    end * k.exp() / (1.0 - k.exp())
+                }
+                _ => 0.0,
+            };
+            // the decay curve, in dB under the total
+            let mut edc = vec![0.0f64; n];
+            let mut acc = beyond;
+            for i in (0..n).rev() {
+                acc += self.bins[i][b].max(0.0) as f64;
+                edc[i] = acc;
+            }
+            let total = edc[0];
+            if total <= 0.0 {
+                return 0.0;
+            }
+            let db = |i: usize| 10.0 * (edc[i] / total).max(1e-30).log10();
+            let Some(i5) = (0..n).find(|&i| db(i) <= -5.0) else { return 0.0 };
+            let Some(i25) = (i5..n).find(|&i| db(i) <= -25.0) else {
+                // the window ends above −25 dB: the tail's own decay
+                return fit.map_or(0.0, |k| (6.0 * core::f64::consts::LN_10 * dt / -k) as f32);
+            };
+            // least squares of the curve over −5 … −25 dB
+            let (mut sx, mut sy, mut sxx, mut sxy, mut m) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            for i in i5..=i25 {
+                let (x, y) = (i as f64 * dt, db(i));
+                sx += x;
+                sy += y;
+                sxx += x * x;
+                sxy += x * y;
+                m += 1.0;
+            }
+            let slope = if m >= 2.0 { (m * sxy - sx * sy) / (m * sxx - sx * sx) } else { -20.0 / ((i25 - i5).max(1) as f64 * dt) };
+            if slope < 0.0 { (-60.0 / slope) as f32 } else { 0.0 }
+        })
+    }
 }
 
 /// What one source sounds like at the listener (world frame, unit gain).

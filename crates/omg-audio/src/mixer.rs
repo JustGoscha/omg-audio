@@ -124,6 +124,12 @@ impl VoiceId {
     pub const NONE: VoiceId = VoiceId(0);
 }
 
+/// Does a block carry any path to the ears (v4's convolved response
+/// comes with taps: its direct path or a bend)?
+fn heard(pb: &ParamBlock) -> bool {
+    !pb.taps.is_empty() || pb.reverb.level[1] > 0.0 || pb.remote.is_some()
+}
+
 /// A channel's level since the last `take_meter`: peak and RMS amplitude.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Meter {
@@ -197,6 +203,9 @@ struct Slot {
     sounded_until: f64,
     audible_next: bool,
     meter: MeterAcc,
+    /// One-shots started while it had no paths (switched off, or not
+    /// traced yet): restarted when it is first traced.
+    unheard: Vec<u32>,
 }
 
 impl Slot {
@@ -216,7 +225,10 @@ impl Slot {
             return end;
         }
         let pb = &self.latest;
-        let mut rt = pb.reverb.rt60.iter().fold(0.0f32, |a, &b| a.max(b));
+        // the parametric reverb's ring (v4 has none: its convolved tail's
+        // own length is `dense_tail`, the rt60 there is only measured)
+        let parametric = pb.reverb.level.iter().any(|&l| l > 0.0);
+        let mut rt = if parametric { pb.reverb.rt60.iter().fold(0.0f32, |a, &b| a.max(b)) } else { 0.0 };
         if let Some(r) = &pb.remote {
             rt = r.rt60.iter().fold(rt, |a, &b| a.max(b));
         }
@@ -371,6 +383,7 @@ impl Mixer {
             sounded_until: f64::NEG_INFINITY,
             audible_next: false,
             meter: MeterAcc::default(),
+            unheard: Vec::new(),
         }
     }
 
@@ -418,6 +431,7 @@ impl Mixer {
         s.loop_voice = 0;
         s.loud = 0.0;
         s.meter = MeterAcc::default();
+        s.unheard.clear();
         s.admitted.clear();
         s.share = (usize::MAX, usize::MAX);
         self.index.insert(id.0, i);
@@ -449,6 +463,7 @@ impl Mixer {
             s.in_frame = false;
         }
         let sr = self.sample_rate as f64;
+        let now = self.clock;
         for (id, pb) in &frame.blocks {
             let i = self.slot_of(*id);
             let s = &mut self.slots[i];
@@ -466,6 +481,16 @@ impl Mixer {
                 s.renderer.set_dense_kernel(s.kernel.clone());
             }
             if !s.has_block || s.latest.version != pb.version {
+                if frame.first_traced.contains(id) && !s.unheard.is_empty() {
+                    // heard for the first time: what it emitted while its
+                    // paths were unknown plays from its beginning
+                    s.log.restart(&s.unheard, now);
+                    s.renderer.snap_next();
+                    s.quiet_at = s.quiet_after(self.sample_rate);
+                }
+                if heard(pb) {
+                    s.unheard.clear();
+                }
                 // traced anew: how much time passed since its last trace
                 s.motion = match (frame.time, s.traced_at) {
                     (Some(t), Some(t0)) => Some((t - t0) * sr),
@@ -516,7 +541,8 @@ impl Mixer {
         }
         let (now, sr) = (self.clock, self.sample_rate);
         for s in self.slots.iter_mut().filter(|s| s.used) {
-            s.log.forget_before(now - s.renderer.horizon() - 1.0);
+            // (sounds waiting for the source's first paths stay)
+            s.log.forget_before_keeping(now - s.renderer.horizon() - 1.0, &s.unheard);
             s.quiet_at = s.quiet_after(sr);
         }
     }
@@ -643,6 +669,9 @@ impl Mixer {
             s.loop_voice = voice.0;
             voice
         } else if s.log.play(voice.0, clip.clone(), now, gain, rate) {
+            if !s.has_block || !heard(&s.latest) {
+                s.unheard.push(voice.0);
+            }
             voice
         } else {
             VoiceId::NONE
@@ -841,7 +870,8 @@ impl Mixer {
         // forget at the next apply)
         for &i in &self.active {
             let s = &mut self.slots[i as usize];
-            s.log.forget_before(self.clock - s.renderer.horizon() - 1.0);
+            // (sounds waiting for the source's first paths stay)
+            s.log.forget_before_keeping(self.clock - s.renderer.horizon() - 1.0, &s.unheard);
             s.quiet_at = s.quiet_after(self.sample_rate);
         }
         self.near.retain(|v| v.pos < v.clip.len());

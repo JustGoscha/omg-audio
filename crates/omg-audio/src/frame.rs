@@ -54,6 +54,10 @@ pub struct Frame {
     /// not copied; the mixer swaps one in when it changes). Not part of
     /// the flat layout: a web host builds them on its own side.
     pub kernels: Vec<(SourceId, Arc<DenseKernel>)>,
+    /// Sources traced this tick for the first time since they were added
+    /// or switched on: the mixer plays what they emitted while their
+    /// paths were unknown from its beginning (`PlayLog::restart_unheard`).
+    pub first_traced: Vec<SourceId>,
 }
 
 /// Flat layout tag ("OMGF") and revision; bump on any layout change.
@@ -155,6 +159,6 @@ impl Frame {
             blocks.push((SourceId(id), ParamBlock::read_flat(body)));
             o += 2 + n;
         }
-        Some(Frame { version, listener, time, blocks, sky, kernels: Vec::new() })
+        Some(Frame { version, listener, time, blocks, sky, kernels: Vec::new(), first_traced: Vec::new() })
     }
 }

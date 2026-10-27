@@ -380,6 +380,11 @@ impl Simulation {
         }
     }
 
+    /// Is the source traced and heard (see `SourceDesc::active`)?
+    pub fn is_active(&self, id: SourceId) -> bool {
+        self.sources.iter().any(|s| s.id == id && s.active)
+    }
+
     pub fn set_source_gain(&mut self, id: SourceId, gain: f32) {
         if let Some(s) = self.sources.iter_mut().find(|s| s.id == id) {
             s.gain = gain.max(0.0);
@@ -648,8 +653,12 @@ impl Simulation {
         let fields = trace_with(&mut self.tracer, &world, ear, &srcs, budget, cpu_budget, walker);
 
         // fields → blocks (the generic half of the demo's WorldSim::v3_blocks)
+        let mut first_traced = Vec::new();
         for (&(_, i), f) in self.picks.iter().zip(fields) {
             let s = &mut self.sources[i];
+            if s.traced.is_none() {
+                first_traced.push(s.id);
+            }
             let g = s.gain;
             let mut pb = ParamBlock { version: tick, ..Default::default() };
             pb.taps.reserve(f.taps.len());
@@ -659,7 +668,8 @@ impl Simulation {
             pb.reverb.rt60 = f.reverb.rt60;
             if let Some(d) = f.dense {
                 // v4: the scattered response is convolved (`kernels`), no
-                // parametric reverb
+                // parametric reverb; its decay, as measured from it
+                pb.reverb.rt60 = d.rt60();
                 s.dense = Some(d);
                 s.block = pb;
                 s.traced = Some((s.pos, tick));
@@ -705,6 +715,7 @@ impl Simulation {
             blocks: self.sources.iter().map(|s| (s.id, s.block.clone())).collect(),
             kernels: self.sources.iter().filter_map(|s| s.kernel.as_ref().map(|k| (s.id, k.0.clone()))).collect(),
             sky,
+            first_traced,
         }
     }
 }

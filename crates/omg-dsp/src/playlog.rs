@@ -129,6 +129,19 @@ impl PlayLog {
         }
     }
 
+    /// Restart the one-shots of these kinds (still on record, not
+    /// stopped) as if they began at emission time `now`: for a source
+    /// heard for the first time, what it emitted while its paths were
+    /// unknown plays from its beginning, late by the trace, instead of
+    /// from the middle (or, a click shorter than a trace, not at all).
+    pub fn restart(&mut self, kinds: &[u32], now: f64) {
+        for s in &mut self.shots {
+            if kinds.contains(&s.kind) && s.start < now && s.stop == f64::INFINITY {
+                s.start = now;
+            }
+        }
+    }
+
     /// One-shots on record.
     pub fn shots(&self) -> usize {
         self.shots.len()
@@ -239,7 +252,13 @@ impl PlayLog {
 
     /// Forget what no path can still hear: nothing will read before `t`.
     pub fn forget_before(&mut self, t: f64) {
-        self.shots.retain(|s| s.end() > t);
+        self.forget_before_keeping(t, &[]);
+    }
+
+    /// `forget_before`, but one-shots of the `keep` kinds stay on record
+    /// (sounds waiting for their source's first paths, see `restart`).
+    pub fn forget_before_keeping(&mut self, t: f64, keep: &[u32]) {
+        self.shots.retain(|s| s.end() > t || keep.contains(&s.kind));
         while self.loops.len() > 1 && self.loops[1].start <= t {
             self.loops.remove(0);
         }

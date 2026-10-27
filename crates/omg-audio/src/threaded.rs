@@ -392,8 +392,9 @@ fn sim_loop(
     period: Duration,
 ) {
     let mut next = Instant::now();
+    let mut held: Vec<SimCmd> = Vec::new();
     while !stop.load(Ordering::Relaxed) {
-        while let Ok(c) = rx.try_recv() {
+        for c in held.drain(..).chain(std::iter::from_fn(|| rx.try_recv().ok())) {
             match c {
                 SimCmd::Geometry(g) => sim.set_geometry(*g),
                 SimCmd::AddSource(id, d) => sim.add_source_as(id, d),
@@ -424,11 +425,30 @@ fn sim_loop(
             drop(unsafe { Box::from_raw(old) }); // never taken: superseded
         }
         next += period;
-        let now = Instant::now();
-        if next > now {
-            std::thread::sleep(next - now);
-        } else {
-            next = now; // fell behind: don't try to catch up in a burst
+        // wait for the next tick — or not: a source switched on is traced
+        // at once (a thrown ball's sound waits for its first paths)
+        loop {
+            let now = Instant::now();
+            if next <= now {
+                next = now; // fell behind: don't try to catch up in a burst
+                break;
+            }
+            match rx.recv_timeout(next - now) {
+                Ok(c) => {
+                    let wakes = match &c {
+                        SimCmd::AddSource(_, d) => d.active,
+                        SimCmd::SetSource(id, _, on) => *on && !sim.is_active(*id),
+                        _ => false,
+                    };
+                    held.push(c);
+                    if wakes {
+                        next = Instant::now();
+                        break;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
         }
     }
 }

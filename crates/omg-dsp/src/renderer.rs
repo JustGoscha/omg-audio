@@ -593,6 +593,9 @@ pub struct Renderer {
     reselect_countdown: u32,
     version_seen: u64,
     first_params: bool,
+    /// The next update's new paths start at full level instead of fading
+    /// in (`snap_next`).
+    snap_born: bool,
     /// Diagnostic mutes (set from env in the demo app).
     pub mute_taps: bool,
     pub mute_own_fdn: bool,
@@ -673,6 +676,7 @@ impl Renderer {
             reselect_countdown: 0,
             version_seen: 0,
             first_params: true,
+            snap_born: false,
             mute_taps: false,
             mute_own_fdn: false,
             mute_remote: false,
@@ -942,8 +946,12 @@ impl Renderer {
                     }
                 }
                 for k in 0..NCH {
-                    slot.g_sh[k].snap(0.0);
-                    slot.g_sh[k].set(tg.g_sh[k]);
+                    if self.snap_born {
+                        slot.g_sh[k].snap(tg.g_sh[k]);
+                    } else {
+                        slot.g_sh[k].snap(0.0);
+                        slot.g_sh[k].set(tg.g_sh[k]);
+                    }
                 }
             }
             // Pool exhausted: drop the tap this update; a slot frees
@@ -995,6 +1003,14 @@ impl Renderer {
             None => self.remote_level.set(0.0),
         }
         self.first_params = false;
+        self.snap_born = false;
+    }
+
+    /// Let the next update's new paths start at full level: a source
+    /// heard for the first time whose sounds all begin now (nothing
+    /// sounding to crossfade from — a fade-in would swallow a click).
+    pub fn snap_next(&mut self) {
+        self.snap_born = true;
     }
 
     /// One mono source sample in (a live or generated source: its past

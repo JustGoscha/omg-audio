@@ -95,3 +95,44 @@ fn debug_paths_reach_the_game_thread_while_enabled() {
     std::thread::sleep(Duration::from_millis(150));
     assert!(engine.debug_paths().is_empty(), "none once disabled");
 }
+
+/// A source switched on together with its sound (a thrown ball's whoosh):
+/// the sound is not lost while the source waits for its first trace —
+/// the simulation traces it at once and the mixer plays what it emitted
+/// from the beginning.
+#[test]
+fn a_sound_on_a_source_just_switched_on_is_heard_from_its_start() {
+    let sr = 48_000.0;
+    let (mut engine, mut out) = Engine::new(sr, EngineConfig::default());
+    let mut g = Geometry::new();
+    let m = g.material(Material::CONCRETE);
+    g.add_box([-10.0, -10.0, -0.2], [10.0, 10.0, 0.0], m);
+    engine.set_geometry(g);
+    let pos = [0.4, 0.0, 1.6];
+    let src = engine.add_source(SourceDesc { position: pos, gain: 1.0, active: false });
+    engine.set_listener([0.0, 0.0, 1.7], 0.0, 0.0, 0.0);
+    let (mut l, mut r) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+    let block = Duration::from_secs_f32(256.0 / sr);
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_millis(300) {
+        out.render(&mut l, &mut r);
+        std::thread::sleep(block);
+    }
+    // a 1 ms click: shorter than a tick, lost before
+    let click: Vec<f32> = (0..48).map(|_| 0.8).collect();
+    engine.set_source(src, pos, true);
+    engine.play(src, &clip(&click), Play::ONCE);
+    let start = Instant::now();
+    let mut n = 0usize;
+    let mut onset = None;
+    while start.elapsed() < Duration::from_millis(1000) && onset.is_none() {
+        out.render(&mut l, &mut r);
+        onset = l.iter().zip(&r).position(|(a, b)| a.abs().max(b.abs()) > 1e-3).map(|i| (n + i) as f32 / sr);
+        n += 256;
+        std::thread::sleep(block);
+    }
+    eprintln!("onset {:?} s after the play", onset);
+    let onset = onset.expect("the click is heard");
+    // the first trace of a near source in an empty scene: well under a tick (50 ms)
+    assert!(onset < 0.05, "heard {onset} s late");
+}
