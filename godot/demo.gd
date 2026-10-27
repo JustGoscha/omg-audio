@@ -554,7 +554,8 @@ func _hud() -> void:
 	hud.position = Vector2(14, 10)
 	hud.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0))
 	hud.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	hud.add_theme_constant_override("outline_size", 4)
+	hud.add_theme_font_size_override("font_size", 22)
+	hud.add_theme_constant_override("outline_size", 6)
 	layer.add_child(hud)
 	# the controls: a panel in the bottom left
 	var panel := PanelContainer.new()
@@ -687,7 +688,7 @@ func _process(dt: float) -> void:
 		var room: String = DemoLevel.room_at(p.x, p.y, p.z + 0.5)[0]
 		var s := world.stats()
 		var q: String = ["low", "medium", "high", "ultra"][quality]
-		hud.text = "%d fps · %s graphics\n%s · RT60 %.2f s · enclosure %.0f%%\nrain %s · %s%s\nsim %.1f ms (%s, %s) · render load %.0f%% · budget %d paths / %d hrtf / %d voices · %d/%d sources rendering · %d paths · late %d" % [
+		hud.text = "%d fps · %s graphics\n%s · RT60 %.2f s · enclosure %.0f%%\nrain %s · %s%s\nsim %.1f ms (%s, %s) · render load %.0f%%\nbudget %d paths / %d hrtf / %d voices\n%d/%d sources rendering · %d paths · late %d" % [
 			Engine.get_frames_per_second(), "fine" if fine else "pixel %dp" % pixel_h,
 			room, s.get("rt60", 0.0), 100.0 * s.get("enclosure", 0.0), rain_name,
 			"flying" if player.flying else "walking", " · crouched" if player.crouch > 0.5 else "",
