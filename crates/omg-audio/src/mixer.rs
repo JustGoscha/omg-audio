@@ -662,8 +662,15 @@ impl Mixer {
         let (now, gain, rate) = (self.clock, play.gain.clamp(0.0, 32.0), play.rate.clamp(0.25, 4.0));
         let sr = self.sample_rate;
         let s = &mut self.slots[i];
-        // audible at once (the next frame re-ranks the voices)
-        s.audible.set(1.0);
+        // audible at once (the next frame re-ranks the voices). A silent
+        // source (nothing it emitted still on its way) has no signal a
+        // jump could click: its voice starts at full level — a fade-in
+        // would swallow a clap's few-ms transient
+        if s.quiet_at < now {
+            s.audible.snap(1.0);
+        } else {
+            s.audible.set(1.0);
+        }
         let v = if play.looped {
             s.log.set_loop_with(clip.clone(), now, gain, rate);
             s.loop_voice = voice.0;
@@ -816,8 +823,12 @@ impl Mixer {
                 self.active.push(i as u16);
             } else {
                 // silent anyway: its ramps jump to where they are headed
+                // (and its paths' glides: the next sound starts on them)
                 s.fader.snap(s.fader.target_val());
                 s.audible.snap(s.audible.target_val());
+                if s.used && s.quiet_at < self.clock {
+                    s.renderer.settle();
+                }
             }
         }
         // sources render a block at a time, path by path

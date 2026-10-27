@@ -5,7 +5,9 @@
 //!   later (the play log is read at the path's emission time);
 //! - mix-wide budgets: of many playing sources only ~`voices` render,
 //!   muted and finished sources cost nothing;
-//! - stopping a loop ends it (after the paths in flight play out).
+//! - stopping a loop ends it (after the paths in flight play out);
+//! - a one-shot on a silent source starts at full level: a clap's 3 ms
+//!   transient is not swallowed by a voice fade-in.
 
 use omg_audio::{clip, Config, Hrir, Mixer, Play, Simulation, SourceDesc, VoiceId};
 
@@ -100,4 +102,54 @@ fn stopping_a_loop_silences_it() {
     let (l, _) = render(&mut m, 0.1);
     assert!(rms(&l) < 1e-5, "stopped: {}", rms(&l));
     assert!(m.take_meter(src).peak > 0.0, "the channel meter saw it");
+}
+
+/// A hand clap 0.6 m away, the first after silence vs one while the
+/// source still sounds: (first, second) output peaks. `rerank`: a frame
+/// arrives just after the first clap starts (the mixer re-ranks the now
+/// sounding source: its direct path moves to point-HRTF rendering).
+fn clap_after_silence(hrir: Hrir, rerank: bool) -> (f32, f32) {
+    // a 3 ms decaying burst (quiet: the output stage's gain stays put)
+    let burst: Vec<f32> = (0..144u32)
+        .map(|i| (((i.wrapping_mul(2654435761) >> 8) as f32 / 8388608.0) - 1.0) * 0.05 * (-(i as f32) / 40.0).exp())
+        .collect();
+    let clap = clip(&burst);
+    let mut sim = Simulation::new(Config::default());
+    let src = sim.add_source(SourceDesc::at([0.6, 0.0, 1.6]));
+    sim.set_listener([0.0, 0.0, 1.6], 0.0, 0.0, 0.0);
+    let frame = sim.tick();
+    let mut m = Mixer::new(SR, hrir);
+    m.apply(&frame);
+    render(&mut m, 0.5);
+    m.apply(&frame); // ranked while silent
+    render(&mut m, 0.1);
+    let peak = |l: &[f32], r: &[f32]| l.iter().zip(r).fold(0.0f32, |p, (a, b)| p.max(a.abs()).max(b.abs()));
+    m.play(src, &clap, Play::ONCE);
+    let mut first = 0.0f32;
+    if rerank {
+        let (l, r) = render(&mut m, 0.0005);
+        first = peak(&l, &r);
+        m.apply(&sim.tick()); // a fresh trace
+    }
+    let (l, r) = render(&mut m, 0.02);
+    let first = first.max(peak(&l, &r));
+    m.play(src, &clap, Play::ONCE);
+    let (l, r) = render(&mut m, 0.02);
+    (first, peak(&l, &r))
+}
+
+#[test]
+fn a_clap_on_a_silent_source_is_not_faded_in() {
+    let asset = |f: &str| std::fs::read(format!("{}/../../assets/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let (grid, speakers) = (asset("hrir_grid.bin"), asset("hrir_dodeca20.bin"));
+    for (name, hrir, rerank) in [
+        ("no hrir", Hrir::none(), false),
+        ("hrir", Hrir::from_bytes(Some(&speakers), Some(&grid)), false),
+        ("hrir, re-ranked mid-clap", Hrir::from_bytes(Some(&speakers), Some(&grid)), true),
+    ] {
+        let (first, second) = clap_after_silence(hrir, rerank);
+        let db = 20.0 * (first / second).log10();
+        eprintln!("{name}: clap after silence {first:.4}, while sounding {second:.4}: {db:+.1} dB");
+        assert!(db.abs() < 1.0, "{name}: the first clap {db:+.1} dB from the second");
+    }
 }
