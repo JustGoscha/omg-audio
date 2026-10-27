@@ -171,8 +171,11 @@ struct Slot {
     /// Voice virtualization ramp: 1 = among the `max_voices` loudest.
     audible: Smoothed,
     latest: ParamBlock,
-    /// v4: the dense kernel the renderer convolves (as the frame had it).
+    /// v4: the dense kernel the frame has for it.
     kernel: Option<std::sync::Arc<omg_dsp::dense::DenseKernel>>,
+    /// Its kernel is convolved (within the mixer's convolution budget);
+    /// otherwise the block's parametric reverb plays the same response.
+    convolving: bool,
     /// What the renderer gets: `latest` cut to this source's share of
     /// the tap budget, with hysteresis (see `select`).
     filtered: ParamBlock,
@@ -225,9 +228,9 @@ impl Slot {
             return end;
         }
         let pb = &self.latest;
-        // the parametric reverb's ring (v4 has none: its convolved tail's
-        // own length is `dense_tail`, the rt60 there is only measured)
-        let parametric = pb.reverb.level.iter().any(|&l| l > 0.0);
+        // the parametric reverb's ring (a convolved source has none: its
+        // tail's own length is `dense_tail`)
+        let parametric = !self.convolving && pb.reverb.level.iter().any(|&l| l > 0.0);
         let mut rt = if parametric { pb.reverb.rt60.iter().fold(0.0f32, |a, &b| a.max(b)) } else { 0.0 };
         if let Some(r) = &pb.remote {
             rt = r.rt60.iter().fold(rt, |a, &b| a.max(b));
@@ -265,6 +268,11 @@ impl Slot {
         core::mem::swap(&mut self.admitted, &mut self.admitted_next);
         self.filtered.reverb = pb.reverb;
         self.filtered.remote = pb.remote;
+        if self.convolving {
+            // the kernel plays the scattered field: no parametric copy
+            self.filtered.reverb.level = [0.0; 3];
+            self.filtered.remote = None;
+        }
         self.filtered.version = pb.version;
     }
 }
@@ -283,6 +291,7 @@ struct NearPlay {
 const MIX_TAPS: usize = 96;
 const MIX_POINTS: usize = 8;
 const MAX_VOICES: usize = 24;
+const MAX_CONVOLVED: usize = 8;
 const SLOT_CAPACITY: usize = 16;
 /// Per-source ceilings while the mix-wide budget is off.
 const SOURCE_TAPS: usize = 160;
@@ -311,6 +320,9 @@ pub struct Mixer {
     mix_taps: usize,
     mix_points: usize,
     max_voices: usize,
+    /// v4: the most sources convolved at once (the loudest); the others
+    /// play their response as the parametric reverb.
+    max_convolved: usize,
     head: [f32; 3],
     head_from_frames: bool,
     // scratch, preallocated
@@ -349,6 +361,7 @@ impl Mixer {
             mix_taps: MIX_TAPS,
             mix_points: MIX_POINTS,
             max_voices: MAX_VOICES,
+            max_convolved: MAX_CONVOLVED,
             head: [0.0; 3],
             head_from_frames: true,
             active: Vec::with_capacity(sources),
@@ -396,6 +409,7 @@ impl Mixer {
             audible_next: false,
             meter: MeterAcc::default(),
             unheard: Vec::new(),
+            convolving: false,
         }
     }
 
@@ -453,6 +467,12 @@ impl Mixer {
     /// Mix-wide budgets: at most `taps` paths and `points` point-HRTF
     /// convolutions across ALL sources (0 taps = per-source ceilings of
     /// 160 / 8 instead), and at most `voices` sources rendering at once.
+    /// v4: the most sources convolved at once (the loudest with a
+    /// kernel); the others play their response as a parametric reverb.
+    pub fn set_convolution_budget(&mut self, sources: usize) {
+        self.max_convolved = sources;
+    }
+
     pub fn set_budget(&mut self, taps: usize, points: usize, voices: usize) {
         self.mix_taps = taps;
         self.mix_points = points;
@@ -490,7 +510,15 @@ impl Mixer {
             };
             if !same {
                 s.kernel = k.cloned();
-                s.renderer.set_dense_kernel(s.kernel.clone());
+                if s.convolving {
+                    s.renderer.set_dense_kernel(s.kernel.clone());
+                    if s.kernel.is_none() {
+                        // back to the parametric reverb
+                        s.convolving = false;
+                        s.reapply = true;
+                        s.dirty = true;
+                    }
+                }
             }
             if !s.has_block || s.latest.version != pb.version {
                 if frame.first_traced.contains(id) && !s.unheard.is_empty() {
@@ -561,6 +589,43 @@ impl Mixer {
         }
     }
 
+    /// v4: which sources' kernels are convolved — the `max_convolved`
+    /// loudest at the ears with a kernel (one convolving counts double, so
+    /// the set doesn't flicker between near-equal ones); the others play
+    /// the same response as their block's parametric reverb.
+    fn choose_convolved(&mut self) {
+        // loudness of the paths (× fader), sounding or not: the choice is
+        // ready before a sound starts
+        let loud = |s: &Slot| -> f32 {
+            let pb = &s.latest;
+            let paths: f32 = pb.taps.iter().map(|t| t.gains[1]).sum::<f32>() + pb.reverb.level[1];
+            paths * s.fader.target_val().max(0.0) * if s.convolving { 2.0 } else { 1.0 }
+        };
+        let eligible = |s: &Slot| s.used && s.has_block && s.kernel.is_some();
+        self.louds.clear();
+        self.louds.extend(self.slots.iter().filter(|s| eligible(s)).map(loud));
+        let cut = if self.louds.len() > self.max_convolved {
+            if self.max_convolved == 0 {
+                f32::INFINITY
+            } else {
+                let k = self.max_convolved;
+                self.louds.select_nth_unstable_by(k - 1, |a, b| b.total_cmp(a));
+                self.louds[k - 1]
+            }
+        } else {
+            0.0
+        };
+        for s in &mut self.slots {
+            let want = eligible(s) && loud(s) >= cut && loud(s) > 0.0;
+            if want != s.convolving {
+                s.convolving = want;
+                s.renderer.set_dense_kernel(if want { s.kernel.clone() } else { None });
+                s.reapply = true;
+                s.dirty = true;
+            }
+        }
+    }
+
     /// Rank every sounding source's paths by loudness at the ears and
     /// share the budgets (cf. omg-web `eng_params_commit`).
     fn rebudget(&mut self) {
@@ -619,6 +684,7 @@ impl Mixer {
             }
             s.audible.set(if s.audible_next { 1.0 } else { 0.0 });
         }
+        self.choose_convolved();
         if self.mix_taps == 0 {
             return;
         }

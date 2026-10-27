@@ -1,5 +1,6 @@
 //! The render-load governor: walks the mixer's mix-wide budgets (taps,
-//! point-HRTF paths, rendering sources) by how long rendering takes
+//! point-HRTF paths, rendering sources, convolved sources) by how long
+//! rendering takes
 //! against the audio it produced — shed at once when a 0.25 s window runs
 //! over, earn density back after calm windows (the web worklet's rules).
 //! The host measures (a wasm AudioWorklet has no clock of its own) and
@@ -7,9 +8,10 @@
 
 use crate::mixer::Mixer;
 
-/// Budget ladder (mix-wide taps, point-HRTF paths, rendering sources).
-/// Rung 1 is the mixer's default.
-pub const LADDER: [(usize, usize, usize); 5] = [(48, 4, 12), (96, 8, 24), (192, 16, 32), (320, 24, 48), (480, 32, 64)];
+/// Budget ladder (mix-wide taps, point-HRTF paths, rendering sources,
+/// convolved sources). Rung 1 is the mixer's default.
+pub const LADDER: [(usize, usize, usize, usize); 5] =
+    [(48, 4, 12, 2), (96, 8, 24, 4), (192, 16, 32, 8), (320, 24, 48, 16), (480, 32, 64, 64)];
 
 /// Render time over audio time: over this, shed straight to the floor.
 const EMERGENCY: f32 = 0.80;
@@ -36,8 +38,9 @@ impl Governor {
 
     /// Put the current rung's budgets on `mixer` (call once at start).
     pub fn apply(&self, mixer: &mut Mixer) {
-        let (t, p, v) = LADDER[self.rung];
+        let (t, p, v, c) = LADDER[self.rung];
         mixer.set_budget(t, p, v);
+        mixer.set_convolution_budget(c);
     }
 
     fn set_rung(&mut self, mixer: &mut Mixer, r: usize) {
@@ -105,8 +108,8 @@ impl Governor {
         self.load
     }
 
-    /// The current rung's budgets (taps, point paths, voices).
-    pub fn budget(&self) -> (usize, usize, usize) {
+    /// The current rung's budgets (taps, point paths, voices, convolved).
+    pub fn budget(&self) -> (usize, usize, usize, usize) {
         LADDER[self.rung]
     }
 }

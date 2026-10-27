@@ -18,7 +18,7 @@ use omg_core::mesh::{Mesh, MeshBuilder};
 use omg_core::params::{ParamBlock, RemoteReverb, Tap};
 use omg_core::v3::walker::{trace_with, V3Walker};
 use omg_core::v3::{Budget, DenseResponse, Source, Tracer, World};
-use omg_dsp::dense::{build_kernel, DenseKernel};
+use omg_dsp::dense::{build_kernel_max, DenseKernel, KernelBuilder};
 use std::sync::Arc;
 use omg_core::vec3::Vec3;
 
@@ -96,8 +96,22 @@ pub struct Config {
     /// The mixer's sample rate (v4 builds its convolution kernels for it).
     pub sample_rate: f32,
     /// v4: build convolution kernels on a thread of their own (off the
-    /// tick); false builds them in the tick (within `KERNEL_BUDGET_MS`).
+    /// tick); false (or no threads: wasm) builds them in the tick, one at
+    /// a time, `kernel_step_samples` of impulse response per tick.
     pub kernel_thread: bool,
+    /// v4: the most sources with a convolution kernel — the loudest at the
+    /// ears (a member counts double, so the set doesn't flicker); the
+    /// others' blocks carry the same response as a parametric reverb.
+    pub max_kernels: usize,
+    /// v4: kernels at most this long (s); a longer tail is cut (the
+    /// native cap is `omg_dsp::dense::MAX_KERNEL_S`).
+    pub max_kernel_s: f32,
+    /// v4, building in the tick: impulse-response samples synthesized
+    /// and transformed per tick.
+    pub kernel_step_samples: usize,
+    /// v4, building in the tick: a finished kernel at most every this
+    /// many ticks (a web host copies each into its audio thread).
+    pub kernel_every_ticks: u64,
 }
 
 impl Default for Config {
@@ -110,6 +124,10 @@ impl Default for Config {
             v4: true,
             sample_rate: 48_000.0,
             kernel_thread: true,
+            max_kernels: 64,
+            max_kernel_s: omg_dsp::dense::MAX_KERNEL_S,
+            kernel_step_samples: 4 * 4096,
+            kernel_every_ticks: 1,
         }
     }
 }
@@ -210,11 +228,18 @@ pub struct Simulation {
     /// v4: the kernel-building thread (when `Config::kernel_thread` and
     /// threads are available), started at the first build.
     kernels: Option<KernelWorker>,
+    /// v4: the sources that get kernels (`Config::max_kernels`).
+    kernel_members: Vec<SourceId>,
+    /// v4, building in the tick: the kernel under construction (source,
+    /// builder, the response and gain it is built from), and when the
+    /// last one was handed over.
+    kernel_job: Option<(SourceId, KernelBuilder, DenseResponse, f32)>,
+    kernel_sent: u64,
 }
 
 /// v4's kernel builder on a thread of its own: responses in, kernels out.
 struct KernelWorker {
-    jobs: std::sync::mpsc::Sender<(SourceId, DenseResponse, f32, f32, u64)>,
+    jobs: std::sync::mpsc::Sender<(SourceId, DenseResponse, f32, f32, f32, u64)>,
     done: std::sync::mpsc::Receiver<(SourceId, Arc<DenseKernel>, DenseResponse, f32, u64)>,
     /// Sources with a build in flight.
     busy: Vec<SourceId>,
@@ -222,13 +247,13 @@ struct KernelWorker {
 
 impl KernelWorker {
     fn start() -> Option<Self> {
-        let (jt, jr) = std::sync::mpsc::channel::<(SourceId, DenseResponse, f32, f32, u64)>();
+        let (jt, jr) = std::sync::mpsc::channel::<(SourceId, DenseResponse, f32, f32, f32, u64)>();
         let (dt, dr) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             .name("omg-kernels".into())
             .spawn(move || {
-                while let Ok((id, resp, gain, sr, tick)) = jr.recv() {
-                    let k = Arc::new(build_kernel(&resp, sr, gain, id.0));
+                while let Ok((id, resp, gain, sr, max_s, tick)) = jr.recv() {
+                    let k = Arc::new(build_kernel_max(&resp, sr, gain, id.0, max_s));
                     if dt.send((id, k, resp, gain, tick)).is_err() {
                         break;
                     }
@@ -245,11 +270,9 @@ fn v3(p: [f32; 3]) -> Vec3 {
 
 /// v4 kernel rebuilds: a dense response whose envelope moved by this
 /// share (L1 of the mid band over its total, ~0.6 dB) is rebuilt; a
-/// quarter of it still lands after `KERNEL_REFRESH_TICKS`. At most
-/// `KERNEL_BUDGET_MS` of a tick goes to building (always one).
+/// quarter of it still lands after `KERNEL_REFRESH_TICKS`.
 const KERNEL_CHANGE: f32 = 0.15;
 const KERNEL_REFRESH_TICKS: u64 = 40;
-const KERNEL_BUDGET_MS: f32 = 4.0;
 /// Builds queued on the kernel thread at once.
 const KERNEL_QUEUE: usize = 4;
 
@@ -284,6 +307,9 @@ impl Simulation {
             traced_last: 0,
             debug_paths: false,
             kernels: None,
+            kernel_members: Vec::new(),
+            kernel_job: None,
+            kernel_sent: 0,
         };
         s.make_walker();
         s
@@ -523,10 +549,10 @@ impl Simulation {
         self.sources.iter().find(|s| s.id == id).and_then(|s| s.dense.as_ref())
     }
 
-    /// v4: (re)build the convolution kernels of the sources whose dense
-    /// response changed audibly since theirs was built — the most changed
-    /// (× loudness) first, within `KERNEL_BUDGET_MS` of this tick (at
-    /// least one). A kernel lags its response by a few ticks at most.
+    /// v4: (re)build the convolution kernels of the members (the
+    /// `max_kernels` loudest) whose dense response changed audibly since
+    /// theirs was built — the most changed (× loudness) first: queued on
+    /// the kernel thread, or one at a time in the tick.
     fn build_kernels(&mut self, tick: u64) {
         // finished builds land first
         if let Some(w) = &mut self.kernels {
@@ -539,12 +565,39 @@ impl Simulation {
         } else if self.cfg.kernel_thread {
             self.kernels = KernelWorker::start();
         }
+        // the members: the loudest at the ears (energy of the block's
+        // paths and its scattered field), a member counting double
+        let loud = |s: &Src| -> f32 {
+            let taps: f32 = s.block.taps.iter().map(|t| t.gains[1] * t.gains[1]).sum();
+            taps + s.block.reverb.level[1] * s.block.reverb.level[1] + s.block.remote.as_ref().map_or(0.0, |r| r.send[1] * r.send[1])
+        };
+        let mut cand: Vec<(f32, SourceId)> = self
+            .sources
+            .iter()
+            .filter(|s| s.dense.as_ref().is_some_and(|d| !d.bins.is_empty()))
+            .map(|s| (loud(s) * if self.kernel_members.contains(&s.id) { 2.0 } else { 1.0 }, s.id))
+            .filter(|c| c.0 > 0.0)
+            .collect();
+        cand.sort_by(|a, b| b.0.total_cmp(&a.0));
+        cand.truncate(self.cfg.max_kernels);
+        self.kernel_members.clear();
+        self.kernel_members.extend(cand.iter().map(|c| c.1));
+        let members = &self.kernel_members;
+        for s in &mut self.sources {
+            if !members.contains(&s.id) {
+                s.kernel = None;
+            }
+        }
+        if self.kernel_job.as_ref().is_some_and(|j| !members.contains(&j.0)) {
+            self.kernel_job = None;
+        }
+        // which members need a kernel, the most needed first
         let ear = v3(self.listener.position);
         let busy: &[SourceId] = self.kernels.as_ref().map_or(&[], |w| &w.busy);
         let mut todo: Vec<(f32, usize)> = Vec::new();
         for (i, s) in self.sources.iter().enumerate() {
             let Some(d) = &s.dense else { continue };
-            if busy.contains(&s.id) {
+            if !members.contains(&s.id) || busy.contains(&s.id) {
                 continue;
             }
             let change = match &s.kernel {
@@ -564,7 +617,7 @@ impl Simulation {
             todo.push((change.min(1e6) * loud, i));
         }
         todo.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let sr = self.cfg.sample_rate;
+        let (sr, max_s) = (self.cfg.sample_rate, self.cfg.max_kernel_s);
         if let Some(w) = &mut self.kernels {
             // the thread's queue stays short: the most needed first
             for &(_, i) in &todo {
@@ -573,21 +626,30 @@ impl Simulation {
                 }
                 let s = &self.sources[i];
                 let d = s.dense.clone().expect("listed above");
-                if w.jobs.send((s.id, d, s.gain, sr, tick)).is_ok() {
+                if w.jobs.send((s.id, d, s.gain, sr, max_s, tick)).is_ok() {
                     w.busy.push(s.id);
                 }
             }
             return;
         }
-        let t0 = std::time::Instant::now();
-        for (n, &(_, i)) in todo.iter().enumerate() {
-            if n > 0 && t0.elapsed().as_secs_f32() * 1000.0 > KERNEL_BUDGET_MS {
-                break;
+        // in the tick: one kernel at a time, a step a tick (no clock: the
+        // same work on any host)
+        if self.kernel_job.is_none() && (self.kernel_sent == 0 || tick >= self.kernel_sent + self.cfg.kernel_every_ticks) {
+            if let Some(&(_, i)) = todo.first() {
+                let s = &self.sources[i];
+                let d = s.dense.clone().expect("listed above");
+                let b = KernelBuilder::new(&d, sr, s.gain, s.id.0, max_s);
+                self.kernel_job = Some((s.id, b, d, s.gain));
             }
-            let s = &mut self.sources[i];
-            let d = s.dense.clone().expect("listed above");
-            let k = build_kernel(&d, sr, s.gain, s.id.0);
-            s.kernel = Some((Arc::new(k), d, s.gain, tick));
+        }
+        if let Some((_, b, _, _)) = &mut self.kernel_job {
+            if b.step(self.cfg.kernel_step_samples.max(1)) {
+                let (id, b, d, g) = self.kernel_job.take().expect("checked");
+                if let Some(s) = self.sources.iter_mut().find(|s| s.id == id && s.dense.is_some()) {
+                    s.kernel = Some((Arc::new(b.finish()), d, g, tick));
+                }
+                self.kernel_sent = tick;
+            }
         }
     }
 
@@ -672,19 +734,19 @@ impl Simulation {
                 pb.taps.push(Tap { gains: core::array::from_fn(|b| t.gains[b] * g), ..t });
             }
             pb.reverb.rt60 = f.reverb.rt60;
+            let mut lv = f.reverb.level;
             if let Some(d) = f.dense {
-                // v4: the scattered response is convolved (`kernels`), no
-                // parametric reverb; its decay, as measured from it
+                // v4: the scattered response is convolved (`kernels`); the
+                // block also carries it as a parametric reverb — its whole
+                // energy and its measured decay — for a mixer that does
+                // not convolve this source (its convolution budget)
                 pb.reverb.rt60 = d.rt60();
+                lv = core::array::from_fn(|b| d.bins.iter().map(|x| x[b].max(0.0)).sum::<f32>().sqrt());
                 s.dense = Some(d);
-                s.block = pb;
-                s.traced = Some((s.pos, tick));
-                continue;
             }
             // a one-sided late field plays from where it comes (the
             // doorway, the lit facade); the rest feeds the diffuse FDN
             let a = f.aniso.clamp(0.0, 0.9);
-            let lv = f.reverb.level;
             pb.reverb.level = core::array::from_fn(|b| lv[b] * (1.0 - a).sqrt() * g);
             if lv[1] * lv[1] * a > 1e-10 {
                 let d = f.late_dir;

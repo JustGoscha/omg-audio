@@ -109,3 +109,57 @@ fn a_rooms_tail_decays_and_ends() {
         assert!(w[1] < w[0] + 3.0, "no bump in the tail: {windows:?}");
     }
 }
+
+/// The mixer's convolution budget: a source outside it plays its traced
+/// response as the parametric reverb — the same energy in the mid band
+/// (a 1 kHz burst: within 4 dB), nothing dry. Broadband it comes out
+/// duller: the reverb's high band is a first-order shelf in each loop, so
+/// a white click's top octaves fall short of the convolution's.
+#[test]
+fn a_source_outside_the_convolution_budget_keeps_its_reverb() {
+    let (lx, ly, lz) = (6.0, 5.0, 3.0);
+    let mut g = Geometry::new();
+    let c = g.material(Material::CONCRETE);
+    let t = 0.2;
+    g.add_box([-t, -t, -t], [lx + t, ly + t, 0.0], c);
+    g.add_box([-t, -t, lz], [lx + t, ly + t, lz + t], c);
+    g.add_box([-t, -t, 0.0], [0.0, ly + t, lz], c);
+    g.add_box([lx, -t, 0.0], [lx + t, ly + t, lz], c);
+    g.add_box([0.0, -t, 0.0], [lx, 0.0, lz], c);
+    g.add_box([0.0, ly, 0.0], [lx, ly + t, lz], c);
+    let mut sim = Simulation::new(Config::default());
+    sim.set_geometry(g);
+    let id = sim.add_source(SourceDesc::at([1.5, 1.5, 1.5]));
+    sim.set_listener([4.0, 3.0, 1.6], 0.0, 0.0, 0.0);
+    for _ in 0..40 {
+        sim.tick();
+    }
+    sim.flush_kernels();
+    let frame = sim.tick();
+    assert!(!frame.kernels.is_empty());
+    let tone: Vec<f32> = (0..480)
+        .map(|i| {
+            let t = i as f32 / 480.0;
+            (std::f32::consts::TAU * 1000.0 * i as f32 / SR).sin() * (std::f32::consts::PI * t).sin().powi(2)
+        })
+        .collect();
+    let tail = |budget: usize, sig: &[f32]| -> f32 {
+        let mut m = Mixer::new(SR, Hrir::none());
+        m.set_convolution_budget(budget);
+        m.apply(&frame);
+        m.play(id, &clip(sig), Play::ONCE);
+        let p = render(&mut m, 2.0);
+        power(&p, 0.05, 1.0)
+    };
+    let (conv, param) = (tail(4, &tone), tail(0, &tone));
+    let (conv_w, param_w) = (tail(4, &clap()), tail(0, &clap()));
+    eprintln!(
+        "tail 50 ms – 1 s, 1 kHz: convolved {:.1} dB, parametric {:.1} dB; white click: {:.1} / {:.1} dB",
+        db(conv),
+        db(param),
+        db(conv_w),
+        db(param_w)
+    );
+    assert!(param > 0.0 && param_w > 0.0, "not dry");
+    assert!((db(conv) - db(param)).abs() < 4.0, "the same reverb energy in the mid band within 4 dB");
+}

@@ -65,11 +65,6 @@ const DEFAULT_POINT_TAPS: usize = 24;
 /// doorway carries ~145 taps/source vs ~20 in the open square, and the
 /// bottom half sits far below the masking threshold of the top.
 const DEFAULT_TAP_CEILING: usize = 160;
-/// Samples of joint input+tail silence before an FDN goes to sleep
-/// (~21 ms at 48 kHz: long enough to never clip a real tail — the energy
-/// check keeps it awake while anything rings — short enough that silent
-/// sources stop costing within a frame).
-const FDN_IDLE_AFTER: u32 = 1024;
 /// Time constant of every per-tap parameter smoother.
 const TAP_TAU_S: f32 = 0.05;
 /// Closing linear tail of a released slot (see `TapState::release_floor`).
@@ -404,7 +399,7 @@ fn tap_group<const L: usize>(taps: &mut [TapState], group: &[u16], cx: &mut Grou
 
 /// One FDN step of `late`: wake on input, run while awake, scale the lines
 /// by `pre·lvl`, spread them onto `foa` along `dirs`, and fall asleep after
-/// `FDN_IDLE_AFTER` silent samples (clearing it when its level is gone, so
+/// `Fdn::idle_after` silent samples (clearing it when its level is gone, so
 /// what it held cannot resume as a ghost). True when it ran.
 #[allow(clippy::too_many_arguments)]
 #[inline]
@@ -418,10 +413,15 @@ fn fdn_step(
     dirs: &[[f32; NCH]; NLINES],
     foa: &mut [f32; NCH],
 ) -> bool {
+    let idle_after = fdn.idle_after();
+    if *idle >= idle_after {
+        // asleep (or waking now): nothing in the lines, their decay may jump
+        fdn.settle();
+    }
     if input.abs() > 1e-7 {
         *idle = 0;
     }
-    if *idle >= FDN_IDLE_AFTER {
+    if *idle >= idle_after {
         return false;
     }
     let mut lines = [0.0f32; NLINES];
@@ -436,7 +436,7 @@ fn fdn_step(
     }
     if e < 1e-6 && input.abs() <= 1e-7 {
         *idle += 1;
-        if *idle == FDN_IDLE_AFTER && gate == 0.0 {
+        if *idle == idle_after && gate == 0.0 {
             fdn.clear();
         }
     } else {
@@ -461,10 +461,15 @@ struct FdnFeed<'a> {
 fn fdn_block(fdn: &mut Fdn, idle: &mut u32, f: &FdnFeed, dirs: &[[f32; NCH]; NLINES], bus: &mut BusBlock, off: usize) {
     let m = f.input.len();
     let wakes = f.input.iter().any(|v| v.abs() > 1e-7);
-    if *idle >= FDN_IDLE_AFTER && !wakes {
-        return;
+    let idle_after = fdn.idle_after();
+    if *idle >= idle_after {
+        // asleep (or waking now): nothing in the lines, their decay may jump
+        fdn.settle();
+        if !wakes {
+            return;
+        }
     }
-    if (*idle as usize) + m < FDN_IDLE_AFTER as usize && m <= fdn.max_block() {
+    if (*idle as usize).saturating_add(m) < idle_after as usize && m <= fdn.max_block() {
         let mut g = [[0.0f32; BLOCK]; NLINES];
         fdn.process_block(f.input, &mut g);
         let mut e = [0.0f32; BLOCK];
@@ -586,7 +591,7 @@ pub struct Renderer {
     /// look, face tracking), applied to point-tap HRIR selection here and
     /// to the bus at the decode stage.
     head: [Smoothed; 3],
-    /// Samples of joint input+tail silence per FDN; at FDN_IDLE_AFTER the
+    /// Samples of joint input+tail silence per FDN; at `Fdn::idle_after` the
     /// FDN sleeps (see process). Starts asleep.
     fdn_idle: u32,
     remote_idle: u32,
@@ -673,8 +678,8 @@ impl Renderer {
             point_budget: DEFAULT_POINT_TAPS,
             tap_ceiling: DEFAULT_TAP_CEILING,
             head: core::array::from_fn(|_| Smoothed::new(0.0, 0.03, sample_rate)),
-            fdn_idle: FDN_IDLE_AFTER,
-            remote_idle: FDN_IDLE_AFTER,
+            fdn_idle: u32::MAX,
+            remote_idle: u32::MAX,
             reselect_countdown: 0,
             version_seen: 0,
             first_params: true,
@@ -1017,7 +1022,9 @@ impl Renderer {
         let ratio = |x: f32| if lv[1] > 1e-6 { (x / lv[1]).clamp(0.0, 4.0) } else { 1.0 };
         self.fdn_level.set(lv[1]);
         self.send_low.set(ratio(lv[0]));
-        self.send_high.set(ratio(lv[2]));
+        // each band's energy as traced: the high band's faster decay
+        // gives it less tail energy per send, made up here
+        self.send_high.set((ratio(lv[2]) * self.fdn.high_make_up()).min(8.0));
 
         match &pb.remote {
             Some(r) => {
@@ -1182,8 +1189,8 @@ impl Renderer {
         // and their send filters run down: the per-sample pass would only
         // move smoothers and push zeros, so jump them instead (most
         // sources, most of the time).
-        let quiet = self.fdn_idle >= FDN_IDLE_AFTER
-            && self.remote_idle >= FDN_IDLE_AFTER
+        let quiet = self.fdn_idle >= self.fdn.idle_after()
+            && self.remote_idle >= self.remote_fdn.idle_after()
             && self.fdn_level.current() <= 1e-6
             && self.fdn_level.target_val() <= 1e-6
             && self.remote_level.current() <= 1e-6
@@ -1383,7 +1390,8 @@ impl Renderer {
             self.c_high,
         );
         let own_in = if self.mute_own_fdn { 0.0 } else { wet_in };
-        fdn_step(&mut self.fdn, &mut self.fdn_idle, own_in, 1.0, 0.5 * own_level, own_gate, &self.fdn_dirs, foa);
+        let own_norm = self.fdn.energy_norm();
+        fdn_step(&mut self.fdn, &mut self.fdn_idle, own_in, 1.0, own_level * own_norm, own_gate, &self.fdn_dirs, foa);
 
         // Coupled-room wet: source room's reverb as a directional emitter
         // at the doorway (mono sum — a distant aperture, not a diffuse field
@@ -1405,7 +1413,8 @@ impl Renderer {
             self.remote_sh[k].tick();
         }
         let rem_in = if self.mute_remote { 0.0 } else { rin };
-        fdn_step(&mut self.remote_fdn, &mut self.remote_idle, rem_in, 0.9, rem_level, rem_gate, &self.remote_spread, foa);
+        let rem_norm = self.remote_fdn.energy_norm();
+        fdn_step(&mut self.remote_fdn, &mut self.remote_idle, rem_in, 1.0, rem_level * rem_norm, rem_gate, &self.remote_spread, foa);
     }
 
     /// `late` for block samples `off..off + x.len()` (`x[j]` = the source
@@ -1422,24 +1431,26 @@ impl Renderer {
         let mut rem_in = [0.0f32; BLOCK];
         let mut rem_lvl = [0.0f32; BLOCK];
         let mut rem_gate = [0.0f32; BLOCK];
+        // energy-calibrated: a level L plays L² (see `Fdn::energy_norm`)
+        let (own_norm, rem_norm) = (self.fdn.energy_norm(), self.remote_fdn.energy_norm());
         for (j, &x) in x.iter().enumerate() {
             let own_level = self.fdn_level.tick();
             let gate = if own_level > 1e-6 || self.fdn_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
             let wet_in = self.send_eq.tick(x * gate, self.send_low.tick(), self.send_high.tick(), c_low, c_high);
             own_in[j] = if self.mute_own_fdn { 0.0 } else { wet_in };
-            own_lvl[j] = 0.5 * own_level;
+            own_lvl[j] = own_level * own_norm;
             own_gate[j] = gate;
             let rem_level = self.remote_level.tick();
             let gate = if rem_level > 1e-6 || self.remote_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
             let rpre = self.remote_lp.tick(x * gate, self.remote_lp_coef.tick());
             let rin = self.remote_eq.tick(rpre, self.remote_low.tick(), self.remote_high.tick(), c_low, c_high);
             rem_in[j] = if self.mute_remote { 0.0 } else { rin };
-            rem_lvl[j] = rem_level;
+            rem_lvl[j] = rem_level * rem_norm;
             rem_gate[j] = gate;
         }
         let own = FdnFeed { input: &own_in[..m], pre: 1.0, lvl: &own_lvl[..m], gate: &own_gate[..m] };
         fdn_block(&mut self.fdn, &mut self.fdn_idle, &own, &self.fdn_dirs, bus, off);
-        let rem = FdnFeed { input: &rem_in[..m], pre: 0.9, lvl: &rem_lvl[..m], gate: &rem_gate[..m] };
+        let rem = FdnFeed { input: &rem_in[..m], pre: 1.0, lvl: &rem_lvl[..m], gate: &rem_gate[..m] };
         fdn_block(&mut self.remote_fdn, &mut self.remote_idle, &rem, &self.remote_spread, bus, off);
     }
 }

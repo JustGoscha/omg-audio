@@ -212,7 +212,7 @@ pub struct Stats {
     pub gpu_ms: f32,
     pub ticks: u32,
     pub load: f32,
-    pub budget: (usize, usize, usize),
+    pub budget: (usize, usize, usize, usize),
     pub rendering: usize,
     pub paths: usize,
     pub peak: f32,
