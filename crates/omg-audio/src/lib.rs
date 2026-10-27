@@ -41,7 +41,7 @@ pub use omg_core::material::Material;
 pub use omg_core::params::{ParamBlock, Tap};
 pub use omg_core::v3::walker::V3Walker;
 pub use omg_core::v3::{Budget, DenseResponse};
-pub use sim::{Compute, Config, DebugPath, ObjectId, Quality, Simulation, SourceDesc};
+pub use sim::{Compute, Config, DebugPath, ObjectId, PathKind, Quality, Simulation, SourceDesc};
 
 /// Speed of sound the engine uses (m/s).
 pub const SPEED_OF_SOUND: f32 = omg_core::SPEED_OF_SOUND;

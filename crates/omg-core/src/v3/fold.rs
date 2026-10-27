@@ -324,8 +324,8 @@ impl Tracer {
         if sources.len() > MAX_SOURCES || world.panels.len() > MAX_PANELS || world.pockets.len() > MAX_POCKETS {
             return None;
         }
-        let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
-        let (direct, vis, edge_taps) = self.prepare(world, listener, sources, budget, &mut dbg);
+        let dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
+        let (direct, vis, edge_taps) = self.prepare(world, listener, sources, budget);
         let rot = random_rotation(&mut self.rng);
         let seed = (self.rng.next_u64() >> 32) as u32;
         let edges = if budget.diffraction { self.edges.as_ref() } else { None };

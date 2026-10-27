@@ -109,8 +109,8 @@ func _ready() -> void:
 		demo.debug.set_perf(i == 1)))
 	_row(v, "spectrum", _choice_box("spectrum", ["off", "on"], 0, func(i: int) -> void:
 		demo.debug.set_spectrum(i == 1)))
-	_row(v, "sound paths", _choice_box("paths", ["off", "on"], 0, func(i: int) -> void:
-		demo.paths_view.set_enabled(i == 1)))
+	_row(v, "sound paths", _choice_box("paths", ["off", "exact", "all"], 0, func(i: int) -> void:
+		demo.paths_view.set_mode(i)))
 
 	# the live stats, under every tab
 	stats_label = _label("", SMALL, INK)

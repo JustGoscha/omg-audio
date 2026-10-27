@@ -12,7 +12,7 @@
 //! - under open sky the outdoor field is large, sealed in a box ~zero;
 //! - beyond `max_traced_sources`, sources take turns and all get traced.
 
-use omg_audio::{Config, Frame, Geometry, Material, ParamBlock, Quality, Simulation, SourceDesc, SPEED_OF_SOUND};
+use omg_audio::{Config, Frame, Geometry, Material, ParamBlock, PathKind, Quality, Simulation, SourceDesc, SPEED_OF_SOUND};
 use omg_core::material::air_attenuation;
 
 /// A material that only reflects: isolates the effect under test.
@@ -295,7 +295,18 @@ fn debug_paths_follow_the_geometry() {
     settle(&mut sim, 5);
     let paths = sim.debug_paths();
     assert!(!paths.is_empty(), "paths through the doorway");
-    assert!(paths.len() <= 64);
+    assert!(paths.iter().filter(|p| p.kind == PathKind::Sampled).count() <= 64);
+    // the exact paths are steady: standing still, the same ones next tick
+    // the exact paths are steady: standing still, the strong ones are
+    // all there again next tick (weak chains may come and go)
+    let key = |p: &omg_audio::DebugPath| (p.kind as u8, p.key);
+    let top = paths.iter().filter(|p| p.kind != PathKind::Sampled).map(|p| p.energy).fold(0.0f32, f32::max);
+    assert!(paths.iter().any(|p| p.kind == PathKind::Direct), "the direct path, through the doorway");
+    settle(&mut sim, 1);
+    let next: Vec<_> = sim.debug_paths().iter().map(key).collect();
+    for p in paths.iter().filter(|p| p.kind != PathKind::Sampled && p.energy > 0.01 * top) {
+        assert!(next.contains(&key(p)), "{:?} {} gone a tick later", p.kind, p.key);
+    }
     assert!(paths.windows(2).all(|p| p[0].energy >= p[1].energy), "strongest first");
     let d = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
     for p in &paths {

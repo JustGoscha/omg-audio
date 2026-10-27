@@ -12,8 +12,9 @@ const SH := 330.0       # the spectrum panel: two flame graphs
 const TOP := 36.0       # below the title
 const N := 240          # samples kept (~4 s at 60 fps)
 const BANDS := 120
-const COLS := 150       # spectrogram history
-const COL_HZ := 50.0    # columns per second (3 s shown)
+const COL_PX := 2.0     # a column's width on screen (the web's)
+const COLS := int(W / COL_PX)
+const COL_HZ := 60.0    # columns per second (~5.7 s shown)
 const F_LO := 40.0
 const F_HI := 16000.0
 
@@ -106,17 +107,20 @@ func _process(dt: float) -> void:
 			bands[0][i] = maxf(bands[0][i], linear_to_db(m.x + 1e-9))
 			bands[1][i] = maxf(bands[1][i], linear_to_db(m.y + 1e-9))
 		col_t += dt
-		if col_t >= 1.0 / COL_HZ:
-			col_t = fmod(col_t, 1.0 / COL_HZ)
-			# everything moves a column left; the newest enters at the right
+		var k := mini(int(col_t * COL_HZ), COLS)
+		if k > 0:
+			col_t -= k / COL_HZ
+			# everything moves k columns left; the newest enter at the right
 			for ear in 2:
 				var img: Image = flame[ear]
 				var b: PackedFloat32Array = bands[ear]
-				img.blit_rect(img.get_region(Rect2i(1, 0, COLS - 1, BANDS)), Rect2i(0, 0, COLS - 1, BANDS), Vector2i.ZERO)
+				if k < COLS:
+					img.blit_rect(img.get_region(Rect2i(k, 0, COLS - k, BANDS)), Rect2i(0, 0, COLS - k, BANDS), Vector2i.ZERO)
 				for i in BANDS:
 					# the web's scale: an analyser's −100 … −30 dB, a mild gamma
-					var t := pow(clampf((b[i] + 100.0) / 70.0, 0.0, 1.0), 1.25)
-					img.set_pixel(COLS - 1, BANDS - 1 - i, _inferno(t))
+					var c := _inferno(pow(clampf((b[i] + 100.0) / 70.0, 0.0, 1.0), 1.25))
+					for x in range(COLS - k, COLS):
+						img.set_pixel(x, BANDS - 1 - i, c)
 				b.fill(-120.0)
 				flame_tex[ear].update(img)
 			spec.queue_redraw()

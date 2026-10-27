@@ -149,6 +149,22 @@ pub struct DebugPath {
     /// Mid-band energy arriving along it (relative: ranks the paths).
     pub energy: f32,
     pub points: Vec<[f32; 3]>,
+    /// What it is: exactly solved (the same path tick after tick, moving
+    /// continuously) or one of the walk's random samples.
+    pub kind: PathKind,
+    /// Stable for an exact path within (source, kind); 0 for samples.
+    pub key: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathKind {
+    Direct,
+    /// Around an edge (diffraction).
+    Bend,
+    /// A solved chain of mirror reflections.
+    Mirror,
+    /// A sampled path of the walk (a different set every tick).
+    Sampled,
 }
 
 struct Src {
@@ -454,7 +470,7 @@ impl Simulation {
         self.debug_paths = on;
         self.tracer.debug = on;
         if !on {
-            self.tracer.debug_paths = Vec::new();
+            self.tracer.clear_debug_paths();
         }
     }
 
@@ -462,18 +478,32 @@ impl Simulation {
         self.debug_paths
     }
 
-    /// The last tick's strongest paths, strongest first (empty when off).
-    /// Sources that did not trace that tick keep no paths in it.
+    /// The exactly solved paths (direct, edge bends, mirror chains) and
+    /// the last tick's strongest sampled ones, strongest first (empty
+    /// when off). Sources that did not trace that tick keep no sampled
+    /// paths in it.
     pub fn debug_paths(&self) -> Vec<DebugPath> {
-        self.tracer
-            .debug_paths
-            .iter()
-            .map(|(id, e, pts)| DebugPath {
-                source: SourceId(*id),
-                energy: *e,
-                points: pts.iter().map(|p| [p.x, p.y, p.z]).collect(),
+        let pts = |v: &[omg_core::vec3::Vec3]| v.iter().map(|p| [p.x, p.y, p.z]).collect();
+        let mut out: Vec<DebugPath> = self
+            .tracer
+            .exact_paths()
+            .map(|p| DebugPath {
+                source: SourceId(p.source),
+                energy: p.energy,
+                points: pts(&p.points),
+                kind: [PathKind::Direct, PathKind::Bend, PathKind::Mirror][p.kind.min(2) as usize],
+                key: p.key,
             })
-            .collect()
+            .collect();
+        out.extend(self.tracer.debug_paths.iter().map(|(id, e, v)| DebugPath {
+            source: SourceId(*id),
+            energy: *e,
+            points: pts(v),
+            kind: PathKind::Sampled,
+            key: 0,
+        }));
+        out.sort_by(|a, b| b.energy.total_cmp(&a.energy));
+        out
     }
 
     /// v4: a source's latest dense (scattered) response, unit source

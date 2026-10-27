@@ -690,11 +690,14 @@ impl OmgWorld {
         d
     }
 
-    /// The last tick's strongest traced paths (with `debug_paths` on;
-    /// empty otherwise), strongest first: each {source: the OmgSource node
-    /// (null if gone), energy: mid-band, relative, points:
-    /// PackedVector3Array from the listener's ears through every
-    /// reflection or edge bend to the source, in world coordinates}.
+    /// The traced paths (with `debug_paths` on; empty otherwise),
+    /// strongest first: each {source: the OmgSource node (null if gone),
+    /// energy: mid-band, relative, points: PackedVector3Array from the
+    /// listener's ears through every reflection or edge bend to the
+    /// source, in world coordinates, kind: 0 direct, 1 edge bend, 2
+    /// mirror chain — exactly solved, the same path from tick to tick
+    /// (`key` names it within its source and kind) — or 3 one of the
+    /// last tick's strongest random samples of the walk}.
     #[func]
     fn paths(&self) -> VarArray {
         let mut out = VarArray::new();
@@ -721,6 +724,8 @@ impl OmgWorld {
             d.set("source", &node.map_or(Variant::nil(), |n| n.to_variant()));
             d.set("energy", p.energy);
             d.set("points", &pts);
+            d.set("kind", p.kind as i64);
+            d.set("key", p.key as i64);
             out.push(&d.to_variant());
         }
         out

@@ -792,8 +792,9 @@ pub struct Tracer {
     tick: u64,
     /// Which edges the listener sees: (listener, tick, mask).
     ear_vis: Option<(Vec3, u64, Vec<bool>)>,
-    /// Per source id: (listener, source, tick, edge-path taps).
-    edge_cache: HashMap<u32, (Vec3, Vec3, u64, Vec<Tap>)>,
+    /// Per source id: (listener, source, tick, edge-path taps, the bend
+    /// point of each).
+    edge_cache: HashMap<u32, (Vec3, Vec3, u64, Vec<Tap>, Vec<Vec3>)>,
     /// Mirror chains past `bounces`, per (source id, plane-sequence
     /// hash): found by coherent rays, solved exactly every tick.
     chains: HashMap<(u32, u64), MirrorChain>,
@@ -808,9 +809,30 @@ pub struct Tracer {
     world_sig: u64,
     /// Capture the strongest paths of each tick for the debug view.
     pub debug: bool,
-    /// Last tick's strongest paths: (source id, mid energy, polyline
-    /// ears → bounces → source), strongest first.
+    /// Last tick's strongest sampled paths (the walk's reflections):
+    /// (source id, mid energy, polyline ears → bounces → source),
+    /// strongest first.
     pub debug_paths: Vec<(u32, f32, Vec<Vec3>)>,
+    /// The exactly solved paths (with `debug`): direct and edge bends of
+    /// the last tick, mirror chains of the last solve. See `exact_paths`.
+    exact: Vec<ExactPath>,
+    exact_mirrors: Vec<ExactPath>,
+}
+
+/// An exactly solved path, for a debug view: unlike the sampled ones it
+/// is the same path from tick to tick (the same `key` while it exists)
+/// and moves continuously with the listener and the source.
+#[derive(Clone, Debug)]
+pub struct ExactPath {
+    pub source: u32,
+    /// 0 direct, 1 edge bend, 2 mirror chain.
+    pub kind: u8,
+    /// Stable within (source, kind): the edge, or the chain's planes.
+    pub key: u64,
+    /// Mid-band energy arriving along it.
+    pub energy: f32,
+    /// The ears, every bend or reflection, the source.
+    pub points: Vec<Vec3>,
 }
 
 /// A coherent chain past `bounces`: the planes its mirrors lie in, in
@@ -861,6 +883,29 @@ const DEBUG_PATHS: usize = 64;
 /// list is full its weakest entry sits at index 0, so a path that cannot
 /// make the cut is turned away with one comparison (this runs for every
 /// next-event connection of every ray while debugging).
+/// The reflection points of a mirror chain, by its images (the chain is
+/// known valid): ears, each reflection, the source.
+fn chain_points(planes: &[(Vec3, f32)], lis: Vec3, src: Vec3) -> Vec<Vec3> {
+    let n = planes.len();
+    let mut images = vec![src; n + 1];
+    for k in (0..n).rev() {
+        images[k] = mirror_point(images[k + 1], planes[k]);
+    }
+    let mut pts = vec![lis];
+    let mut p = lis;
+    for (k, &(nrm, d)) in planes.iter().enumerate() {
+        let to = images[k] - p;
+        let denom = nrm.dot(to);
+        if denom.abs() < 1e-9 {
+            break;
+        }
+        p = p + to * ((d - nrm.dot(p)) / denom);
+        pts.push(p);
+    }
+    pts.push(src);
+    pts
+}
+
 fn keep_path(list: &mut Vec<(u32, f32, Vec<Vec3>)>, id: u32, e: f32, verts: &[Vec3], end: Vec3) {
     let full = list.len() >= DEBUG_PATHS;
     if full && e <= list[0].1 {
@@ -881,6 +926,19 @@ fn keep_path(list: &mut Vec<(u32, f32, Vec<Vec3>)>, id: u32, e: f32, verts: &[Ve
 }
 
 impl Tracer {
+    /// The exactly solved paths (with `debug`): the direct paths and edge
+    /// bends of the last tick, the mirror chains of the last solve.
+    pub fn exact_paths(&self) -> impl Iterator<Item = &ExactPath> {
+        self.exact.iter().chain(&self.exact_mirrors)
+    }
+
+    /// Forget every recorded debug path.
+    pub fn clear_debug_paths(&mut self) {
+        self.debug_paths.clear();
+        self.exact.clear();
+        self.exact_mirrors.clear();
+    }
+
     pub fn new(seed: u64) -> Self {
         Self {
             rng: Rng::new(seed),
@@ -901,6 +959,8 @@ impl Tracer {
             world_sig: 0,
             debug: false,
             debug_paths: Vec::new(),
+            exact: Vec::new(),
+            exact_mirrors: Vec::new(),
         }
     }
 
@@ -970,7 +1030,7 @@ impl Tracer {
 
         // 1. direct, visibility, edge next-event paths (shared with the
         // externally walked tick, fold.rs)
-        let (direct, vis, mut edge_taps) = self.prepare(world, listener, sources, budget, &mut dbg);
+        let (direct, vis, mut edge_taps) = self.prepare(world, listener, sources, budget);
 
         // 2. rays: stratified (Fibonacci) and randomly rotated per tick
         let rot = random_rotation(&mut self.rng);
@@ -1394,6 +1454,7 @@ impl Tracer {
         self.grow_trains();
         let mut drop: Vec<(u32, u64)> = Vec::new();
         let mut reject: Vec<(u32, u64)> = Vec::new();
+        let mut mirrors: Vec<ExactPath> = Vec::new();
         let keys: Vec<(u32, u64)> = self.chains.keys().copied().collect();
         for key in keys {
             let Some(si) = sources.iter().position(|s| s.id == key.0) else {
@@ -1417,6 +1478,14 @@ impl Tracer {
                     r
                 }
             };
+            if let (true, Some((e, delay, _))) = (self.debug, result) {
+                // (v3: short early chains are the sphere estimate's; a
+                // last leg through a solid wall carries nothing)
+                if e[1] > 0.0 && (self.v4 || long || delay - accs[si].t_free >= EARLY_S) {
+                    let points = chain_points(&self.chains[&key].planes, listener, src);
+                    mirrors.push(ExactPath { source: key.0, kind: 2, key: key.1, energy: e[1], points });
+                }
+            }
             match result {
                 // v4: every valid chain is a coherent arrival — the field
                 // decides whether it plays as its own tap or joins the
@@ -1452,6 +1521,7 @@ impl Tracer {
         for k in drop {
             self.chains.remove(&k);
         }
+        self.exact_mirrors = mirrors;
         let tick = self.tick;
         for k in reject {
             self.chains.remove(&k);
@@ -1533,7 +1603,8 @@ impl Tracer {
 
     /// Everything before the walk: the exact direct segment per source
     /// (step 1), each source's per-band direct visibility, and the
-    /// edge next-event paths (diffraction). Debug paths go to `dbg`.
+    /// edge next-event paths (diffraction); with `debug`, the exact
+    /// direct and bent paths for the debug view.
     #[allow(clippy::type_complexity)]
     fn prepare(
         &mut self,
@@ -1541,7 +1612,6 @@ impl Tracer {
         listener: Vec3,
         sources: &[Source],
         budget: Budget,
-        dbg: &mut Vec<(u32, f32, Vec<Vec3>)>,
     ) -> (Vec<Option<Tap>>, Vec<[f32; NBANDS]>, Vec<Vec<Tap>>) {
         // 0. crossed a surface since last tick (flew through a wall)?
         // Then nothing averaged on the old side can reach this one.
@@ -1558,6 +1628,7 @@ impl Tracer {
             }
         }
         self.last_listener = Some(listener);
+        self.exact.clear();
         let debug = self.debug;
         // 1. direct: one exact segment per source
         let mut direct: Vec<Option<Tap>> = Vec::with_capacity(sources.len());
@@ -1568,8 +1639,7 @@ impl Tracer {
             let air = air_attenuation(d);
             let gains: [f32; NBANDS] = core::array::from_fn(|b| t[b] * air[b] / d);
             if debug && gains[1] > 1e-7 {
-                // direct paths always show, ranked like the rest
-                keep_path(dbg, s.id, gains[1] * gains[1], &[listener], s.pos);
+                self.exact.push(ExactPath { source: s.id, kind: 0, key: 0, energy: gains[1] * gains[1], points: vec![listener, s.pos] });
             }
             direct.push(if gains.iter().any(|&g| g > 1e-7) {
                 let dir = to * (1.0 / to.length().max(1e-6));
@@ -1645,12 +1715,23 @@ impl Tracer {
                 if vis[si][1] > 0.999 {
                     continue;
                 }
-                if let Some((pl, ps, t, taps)) = self.edge_cache.get(&s.id) {
+                if let Some((pl, ps, t, taps, bends)) = self.edge_cache.get(&s.id) {
                     if (*pl - listener).length() < EDGE_REUSE_M
                         && (*ps - s.pos).length() < EDGE_REUSE_M
                         && tick - t < EDGE_REFRESH_TICKS
                     {
                         edge_taps[si] = taps.clone();
+                        if debug {
+                            for (tap, p) in taps.iter().zip(bends) {
+                                self.exact.push(ExactPath {
+                                    source: s.id,
+                                    kind: 1,
+                                    key: tap.key as u64,
+                                    energy: tap.gains[1] * tap.gains[1],
+                                    points: vec![listener, *p, s.pos],
+                                });
+                            }
+                        }
                         continue;
                     }
                 }
@@ -1734,11 +1815,17 @@ impl Tracer {
                     }
                     kept.push(p);
                     if debug {
-                        keep_path(dbg, s.id, tap.gains[1] * tap.gains[1], &[listener, p], s.pos);
+                        self.exact.push(ExactPath {
+                            source: s.id,
+                            kind: 1,
+                            key: tap.key as u64,
+                            energy: tap.gains[1] * tap.gains[1],
+                            points: vec![listener, p, s.pos],
+                        });
                     }
                     edge_taps[si].push(tap);
                 }
-                self.edge_cache.insert(s.id, (listener, s.pos, tick, edge_taps[si].clone()));
+                self.edge_cache.insert(s.id, (listener, s.pos, tick, edge_taps[si].clone(), kept));
             }
         }
 
