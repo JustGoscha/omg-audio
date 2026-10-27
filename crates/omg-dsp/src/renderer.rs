@@ -593,6 +593,8 @@ pub struct Renderer {
     reselect_countdown: u32,
     version_seen: u64,
     first_params: bool,
+    /// Every glide is at its target (see `settle`); cleared by new params.
+    settled: bool,
     /// Diagnostic mutes (set from env in the demo app).
     pub mute_taps: bool,
     pub mute_own_fdn: bool,
@@ -673,6 +675,7 @@ impl Renderer {
             reselect_countdown: 0,
             version_seen: 0,
             first_params: true,
+            settled: false,
             mute_taps: false,
             mute_own_fdn: false,
             mute_remote: false,
@@ -769,6 +772,46 @@ impl Renderer {
         self.tap_ceiling = n.max(1);
     }
 
+    /// Jump every glide to where it is headed — for a source that renders
+    /// nothing now (silent): there is no signal a jump could click, and a
+    /// path still fading in when the next sound starts would swallow its
+    /// onset (a clap is over in a few ms; the fades take tens). Released
+    /// paths are freed. Cheap when already settled.
+    pub fn settle(&mut self) {
+        if self.settled {
+            return;
+        }
+        self.settled = true;
+        for slot in &mut self.taps {
+            slot.delay.snap(slot.delay.target_val());
+            slot.g_low.snap(slot.g_low.target_val());
+            slot.g_high.snap(slot.g_high.target_val());
+            slot.lp_coef.snap(slot.lp_coef.target_val());
+            for g in &mut slot.g_sh {
+                g.snap(g.target_val());
+            }
+            slot.tail = 0;
+        }
+        let taps = &self.taps;
+        self.active.retain(|&i| !taps[i as usize].free());
+        self.onset.snap(self.onset.target_val());
+        for g in [
+            &mut self.dense_yaw,
+            &mut self.fdn_level,
+            &mut self.send_low,
+            &mut self.send_high,
+            &mut self.remote_level,
+            &mut self.remote_low,
+            &mut self.remote_high,
+            &mut self.remote_lp_coef,
+        ] {
+            g.snap(g.target_val());
+        }
+        for g in &mut self.remote_sh {
+            g.snap(g.target_val());
+        }
+    }
+
     /// Forget which ParamBlock version was applied, so the next
     /// `set_params` re-applies even the same block — used when a budget
     /// share changes and must take effect without waiting a tick.
@@ -791,6 +834,7 @@ impl Renderer {
             return;
         }
         self.version_seen = pb.version;
+        self.settled = false;
         // judged against the TYPICAL interval too: an update arriving
         // early must not turn fast motion into a crossfade
         let thresh = (self.retarget_thresh as f64).max(
