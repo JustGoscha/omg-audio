@@ -877,6 +877,9 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     let sliced = pooled || (!late && steps > 0u && job.debug == 0u);
     // early rays walked whole (debug capture) run in pass 0 only
     if (!late && !sliced && pass_idx > 0u) { return; }
+    // the late pool walks the early family's passes; the ones after them
+    // (v4: the early rays' split branches, WalkJob::passes) are theirs
+    if (pooled && pass_idx * steps >= job.bounces + 1u + MAX_BENDS) { return; }
     let inv_n = select(1.0 / f32(n), job.late_w, pooled);
     let n_src = min(job.n_sources, MAX_SOURCES);
     let diffraction = job.n_edges > 0u;

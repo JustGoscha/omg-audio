@@ -229,6 +229,18 @@ impl WalkJob {
         self.words[7]
     }
     /// Threads to launch: one per ray of either family.
+    /// Dispatches a sliced walk takes at `steps` segments a ray each: the
+    /// early rays' longest walk (v4: a ray and its split branch, each up
+    /// to the early family's segments).
+    pub fn passes(&self, steps: u32) -> u32 {
+        if steps == 0 {
+            return 1;
+        }
+        let segments = self.words[11] + 1 + super::MAX_BENDS;
+        let walk = if self.words[35] != 0 { 2 * segments } else { segments };
+        walk.div_ceil(steps).max(1)
+    }
+
     pub fn n_rays(&self) -> u32 {
         self.n_early() + self.n_late()
     }

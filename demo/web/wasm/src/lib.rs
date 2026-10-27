@@ -385,10 +385,8 @@ pub extern "C" fn sim_nsrc() -> u32 {
 // persistent pool across walks (their state stays on the GPU); the
 // bookkeeping is here, as omg-gpu's is for native.
 
-/// Segments per ray per dispatch (omg-gpu SLICE_STEPS) and the most bends
-/// a ray takes (MAX_BENDS).
+/// Segments per ray per dispatch (omg-gpu SLICE_STEPS).
 const SLICE_STEPS: u32 = 2;
-const MAX_BENDS: u32 = 3;
 const BIRTHS_EMA: f32 = 0.2;
 
 #[derive(Default)]
@@ -541,7 +539,7 @@ pub extern "C" fn sim_v3_take() -> u32 {
     b.words.extend_from_slice(&job.words);
     b.words[37] = state_off as u32;
     b.words[38] = (1.0 / births.max(1.0)).to_bits();
-    let passes = (job.header()[11] + 1 + MAX_BENDS).div_ceil(SLICE_STEPS).max(1);
+    let passes = job.passes(SLICE_STEPS);
     let out = walkfmt::output_words(job.n_sources()) + 1; // + the births
     b.taken = Some((job.ids.clone(), job.epoch, passes, out));
     b.words.len() as u32

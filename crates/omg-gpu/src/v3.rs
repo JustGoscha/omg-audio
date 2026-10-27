@@ -109,8 +109,6 @@ struct Pool {
 pub const SLICE_STEPS: u32 = 2;
 /// Most dispatches one sliced walk takes.
 const MAX_PASSES: u32 = 16;
-/// Bends a ray takes at most (v3_walk.wgsl MAX_BENDS, omg_core::v3).
-const MAX_BENDS: u32 = 3;
 /// Smoothing of the pool's births per walk (≈ 5 walks).
 const BIRTHS_EMA: f32 = 0.2;
 
@@ -450,7 +448,7 @@ impl GpuV3Tracer {
         if self.steps == 0 {
             return 1;
         }
-        (job.header()[11] + 1 + MAX_BENDS).div_ceil(self.steps).clamp(1, MAX_PASSES)
+        job.passes(self.steps).min(MAX_PASSES)
     }
 
     /// The in-flight walk's result, if it finished — never blocks (unless
