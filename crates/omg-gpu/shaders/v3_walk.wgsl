@@ -877,9 +877,6 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     let sliced = pooled || (!late && steps > 0u && job.debug == 0u);
     // early rays walked whole (debug capture) run in pass 0 only
     if (!late && !sliced && pass_idx > 0u) { return; }
-    // the late pool walks the early family's passes; the ones after them
-    // (v4: the early rays' split branches, WalkJob::passes) are theirs
-    if (pooled && pass_idx * steps >= job.bounces + 1u + MAX_BENDS) { return; }
     let inv_n = select(1.0 / f32(n), job.late_w, pooled);
     let n_src = min(job.n_sources, MAX_SOURCES);
     let diffraction = job.n_edges > 0u;
@@ -1180,10 +1177,12 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
         }
 
         // 4. continue: v4 splits at the first partition passing real
-        // energy (both branches, their exact weights); else transmit
+        // energy (both branches, their exact weights) — except a sliced
+        // walk's early rays, whose walk must end within the walk's passes
+        // (the late pool carries its rays on); else transmit
         // (importance-floored) or reflect
         let p_t = max(max(t2.x, t2.y), t2.z);
-        let split_here = job.v4 != 0u && !split && p_t >= SPLIT_T2;
+        let split_here = job.v4 != 0u && !split && p_t >= SPLIT_T2 && (late || !sliced);
         if (split_here) {
             split = true;
             has_pending = true;
