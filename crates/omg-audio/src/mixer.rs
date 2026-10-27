@@ -580,18 +580,7 @@ impl Mixer {
             self.set_head_inner(l.yaw, l.pitch, l.roll);
         }
         self.rebudget();
-        let per_source = if self.mix_taps == 0 { Some(SOURCE_TAPS) } else { None };
-        for s in self.slots.iter_mut().filter(|s| s.used && s.has_block && s.dirty) {
-            let k = per_source.unwrap_or(s.share.0).max(1);
-            s.select(k, &mut self.order);
-            if s.reapply {
-                // a changed share takes effect now, not one frame later
-                s.renderer.invalidate_params();
-                s.reapply = false;
-            }
-            s.renderer.set_params_after(&s.filtered, s.motion.take());
-            s.dirty = false;
-        }
+        self.reselect();
         let (now, sr) = (self.clock, self.sample_rate);
         for s in self.slots.iter_mut().filter(|s| s.used) {
             // (sounds waiting for the source's first paths stay)
@@ -639,6 +628,23 @@ impl Mixer {
 
     /// Rank every sounding source's paths by loudness at the ears and
     /// share the budgets (cf. omg-web `eng_params_commit`).
+    /// Every changed source's paths, chosen within its share, onto its
+    /// renderer.
+    fn reselect(&mut self) {
+        let per_source = if self.mix_taps == 0 { Some(SOURCE_TAPS) } else { None };
+        for s in self.slots.iter_mut().filter(|s| s.used && s.has_block && s.dirty) {
+            let k = per_source.unwrap_or(s.share.0).max(1);
+            s.select(k, &mut self.order);
+            if s.reapply {
+                // a changed share takes effect now, not one frame later
+                s.renderer.invalidate_params();
+                s.reapply = false;
+            }
+            s.renderer.set_params_after(&s.filtered, s.motion.take());
+            s.dirty = false;
+        }
+    }
+
     fn rebudget(&mut self) {
         let now = self.clock;
         self.ranked.clear();
@@ -753,11 +759,13 @@ impl Mixer {
         let (now, gain, rate) = (self.clock, play.gain.clamp(0.0, 32.0), play.rate.clamp(0.25, 4.0));
         let sr = self.sample_rate;
         let s = &mut self.slots[i];
-        // audible at once (the next frame re-ranks the voices). A silent
-        // source (nothing it emitted still on its way) has no signal a
-        // jump could click: its voice starts at full level — a fade-in
-        // would swallow a clap's few-ms transient
-        if s.quiet_at < now {
+        // audible at once. A silent source (nothing it emitted still on
+        // its way) has no signal a jump could click: its voice starts at
+        // full level — a fade-in would swallow a clap's few-ms transient —
+        // and on all its paths: the mix re-ranks now, not at the next
+        // frame (a silent source holds no share of the paths)
+        let was_silent = s.quiet_at < now;
+        if was_silent {
             s.audible.snap(1.0);
         } else {
             s.audible.set(1.0);
@@ -775,6 +783,10 @@ impl Mixer {
             VoiceId::NONE
         };
         s.quiet_at = s.quiet_after(sr);
+        if was_silent && s.has_block {
+            self.rebudget();
+            self.reselect();
+        }
         v
     }
 
