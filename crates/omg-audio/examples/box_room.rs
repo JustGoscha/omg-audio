@@ -29,8 +29,8 @@ fn main() -> std::io::Result<()> {
     sim.set_geometry(g);
     let src = sim.add_source(SourceDesc::at([6.0, 4.0, 1.2]));
 
-    // 3. mixer: HRIRs from assets/ if present, a pulsing tone as the clip
-    let mut mixer = Mixer::new(SR, Hrir::load_dir("assets"));
+    // 3. mixer: the engine's built-in HRIRs, a pulsing tone as the clip
+    let mut mixer = Mixer::new(SR, Hrir::builtin());
     let tone: Vec<f32> = (0..SR as usize)
         .map(|i| {
             let t = i as f32 / SR;

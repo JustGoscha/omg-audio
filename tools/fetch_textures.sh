@@ -1,10 +1,10 @@
 #!/bin/sh
 # Fetch the CC0 Poly Haven textures the Godot demo dresses its level with
 # (1k JPG: diffuse, OpenGL normal, AO/rough/metal packed). They are
-# committed under assets/textures/ (re-encoded smaller, ~5 MB); this
+# committed under demo/assets/textures/ (re-encoded smaller, ~5 MB); this
 # script documents where they came from and refreshes them. Licence: CC0 (https://polyhaven.com/license).
 set -e
-cd "$(dirname "$0")/../assets/textures"
+cd "$(dirname "$0")/../demo/assets/textures"
 new=""
 for n in castle_brick_02_red white_sandstone_bricks_03 plastered_wall_04 \
          brushed_concrete concrete_block_wall roof_slates_02 cobblestone_floor_08 \

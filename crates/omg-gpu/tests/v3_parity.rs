@@ -674,7 +674,9 @@ fn v3_walk_speed_probe() {
         cpu_tick(&mut tc2, &w, lis, &srcs, cpu_b);
         true
     });
-    let mut walker = omg_gpu::GpuV3Walker { tracer: g, sync: false };
+    drop(g);
+    // the live walker unpaced (all of the GPU): the async path's latency
+    let mut walker = omg_gpu::GpuV3Walker::live(&mesh, 1.0).expect("a GPU above");
     let mut ta = Tracer::new(3);
     let (sim_ms, fresh) = cadence(&mut || {
         let mut got = false;

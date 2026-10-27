@@ -9,9 +9,9 @@ name = "omg-audio"
 path = "src/main.rs"
 
 [dependencies]
-omg-core = { path = "../omg-core" }
-omg-dsp = { path = "../omg-dsp" }
-omg-scene = { path = "../omg-scene" }
-omg-gpu = { path = "../omg-gpu" }
+omg-core = { path = "../../crates/omg-core" }
+omg-dsp = { path = "../../crates/omg-dsp" }
+omg-scene = { path = "../scene" }
+omg-gpu = { path = "../../crates/omg-gpu" }
 cpal = "0.15"
 hound = "3.5"

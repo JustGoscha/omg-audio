@@ -45,8 +45,7 @@ use crate::backend::clips::{self, Import};
 use crate::backend::decode::ClipOptions;
 use crate::backend::{materials, Host, OutCmd, OutputReader};
 
-const HRIR_GRID: &[u8] = include_bytes!("../../../assets/hrir_grid.bin");
-const HRIR_SPEAKERS: &[u8] = include_bytes!("../../../assets/hrir_dodeca20.bin");
+use omg_audio::{HRIR_GRID, HRIR_SPEAKERS};
 
 /// The live engine (one OmgWorld at a time). Sources reach it directly
 /// to start their clips.
@@ -440,6 +439,11 @@ pub struct OmgWorld {
     #[export]
     #[init(val = true)]
     use_gpu: bool,
+    /// With `use_gpu`: the share of the GPU's time the sound may take
+    /// (0..1) — the game's frames come first (omg-audio `Config::gpu_budget`).
+    #[export]
+    #[init(val = 0.2)]
+    gpu_budget: f32,
     /// Render on a background thread and play through an
     /// AudioStreamPlayer (false: call render() yourself — tests).
     #[export]
@@ -499,7 +503,7 @@ pub struct OmgWorld {
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 12],
+    sent: [f32; 13],
     amb_clip: Option<(usize, bool)>,
     rain_clip: Option<(usize, bool)>,
     scratch: Vec<(f32, f32)>,
@@ -795,6 +799,7 @@ impl OmgWorld {
             compute: if self.use_gpu { Compute::Gpu } else { Compute::Cpu },
             v4: self.engine_v4,
             sample_rate: engine_rate(),
+            gpu_budget: self.gpu_budget.clamp(0.02, 1.0),
             ..Config::default()
         }
     }
@@ -817,7 +822,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 12];
+        self.sent = [f32::NAN; 13];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -1007,6 +1012,7 @@ impl OmgWorld {
             self.diffraction as i32 as f32,
             self.debug_paths as i32 as f32,
             self.engine_v4 as i32 as f32,
+            self.gpu_budget,
         ];
         let cfg = self.sim_config();
         let mut g = host();

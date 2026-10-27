@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Serve the repo root for the web demo.
 
-Desktop:  python3 tools/serve.py  →  http://localhost:8000/web/
+Desktop:  python3 tools/serve.py  →  http://localhost:8000/demo/web/
 Android:  connect phone via USB, enable USB debugging, then:
             adb reverse tcp:8000 tcp:8000
-          and open http://localhost:8000/web/ in Chrome on the phone.
+          and open http://localhost:8000/demo/web/ in Chrome on the phone.
           (localhost is a secure context, so AudioWorklet + sensors work
           without HTTPS certificates.)
 """
@@ -25,5 +25,5 @@ handler.extensions_map = getattr(handler, "extensions_map", {})
 http.server.SimpleHTTPRequestHandler.extensions_map[".wasm"] = "application/wasm"
 http.server.SimpleHTTPRequestHandler.extensions_map[".js"] = "text/javascript"
 
-print(f"serving {os.path.abspath(root)} on http://localhost:{PORT}/web/")
+print(f"serving {os.path.abspath(root)} on http://localhost:{PORT}/demo/web/")
 http.server.ThreadingHTTPServer(("", PORT), handler).serve_forever()

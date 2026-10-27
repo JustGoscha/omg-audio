@@ -5,5 +5,5 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
-omg-core = { path = "../omg-core" }
-omg-dsp = { path = "../omg-dsp" }
+omg-core = { path = "../../crates/omg-core" }
+omg-dsp = { path = "../../crates/omg-dsp" }

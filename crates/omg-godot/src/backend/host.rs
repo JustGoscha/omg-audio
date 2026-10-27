@@ -379,8 +379,8 @@ mod tests {
     use super::*;
     use omg_audio::{Geometry, Material, Play, SourceDesc};
 
-    const GRID: &[u8] = include_bytes!("../../../../assets/hrir_grid.bin");
-    const SPK: &[u8] = include_bytes!("../../../../assets/hrir_dodeca20.bin");
+    const GRID: &[u8] = omg_audio::HRIR_GRID;
+    const SPK: &[u8] = omg_audio::HRIR_SPEAKERS;
 
     /// End to end without Godot: a looping source in a brick room is
     /// heard, bounded, and the room rings.

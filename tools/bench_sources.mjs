@@ -62,9 +62,9 @@ const FLAT_PER_TAP = 9;
 const SRC_NAMES = ['music', 'voice', 'club', 'flute', 'radio', 'owl·cath', 'owl·house', 'bells',
   'ball0', 'ball1', 'ball2', 'car0', 'car1', 'feet'];
 
-const wasmBytes = readFileSync(join(root, 'web/omg_web.wasm'));
-const hrirGrid = readFileSync(join(root, 'assets/hrir_grid.bin'));
-const hrirSpk = readFileSync(join(root, 'assets/hrir_dodeca20.bin'));
+const wasmBytes = readFileSync(join(root, 'demo/web/omg_web.wasm'));
+const hrirGrid = readFileSync(join(root, 'crates/omg-audio/hrir/hrir_grid.bin'));
+const hrirSpk = readFileSync(join(root, 'crates/omg-audio/hrir/hrir_dodeca20.bin'));
 const wasmMod = await WebAssembly.compile(wasmBytes);
 const instantiate = async () => (await WebAssembly.instantiate(wasmMod, {})).exports;
 

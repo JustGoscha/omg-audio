@@ -33,6 +33,10 @@ pub type ProbeResult = ([f32; 3], f32, [f32; 3], bool, bool, Option<(f32, f32)>)
 struct InFlight {
     ids: Vec<u32>,
     epoch: u32,
+    /// The outputs' words; one more (the pool's births) when pooled.
+    out_words: usize,
+    pooled: bool,
+    passes: u32,
     out_bytes: u64,
     dbg_bytes: u64,
     /// map_async callbacks still outstanding (0 = all mapped).
@@ -40,7 +44,20 @@ struct InFlight {
     t0: Instant,
 }
 
+/// Timestamp queries around the walk's compute pass.
+struct Timing {
+    set: wgpu::QuerySet,
+    resolved: wgpu::Buffer,
+    read: wgpu::Buffer,
+    period_ns: f32,
+}
+
 pub struct GpuV3Tracer {
+    timing: Option<Timing>,
+    /// The last walk's own GPU time (its dispatches' sum, from GPU
+    /// timestamps; 0 without them), and its longest single dispatch.
+    pub gpu_ms: f32,
+    pub gpu_max_ms: f32,
     device: wgpu::Device,
     queue: wgpu::Queue,
     walk_pipe: wgpu::ComputePipeline,
@@ -63,7 +80,41 @@ pub struct GpuV3Tracer {
     /// Wall-clock of the last walk: dispatch to readback (sync), or
     /// submit to the poll that found it done (async — an upper bound).
     pub last_ms: f32,
+    /// Segments per ray per dispatch (0: every ray walked whole in one
+    /// dispatch, as the CPU does). Sliced, a walk is several short
+    /// dispatches — each lasts its rays' few steps, not a ringing room's
+    /// longest ray — and the late rays are a persistent pool: a lane's ray
+    /// goes on in the next walk.
+    pub steps: u32,
+    /// The share of GPU time a walk may take (0: none asked — the passes
+    /// go out at once). Set on a thread of its own: `submit` then waits
+    /// between passes (see `yield_after_pass`).
+    pub pace: f32,
+    pool: Option<Pool>,
 }
+
+/// The pool's bookkeeping: where its lanes live in `dbg`, for which
+/// tracer epoch, and the smoothed births per walk (the late rays'
+/// normalization: in steady state the lanes' deposits in one walk add up
+/// to what that many new rays deposit over their whole lives).
+#[derive(Clone, Copy, Debug)]
+struct Pool {
+    lanes: u32,
+    state_off: u32,
+    epoch: u32,
+    births: f32,
+}
+
+/// Segments per ray per dispatch in the live walk.
+pub const SLICE_STEPS: u32 = 2;
+/// Most dispatches one sliced walk takes.
+const MAX_PASSES: u32 = 16;
+/// Bends a ray takes at most (v3_walk.wgsl MAX_BENDS, omg_core::v3).
+const MAX_BENDS: u32 = 3;
+/// Words per pooled late ray in `dbg` (v3_walk.wgsl STATE_WORDS).
+const STATE_WORDS: usize = 28;
+/// Smoothing of the pool's births per walk (≈ 5 walks).
+const BIRTHS_EMA: f32 = 0.2;
 
 impl GpuV3Tracer {
     /// None when no usable adapter exists — callers keep the CPU walk.
@@ -81,8 +132,14 @@ impl GpuV3Tracer {
             })
             .await
             .ok()?;
+        // GPU timestamps where the adapter has them: the walk's own time
+        let stamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor { label: Some("omg-gpu-v3"), ..Default::default() })
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("omg-gpu-v3"),
+                required_features: if stamps { wgpu::Features::TIMESTAMP_QUERY } else { wgpu::Features::empty() },
+                ..Default::default()
+            })
             .await
             .ok()?;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -133,7 +190,8 @@ impl GpuV3Tracer {
         };
         let job = buf("v3-job", core::mem::size_of::<crate::layout::GpuV3Job>(), U::UNIFORM | U::COPY_DST);
         let scene = buf("v3-scene", MAX_SCENE_WORDS * 4, U::STORAGE | U::COPY_DST);
-        let out_bytes = output_words(MAX_SOURCES) * 4;
+        // + the pool's births word
+        let out_bytes = (output_words(MAX_SOURCES) + 1) * 4;
         let acc = buf("v3-acc", out_bytes * 2, U::STORAGE | U::COPY_DST);
         let out = buf("v3-out", out_bytes, U::STORAGE | U::COPY_SRC);
         let read = buf("v3-read", out_bytes, U::MAP_READ | U::COPY_DST);
@@ -146,7 +204,20 @@ impl GpuV3Tracer {
             &[(0, &job), (1, &nodes), (2, &prims), (3, &mats), (4, &scene), (5, &acc), (7, &dbg)],
         );
         let resolve_bind = Self::bind(&device, &resolve_pipe, &[(0, &job), (4, &scene), (5, &acc), (6, &out)]);
+        let timing = stamps.then(|| Timing {
+            set: device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("v3-time"),
+                ty: wgpu::QueryType::Timestamp,
+                count: 2 * MAX_PASSES,
+            }),
+            resolved: buf("v3-time", 16 * MAX_PASSES as usize, U::QUERY_RESOLVE | U::COPY_SRC),
+            read: buf("v3-time-read", 16 * MAX_PASSES as usize, U::MAP_READ | U::COPY_DST),
+            period_ns: queue.get_timestamp_period(),
+        });
         Some(Self {
+            timing,
+            gpu_ms: 0.0,
+            gpu_max_ms: 0.0,
             device,
             queue,
             walk_pipe,
@@ -167,6 +238,9 @@ impl GpuV3Tracer {
             resolve_bind,
             flight: None,
             last_ms: 0.0,
+            steps: 0,
+            pace: 0.0,
+            pool: None,
         })
     }
 
@@ -191,7 +265,10 @@ impl GpuV3Tracer {
             && job.n_rays() > 0
     }
 
-    /// Queue one walk (job upload, clear, walk, resolve, copy, map).
+    /// Queue one walk (job upload, clear, walk, resolve, copy, map) —
+    /// `steps > 0`: as `passes(job)` dispatches of at most `steps`
+    /// segments per ray each, separate submissions (the GPU can run other
+    /// work between them), the late rays a persistent pool across walks.
     /// False when the job exceeds the buffers or one is still in flight.
     pub fn submit(&mut self, job: &WalkJob) -> bool {
         if self.flight.is_some() || !Self::fits(job) {
@@ -199,79 +276,183 @@ impl GpuV3Tracer {
         }
         let ns = job.n_sources();
         let debug = job.debug();
-        if debug {
-            let need = job.n_early() as usize * DEBUG_WORDS;
-            if need > self.dbg_words {
-                let words = need.next_power_of_two();
-                use wgpu::BufferUsages as U;
-                let mk = |label: &str, usage| {
-                    self.device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some(label),
-                        size: (words * 4) as u64,
-                        usage,
-                        mapped_at_creation: false,
-                    })
-                };
-                self.dbg = mk("v3-dbg", U::STORAGE | U::COPY_SRC | U::COPY_DST);
-                self.dbg_read = mk("v3-dbg-read", U::MAP_READ | U::COPY_DST);
-                self.dbg_words = words;
-                self.walk_bind = Self::bind(
-                    &self.device,
-                    &self.walk_pipe,
-                    &[
-                        (0, &self.job),
-                        (1, &self.nodes),
-                        (2, &self.prims),
-                        (3, &self.mats),
-                        (4, &self.scene),
-                        (5, &self.acc),
-                        (7, &self.dbg),
-                    ],
-                );
-            }
+        let steps = self.steps;
+        // the late rays' pool, then (unless debug captures them whole) the
+        // early rays' states, after the debug records' room (kept for
+        // every early ray, so toggling debug doesn't move the pool)
+        let lanes = if steps > 0 { job.n_late() } else { 0 };
+        let early_sliced = steps > 0 && !debug;
+        let state_off = job.n_early() as usize * DEBUG_WORDS;
+        let states = lanes as usize + if early_sliced { job.n_early() as usize } else { 0 };
+        let need = if states > 0 {
+            state_off + states * STATE_WORDS
+        } else if debug {
+            state_off
+        } else {
+            0
+        };
+        if need > self.dbg_words {
+            self.pool = None; // a new buffer holds no rays
+            let words = need.next_power_of_two();
+            use wgpu::BufferUsages as U;
+            let mk = |label: &str, usage| {
+                self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size: (words * 4) as u64,
+                    usage,
+                    mapped_at_creation: false,
+                })
+            };
+            self.dbg = mk("v3-dbg", U::STORAGE | U::COPY_SRC | U::COPY_DST);
+            self.dbg_read = mk("v3-dbg-read", U::MAP_READ | U::COPY_DST);
+            self.dbg_words = words;
+            self.walk_bind = Self::bind(
+                &self.device,
+                &self.walk_pipe,
+                &[
+                    (0, &self.job),
+                    (1, &self.nodes),
+                    (2, &self.prims),
+                    (3, &self.mats),
+                    (4, &self.scene),
+                    (5, &self.acc),
+                    (7, &self.dbg),
+                ],
+            );
         }
-        self.queue.write_buffer(&self.job, 0, bytemuck::cast_slice(job.header()));
+        let mut header = job.header().to_vec();
+        let mut fresh = false;
+        if lanes > 0 {
+            fresh = match self.pool {
+                Some(p) => p.lanes != lanes || p.state_off as usize != state_off || p.epoch != job.epoch,
+                None => true,
+            };
+            if fresh {
+                // every lane starts a ray now
+                self.pool = Some(Pool { lanes, state_off: state_off as u32, epoch: job.epoch, births: lanes as f32 });
+            }
+            let p = self.pool.expect("set above");
+            header[37] = p.state_off;
+            header[38] = (1.0 / p.births.max(1.0)).to_bits();
+        } else {
+            self.pool = None;
+            header[37] = state_off as u32;
+        }
         if !job.scene().is_empty() {
             self.queue.write_buffer(&self.scene, 0, bytemuck::cast_slice(job.scene()));
         }
-        let out_words = output_words(ns);
+        let passes = self.passes(job);
+        let out_words = output_words(ns) + (lanes > 0) as usize;
         let out_bytes = (out_words * 4) as u64;
         let dbg_bytes = if debug { (job.n_early() as usize * DEBUG_WORDS * 4) as u64 } else { 0 };
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("v3") });
-        enc.clear_buffer(&self.acc, 0, Some(out_bytes * 2));
-        if dbg_bytes > 0 {
-            enc.clear_buffer(&self.dbg, 0, Some(dbg_bytes));
+        for pass in 0..passes {
+            header[36] = steps | (pass << 16);
+            header[39] = (fresh && pass == 0) as u32;
+            self.queue.write_buffer(&self.job, 0, bytemuck::cast_slice(&header));
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("v3") });
+            if pass == 0 {
+                enc.clear_buffer(&self.acc, 0, Some(out_bytes * 2));
+                if dbg_bytes > 0 {
+                    enc.clear_buffer(&self.dbg, 0, Some(dbg_bytes));
+                }
+            }
+            let last = pass + 1 == passes;
+            {
+                let timestamp_writes = self.timing.as_ref().map(|t| wgpu::ComputePassTimestampWrites {
+                    query_set: &t.set,
+                    beginning_of_pass_write_index: Some(2 * pass),
+                    end_of_pass_write_index: Some(2 * pass + 1),
+                });
+                let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("v3"), timestamp_writes });
+                cp.set_pipeline(&self.walk_pipe);
+                cp.set_bind_group(0, &self.walk_bind, &[]);
+                cp.dispatch_workgroups(job.n_rays().div_ceil(64), 1, 1);
+                if last {
+                    cp.set_pipeline(&self.resolve_pipe);
+                    cp.set_bind_group(0, &self.resolve_bind, &[]);
+                    cp.dispatch_workgroups((out_words as u32).div_ceil(64), 1, 1);
+                }
+            }
+            if last {
+                enc.copy_buffer_to_buffer(&self.out, 0, &self.read, 0, out_bytes);
+                if dbg_bytes > 0 {
+                    enc.copy_buffer_to_buffer(&self.dbg, 0, &self.dbg_read, 0, dbg_bytes);
+                }
+                if let Some(t) = &self.timing {
+                    enc.resolve_query_set(&t.set, 0..2 * passes, &t.resolved, 0);
+                    enc.copy_buffer_to_buffer(&t.resolved, 0, &t.read, 0, 16 * passes as u64);
+                }
+            }
+            self.queue.submit([enc.finish()]);
+            if self.pace > 0.0 {
+                self.yield_after_pass();
+            }
         }
-        {
-            let mut pass =
-                enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("v3"), timestamp_writes: None });
-            pass.set_pipeline(&self.walk_pipe);
-            pass.set_bind_group(0, &self.walk_bind, &[]);
-            pass.dispatch_workgroups(job.n_rays().div_ceil(64), 1, 1);
-            pass.set_pipeline(&self.resolve_pipe);
-            pass.set_bind_group(0, &self.resolve_bind, &[]);
-            pass.dispatch_workgroups((out_words as u32).div_ceil(64), 1, 1);
+        let maps = 1 + (dbg_bytes > 0) as u32 + self.timing.is_some() as u32;
+        let pending = Arc::new(AtomicU32::new(maps));
+        if let Some(t) = &self.timing {
+            let p = pending.clone();
+            t.read.slice(..16 * passes as u64).map_async(wgpu::MapMode::Read, move |r| {
+                let _ = r; // aborted only when the tracer goes away mid-walk
+                p.fetch_sub(1, Ordering::AcqRel);
+            });
         }
-        enc.copy_buffer_to_buffer(&self.out, 0, &self.read, 0, out_bytes);
-        if dbg_bytes > 0 {
-            enc.copy_buffer_to_buffer(&self.dbg, 0, &self.dbg_read, 0, dbg_bytes);
-        }
-        self.queue.submit([enc.finish()]);
-        let pending = Arc::new(AtomicU32::new(if dbg_bytes > 0 { 2 } else { 1 }));
         let p = pending.clone();
         self.read.slice(..out_bytes).map_async(wgpu::MapMode::Read, move |r| {
-            r.expect("map v3 out");
+            let _ = r; // aborted only when the tracer goes away mid-walk
             p.fetch_sub(1, Ordering::AcqRel);
         });
         if dbg_bytes > 0 {
             let p = pending.clone();
             self.dbg_read.slice(..dbg_bytes).map_async(wgpu::MapMode::Read, move |r| {
-                r.expect("map v3 dbg");
+                let _ = r; // aborted only when the tracer goes away mid-walk
                 p.fetch_sub(1, Ordering::AcqRel);
             });
         }
-        self.flight = Some(InFlight { ids: job.ids.clone(), epoch: job.epoch, out_bytes, dbg_bytes, pending, t0: Instant::now() });
+        self.flight = Some(InFlight {
+            ids: job.ids.clone(),
+            epoch: job.epoch,
+            out_words,
+            pooled: lanes > 0,
+            passes,
+            out_bytes,
+            dbg_bytes,
+            pending,
+            t0: Instant::now(),
+        });
         true
+    }
+
+    /// The last walk's (GPU time summed over its dispatches, its longest
+    /// dispatch): GPU timestamps where they exist, else wall-clock.
+    pub fn time_stats(&self) -> (f32, f32) {
+        if self.timing.is_some() {
+            (self.gpu_ms, self.gpu_max_ms)
+        } else {
+            (self.last_ms, self.last_ms)
+        }
+    }
+
+    /// Paced (`pace` > 0, on a thread of its own): wait for the pass just
+    /// submitted, then leave the GPU alone long enough that this walk's
+    /// share of the time stays at `pace` — measured submit to done, so
+    /// time spent queued behind the game's frames counts too: the walk
+    /// yields more when the GPU is busy drawing.
+    fn yield_after_pass(&mut self) {
+        let t = Instant::now();
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        let busy = t.elapsed();
+        std::thread::sleep(busy.mul_f32(1.0 / self.pace.clamp(0.01, 1.0) - 1.0));
+    }
+
+    /// Dispatches one walk takes: every early ray's segments (its
+    /// reflections, the bounce out, the bends) `steps` at a time; 1 when
+    /// not sliced.
+    pub fn passes(&self, job: &WalkJob) -> u32 {
+        if self.steps == 0 {
+            return 1;
+        }
+        (job.header()[11] + 1 + MAX_BENDS).div_ceil(self.steps).clamp(1, MAX_PASSES)
     }
 
     /// The in-flight walk's result, if it finished — never blocks (unless
@@ -285,11 +466,19 @@ impl GpuV3Tracer {
             return None;
         }
         let f = self.flight.take().unwrap();
-        let data: Vec<f32> = {
+        let mut data: Vec<f32> = {
             let view = self.read.slice(..f.out_bytes).get_mapped_range().expect("mapped v3 out");
             bytemuck::cast_slice(&view).to_vec()
         };
         self.read.unmap();
+        if f.pooled {
+            // the births word: the pool's normalization for the next walks
+            let born = data.pop().unwrap_or(0.0).round();
+            if let Some(p) = &mut self.pool {
+                p.births += BIRTHS_EMA * (born - p.births);
+            }
+        }
+        debug_assert_eq!(data.len() + f.pooled as usize, f.out_words);
         let debug = if f.dbg_bytes > 0 {
             let list = {
                 let view = self.dbg_read.slice(..f.dbg_bytes).get_mapped_range().expect("mapped v3 dbg");
@@ -301,6 +490,16 @@ impl GpuV3Tracer {
             Vec::new()
         };
         self.last_ms = f.t0.elapsed().as_secs_f32() * 1e3;
+        if let Some(t) = &self.timing {
+            let (sum, max) = {
+                let view = t.read.slice(..16 * f.passes as u64).get_mapped_range().expect("mapped v3 time");
+                let v: &[u64] = bytemuck::cast_slice(&view);
+                v.chunks_exact(2).map(|p| p[1].saturating_sub(p[0]) as f32 * t.period_ns * 1e-6).fold((0.0, 0.0f32), |(s, m), d| (s + d, m.max(d)))
+            };
+            t.read.unmap();
+            self.gpu_ms = sum;
+            self.gpu_max_ms = max;
+        }
         Some(Walked { ids: f.ids, data, debug, epoch: f.epoch })
     }
 
@@ -388,19 +587,59 @@ impl GpuV3Tracer {
 }
 
 /// The v3 walker the app registers under OMG_GPU=1 (omg_scene::v3walk)
-/// and the engine uses under `Compute::Gpu` (`omg_core::v3::walker`):
-/// one walk in flight on the world mesh uploaded once at startup; each
-/// tick collects the previous tick's walk (never blocking) and submits
-/// this one — the GPU's latency hides behind the 50 ms tick.
+/// and the engine uses under `Compute::Gpu` (`omg_core::v3::walker`).
+/// Live: a thread of its own drives the GPU — sliced walks (`SLICE_STEPS`
+/// segments per dispatch, the late rays pooled), one pass at a time and
+/// paced to `budget` of the GPU's time; each tick hands it the newest job
+/// when it is free and takes the last finished walk (never blocking).
+/// Synchronous (tests, offline renders): this tick's own walk, every ray
+/// walked whole.
 pub struct GpuV3Walker {
-    pub tracer: GpuV3Tracer,
-    /// Synchronous mode (tests, offline renders): this tick's own walk.
+    /// The synchronous walker's tracer (the live one lives on the driver).
+    pub tracer: Option<GpuV3Tracer>,
     pub sync: bool,
+    driver: Option<Driver>,
+    stats: Arc<std::sync::Mutex<(f32, f32)>>,
+}
+
+struct Driver {
+    jobs: std::sync::mpsc::SyncSender<WalkJob>,
+    done: std::sync::mpsc::Receiver<Walked>,
+    busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl GpuV3Walker {
+    /// A synchronous walker.
     pub fn new(mesh: &Mesh) -> Option<Self> {
-        Some(Self { tracer: GpuV3Tracer::new(mesh)?, sync: false })
+        Some(Self { tracer: Some(GpuV3Tracer::new(mesh)?), sync: true, driver: None, stats: Default::default() })
+    }
+
+    /// A live walker taking at most `budget` (0..1) of the GPU's time.
+    pub fn live(mesh: &Mesh, budget: f32) -> Option<Self> {
+        let mut tracer = GpuV3Tracer::new(mesh)?;
+        tracer.steps = SLICE_STEPS;
+        tracer.pace = budget.clamp(0.01, 1.0);
+        let (jobs, job_rx) = std::sync::mpsc::sync_channel::<WalkJob>(1);
+        let (done_tx, done) = std::sync::mpsc::channel();
+        let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stats: Arc<std::sync::Mutex<(f32, f32)>> = Default::default();
+        let (b, st) = (busy.clone(), stats.clone());
+        std::thread::Builder::new()
+            .name("omg-gpu-walk".into())
+            .spawn(move || {
+                while let Ok(job) = job_rx.recv() {
+                    let w = tracer.walk(&job);
+                    *st.lock().unwrap() = tracer.time_stats();
+                    b.store(false, Ordering::Release);
+                    if let Some(w) = w {
+                        if done_tx.send(w).is_err() {
+                            break;
+                        }
+                    }
+                }
+            })
+            .ok()?;
+        Some(Self { tracer: None, sync: false, driver: Some(Driver { jobs, done, busy }), stats })
     }
 }
 
@@ -409,23 +648,36 @@ impl omg_core::v3::walker::V3Walker for GpuV3Walker {
         if !GpuV3Tracer::fits(job) {
             return Walk::Refused;
         }
-        if self.sync {
-            return match self.tracer.walk(job) {
+        if let Some(d) = &self.driver {
+            let done = d.done.try_iter().last();
+            if !d.busy.load(Ordering::Acquire) {
+                d.busy.store(true, Ordering::Release);
+                if d.jobs.try_send(job.clone()).is_err() {
+                    d.busy.store(false, Ordering::Release);
+                }
+            }
+            return match done {
                 Some(w) => Walk::Fresh(w),
-                None => Walk::Refused,
+                None => Walk::Pending,
             };
         }
-        let done = self.tracer.poll(false);
-        if self.tracer.flight.is_none() {
-            self.tracer.submit(job);
-        }
-        match done {
+        let Some(t) = &mut self.tracer else { return Walk::Refused };
+        t.steps = 0;
+        let r = t.walk(job);
+        *self.stats.lock().unwrap() = t.time_stats();
+        match r {
             Some(w) => Walk::Fresh(w),
-            None => Walk::Pending,
+            None => Walk::Refused,
         }
     }
 
+    /// The last walk's own GPU time (its dispatches' sum; GPU timestamps
+    /// where they exist, else submit to read-back).
     fn last_ms(&self) -> f32 {
-        self.tracer.last_ms
+        self.stats.lock().unwrap().0
+    }
+
+    fn last_max_ms(&self) -> f32 {
+        self.stats.lock().unwrap().1
     }
 }

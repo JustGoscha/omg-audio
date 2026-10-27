@@ -38,7 +38,7 @@ pub mod threaded;
 
 pub use frame::{Frame, Listener, SkyCell, SourceId};
 pub use geometry::{from_y_up, to_y_up, Geometry, MaterialId};
-pub use mixer::{clip, normalize, Clip, Hrir, Meter, Mixer, Play, VoiceId};
+pub use mixer::{clip, normalize, Clip, Hrir, Meter, Mixer, Play, VoiceId, HRIR_GRID, HRIR_SPEAKERS};
 pub use omg_core::material::Material;
 pub use omg_core::params::{ParamBlock, Tap};
 pub use omg_core::v3::walker::V3Walker;

@@ -57,7 +57,7 @@ fn furnished_rooms() -> Vec<usize> {
 #[test]
 fn layout_json_is_fresh() {
     let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/demo/layout.json");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/demo/layout.json");
     let want = walkthrough::layout_json();
     if std::env::var_os("OMG_WRITE_LAYOUT").is_some() {
         std::fs::write(&path, &want).expect("write layout.json");
@@ -65,7 +65,7 @@ fn layout_json_is_fresh() {
     let have = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(
         have == want,
-        "assets/demo/layout.json is stale — run `cargo run -p omg-scene --example export_layout`"
+        "demo/assets/demo/layout.json is stale — run `cargo run -p omg-scene --example export_layout`"
     );
 }
 

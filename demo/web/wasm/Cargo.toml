@@ -1,0 +1,19 @@
+[package]
+name = "omg-web"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+# cdylib: the demo's wasm; rlib: its native examples (headless runs)
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+omg-core = { path = "../../../crates/omg-core" }
+omg-dsp = { path = "../../../crates/omg-dsp" }
+omg-scene = { path = "../../scene" }
+omg-audio = { path = "../../../crates/omg-audio", default-features = false }
+
+[features]
+# the native examples' GPU walk
+gpu = ["omg-audio/gpu"]

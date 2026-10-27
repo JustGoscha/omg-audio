@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build assets/motor{0..3}48.ogg: steady vehicle-motor loops for the
+"""Build demo/assets/motor{0..3}48.ogg: steady vehicle-motor loops for the
 demo's passing cars, cut from CC0 freesound recordings and seam-
 crossfaded so they loop without a click. The ENGINE renders the pass-by
 (distance, air, Doppler) — these must be constant-RPM beds, never
@@ -7,7 +7,7 @@ pass-by recordings.
 
 All sources are Creative Commons 0 (verified on their pages):
     https://freesound.org/people/<user>/sounds/<id>/
-Usage: make_motors.py assets/
+Usage: make_motors.py demo/assets/
 """
 import struct
 import subprocess

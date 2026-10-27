@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build assets/fountain48.ogg: a small garden fountain, synthesized in-repo
+"""Build demo/assets/fountain48.ogg: a small garden fountain, synthesized in-repo
 (no recording, no license to track). A steady loop — the ENGINE places it,
 so this is the water as heard from close by, dry.
 
@@ -15,7 +15,7 @@ The sound of a jet falling into a basin, from four layers:
 Seed-fixed (the asset is reproducible); the tail is crossfaded into the
 head so it loops without a seam.
 
-Usage: make_fountain.py assets/
+Usage: make_fountain.py demo/assets/
 """
 import math
 import random

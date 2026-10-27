@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Build assets/drops48.ogg: a bank of individual water-drop/splat hits,
+"""Build demo/assets/drops48.ogg: a bank of individual water-drop/splat hits,
 sliced from CC0 freesound previews, peak-normalized, packed into uniform
 150 ms slots (48 kHz mono). The engine triggers random slots with pitch
 and gain variation for rain-on-window/roof impacts.
 
 All sources are Creative Commons 0 (verified on their pages):
     https://freesound.org/people/<user>/sounds/<id>/
-Usage: make_drops.py assets/
+Usage: make_drops.py demo/assets/
 """
 import struct
 import subprocess

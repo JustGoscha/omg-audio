@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build assets/hrir_ico12.bin from the MIT KEMAR compact HRIR set.
+"""Build crates/omg-audio/hrir/hrir_ico12.bin from the MIT KEMAR compact HRIR set.
 
 Picks the nearest KEMAR measurement for each of 12 icosahedron-vertex
 directions, resamples 44.1 kHz → 48 kHz, and writes a flat little-endian

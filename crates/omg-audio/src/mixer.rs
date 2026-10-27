@@ -52,6 +52,11 @@ pub fn normalize(samples: &mut [f32]) {
     omg_dsp::level::normalize_rms(samples, omg_dsp::level::REF_CLIP_RMS);
 }
 
+/// The engine's HRIR data (`hrir/`): a 20-speaker virtual array for the
+/// ambisonic decode, and the dense direction grid.
+pub const HRIR_SPEAKERS: &[u8] = include_bytes!("../hrir/hrir_dodeca20.bin");
+pub const HRIR_GRID: &[u8] = include_bytes!("../hrir/hrir_grid.bin");
+
 /// Head-related impulse responses for the binaural decode.
 #[derive(Clone, Default)]
 pub struct Hrir {
@@ -66,10 +71,16 @@ impl Hrir {
         Self::default()
     }
 
-    /// From the engine's HRIR files: `speakers` = a virtual-speaker set
-    /// (`assets/hrir_dodeca20.bin`) for the ambisonic decode, `grid` = a
-    /// dense direction grid (`assets/hrir_grid.bin`) for the strongest
-    /// paths' own convolution. Either may be None.
+    /// The engine's own HRIRs, built in (`hrir/`): the 20-speaker set for
+    /// the ambisonic decode and the dense grid for the strongest paths.
+    pub fn builtin() -> Self {
+        Self::from_bytes(Some(HRIR_SPEAKERS), Some(HRIR_GRID))
+    }
+
+    /// From HRIR data: `speakers` = a virtual-speaker set (as
+    /// `HRIR_SPEAKERS`) for the ambisonic decode, `grid` = a dense
+    /// direction grid (as `HRIR_GRID`) for the strongest paths' own
+    /// convolution. Either may be None.
     pub fn from_bytes(speakers: Option<&[u8]>, grid: Option<&[u8]>) -> Self {
         Self { speakers: speakers.map(Arc::from), grid: grid.map(|g| Arc::new(HrirGrid::from_bytes(g))) }
     }

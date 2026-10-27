@@ -2187,8 +2187,8 @@ async function startAudio() {
     await Promise.all([
     fetchBuf('omg_web.wasm'),
     fetchBuf('omg_web.wasm'),
-    fetchBuf('../assets/hrir_grid.bin'),
-    fetchBuf('../assets/hrir_dodeca20.bin'),
+    fetchBuf('../../crates/omg-audio/hrir/hrir_grid.bin'),
+    fetchBuf('../../crates/omg-audio/hrir/hrir_dodeca20.bin'),
     fetchBuf('../assets/aria48.ogg'),
     fetchBuf('../assets/alice48.ogg'),
     fetchBuf('../assets/club48.ogg'),

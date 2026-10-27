@@ -1355,8 +1355,26 @@ impl Tracer {
                     origin = p + dir * (2.0 * EPS);
                     continue; // straight on; `specular` unchanged
                 }
+                let before = thr.iter().fold(0.0f32, |a, &b| a.max(b));
                 for b in 0..NBANDS {
                     thr[b] *= keep[b] / (1.0 - pt);
+                }
+                if v4 && hi == u32::MAX && length > EARLY_S * SPEED_OF_SOUND {
+                    // v4's late rays past the early window: Russian roulette ∝
+                    // amplitude — survive with √(what this bounce kept), the
+                    // survivor carries 1 / that. Unbiased; the rays alive (and
+                    // the work) fall with the amplitude, not with time, so a
+                    // ringing stone room no longer walks every ray to the
+                    // window's end. Inside the early window every ray goes on:
+                    // what the taps are estimated from keeps its samples
+                    let after = thr.iter().fold(0.0f32, |a, &b| a.max(b));
+                    let p = if before > 0.0 { (after / before).sqrt().min(1.0) } else { 0.0 };
+                    if self.rng.next_f32() >= p {
+                        break;
+                    }
+                    for t in &mut thr {
+                        *t /= p;
+                    }
                 }
                 if thr.iter().all(|&e| e < LATE_FLOOR) {
                     break;

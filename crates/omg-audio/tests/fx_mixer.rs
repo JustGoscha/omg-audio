@@ -143,12 +143,10 @@ fn clap_after_silence(hrir: Hrir, rerank: bool) -> (f32, f32) {
 
 #[test]
 fn a_clap_on_a_silent_source_is_not_faded_in() {
-    let asset = |f: &str| std::fs::read(format!("{}/../../assets/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
-    let (grid, speakers) = (asset("hrir_grid.bin"), asset("hrir_dodeca20.bin"));
     for (name, hrir, rerank) in [
         ("no hrir", Hrir::none(), false),
-        ("hrir", Hrir::from_bytes(Some(&speakers), Some(&grid)), false),
-        ("hrir, re-ranked mid-clap", Hrir::from_bytes(Some(&speakers), Some(&grid)), true),
+        ("hrir", Hrir::builtin(), false),
+        ("hrir, re-ranked mid-clap", Hrir::builtin(), true),
     ] {
         let (first, second) = clap_after_silence(hrir, rerank);
         let db = 20.0 * (first / second).log10();

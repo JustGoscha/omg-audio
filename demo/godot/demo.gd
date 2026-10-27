@@ -103,6 +103,9 @@ func _ready() -> void:
 	# renderer for the GPU (measured on an M1 Max: 60–105 fps on the CPU
 	# walk vs 15–100 with the GPU walk). `-- --gpu` switches it on.
 	world.use_gpu = "--gpu" in OS.get_cmdline_user_args()
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--gpu-budget="):
+			world.gpu_budget = float(a.trim_prefix("--gpu-budget="))
 	world.quality = quality
 	add_child(world)
 	var g := world.rebuild_geometry()
@@ -147,7 +150,9 @@ func _print_fps() -> void:
 	if loading:
 		await loaded
 	player.set_physics_process(false)
-	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED) # measure headroom
+	var vsync := "--vsync" in OS.get_cmdline_user_args()
+	if not vsync:
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED) # measure headroom
 	for i in 60:
 		await get_tree().process_frame
 	var res := []
@@ -159,21 +164,24 @@ func _print_fps() -> void:
 		var t0 := Time.get_ticks_usec()
 		var frames := 0
 		var worst := 0.0
+		var late := 0 # frames over a 60 Hz frame (16.7 ms + 2 ms slack)
 		var last := t0
 		while Time.get_ticks_usec() - t0 < 5_000_000:
 			player.rotation.y += 0.004
 			await get_tree().process_frame
 			var now := Time.get_ticks_usec()
 			worst = maxf(worst, (now - last) / 1000.0)
+			if now - last > 18_700:
+				late += 1
 			last = now
 			frames += 1
 		var secs := (Time.get_ticks_usec() - t0) / 1e6
-		res.append("%s: %.0f fps avg, worst frame %.1f ms" % [spot[0], frames / secs, worst])
+		res.append("%s: %.0f fps avg, worst frame %.1f ms, %d of %d frames over 18.7 ms" % [spot[0], frames / secs, worst, late, frames])
 		for a in OS.get_cmdline_user_args():
 			if a.begins_with("--fps-shot="): # what the window showed
 				get_viewport().get_texture().get_image().save_png(a.trim_prefix("--fps-shot=") + "_%s.png" % spot[0].replace(" ", "_"))
-	print("FPS (%s graphics, window %s px, 3D rendered at %s, screen scale %.1f, vsync off): %s" % ["fine" if fine else "pixel %dp" % pixel_h,
-		DisplayServer.window_get_size(), view.size, DisplayServer.screen_get_scale(), " · ".join(res)])
+	print("FPS (%s graphics, window %s px, 3D rendered at %s, screen scale %.1f, vsync %s): %s" % ["fine" if fine else "pixel %dp" % pixel_h,
+		DisplayServer.window_get_size(), view.size, DisplayServer.screen_get_scale(), "on" if vsync else "off", " · ".join(res)])
 	print("stats: ", world.stats())
 	get_tree().quit()
 

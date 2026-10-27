@@ -1,14 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
+    # the engine
     "crates/omg-core",
     "crates/omg-dsp",
-    "crates/omg-scene",
-    "crates/omg-app",
-    "crates/omg-web",
-    "crates/omg-godot",
     "crates/omg-gpu",
     "crates/omg-audio",
+    "crates/omg-godot",
+    # the demos: the town's layout, the offline renderer, the web demo
+    "demo/scene",
+    "demo/app",
+    "demo/web/wasm",
 ]
 
 [profile.release]

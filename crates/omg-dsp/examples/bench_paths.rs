@@ -38,7 +38,7 @@ fn scene(v: u64, paths: usize, t: f32) -> ParamBlock {
 fn main() {
     let paths: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(96);
     let grid = (std::env::args().nth(2).as_deref() == Some("points"))
-        .then(|| std::sync::Arc::new(omg_dsp::hrtf::HrirGrid::load("assets/hrir_grid.bin").expect("assets/hrir_grid.bin")));
+        .then(|| std::sync::Arc::new(omg_dsp::hrtf::HrirGrid::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../omg-audio/hrir/hrir_grid.bin")).expect("assets/hrir_grid.bin")));
     let noise: Vec<f32> =
         (0..48_000u32).map(|i| ((i.wrapping_mul(2654435761) >> 8) as f32 / 8388608.0 - 1.0) * 0.2).collect();
     let mut log = PlayLog::new();

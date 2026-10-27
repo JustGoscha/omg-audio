@@ -84,6 +84,8 @@ func _ready() -> void:
 	var web := OS.has_feature("web")
 	_row(v, "compute", _choice_box("compute", ["cpu", "gpu"], 1 if world.use_gpu else 0, func(i: int) -> void:
 		world.use_gpu = i == 1, [false, web]))
+	_value_slider(v, "gpu share", 5, 100, roundi(world.gpu_budget * 100.0), "%d %% of the GPU", func(x: float) -> void:
+		world.gpu_budget = x / 100.0)
 	_row(v, "diffraction", _choice_box("diffraction", ["on", "off"], 0 if world.diffraction else 1, func(i: int) -> void:
 		world.diffraction = i == 0))
 	_row(v, "render budget", _choice_box("budget", ["auto", "1", "2", "3", "4", "5"], 0, func(i: int) -> void:
@@ -348,3 +350,27 @@ func _slider(v: VBoxContainer, lever: String, name: String, lo: int, hi: int, lo
 	h.add_child(val)
 	v.add_child(h)
 	sliders[lever] = [s, val]
+
+# A plain value slider: `fmt` shows the value, `on` takes it.
+func _value_slider(v: VBoxContainer, name: String, lo: float, hi: float, at: float, fmt: String, on: Callable) -> void:
+	var h := HBoxContainer.new()
+	var l := _label(name, TEXT, INK)
+	l.custom_minimum_size = Vector2(NAME_W, 0)
+	h.add_child(l)
+	var s := HSlider.new()
+	s.min_value = lo
+	s.max_value = hi
+	s.step = 1
+	s.value = at
+	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	s.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	s.custom_minimum_size = Vector2(0, 40)
+	var val := _label(fmt % at, SMALL, DIM)
+	val.custom_minimum_size = Vector2(200, 0)
+	val.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	s.value_changed.connect(func(x: float) -> void:
+		on.call(x)
+		val.text = fmt % x)
+	h.add_child(s)
+	h.add_child(val)
+	v.add_child(h)

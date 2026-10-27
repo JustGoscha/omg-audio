@@ -2,7 +2,7 @@
 """Synthesize a house loop (CC0 by construction) with heavy sub content —
 the club-transmission demo needs guaranteed bass. Pure stdlib.
 
-Usage: make_club_track.py assets/club48.wav [seconds]
+Usage: make_club_track.py demo/assets/club48.wav [seconds]
 """
 import math
 import random

@@ -39,8 +39,8 @@ RUSTFLAGS="-C link-args=-pthread -C target-feature=+atomics,+bulk-memory,+mutabl
 -Z default-visibility=hidden -Z link-native-libraries=no" \
 cargo +nightly build -Zbuild-std=std,panic_abort --target wasm32-unknown-emscripten \
   -p omg-godot --release
-mkdir -p godot/bin
-cp target/wasm32-unknown-emscripten/release/omg_godot.wasm godot/bin/
+mkdir -p demo/godot/bin
+cp target/wasm32-unknown-emscripten/release/omg_godot.wasm demo/demo/godot/bin/
 
 # 3. the assets, into the project for the export (natively the demo reads
 # them from ../assets)
@@ -49,8 +49,8 @@ sh tools/pack_godot_assets.sh
 # 4. import, export
 rm -rf godot-web
 mkdir -p godot-web
-"$GODOT" --headless --path godot --import >/dev/null 2>&1 || true
-"$GODOT" --headless --path godot --export-release "Web" ../godot-web/index.html
-rm -rf godot/assets
+"$GODOT" --headless --path demo/godot --import >/dev/null 2>&1 || true
+"$GODOT" --headless --path demo/godot --export-release "Web" ../../godot-web/index.html
+rm -rf demo/godot/assets
 du -sh godot-web
 ls -la godot-web

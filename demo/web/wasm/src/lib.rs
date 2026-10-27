@@ -24,6 +24,7 @@ use omg_dsp::{PlayLog, Renderer};
 use omg_scene::world::WorldSim;
 
 mod dense_budget;
+pub mod town;
 use dense_budget::DenseBudget;
 
 const NSRC: usize = 15; // = omg_scene::walkthrough::sources().len()
@@ -2337,7 +2338,7 @@ mod tests {
     #[test]
     fn whisper_is_post_agc() {
         let _g = eng_lock();
-        let spk = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/hrir_dodeca20.bin"))
+        let spk = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../crates/omg-audio/hrir/hrir_dodeca20.bin"))
             .expect("speaker HRIRs");
         let run = |whisper: bool| {
             eng_init(SR);

@@ -22,6 +22,12 @@ pub trait V3Walker: Send {
     fn last_ms(&self) -> f32 {
         0.0
     }
+
+    /// The longest single dispatch of the last walk, ms (a sliced walk is
+    /// several; stats only).
+    fn last_max_ms(&self) -> f32 {
+        self.last_ms()
+    }
 }
 
 /// One v3 tick: through `walker` when there is one, else (or when it

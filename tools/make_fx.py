@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Synthesize FX (CC0 by construction): whistle, thump, boom, clap.
-Pure stdlib. Usage: make_fx.py assets/  (then encode, e.g.
+Pure stdlib. Usage: make_fx.py demo/assets/  (then encode, e.g.
 `ffmpeg -i fx_clap.wav -c:a flac fx_clap.ogg`)
 """
 import math

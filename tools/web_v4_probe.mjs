@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const wasmBytes = readFileSync(join(root, 'web/omg_web.wasm'));
+const wasmBytes = readFileSync(join(root, 'demo/web/omg_web.wasm'));
 const FS = 48000;
 const SECS = 8;
 const VOICE = 1; // the narrator's source index
@@ -28,8 +28,8 @@ async function run(mode) {
     new Uint8Array(eng.memory.buffer, ptr, bytes.byteLength).set(bytes);
     doneFn();
   };
-  put(readFileSync(join(root, 'assets/hrir_grid.bin')), eng.eng_hrir_grid_alloc, eng.eng_hrir_grid_done);
-  put(readFileSync(join(root, 'assets/hrir_dodeca20.bin')), eng.eng_hrir_speakers_alloc, eng.eng_hrir_speakers_done);
+  put(readFileSync(join(root, 'crates/omg-audio/hrir/hrir_grid.bin')), eng.eng_hrir_grid_alloc, eng.eng_hrir_grid_done);
+  put(readFileSync(join(root, 'crates/omg-audio/hrir/hrir_dodeca20.bin')), eng.eng_hrir_speakers_alloc, eng.eng_hrir_speakers_done);
   const nsrc = sim.sim_nsrc ? 0 : 0;
   // every source silent but the voice: a 3 ms click every 2 s
   for (let i = 0; i < 15; i++) {

@@ -256,9 +256,10 @@ fn main() {
                 // folded a tick later. Offline renders tick back to back
                 // (no 50 ms for the GPU to hide in), so they walk
                 // synchronously — every tick gets its own walk.
-                if let Some(mut v3) = omg_gpu::GpuV3Walker::new(&mesh) {
-                    v3.sync = std::env::args().any(|a| a == "--render");
-                    let mode = if v3.sync { "sync" } else { "async" };
+                let sync = std::env::args().any(|a| a == "--render");
+                let v3 = if sync { omg_gpu::GpuV3Walker::new(&mesh) } else { omg_gpu::GpuV3Walker::live(&mesh, 0.5) };
+                if let Some(v3) = v3 {
+                    let mode = if sync { "sync" } else { "async" };
                     omg_scene::v3walk::set_v3_walker(Box::new(v3));
                     println!("engine v3 walk: GPU (wgpu K5, {mode}, 8x rays)");
                 }
@@ -283,9 +284,9 @@ fn main() {
 
     match (render_path, walk) {
         (Some(path), true) => {
-            let music = arg_value(&args, "--music").unwrap_or("assets/aria48.wav".into());
-            let voice = arg_value(&args, "--voice").unwrap_or("assets/alice48.wav".into());
-            let club = arg_value(&args, "--club").unwrap_or("assets/club48.wav".into());
+            let music = arg_value(&args, "--music").unwrap_or("demo/assets/aria48.wav".into());
+            let voice = arg_value(&args, "--voice").unwrap_or("demo/assets/alice48.wav".into());
+            let club = arg_value(&args, "--club").unwrap_or("demo/assets/club48.wav".into());
             render_walkthrough(
                 &path,
                 secs_opt.unwrap_or(walkthrough::DURATION_S),
@@ -305,7 +306,7 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
 // ------------------------------------------------------------ output setup
 
 fn make_output(fs: f32) -> OutputStage {
-    let bytes = ["assets/hrir_dodeca20.bin", "assets/hrir_ico12.bin"]
+    let bytes = ["crates/omg-audio/hrir/hrir_dodeca20.bin", "crates/omg-audio/hrir/hrir_ico12.bin"]
         .iter()
         .find_map(|p| std::fs::read(p).ok());
     let out = OutputStage::from_speaker_bytes(bytes.as_deref(), fs);
@@ -321,7 +322,7 @@ fn make_output(fs: f32) -> OutputStage {
 }
 
 fn load_grid() -> Option<Arc<omg_dsp::hrtf::HrirGrid>> {
-    match omg_dsp::hrtf::HrirGrid::load("assets/hrir_grid.bin") {
+    match omg_dsp::hrtf::HrirGrid::load("crates/omg-audio/hrir/hrir_grid.bin") {
         Ok(g) => {
             println!("point render: {} HRIR directions", g.len());
             Some(Arc::new(g))

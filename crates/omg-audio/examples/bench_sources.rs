@@ -107,11 +107,11 @@ fn bench_mixer(n: usize, frames: &[Frame], hrir: &Hrir) -> (f64, usize) {
 }
 
 fn main() {
-    let hrir = Hrir::load_dir("assets");
+    let hrir = Hrir::builtin();
     println!(
         "omg-audio scaling bench — town of 25 buildings ({} tris + ground), HRIR {}",
         town().triangle_count(),
-        if hrir.is_binaural() { "binaural (assets/)" } else { "none (cardioid)" }
+        if hrir.is_binaural() { "binaural (built in)" } else { "none (cardioid)" }
     );
     for n in [64usize, 256] {
         let (cpu_ms, traced, frames) = bench_sim(n, Compute::Cpu).unwrap();

@@ -3,9 +3,9 @@
 *.mp3
 *.mp4
 *.flac
-/web/vendor/three.module.js.map
-/godot/.godot/
-/godot/bin/
-/godot/assets/
+/demo/web/vendor/three.module.js.map
+/demo/godot/.godot/
+/demo/godot/bin/
+/demo/godot/assets/
 /godot-web/
 /dist/

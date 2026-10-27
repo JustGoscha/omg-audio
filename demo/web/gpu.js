@@ -27,13 +27,13 @@ export async function initGpu(wasm) {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) return null;
     device = await adapter.requestDevice();
-    const code = await (await fetch('../crates/omg-gpu/shaders/trace_box.wgsl')).text();
+    const code = await (await fetch('../../crates/omg-gpu/shaders/trace_box.wgsl')).text();
     const module = device.createShaderModule({ code });
     pipeline = device.createComputePipeline({
       layout: 'auto',
       compute: { module, entryPoint: 'trace' },
     });
-    const ptCode = await (await fetch('../crates/omg-gpu/shaders/pt_early.wgsl')).text();
+    const ptCode = await (await fetch('../../crates/omg-gpu/shaders/pt_early.wgsl')).text();
     ptPipeline = device.createComputePipeline({
       layout: 'auto',
       compute: { module: device.createShaderModule({ code: ptCode }), entryPoint: 'discover' },
@@ -50,7 +50,7 @@ export async function initGpu(wasm) {
   let mesh = null;
   try {
     if (wasm.sim_wlate_version && wasm.sim_wlate_version() === 3) {
-      const code = await (await fetch('../crates/omg-gpu/shaders/trace_mesh.wgsl')).text();
+      const code = await (await fetch('../../crates/omg-gpu/shaders/trace_mesh.wgsl')).text();
       const pipe = device.createComputePipeline({
         layout: 'auto',
         compute: { module: device.createShaderModule({ code }), entryPoint: 'trace' },
@@ -78,7 +78,7 @@ export async function initGpu(wasm) {
         panels: device.createBuffer({ size: 64 * 64, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
       };
       // K3: chain discovery over the same BVH buffers
-      const discCode = await (await fetch('../crates/omg-gpu/shaders/discover_mesh.wgsl')).text();
+      const discCode = await (await fetch('../../crates/omg-gpu/shaders/discover_mesh.wgsl')).text();
       mesh.discPipe = device.createComputePipeline({
         layout: 'auto',
         compute: { module: device.createShaderModule({ code: discCode }), entryPoint: 'discover' },
@@ -141,7 +141,7 @@ export async function initGpu(wasm) {
   let v3 = null;
   try {
     if (mesh && wasm.sim_v3_version && wasm.sim_v3_version() === V3_VERSION) {
-      const code = await (await fetch('../crates/omg-gpu/shaders/v3_walk.wgsl')).text();
+      const code = await (await fetch('../../crates/omg-gpu/shaders/v3_walk.wgsl')).text();
       const module = device.createShaderModule({ code });
       const walkPipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'walk' } });
       const resolvePipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'resolve' } });

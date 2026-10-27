@@ -112,6 +112,12 @@ pub struct Config {
     /// v4, building in the tick: a finished kernel at most every this
     /// many ticks (a web host copies each into its audio thread).
     pub kernel_every_ticks: u64,
+    /// `Compute::Gpu`: the share of the GPU's time the walk may take
+    /// (0..1). The game's frames come first: the walk runs as short
+    /// dispatches, paced so its share stays under this — waiting behind
+    /// the game's frames counts against it — and its results arrive
+    /// later when the GPU is busy drawing.
+    pub gpu_budget: f32,
 }
 
 impl Default for Config {
@@ -128,6 +134,7 @@ impl Default for Config {
             max_kernel_s: omg_dsp::dense::MAX_KERNEL_S,
             kernel_step_samples: 4 * 4096,
             kernel_every_ticks: 1,
+            gpu_budget: 0.2,
         }
     }
 }
@@ -321,7 +328,7 @@ impl Simulation {
 
     /// Change quality or compute on the fly (takes effect next tick).
     pub fn set_config(&mut self, cfg: Config) {
-        let rebuild = cfg.compute != self.cfg.compute || cfg.v4 != self.cfg.v4;
+        let rebuild = cfg.compute != self.cfg.compute || cfg.v4 != self.cfg.v4 || cfg.gpu_budget != self.cfg.gpu_budget;
         self.cfg = cfg;
         self.tracer.v4 = cfg.v4;
         if rebuild {
@@ -366,16 +373,23 @@ impl Simulation {
         self.walker.as_ref().map_or(0.0, |w| w.last_ms())
     }
 
+    /// The last GPU walk's longest single dispatch (ms): how long it held
+    /// the GPU at once (a live walk is several short dispatches).
+    pub fn gpu_walk_max_ms(&self) -> f32 {
+        self.walker.as_ref().map_or(0.0, |w| w.last_max_ms())
+    }
+
     fn make_walker(&mut self) {
         self.walker = None;
         if matches!(self.cfg.compute, Compute::Gpu | Compute::GpuSync) {
             #[cfg(feature = "gpu")]
             {
-                let sync = self.cfg.compute == Compute::GpuSync;
-                self.walker = omg_gpu::GpuV3Walker::new(&self.mesh).map(|mut w| {
-                    w.sync = sync;
-                    Box::new(w) as Box<dyn V3Walker>
-                });
+                let w = if self.cfg.compute == Compute::GpuSync {
+                    omg_gpu::GpuV3Walker::new(&self.mesh)
+                } else {
+                    omg_gpu::GpuV3Walker::live(&self.mesh, self.cfg.gpu_budget)
+                };
+                self.walker = w.map(|w| Box::new(w) as Box<dyn V3Walker>);
             }
         }
     }

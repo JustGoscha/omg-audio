@@ -21,16 +21,16 @@ fi
 for t in aarch64-apple-darwin x86_64-apple-darwin; do
   GODOT4_BIN="$GODOT" cargo build -p omg-godot --release --target $t
 done
-mkdir -p godot/bin
-rm -f godot/bin/libomg_godot.dylib # macOS kills a process whose dylib is overwritten in place
+mkdir -p demo/godot/bin
+rm -f demo/godot/bin/libomg_godot.dylib # macOS kills a process whose dylib is overwritten in place
 lipo -create target/aarch64-apple-darwin/release/libomg_godot.dylib \
-  target/x86_64-apple-darwin/release/libomg_godot.dylib -output godot/bin/libomg_godot.dylib
+  target/x86_64-apple-darwin/release/libomg_godot.dylib -output demo/godot/bin/libomg_godot.dylib
 # 2. the assets, into the project for the export (as build_godot_web.sh)
 sh tools/pack_godot_assets.sh
 # 3. import, export (Godot zips the .app)
 mkdir -p dist
 rm -f dist/omg-audio-godot-macos.zip
-"$GODOT" --headless --path godot --import >/dev/null 2>&1 || true
-"$GODOT" --headless --path godot --export-release "macOS" ../dist/omg-audio-godot-macos.zip
-rm -rf godot/assets
+"$GODOT" --headless --path demo/godot --import >/dev/null 2>&1 || true
+"$GODOT" --headless --path demo/godot --export-release "macOS" ../../dist/omg-audio-godot-macos.zip
+rm -rf demo/godot/assets
 ls -la dist/omg-audio-godot-macos.zip

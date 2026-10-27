@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const wasmBytes = readFileSync(join(root, 'web/omg_web.wasm'));
+const wasmBytes = readFileSync(join(root, 'demo/web/omg_web.wasm'));
 
 const FS = 48000;
 
@@ -21,8 +21,8 @@ const put = (bytes, allocFn, doneFn) => {
   new Uint8Array(eng.memory.buffer, ptr, bytes.byteLength).set(bytes);
   doneFn();
 };
-put(readFileSync(join(root, 'assets/hrir_grid.bin')), eng.eng_hrir_grid_alloc, eng.eng_hrir_grid_done);
-put(readFileSync(join(root, 'assets/hrir_dodeca20.bin')), eng.eng_hrir_speakers_alloc, eng.eng_hrir_speakers_done);
+put(readFileSync(join(root, 'crates/omg-audio/hrir/hrir_grid.bin')), eng.eng_hrir_grid_alloc, eng.eng_hrir_grid_done);
+put(readFileSync(join(root, 'crates/omg-audio/hrir/hrir_dodeca20.bin')), eng.eng_hrir_speakers_alloc, eng.eng_hrir_speakers_done);
 
 // Synthetic sources: click train (music slot) + 220 Hz tone bursts (voice).
 for (let i = 0; i < 10; i++) {

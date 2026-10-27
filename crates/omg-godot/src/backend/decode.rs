@@ -219,7 +219,7 @@ mod tests {
     use super::*;
 
     fn asset(p: &str) -> String {
-        format!("{}/../../assets/{p}", env!("CARGO_MANIFEST_DIR"))
+        format!("{}/../../demo/assets/{p}", env!("CARGO_MANIFEST_DIR"))
     }
 
     /// Every container/codec the demo ships decodes to real audio.
