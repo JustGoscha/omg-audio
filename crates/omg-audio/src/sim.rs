@@ -280,6 +280,11 @@ fn v3(p: [f32; 3]) -> Vec3 {
 /// quarter of it still lands after `KERNEL_REFRESH_TICKS`.
 const KERNEL_CHANGE: f32 = 0.15;
 const KERNEL_REFRESH_TICKS: u64 = 40;
+/// A kernel this far from its source's current response (a quarter of the
+/// envelope's energy moved: the listener stepped into another space) is
+/// dropped at once — the block's parametric copy of the current response
+/// plays until the new kernel lands, never the old room's.
+const KERNEL_STALE: f32 = 0.5;
 /// Builds queued on the kernel thread at once.
 const KERNEL_QUEUE: usize = 4;
 
@@ -564,6 +569,15 @@ impl Simulation {
         out
     }
 
+    /// v4: how far a source's kernel is from its current response (the
+    /// envelope's L1 over its total, `DenseResponse::change_from`: 0 the
+    /// same, 2 disjoint); None without a kernel.
+    pub fn kernel_staleness(&self, id: SourceId) -> Option<f32> {
+        let s = self.sources.iter().find(|s| s.id == id)?;
+        let (_, from, _, _) = s.kernel.as_ref()?;
+        Some(from.change_from(s.dense.as_ref()?))
+    }
+
     /// v4: a source's latest dense (scattered) response, unit source
     /// (see `DenseResponse`); None in v3 or before its first trace.
     pub fn dense_response(&self, id: SourceId) -> Option<&DenseResponse> {
@@ -606,6 +620,13 @@ impl Simulation {
         let members = &self.kernel_members;
         for s in &mut self.sources {
             if !members.contains(&s.id) {
+                s.kernel = None;
+            }
+            let stale = match (&s.kernel, &s.dense) {
+                (Some((_, from, _, _)), Some(d)) => from.change_from(d) > KERNEL_STALE,
+                _ => false,
+            };
+            if stale {
                 s.kernel = None;
             }
         }

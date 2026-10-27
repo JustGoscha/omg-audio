@@ -115,7 +115,10 @@ pub extern "C" fn sim_setup(sample_rate: f32) {
         kernel_thread: false,
         max_kernels: 8,
         max_kernel_s: 2.5,
-        kernel_every_ticks: 2,
+        // a 2.5 s kernel in two ticks (~5 ms native a step, a few × that
+        // in wasm): after a move, all eight convolve again within a second
+        kernel_step_samples: 65536,
+        kernel_every_ticks: 1,
         ..Config::default()
     };
     let mut sim = Simulation::new(cfg);
