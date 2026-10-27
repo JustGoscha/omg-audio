@@ -17,7 +17,7 @@
 
 use crate::ambi::{encode_gains, NCH};
 use crate::bands::BandSplit;
-use crate::env::{Environment, RouteSlots, MAX_ENV_ROUTES};
+use crate::env::{Environment, RouteSlots, MAX_ENV_ROUTES, TICK_SMOOTH_S};
 use crate::smooth::Smoothed;
 
 /// Level of a unit-gain inlet. Calibrated so the open sky (four unit
@@ -49,8 +49,8 @@ impl Ambience {
             stereo: false,
             pos: 0,
             user: Smoothed::new(1.0, 0.02, sample_rate),
-            routes: RouteSlots::new(sample_rate, 0.25),
-            seep: core::array::from_fn(|_| Smoothed::new(0.0, 0.4, sample_rate)),
+            routes: RouteSlots::new(sample_rate, TICK_SMOOTH_S),
+            seep: core::array::from_fn(|_| Smoothed::new(0.0, TICK_SMOOTH_S, sample_rate)),
             seep_split: core::array::from_fn(|_| BandSplit::new(sample_rate)),
             // world-anchored diffuse feed directions (N/E/S/W): the SH bus
             // counter-rotates with head turns downstream

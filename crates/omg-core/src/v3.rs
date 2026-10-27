@@ -1005,6 +1005,11 @@ pub struct Tracer {
     /// Averaged over ticks. This replaces the separate dome ray fan.
     sky: Vec<([f32; NBANDS], Vec3)>,
     sky_primed: bool,
+    /// The sky's history test (`fold_sky`): ticks since it last changed,
+    /// the measured scatter of its total, where the listener was.
+    sky_age: u32,
+    sky_var: f32,
+    sky_at: Option<Vec3>,
     /// Where the listener was last tick: crossing a surface since then
     /// (flying through a wall) drops every average — the rays that built
     /// it can't reach the new side.
@@ -1215,6 +1220,9 @@ impl Tracer {
             hits: Vec::new(),
             sky: vec![([0.0; NBANDS], Vec3::new(0.0, 0.0, 0.0)); N_CELLS],
             sky_primed: false,
+            sky_age: 0,
+            sky_var: 0.0,
+            sky_at: None,
             last_listener: None,
             epoch: 0,
             edges: None,
@@ -1266,8 +1274,34 @@ impl Tracer {
     }
 
     /// Step 4b, shared with the externally walked fold: average the sky.
-    fn fold_sky(&mut self, fresh: impl Iterator<Item = ([f32; NBANDS], Vec3)>, budget: Budget) {
-        let a = if self.sky_primed { budget.ema.clamp(0.0, 1.0) } else { 1.0 };
+    /// Step 4b, shared with the externally walked fold: the sky. A running
+    /// mean (moving, at most the budget's EMA) while the fresh escapes
+    /// agree with it — the whole sky's energy within `HISTORY_Z` of its
+    /// measured scatter; beyond it (a door shut, a step indoors) it
+    /// restarts from this tick's escapes at once.
+    fn fold_sky(&mut self, fresh: impl Iterator<Item = ([f32; NBANDS], Vec3)>, budget: Budget, listener: Vec3) {
+        let fresh: Vec<([f32; NBANDS], Vec3)> = fresh.collect();
+        let f_tot: f32 = fresh.iter().map(|c| c.0[1]).sum();
+        let h_tot: f32 = self.sky.iter().map(|c| c.0[1]).sum();
+        let moved = self.sky_at != Some(listener);
+        self.sky_at = Some(listener);
+        let changed = !self.sky_primed
+            || match (f_tot > 0.0, h_tot > 0.0) {
+                (true, true) => {
+                    let d = (f_tot / h_tot).ln();
+                    let c = d.abs() > HISTORY_Z * self.sky_var.sqrt();
+                    self.sky_var += HISTORY_VAR_EMA * (d * d - self.sky_var);
+                    c
+                }
+                (false, false) => false,
+                _ => true,
+            };
+        if changed {
+            self.sky_age = 0;
+        }
+        let floor = if moved { budget.ema.clamp(STILL_ALPHA_FLOOR, 1.0) } else { STILL_ALPHA_FLOOR };
+        let a = (1.0 / (self.sky_age + 1) as f32).max(floor);
+        self.sky_age = self.sky_age.saturating_add(1);
         self.sky_primed = true;
         for (cur, f) in self.sky.iter_mut().zip(fresh) {
             for b in 0..NBANDS {
@@ -1644,7 +1678,7 @@ impl Tracer {
             dbg.sort_by(|a, b| b.1.total_cmp(&a.1));
             self.debug_paths = dbg;
         }
-        self.fold_sky(sky_acc.into_iter(), budget);
+        self.fold_sky(sky_acc.into_iter(), budget, listener);
 
         // 4b. the exact solver's chains: named by a few mirror rays,
         // solved every tick while cached
@@ -1955,6 +1989,7 @@ impl Tracer {
             self.edge_cache.clear();
             self.ear_vis = None;
             self.epoch = self.epoch.wrapping_add(1);
+            self.sky_primed = false;
             for st in self.state.values_mut() {
                 st.restart = true;
             }

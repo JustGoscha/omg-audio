@@ -161,6 +161,11 @@ impl Environment {
 
 use crate::ambi::{encode_gains, NCH};
 use crate::bands::BandSplit;
+/// How the outdoor beds (ambience, rain) follow the environment: the
+/// simulation's tick steps (20 Hz) ironed out, nothing more — a door shut,
+/// a step under a roof is heard at once.
+pub const TICK_SMOOTH_S: f32 = 0.03;
+
 use crate::smooth::Smoothed;
 
 /// Per-route engine state: a fixed bank of slots keyed by the route's

@@ -20,7 +20,7 @@
 
 use crate::ambi::{encode_gains, NCH};
 use crate::bands::BandSplit;
-use crate::env::{Environment, RouteSlots, MAX_ENV_ROUTES, MAX_ENV_WINDOWS};
+use crate::env::{Environment, RouteSlots, MAX_ENV_ROUTES, MAX_ENV_WINDOWS, TICK_SMOOTH_S};
 use crate::smooth::Smoothed;
 use omg_core::rng::Rng;
 
@@ -165,12 +165,12 @@ impl Rain {
             drum_lp: 0.0,
             bank: Vec::new(),
             bank_slot: (BANK_SLOT_S * sample_rate).round() as usize,
-            routes: RouteSlots::new(sample_rate, 0.25),
+            routes: RouteSlots::new(sample_rate, TICK_SMOOTH_S),
             windows: [([0.0; NCH], 0.0); MAX_ENV_WINDOWS],
             n_windows: 0,
-            enclosure: Smoothed::new(0.0, 0.5, sample_rate),
-            roof: Smoothed::new(0.0, 0.5, sample_rate),
-            seep: core::array::from_fn(|_| Smoothed::new(0.0, 0.4, sample_rate)),
+            enclosure: Smoothed::new(0.0, TICK_SMOOTH_S, sample_rate),
+            roof: Smoothed::new(0.0, TICK_SMOOTH_S, sample_rate),
+            seep: core::array::from_fn(|_| Smoothed::new(0.0, TICK_SMOOTH_S, sample_rate)),
             seep_split: BandSplit::new(sample_rate),
             sample_rate,
             up_enc: encode_gains([0.0, 0.0, 1.0]),

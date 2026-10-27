@@ -321,6 +321,44 @@ fn tone(v4: bool) {
     println!("tone 60 m, still: level {mean:.1} dB, wobble ±{sd:.2} dB (range {:.1} dB)", hi - lo);
 }
 
+/// The outdoor bed (an ambience loop) heard inside B by its opening to
+/// the field; a door leaf closes the opening, then opens it: the bed's
+/// level per 100 ms and how long it takes to settle.
+fn bed(v4: bool) {
+    let mut rig = Rig::new(v4);
+    rig.mix.set_ambience(noise(96_000, 11), false); // HEAD
+    let leaf = rig.sim.add_object([13.95, 2.0, 0.0], [14.25, 4.0, 2.5], Material::DOOR);
+    rig.sim.set_object_enabled(leaf, false);
+    rig.sim.set_listener([12.0, 3.0, 1.7], 0.0, 0.0, 0.0);
+    let level = |rig: &mut Rig, secs: f32| -> Vec<f32> {
+        let mut out = Vec::new();
+        for _ in 0..(secs * 10.0) as usize {
+            for _ in 0..10 {
+                rig.block();
+            }
+            out.push(db(rig.mix.take_env_meters().0.rms)); // HEAD
+        }
+        out
+    };
+    let open = level(&mut rig, 3.0);
+    let open = open[20..].iter().sum::<f32>() / 10.0;
+    rig.sim.set_object_enabled(leaf, true);
+    let closing = level(&mut rig, 4.0);
+    let closed = closing[30..].iter().sum::<f32>() / 10.0;
+    rig.sim.set_object_enabled(leaf, false);
+    let opening = level(&mut rig, 4.0);
+    let reopened = opening[30..].iter().sum::<f32>() / 10.0;
+    println!(
+        "outdoor bed: open {open:.1} dB, closed {closed:.1} dB ({:+.1} dB) — settles in {}; reopened {reopened:.1} dB in {}",
+        closed - open,
+        settle(&closing, closed),
+        settle(&opening, reopened)
+    );
+    let show = |v: &[f32]| v.iter().take(15).map(|x| format!("{x:.0}")).collect::<Vec<_>>().join(" ");
+    println!("      closing, per 100 ms: {}", show(&closing));
+    println!("      opening, per 100 ms: {}", show(&opening));
+}
+
 /// A noise source in room A, the listener still in it: the level's
 /// wobble per 100 ms (the trace's noise, tick to tick) and the kernels
 /// rebuilt per second.
@@ -358,6 +396,9 @@ fn main() {
     }
     if only.is_empty() || only == "walk" {
         walk_out(v4);
+    }
+    if only.is_empty() || only == "bed" {
+        bed(v4);
     }
     if only.is_empty() || only == "still" {
         still(v4);

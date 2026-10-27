@@ -379,7 +379,7 @@ impl Tracer {
                     ([e[0], e[1], e[2]], Vec3::new(e[3], e[4], e[5]))
                 })
                 .collect();
-            self.fold_sky(sky.into_iter(), budget);
+            self.fold_sky(sky.into_iter(), budget, listener);
         }
         if self.debug {
             dbg.sort_by(|a, b| b.1.total_cmp(&a.1));
