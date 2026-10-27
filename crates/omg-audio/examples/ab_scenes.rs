@@ -54,8 +54,10 @@ struct Rig {
 
 impl Rig {
     fn new(v4: bool) -> Self {
+        let compute = if std::env::var("GPU").is_ok() { omg_audio::Compute::GpuSync } else { omg_audio::Compute::Cpu };
         let cfg = Config {
             v4,
+            compute,
             kernel_thread: false,
             kernel_step_samples: 1 << 24, // HEAD: whole kernels in the tick, like a fast kernel thread
             ..Config::default()

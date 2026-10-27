@@ -108,7 +108,12 @@ const NO_EDGE: u32 = 0xFFFFFFFFu;
 // dir 3..6, thr 6..9, length 9, refl 10, flags 11, mirror_thr 12,
 // bends 13, bend_from 14..17, last_edge 17, segment 18, rng 19, first
 // direction 20..23, first cell 23, alive 27
-const STATE_WORDS: u32 = 28u;
+// a ray's state, then its split branch's (v3.rs `Branch`: the same 24
+// words at +28, word 55 = pending)
+const STATE_WORDS: u32 = 56u;
+// v4: a ray splits at the first surface passing this share of the energy
+// (v3.rs SPLIT_T2)
+const SPLIT_T2: f32 = 0.02;
 
 struct Job {
     rot0: vec3<f32>,
@@ -909,6 +914,21 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     var bend_from = vec3<f32>(0.0);
     var last_edge = NO_EDGE;
     var cum: array<f32, MAX_SOURCES>;
+    // v4: split once (at a partition); the transmitted branch waits here
+    // while the reflected one walks on (v3.rs `Branch`)
+    var split = false;
+    var has_pending = false;
+    var p_origin = vec3<f32>(0.0);
+    var p_dir = vec3<f32>(0.0);
+    var p_thr = vec3<f32>(0.0);
+    var p_length = 0.0;
+    var p_refl = 0u;
+    var p_flags = 0u;
+    var p_mirror_thr = 0.0;
+    var p_bends = 0u;
+    var p_bend_from = vec3<f32>(0.0);
+    var p_last_edge = NO_EDGE;
+    var p_seg = 0u;
 
     // a sliced ray goes on where the last dispatch left it; a late lane
     // whose ray ended (or was reset) starts a new one, counted; an early
@@ -939,13 +959,31 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
             rng_state = dbg[so + 19u];
             ray_first = vec3<f32>(bitcast<f32>(dbg[so + 20u]), bitcast<f32>(dbg[so + 21u]), bitcast<f32>(dbg[so + 22u]));
             ray_cell = dbg[so + 23u];
+            split = (flags & 32u) != 0u;
+            has_pending = dbg[so + 55u] == 1u;
+            if (has_pending) {
+                let q = so + 28u;
+                p_origin = vec3<f32>(bitcast<f32>(dbg[q]), bitcast<f32>(dbg[q + 1u]), bitcast<f32>(dbg[q + 2u]));
+                p_dir = vec3<f32>(bitcast<f32>(dbg[q + 3u]), bitcast<f32>(dbg[q + 4u]), bitcast<f32>(dbg[q + 5u]));
+                p_thr = vec3<f32>(bitcast<f32>(dbg[q + 6u]), bitcast<f32>(dbg[q + 7u]), bitcast<f32>(dbg[q + 8u]));
+                p_length = bitcast<f32>(dbg[q + 9u]);
+                p_refl = dbg[q + 10u];
+                p_flags = dbg[q + 11u];
+                p_mirror_thr = bitcast<f32>(dbg[q + 12u]);
+                p_bends = dbg[q + 13u];
+                p_bend_from = vec3<f32>(bitcast<f32>(dbg[q + 14u]), bitcast<f32>(dbg[q + 15u]), bitcast<f32>(dbg[q + 16u]));
+                p_last_edge = dbg[q + 17u];
+                p_seg = dbg[q + 18u];
+            }
         } else if (late) {
             add_fx(SKY_WORDS + job.n_sources * SOURCE_WORDS, FX_SCALE);
         }
     }
 
+    var walked = 0u;
+    loop {
     for (var seg = seg0; seg < segments; seg++) {
-        if (sliced && seg >= seg0 + steps) {
+        if (sliced && walked >= steps) {
             // this dispatch's share walked: the lane keeps its ray
             dbg[so] = bitcast<u32>(origin.x);
             dbg[so + 1u] = bitcast<u32>(origin.y);
@@ -959,7 +997,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
             dbg[so + 9u] = bitcast<u32>(length_m);
             dbg[so + 10u] = refl;
             dbg[so + 11u] = select(0u, 1u, specular) | select(0u, 2u, mirror_only) | select(0u, 4u, loud)
-                | select(0u, 8u, bent) | select(0u, 16u, have_bend_from);
+                | select(0u, 8u, bent) | select(0u, 16u, have_bend_from) | select(0u, 32u, split);
             dbg[so + 12u] = bitcast<u32>(mirror_thr);
             dbg[so + 13u] = bends;
             dbg[so + 14u] = bitcast<u32>(bend_from.x);
@@ -973,8 +1011,32 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
             dbg[so + 22u] = bitcast<u32>(ray_first.z);
             dbg[so + 23u] = ray_cell;
             dbg[so + 27u] = 1u;
+            dbg[so + 55u] = select(0u, 1u, has_pending);
+            if (has_pending) {
+                let q = so + 28u;
+                dbg[q] = bitcast<u32>(p_origin.x);
+                dbg[q + 1u] = bitcast<u32>(p_origin.y);
+                dbg[q + 2u] = bitcast<u32>(p_origin.z);
+                dbg[q + 3u] = bitcast<u32>(p_dir.x);
+                dbg[q + 4u] = bitcast<u32>(p_dir.y);
+                dbg[q + 5u] = bitcast<u32>(p_dir.z);
+                dbg[q + 6u] = bitcast<u32>(p_thr.x);
+                dbg[q + 7u] = bitcast<u32>(p_thr.y);
+                dbg[q + 8u] = bitcast<u32>(p_thr.z);
+                dbg[q + 9u] = bitcast<u32>(p_length);
+                dbg[q + 10u] = p_refl;
+                dbg[q + 11u] = p_flags;
+                dbg[q + 12u] = bitcast<u32>(p_mirror_thr);
+                dbg[q + 13u] = p_bends;
+                dbg[q + 14u] = bitcast<u32>(p_bend_from.x);
+                dbg[q + 15u] = bitcast<u32>(p_bend_from.y);
+                dbg[q + 16u] = bitcast<u32>(p_bend_from.z);
+                dbg[q + 17u] = p_last_edge;
+                dbg[q + 18u] = p_seg;
+            }
             return;
         }
+        walked += 1u;
         if (in_earth(origin)) { break; }
         let hit = raycast_world(origin, dir);
         let t_hit = hit.t;
@@ -1114,9 +1176,29 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
             }
         }
 
-        // 4. continue: transmit (importance-floored) or reflect
+        // 4. continue: v4 splits at the first partition passing real
+        // energy (both branches, their exact weights); else transmit
+        // (importance-floored) or reflect
         let p_t = max(max(t2.x, t2.y), t2.z);
-        let pt = select(0.0, min(max(p_t, 0.02), 0.5), p_t > 1e-5);
+        let split_here = job.v4 != 0u && !split && p_t >= SPLIT_T2;
+        if (split_here) {
+            split = true;
+            has_pending = true;
+            p_origin = p + dir * (2.0 * EPS);
+            p_dir = dir;
+            p_thr = thr * t2;
+            p_length = length_m;
+            p_refl = refl;
+            p_mirror_thr = mirror_thr * t2.y;
+            p_flags = select(0u, 1u, specular) | select(0u, 2u, mirror_only)
+                | select(0u, 4u, loud && p_mirror_thr >= COHERENT_FLOOR) | select(0u, 8u, bent)
+                | select(0u, 16u, have_bend_from);
+            p_bends = bends;
+            p_bend_from = bend_from;
+            p_last_edge = last_edge;
+            p_seg = seg + 1u;
+        }
+        let pt = select(select(0.0, min(max(p_t, 0.02), 0.5), p_t > 1e-5), 0.0, split_here);
         if (pt > 0.0 && rand_f32() < pt) {
             thr = thr * t2 / pt;
             mirror_thr = mirror_thr * t2.y;
@@ -1152,8 +1234,30 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
         }
         origin = p + normal * EPS;
     }
+    // the branch ended: the split's transmitted one walks next
+    if (!has_pending) { break; }
+    has_pending = false;
+    origin = p_origin;
+    dir = p_dir;
+    thr = p_thr;
+    length_m = p_length;
+    refl = p_refl;
+    specular = (p_flags & 1u) != 0u;
+    mirror_only = (p_flags & 2u) != 0u;
+    loud = (p_flags & 4u) != 0u;
+    bent = (p_flags & 8u) != 0u;
+    have_bend_from = (p_flags & 16u) != 0u;
+    mirror_thr = p_mirror_thr;
+    bends = p_bends;
+    bend_from = p_bend_from;
+    last_edge = p_last_edge;
+    seg0 = p_seg;
+    n_verts = 1u;
+    push_vert(origin);
+    }
     if (sliced) {
         dbg[so + 27u] = 0u; // ended (a late lane starts a new ray next pass)
+        dbg[so + 55u] = 0u;
     }
 }
 

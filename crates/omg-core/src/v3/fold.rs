@@ -55,7 +55,7 @@
 use super::*;
 
 /// Bump on ANY change to the flat formats above or in v3_walk.wgsl.
-pub const WALK_LAYOUT_VERSION: u32 = 5;
+pub const WALK_LAYOUT_VERSION: u32 = 6;
 /// Direction cells for early binning (and the sky).
 pub const CELLS: usize = N_CELLS;
 /// Early delay bins: the early window over the delay bin width.
@@ -91,6 +91,9 @@ pub const MAX_POCKETS: usize = 8;
 pub const MAX_EDGES: usize = 16384;
 pub const DEBUG_VERTS: usize = 8;
 pub const DEBUG_WORDS: usize = 4 + DEBUG_VERTS * 3;
+/// Words per sliced ray's state in the kernel's `dbg` buffer: the ray's
+/// and its split branch's (v3_walk.wgsl STATE_WORDS).
+pub const STATE_WORDS: usize = 56;
 /// Debug paths a walker needs to return at most (the view's cap).
 pub const DEBUG_KEEP: usize = DEBUG_PATHS;
 

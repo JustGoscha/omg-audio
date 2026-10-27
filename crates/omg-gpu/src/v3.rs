@@ -15,7 +15,7 @@
 use crate::layout::{flatten_mesh, GpuBvhNode};
 use omg_core::mesh::Mesh;
 use omg_core::v3::fold::{
-    decode_debug, output_words, Walk, WalkJob, Walked, DEBUG_WORDS, MAX_EDGES, MAX_PANELS, MAX_POCKETS,
+    decode_debug, output_words, Walk, WalkJob, Walked, DEBUG_WORDS, STATE_WORDS, MAX_EDGES, MAX_PANELS, MAX_POCKETS,
     MAX_SCENE_WORDS, MAX_SOURCES,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -111,8 +111,6 @@ pub const SLICE_STEPS: u32 = 2;
 const MAX_PASSES: u32 = 16;
 /// Bends a ray takes at most (v3_walk.wgsl MAX_BENDS, omg_core::v3).
 const MAX_BENDS: u32 = 3;
-/// Words per pooled late ray in `dbg` (v3_walk.wgsl STATE_WORDS).
-const STATE_WORDS: usize = 28;
 /// Smoothing of the pool's births per walk (≈ 5 walks).
 const BIRTHS_EMA: f32 = 0.2;
 

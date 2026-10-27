@@ -389,7 +389,6 @@ pub extern "C" fn sim_nsrc() -> u32 {
 /// a ray takes (MAX_BENDS).
 const SLICE_STEPS: u32 = 2;
 const MAX_BENDS: u32 = 3;
-const STATE_WORDS: usize = 28;
 const BIRTHS_EMA: f32 = 0.2;
 
 #[derive(Default)]
@@ -537,7 +536,7 @@ pub extern "C" fn sim_v3_take() -> u32 {
     }
     let (_, _, _, births) = b.pool.expect("set above");
     b.reset = fresh;
-    b.dbg_words = state_off + (n_late as usize + n_early) * STATE_WORDS;
+    b.dbg_words = state_off + (n_late as usize + n_early) * walkfmt::STATE_WORDS;
     b.words.clear();
     b.words.extend_from_slice(&job.words);
     b.words[37] = state_off as u32;

@@ -6,7 +6,7 @@
 // frames come first — and hands the result back, folded the tick after.
 // Any failure: the driver reports none and the walk stays on the CPU.
 
-const V3_VERSION = 5; // omg_core::v3::fold::WALK_LAYOUT_VERSION
+const V3_VERSION = 6; // omg_core::v3::fold::WALK_LAYOUT_VERSION
 const V3_SKY = 384;
 const V3_SRC = 17164; // SOURCE_WORDS
 const V3_MAX_SRC = 64;
