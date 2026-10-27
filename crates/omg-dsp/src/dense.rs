@@ -730,7 +730,7 @@ mod tests {
     use super::*;
 
     fn resp(bins: Vec<[f32; 6]>) -> DenseResponse {
-        DenseResponse { bin_s: 0.002, bins }
+        DenseResponse { bin_s: 0.002, bins, ..Default::default() }
     }
 
     /// The convolver equals direct convolution with the kernel's impulse

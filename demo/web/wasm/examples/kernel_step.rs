@@ -12,7 +12,7 @@ fn main() {
             [e, e, e * 0.6, 0.1 * e, 0.0, 0.0]
         })
         .collect();
-    let resp = DenseResponse { bin_s, bins };
+    let resp = DenseResponse { bin_s, bins, ..Default::default() };
     for step in [16384usize, 65536] {
         let mut b = KernelBuilder::new(&resp, 48_000.0, 1.0, 7, 2.5);
         let mut n = 0;

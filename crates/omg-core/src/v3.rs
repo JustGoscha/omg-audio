@@ -127,6 +127,25 @@ pub const MAX_COHERENT_TAPS: usize = 48;
 /// 1/(ticks still + 1), down to this: the estimate converges instead of
 /// flickering; any move restores the budget's EMA.
 const STILL_ALPHA_FLOOR: f32 = 0.02;
+/// v4's history test: a window of the dense response restarts from the
+/// fresh trace when the two differ by more than this many standard errors.
+const HISTORY_Z: f32 = 4.0;
+/// Weight of a tick in a window's measured scatter (`dense_var`).
+const HISTORY_VAR_EMA: f32 = 0.1;
+/// History windows: from the free-field arrival, the first 4 ms, then each
+/// twice as long as the one before (4–8 ms, 8–16 ms, … past 4 s).
+pub const HISTORY_WINDOWS: usize = 12;
+
+fn history_window(bin: usize) -> usize {
+    // in 2 ms units
+    let t = (bin as f32 * DENSE_BIN_S / 0.002) as usize;
+    if t < 2 {
+        0
+    } else {
+        ((usize::BITS - 1 - t.leading_zeros()) as usize).min(HISTORY_WINDOWS - 1)
+    }
+}
+
 /// The dense response's target effective sample count per bin (its
 /// relative noise ~ 1/√32 ≈ 18 %), `smooth_dense`.
 const ESS_TARGET: f64 = 32.0;
@@ -333,6 +352,65 @@ impl Default for Budget {
     }
 }
 
+/// A ray splits at the first surface passing at least this share of the
+/// energy (its loudest band): a door leaf passes ~0.08 at low frequencies,
+/// drywall 0.04, glass more; concrete (0.01) is sampled by the unbiased
+/// draw. Splitting follows both branches with their exact weights — what
+/// leaks through a partition is then estimated from every ray that meets
+/// it, not from the few a draw lets through.
+const SPLIT_T2: f32 = 0.02;
+
+/// One branch of a walked ray (`SPLIT_T2`): where it is, what it
+/// carries, its path's state so far, and the segment it resumes at.
+#[derive(Clone, Copy)]
+struct Branch {
+    origin: Vec3,
+    dir: Vec3,
+    thr: [f32; NBANDS],
+    length: f32,
+    // reflections so far, and whether the last one was specular (only
+    // then do sphere hits count — NEE covered diffuse ones)
+    refl: u32,
+    specular: bool,
+    // every bounce a mirror so far (nothing scattered or bent), and that
+    // mirror chain's own throughput still above the floor (latched: once
+    // quiet, quiet)
+    coherent: bool,
+    loud: bool,
+    mirror_thr: f32,
+    // bent around an edge since the last diffuse bounce, and where the ray
+    // was when it first bent (gating: a bend only adds what the straight
+    // line from there doesn't carry); a ray passes an edge once
+    bent: bool,
+    bends: u32,
+    bend_from: Option<Vec3>,
+    last_edge: Option<usize>,
+    seg0: u32,
+    split: bool,
+}
+
+impl Branch {
+    fn start(origin: Vec3, dir: Vec3) -> Self {
+        Self {
+            origin,
+            dir,
+            thr: [1.0; NBANDS],
+            length: 0.0,
+            refl: 0,
+            specular: false,
+            coherent: true,
+            loud: true,
+            mirror_thr: 1.0,
+            bent: false,
+            bends: 0,
+            bend_from: None,
+            last_edge: None,
+            seg0: 0,
+            split: false,
+        }
+    }
+}
+
 /// Hard cap on late-family segments per ray (the time and energy limits
 /// end it first in any real room).
 const LATE_MAX_SEGMENTS: u32 = 600;
@@ -348,26 +426,61 @@ pub struct DenseResponse {
     pub bin_s: f32,
     /// [E_low, E_mid, E_high, vx, vy, vz] per bin.
     pub bins: Vec<[f32; 6]>,
+    /// Per history window (`HISTORY_WINDOWS`: the first 4 ms from the
+    /// free-field arrival, then each twice as long), the estimate's
+    /// relative standard error (0: exact, or not known).
+    pub noise: [f32; HISTORY_WINDOWS],
 }
 
 impl DenseResponse {
     /// How far `other`'s mid-band envelope is from this one's: L1 over
-    /// the larger total (0 = the same, 2 = disjoint), compared in ~20 ms
-    /// groups — the scale a listener hears a tail change on, where a
-    /// still scene's estimator noise (2 ms bins) averages out but a door
-    /// or a step into another room does not.
+    /// the larger total (0 = the same, 2 = disjoint), per history window
+    /// (the first 4 ms from the free-field arrival, then each twice as
+    /// long), counting only the windows that differ beyond the two
+    /// estimates' noise (`HISTORY_Z` standard errors, as the history test).
     pub fn change_from(&self, other: &DenseResponse) -> f32 {
-        let g = ((0.02 / self.bin_s.max(1e-6)).round() as usize).max(1);
-        let n = self.bins.len().max(other.bins.len()).div_ceil(g);
-        let sum = |d: &DenseResponse, k: usize| -> f32 { d.bins.iter().skip(k * g).take(g).map(|v| v[1]).sum() };
-        let (mut diff, mut ta, mut tb) = (0.0f32, 0.0f32, 0.0f32);
-        for k in 0..n {
-            let (x, y) = (sum(self, k), sum(other, k));
-            diff += (x - y).abs();
-            ta += x;
-            tb += y;
+        self.compare(other, true)
+    }
+
+    /// `change_from` counting every window's difference, noise and all
+    /// (what a crossfaded rebuild follows: it costs work, never a jump).
+    pub fn difference_from(&self, other: &DenseResponse) -> f32 {
+        self.compare(other, false)
+    }
+
+    fn compare(&self, other: &DenseResponse, significant: bool) -> f32 {
+        let mut a = [0.0f32; HISTORY_WINDOWS];
+        let mut b = [0.0f32; HISTORY_WINDOWS];
+        let at = |d: &DenseResponse, i: usize| history_window((i as f32 * d.bin_s / DENSE_BIN_S) as usize);
+        for (i, v) in self.bins.iter().enumerate() {
+            a[at(self, i)] += v[1];
         }
-        diff / ta.max(tb).max(1e-30)
+        for (i, v) in other.bins.iter().enumerate() {
+            b[at(other, i)] += v[1];
+        }
+        let diff: f32 = (0..HISTORY_WINDOWS)
+            .map(|w| {
+                let (x, y) = (a[w], b[w]);
+                if !significant {
+                    return (x - y).abs();
+                }
+                if x <= 0.0 && y <= 0.0 {
+                    return 0.0;
+                }
+                if x <= 0.0 || y <= 0.0 {
+                    // there in one, not in the other: real if the one is sure
+                    let (v, n) = if x > 0.0 { (x, self.noise[w]) } else { (y, other.noise[w]) };
+                    return if n * HISTORY_Z < 1.0 { v } else { 0.0 };
+                }
+                let se = (self.noise[w] * self.noise[w] + other.noise[w] * other.noise[w]).sqrt();
+                if (x / y).ln().abs() > HISTORY_Z * se {
+                    (x - y).abs()
+                } else {
+                    0.0
+                }
+            })
+            .sum();
+        diff / a.iter().sum::<f32>().max(b.iter().sum::<f32>()).max(1e-30)
     }
 
     /// Reverberation time per band (s), as measured from an impulse
@@ -491,11 +604,20 @@ struct SourceState {
     /// a 7th channel: Σ of the contributions' squared mid energies (their
     /// effective number, `ESS_TARGET`).
     dense: Vec<[f32; 7]>,
-    /// v4: the dense average's last weight (how many ticks it spans).
-    dense_alpha: f32,
-    /// v4: ticks with listener and source unmoved, and where they were.
-    still: u32,
+    /// v4: per history window (`history_window`), the ticks since the
+    /// window last changed (its running mean's count) and how many ticks
+    /// its average spans now (its effective sample count's multiplier).
+    dense_age: [u32; HISTORY_WINDOWS],
+    dense_ticks: [f32; HISTORY_WINDOWS],
+    /// v4: per history window, the fresh trace's measured scatter around
+    /// the mean (variance of ln fresh/mean, tick to tick): the noise the
+    /// effective sample count misses (rare strong paths, one ray's many
+    /// correlated contributions).
+    dense_var: [f32; HISTORY_WINDOWS],
+    /// v4: where listener and source were last tick.
     at: Option<(Vec3, Vec3)>,
+    /// v4: the world changed — the next fresh trace replaces the response.
+    restart: bool,
 }
 
 /// The diffuse field's mid-band energy in one echo slot at `rel`: the
@@ -592,60 +714,80 @@ impl SourceState {
         self.echo_on = groups.into_iter().map(|g| g.2).collect();
     }
 
-    /// v4's step 5a: average one tick in. Moving, the budget's EMA (the
-    /// dense response — fewer samples per bin — its slower late EMA);
-    /// standing still (listener and source where they were), a running
-    /// mean that converges instead of flickering.
+    /// v4's step 5a: one tick in. The solved chains are exact: this
+    /// tick's energies as they are. The dense response is a running mean
+    /// per history window only while the fresh trace agrees with it — a
+    /// window whose fresh energy lies more than `HISTORY_Z` standard
+    /// errors from its mean (both estimates' noise, from their effective
+    /// sample counts) has changed, and restarts from the fresh trace at
+    /// once: a door, a step into another space, a moved source are heard
+    /// the tick they happen; a still scene's noise still averages out.
+    /// Moving, a window's mean spans at most the budget's late EMA.
     fn fold_v4(&mut self, acc: Acc, budget: Budget, listener: Vec3, source: Vec3) {
         let first = self.echo.is_none();
-        self.still = if self.at == Some((listener, source)) { self.still + 1 } else { 0 };
+        let world_changed = std::mem::take(&mut self.restart);
+        let moved = self.at != Some((listener, source));
         self.at = Some((listener, source));
-        let settle = |a: f32| {
-            if first {
-                1.0
-            } else if self.still > 0 {
-                (1.0 / (self.still + 1) as f32).max(STILL_ALPHA_FLOOR).min(a)
-            } else {
-                a
-            }
-        };
-        let alpha = settle(budget.ema.clamp(0.0, 1.0));
-        let alpha_dense = settle(budget.late_ema.clamp(0.0, 1.0));
-        // coherent arrivals (solved chains)
-        let mut keys: Vec<u32> = self.early.keys().copied().collect();
-        for k in acc.early.keys() {
-            if !self.early.contains_key(k) {
-                keys.push(*k);
-            }
-        }
-        for k in keys {
-            let f = acc.early.get(&k).copied().unwrap_or_default();
-            let cur = self.early.entry(k).or_default();
-            for b in 0..NBANDS {
-                cur.e[b] += alpha * (f.e[b] - cur.e[b]);
-            }
-            cur.ed += alpha * (f.ed - cur.ed);
-            cur.dir = cur.dir + (f.dir - cur.dir) * alpha;
-            if f.e[1] > 0.0 {
-                cur.last = f.last;
-            }
-        }
-        self.early.retain(|_, b| b.e.iter().any(|&e| e > 1e-12));
-        // the dense response
+        // coherent arrivals (solved chains): exact, no history
+        self.early = acc.early.into_iter().filter(|(_, b)| b.e.iter().any(|&e| e > 1e-12)).collect();
+        // the dense response, window by window
         let n = self.dense.len().max(acc.dense.len());
         self.dense.resize(n, [0.0; 7]);
+        let mut sums = [[0.0f64; 4]; HISTORY_WINDOWS]; // fresh Σe, Σe², history Σe, Σe²
+        for i in 0..n {
+            let w = history_window(i);
+            let f = acc.dense.get(i).copied().unwrap_or([0.0; 7]);
+            let h = self.dense[i];
+            sums[w][0] += f[1] as f64;
+            sums[w][1] += f[6] as f64;
+            sums[w][2] += h[1] as f64;
+            sums[w][3] += h[6] as f64;
+        }
+        let floor = if moved { budget.late_ema.clamp(STILL_ALPHA_FLOOR, 1.0) } else { STILL_ALPHA_FLOOR };
+        let mut alpha = [1.0f32; HISTORY_WINDOWS];
+        for w in 0..HISTORY_WINDOWS {
+            let [fe, fq, he, hq] = sums[w];
+            let n_f = if fq > 0.0 { fe * fe / fq } else { 0.0 };
+            let n_h = if hq > 0.0 { he * he / hq * self.dense_ticks[w] as f64 } else { 0.0 };
+            // the scatter expected of the fresh trace around the mean: its
+            // effective sample counts', or as measured, whichever is wider
+            let var = (1.0 / n_f.max(1.0) + 1.0 / n_h.max(1.0)).max(self.dense_var[w] as f64);
+            let dev = if fe > 0.0 && he > 0.0 { (fe / he).ln() } else { 0.0 };
+            let changed = first
+                || world_changed
+                || if fe > 0.0 && he > 0.0 {
+                    dev.abs() > HISTORY_Z as f64 * var.sqrt()
+                } else if he > 0.0 {
+                    // nothing where the mean expects contributions
+                    n_h / self.dense_ticks[w].max(1.0) as f64 > HISTORY_Z as f64
+                } else {
+                    // contributions where the mean has none
+                    n_f > HISTORY_Z as f64
+                };
+            if !first && !world_changed && fe > 0.0 && he > 0.0 {
+                self.dense_var[w] += HISTORY_VAR_EMA * (dev * dev) as f32 - HISTORY_VAR_EMA * self.dense_var[w];
+            }
+            if changed {
+                self.dense_age[w] = 0;
+            }
+            let run = 1.0 / (self.dense_age[w] + 1) as f32;
+            alpha[w] = run.max(floor);
+            self.dense_ticks[w] = if alpha[w] > run { (2.0 - alpha[w]) / alpha[w] } else { (self.dense_age[w] + 1) as f32 };
+            self.dense_age[w] = self.dense_age[w].saturating_add(1);
+        }
         for (i, cur) in self.dense.iter_mut().enumerate() {
+            let a = alpha[history_window(i)];
             let f = acc.dense.get(i).copied().unwrap_or([0.0; 7]);
             for c in 0..7 {
-                cur[c] += alpha_dense * (f[c] - cur[c]);
+                cur[c] += a * (f[c] - cur[c]);
             }
         }
-        self.dense_alpha = alpha_dense;
         while self.dense.last().is_some_and(|b| b[1] <= 1e-15 && b[0] <= 1e-15 && b[2] <= 1e-15) {
             self.dense.pop();
         }
+        let a_echo = alpha.iter().cloned().fold(0.0f32, f32::max);
         match &mut self.echo {
-            Some(e) => e.ema(&acc.echo, alpha_dense),
+            Some(e) => e.ema(&acc.echo, a_echo),
             None => self.echo = Some(acc.echo),
         }
     }
@@ -666,7 +808,7 @@ impl SourceState {
             taps.push(t);
         }
         taps.append(edge_taps);
-        let mut dense = smooth_dense(&self.dense, self.dense_alpha);
+        let mut dense = smooth_dense(&self.dense, &self.dense_ticks);
         let span = (DISTINCT_SPAN_S / DENSE_BIN_S).ceil() as usize;
         let around = |dense: &[[f32; 6]], i: usize| -> f32 {
             dense.iter().skip(i.saturating_sub(span)).take(2 * span + 1).map(|d| d[1]).sum()
@@ -719,7 +861,23 @@ impl SourceState {
         let vl = v.length();
         let late_dir = if vl > 1e-12 { [v.x / vl, v.y / vl, v.z / vl] } else { [0.0, 0.0, 1.0] };
         let aniso = if e > 0.0 { (vl / e).min(1.0) } else { 0.0 };
-        SourceField { taps, dense: Some(DenseResponse { bin_s: DENSE_BIN_S, bins: dense }), reverb, late_dir, aniso, reflected }
+        // each window's standard error: the per-tick scatter (the effective
+        // sample count's, or as measured) over the ticks averaged
+        let mut sums = [[0.0f64; 2]; HISTORY_WINDOWS];
+        for (i, d) in self.dense.iter().enumerate() {
+            let w = history_window(i);
+            sums[w][0] += d[1] as f64;
+            sums[w][1] += d[6] as f64;
+        }
+        let noise: [f32; HISTORY_WINDOWS] = core::array::from_fn(|w| {
+            let [e, q] = sums[w];
+            if e <= 0.0 {
+                return 0.0;
+            }
+            let per_tick = (q / (e * e)).max(self.dense_var[w] as f64);
+            (per_tick / self.dense_ticks[w].max(1.0) as f64).sqrt() as f32
+        });
+        SourceField { taps, dense: Some(DenseResponse { bin_s: DENSE_BIN_S, bins: dense, noise }), reverb, late_dir, aniso, reflected }
     }
 
     /// Step 5b: this source's field from the smoothed state.
@@ -1017,10 +1175,7 @@ impl Tracer {
             // the bends, through the points the last search found
             if let Some((_, _, _, cached, points)) = self.edge_cache.get(&s.id) {
                 for (tap, p) in cached.iter().zip(points) {
-                    let (a, b) = (*p - listener, s.pos - *p);
-                    let la = a.length().max(1e-6);
-                    let dir = a * (1.0 / la);
-                    taps.push(Tap { delay_s: (la + b.length()) / SPEED_OF_SOUND, dir: [dir.x, dir.y, dir.z], ..*tap });
+                    taps.push(retimed(tap, *p, listener, s.pos));
                 }
             }
             // the mirror chains, re-solved
@@ -1173,6 +1328,7 @@ impl Tracer {
         let solver_owns = |refl: u32, coherent: bool, loud: bool, rel: f32| {
             coherent && loud && refl >= 1 && refl <= MAX_COHERENT_REFL && (v4 || refl > bounces || rel >= EARLY_S)
         };
+        let mut branches: Vec<Branch> = Vec::new();
         for (dirs, lo, hi, segments, nee) in fams {
         if dirs.is_empty() || lo > hi {
             continue;
@@ -1181,33 +1337,34 @@ impl Tracer {
         let counts = |order: u32| order >= lo && order <= hi;
         for &d0 in dirs {
             let first = rot_apply(&rot, d0);
-            let mut origin = listener;
-            let mut dir = first;
-            let mut thr = [1.0f32; NBANDS];
-            let mut length = 0.0f32;
-            // reflections so far, and whether the last one was specular
-            // (only then do sphere hits count — NEE covered diffuse ones)
-            let mut refl = 0u32;
-            let mut specular = false;
-            // every bounce a mirror so far (nothing scattered or bent),
-            // and that mirror chain's own throughput still above the
-            // floor (latched: once quiet, quiet)
-            let mut coherent = true;
-            let mut loud = true;
-            let mut mirror_thr = 1.0f32;
-            // bent around an edge since the last diffuse bounce, and
-            // where the ray was when it first bent (gating: a bend only
-            // adds what the straight line from there doesn't carry)
-            let mut bent = false;
-            let mut bends = 0u32;
-            let mut bend_from: Option<Vec3> = None;
-            // a ray passes an edge once: never bend twice at the same one
-            let mut last_edge: Option<usize> = None;
+            branches.clear();
+            branches.push(Branch::start(listener, first));
+            while let Some(br) = branches.pop() {
+            let Branch {
+                mut origin,
+                mut dir,
+                mut thr,
+                mut length,
+                mut refl,
+                mut specular,
+                mut coherent,
+                mut loud,
+                mut mirror_thr,
+                mut bent,
+                mut bends,
+                mut bend_from,
+                mut last_edge,
+                seg0,
+                mut split,
+            } = br;
             if debug {
                 verts.clear();
                 verts.push(listener);
+                if seg0 > 0 {
+                    verts.push(origin);
+                }
             }
-            for _seg in 0..segments {
+            for seg in seg0..segments {
                 if world.in_earth(origin) {
                     break; // transmitted into solid ground: gone
                 }
@@ -1391,7 +1548,43 @@ impl Tracer {
                 for b in 0..NBANDS {
                     p_t = p_t.max(mat.transmission[b] * mat.transmission[b]);
                 }
-                let pt = if p_t > 1e-5 { p_t.max(0.02).min(0.5) } else { 0.0 };
+                // v4: a partition passing real energy (a door, glass, a
+                // light wall): the ray splits — the transmitted branch goes
+                // on with its exact weight, this one reflects with its own
+                // — once per ray; elsewhere the unbiased draw. (v3 keeps
+                // the draw: its echo selection, a salience test against
+                // the diffuse estimate, was calibrated on it.)
+                let split_here = v4 && !split && p_t >= SPLIT_T2;
+                if split_here {
+                    split = true;
+                    let t_thr: [f32; NBANDS] =
+                        core::array::from_fn(|b| thr[b] * mat.transmission[b] * mat.transmission[b]);
+                    let t_mirror = mirror_thr * mat.transmission[1] * mat.transmission[1];
+                    branches.push(Branch {
+                        origin: p + dir * (2.0 * EPS),
+                        dir,
+                        thr: t_thr,
+                        length,
+                        refl,
+                        specular,
+                        coherent,
+                        loud: loud && t_mirror >= COHERENT_FLOOR,
+                        mirror_thr: t_mirror,
+                        bent,
+                        bends,
+                        bend_from,
+                        last_edge,
+                        seg0: seg + 1,
+                        split: true,
+                    });
+                }
+                let pt = if split_here {
+                    0.0
+                } else if p_t > 1e-5 {
+                    p_t.max(0.02).min(0.5)
+                } else {
+                    0.0
+                };
                 if pt > 0.0 && self.rng.next_f32() < pt {
                     for b in 0..NBANDS {
                         thr[b] *= mat.transmission[b] * mat.transmission[b] / pt;
@@ -1443,6 +1636,7 @@ impl Tracer {
                 }
                 origin = p + normal * EPS;
             }
+            }
         }
         }
 
@@ -1457,18 +1651,7 @@ impl Tracer {
         self.find_chains(world, listener, sources, budget, chain_finders(budget));
         self.solve_chains(world, listener, sources, budget, &mut accs);
 
-        // v4: the world changed (an object moved, a door closed)? Then no
-        // source is standing still in it any more
-        if self.v4 {
-            let sig = panels_sig(world.panels);
-            if sig != self.world_sig {
-                self.world_sig = sig;
-                for st in self.state.values_mut() {
-                    st.still = 0;
-                    st.at = None;
-                }
-            }
-        }
+
 
         // 5. smooth over ticks and build each source's field
         let mut out = Vec::with_capacity(sources.len());
@@ -1759,6 +1942,23 @@ impl Tracer {
             }
         }
         self.last_listener = Some(listener);
+        // the world changed (an object moved, a door closed): every cached
+        // solve is redone now, a walk launched before is dropped, and v4's
+        // responses restart from this tick's trace
+        let sig = panels_sig(world.panels);
+        if sig != self.world_sig {
+            self.world_sig = sig;
+            for c in self.chains.values_mut() {
+                c.solved = None;
+            }
+            self.rejected.clear();
+            self.edge_cache.clear();
+            self.ear_vis = None;
+            self.epoch = self.epoch.wrapping_add(1);
+            for st in self.state.values_mut() {
+                st.restart = true;
+            }
+        }
         self.exact.clear();
         let debug = self.debug;
         // 1. direct: one exact segment per source
@@ -1851,7 +2051,10 @@ impl Tracer {
                         && (*ps - s.pos).length() < EDGE_REUSE_M
                         && tick - t < EDGE_REFRESH_TICKS
                     {
-                        edge_taps[si] = taps.clone();
+                        // the same bends, re-timed for where both ends are
+                        // now (as `exact_taps` does between ticks: a reused
+                        // bend never jumps back to an old delay)
+                        edge_taps[si] = taps.iter().zip(bends).map(|(tap, p)| retimed(tap, *p, listener, s.pos)).collect();
                         if debug {
                             for (tap, p) in taps.iter().zip(bends) {
                                 self.exact.push(ExactPath {
@@ -1964,6 +2167,15 @@ impl Tracer {
     }
 }
 
+/// An edge bend's tap for where listener and source are now: its delay
+/// and arrival direction through the same bend point (its gains as found).
+fn retimed(tap: &Tap, bend: Vec3, listener: Vec3, source: Vec3) -> Tap {
+    let (a, b) = (bend - listener, source - bend);
+    let la = a.length().max(1e-6);
+    let dir = a * (1.0 / la);
+    Tap { delay_s: (la + b.length()) / SPEED_OF_SOUND, dir: [dir.x, dir.y, dir.z], ..*tap }
+}
+
 fn cell_of(key: u32) -> usize {
     ((key - KEY_EARLY_BASE) / 256) as usize % N_CELLS
 }
@@ -2029,13 +2241,12 @@ fn deposit(acc: &mut Acc, cells: &[Vec3], e: [f32; NBANDS], delay: f32, dir: Vec
 /// samples are sparse (late, far), while the well-sampled early part
 /// keeps the full 2 ms. Windows reach back at most a quarter of a bin's
 /// delay (the onset is never smeared).
-fn smooth_dense(d: &[[f32; 7]], alpha: f32) -> Vec<[f32; 6]> {
+fn smooth_dense(d: &[[f32; 7]], ticks: &[f32; HISTORY_WINDOWS]) -> Vec<[f32; 6]> {
     let n = d.len();
     let mut out = vec![[0.0f32; 6]; n];
     if n == 0 {
         return out;
     }
-    let ticks = if alpha > 0.0 { (2.0 - alpha) / alpha } else { 1.0 };
     // prefix sums of every channel
     let mut pre = vec![[0.0f64; 7]; n + 1];
     for i in 0..n {
@@ -2051,7 +2262,7 @@ fn smooth_dense(d: &[[f32; 7]], alpha: f32) -> Vec<[f32; 6]> {
             let (a, b) = (i.saturating_sub(h), (i + h + 1).min(n));
             let w = sum(a, b, 1);
             let q = sum(a, b, 6);
-            let ess = if q > 0.0 { w * w / q * ticks as f64 } else { f64::INFINITY };
+            let ess = if q > 0.0 { w * w / q * ticks[history_window(i)].max(1.0) as f64 } else { f64::INFINITY };
             if ess >= ESS_TARGET || h >= reach {
                 let len = (b - a) as f32;
                 for c in 0..6 {

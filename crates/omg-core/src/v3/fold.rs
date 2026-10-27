@@ -535,7 +535,7 @@ mod tests {
         // every walk lands energy in every early bin; `stale` answers
         // with the previous job's epoch, as a one-tick-late GPU would
         let mut last_epoch = 0u32;
-        let mut walk = |stale: bool| {
+        let walk = |stale: bool| {
             move |job: &WalkJob| {
                 let epoch = if stale { last_epoch } else { job.epoch };
                 last_epoch = job.epoch;

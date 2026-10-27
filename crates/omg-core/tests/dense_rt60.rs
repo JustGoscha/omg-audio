@@ -17,7 +17,7 @@ fn decay(rt: f32, delay: f32) -> DenseResponse {
             [e, e, e * 0.5, 0.0, 0.0, 0.0]
         })
         .collect();
-    DenseResponse { bin_s, bins }
+    DenseResponse { bin_s, bins, ..Default::default() }
 }
 
 #[test]
@@ -40,5 +40,5 @@ fn a_response_that_ended_has_its_own_decay() {
     }
     let got = d.rt60();
     assert!((got[1] - 0.5).abs() < 0.03, "{got:?}");
-    assert_eq!(DenseResponse { bin_s: 0.002, bins: Vec::new() }.rt60(), [0.0; 3]);
+    assert_eq!(DenseResponse { bin_s: 0.002, ..Default::default() }.rt60(), [0.0; 3]);
 }

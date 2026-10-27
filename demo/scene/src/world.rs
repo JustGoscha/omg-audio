@@ -1320,7 +1320,7 @@ impl WorldSim {
             let w = 1.0 / (n_em as f32).sqrt();
             if let Some(d) = &f.dense {
                 let e = 1.0 / n_em as f32;
-                let sum = dense[si].get_or_insert_with(|| omg_core::v3::DenseResponse { bin_s: d.bin_s, bins: Vec::new() });
+                let sum = dense[si].get_or_insert_with(|| omg_core::v3::DenseResponse { bin_s: d.bin_s, ..Default::default() });
                 if sum.bins.len() < d.bins.len() {
                     sum.bins.resize(d.bins.len(), [0.0; 6]);
                 }

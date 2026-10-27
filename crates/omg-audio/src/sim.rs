@@ -283,13 +283,14 @@ fn v3(p: [f32; 3]) -> Vec3 {
     Vec3::new(p[0], p[1], p[2])
 }
 
-/// v4 kernel rebuilds: a dense response whose envelope moved by this
-/// share (L1 of the mid band over its total, ~0.6 dB) is rebuilt; a
-/// quarter of it still lands after `KERNEL_REFRESH_TICKS`.
+/// v4 kernel rebuilds (crossfaded): a dense response whose envelope moved
+/// by this share (`DenseResponse::difference_from`, ~0.6 dB) is rebuilt;
+/// a quarter of it still lands after `KERNEL_REFRESH_TICKS`.
 const KERNEL_CHANGE: f32 = 0.15;
 const KERNEL_REFRESH_TICKS: u64 = 40;
-/// A kernel this far from its source's current response (a quarter of the
-/// envelope's energy moved: the listener stepped into another space) is
+/// A kernel this far from its source's current response beyond the
+/// estimates' noise (`DenseResponse::change_from`: a quarter of the
+/// envelope's energy moved — the listener stepped into another space) is
 /// dropped at once — the block's parametric copy of the current response
 /// plays until the new kernel lands, never the old room's.
 const KERNEL_STALE: f32 = 0.5;
@@ -658,7 +659,7 @@ impl Simulation {
                 None => f32::INFINITY,
                 Some((_, from, g, at)) => {
                     let gain = if *g > 0.0 { (s.gain / g - 1.0).abs() } else { 1.0 };
-                    let c = from.change_from(d).max(gain);
+                    let c = from.difference_from(d).max(gain);
                     // small drifts still land, just later
                     if c > KERNEL_CHANGE || (c > KERNEL_CHANGE / 4.0 && tick > at + KERNEL_REFRESH_TICKS) {
                         c
