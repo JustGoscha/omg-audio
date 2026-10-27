@@ -993,6 +993,52 @@ fn keep_path(list: &mut Vec<(u32, f32, Vec<Vec3>)>, id: u32, e: f32, verts: &[Ve
 }
 
 impl Tracer {
+    /// Between full ticks: the exact paths' taps for where the listener
+    /// and the sources are now, keyed as a full tick keys them — the
+    /// direct path computed afresh, the cached edge bends re-timed through
+    /// their bend points (their gains as the last search found them), every
+    /// cached mirror chain re-solved. Per source, in `sources` order. The
+    /// stochastic walk (the dense response, the reverb) is not touched:
+    /// it changes slowly and follows at the next full tick.
+    pub fn exact_taps(&mut self, world: &World, listener: Vec3, sources: &[Source]) -> Vec<Vec<Tap>> {
+        let mut out: Vec<Vec<Tap>> = Vec::with_capacity(sources.len());
+        for s in sources {
+            let mut taps = Vec::new();
+            // the direct path
+            let to = s.pos - listener;
+            let d = to.length().max(MIN_DIST);
+            let t = world.transmission(listener, s.pos, &mut self.hits);
+            let air = air_attenuation(d);
+            let gains: [f32; NBANDS] = core::array::from_fn(|b| t[b] * air[b] / d);
+            if gains.iter().any(|&g| g > 1e-7) {
+                let dir = to * (1.0 / to.length().max(1e-6));
+                taps.push(Tap { key: KEY_DIRECT, delay_s: d / SPEED_OF_SOUND, dir: [dir.x, dir.y, dir.z], gains });
+            }
+            // the bends, through the points the last search found
+            if let Some((_, _, _, cached, points)) = self.edge_cache.get(&s.id) {
+                for (tap, p) in cached.iter().zip(points) {
+                    let (a, b) = (*p - listener, s.pos - *p);
+                    let la = a.length().max(1e-6);
+                    let dir = a * (1.0 / la);
+                    taps.push(Tap { delay_s: (la + b.length()) / SPEED_OF_SOUND, dir: [dir.x, dir.y, dir.z], ..*tap });
+                }
+            }
+            // the mirror chains, re-solved
+            for (key, c) in self.chains.iter().filter(|(k, _)| k.0 == s.id) {
+                if let Some((e, delay, dir)) = solve_chain(world, &c.planes, listener, s.pos, &mut self.hits) {
+                    taps.push(Tap {
+                        key: KEY_CHAIN_BASE + (key.1 % KEY_CHAIN_SPAN as u64) as u32,
+                        delay_s: delay,
+                        dir: [dir.x, dir.y, dir.z],
+                        gains: core::array::from_fn(|b| e[b].max(0.0).sqrt()),
+                    });
+                }
+            }
+            out.push(taps);
+        }
+        out
+    }
+
     /// The exactly solved paths (with `debug`): the direct paths and edge
     /// bends of the last tick, the mirror chains of the last solve.
     pub fn exact_paths(&self) -> impl Iterator<Item = &ExactPath> {

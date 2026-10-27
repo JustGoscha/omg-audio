@@ -226,6 +226,14 @@ pub struct Simulation {
     listener: Listener,
     listener_time: Option<f64>,
     tick_no: u64,
+    /// Frames out (full ticks and exact ones): their and their blocks'
+    /// versions.
+    frame_no: u64,
+    /// The last full tick's sky and environment (exact frames resend
+    /// them), and where everything was at the last frame.
+    last_sky: Vec<SkyCell>,
+    last_env: omg_dsp::env::Environment,
+    exact_at: Option<(Vec3, Vec<Vec3>)>,
     next_source: u32,
     next_object: u32,
     panels: Vec<(Vec3, Vec3, Material)>,
@@ -312,6 +320,10 @@ impl Simulation {
             listener: Listener::default(),
             listener_time: None,
             tick_no: 0,
+            frame_no: 0,
+            last_sky: Vec::new(),
+            last_env: Default::default(),
+            exact_at: None,
             next_source: 0,
             next_object: 0,
             panels: Vec::new(),
@@ -714,7 +726,10 @@ impl Simulation {
     pub fn tick(&mut self) -> Frame {
         self.tick_no += 1;
         let tick = self.tick_no;
+        self.frame_no += 1;
+        let version = self.frame_no;
         let ear = v3(self.listener.position);
+        self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect()));
 
         self.panels.clear();
         for o in self.objects.iter().filter(|o| o.enabled) {
@@ -770,7 +785,7 @@ impl Simulation {
                 first_traced.push(s.id);
             }
             let g = s.gain;
-            let mut pb = ParamBlock { version: tick, ..Default::default() };
+            let mut pb = ParamBlock { version, ..Default::default() };
             pb.taps.reserve(f.taps.len());
             for t in f.taps {
                 pb.taps.push(Tap { gains: core::array::from_fn(|b| t.gains[b] * g), ..t });
@@ -805,7 +820,7 @@ impl Simulation {
         for s in &mut self.sources {
             if !s.active && (!s.block.taps.is_empty() || s.block.reverb.level[1] > 0.0 || s.block.remote.is_some()) {
                 // silent from now on (the mixer fades it out)
-                s.block = ParamBlock { version: tick, ..Default::default() };
+                s.block = ParamBlock { version, ..Default::default() };
                 s.traced = None;
             }
             if !self.cfg.v4 || !s.active {
@@ -819,8 +834,10 @@ impl Simulation {
 
         let sky: Vec<SkyCell> = self.tracer.sky().into_iter().map(|(dir, energy)| SkyCell { dir, energy }).collect();
         let env = crate::env::environment(&sky, &self.outdoor_context(ear));
+        self.last_sky = sky.clone();
+        self.last_env = env.clone();
         Frame {
-            version: tick,
+            version,
             listener: self.listener,
             time: self.listener_time,
             blocks: self.sources.iter().map(|s| (s.id, s.block.clone())).collect(),
@@ -829,6 +846,69 @@ impl Simulation {
             first_traced,
             env,
         }
+    }
+
+    /// Between full ticks (as often as a host likes — every frame, or
+    /// faster): the exact paths for where the listener and the sources are
+    /// now — the direct path, the edge bends re-timed through their bend
+    /// points, every cached mirror chain re-solved — in the last full
+    /// tick's blocks; the stochastic part (the reverb, the dense response)
+    /// stays the full tick's. Close, moving sounds follow at this rate
+    /// instead of the tick's. None when nothing moved since the last frame.
+    pub fn tick_exact(&mut self) -> Option<Frame> {
+        let ear = v3(self.listener.position);
+        let moved = match &self.exact_at {
+            Some((l, ps)) => {
+                (*l - ear).length() > 1e-4
+                    || ps.len() != self.sources.len()
+                    || self.sources.iter().zip(ps).any(|(s, p)| (s.pos - *p).length() > 1e-4)
+            }
+            None => true,
+        };
+        if !moved || self.frame_no == 0 {
+            return None;
+        }
+        self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect()));
+        self.panels.clear();
+        for o in self.objects.iter().filter(|o| o.enabled) {
+            self.panels.push((o.min, o.max, o.material));
+        }
+        let world = World { grade: self.grade, pockets: &[], ..World::new(&self.mesh, &self.panels) };
+        let idx: Vec<usize> = (0..self.sources.len()).filter(|&i| self.sources[i].active && self.sources[i].traced.is_some()).collect();
+        let srcs: Vec<Source> = idx
+            .iter()
+            .map(|&i| {
+                let s = &self.sources[i];
+                Source { id: s.id.0, pos: s.pos, weight: s.gain * s.gain }
+            })
+            .collect();
+        let taps = self.tracer.exact_taps(&world, ear, &srcs);
+        self.frame_no += 1;
+        let version = self.frame_no;
+        for (k, &i) in idx.iter().enumerate() {
+            let s = &mut self.sources[i];
+            let g = s.gain;
+            let mut changed = false;
+            for t in s.block.taps.iter_mut() {
+                if let Some(n) = taps[k].iter().find(|n| n.key == t.key) {
+                    *t = Tap { gains: core::array::from_fn(|b| n.gains[b] * g), ..*n };
+                    changed = true;
+                }
+            }
+            if changed {
+                s.block.version = version;
+            }
+        }
+        Some(Frame {
+            version,
+            listener: self.listener,
+            time: self.listener_time,
+            blocks: self.sources.iter().map(|s| (s.id, s.block.clone())).collect(),
+            kernels: self.sources.iter().filter_map(|s| s.kernel.as_ref().map(|k| (s.id, k.0.clone()))).collect(),
+            sky: self.last_sky.clone(),
+            first_traced: Vec::new(),
+            env: self.last_env.clone(),
+        })
     }
 
     /// Around the listener, for the outdoor field: a roof probe

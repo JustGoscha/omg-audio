@@ -44,11 +44,16 @@ pub struct EngineConfig {
     pub hrir: Hrir,
     /// Mixer channels preallocated (sources beyond allocate on arrival).
     pub mixer_capacity: usize,
+    /// Exact frames per second between the ticks (0: none): the direct
+    /// paths, edge bends and mirror chains for where everything is now
+    /// (`Simulation::tick_exact`) — moving sounds follow at this rate, the
+    /// reverb at the tick's.
+    pub exact_hz: f32,
 }
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        Self { sim: Config::default(), tick_hz: 20.0, hrir: Hrir::none(), mixer_capacity: 64 }
+        Self { sim: Config::default(), tick_hz: 20.0, hrir: Hrir::none(), mixer_capacity: 64, exact_hz: 120.0 }
     }
 }
 
@@ -137,6 +142,15 @@ struct FrameSlot {
 }
 
 impl FrameSlot {
+    /// Free what the audio side handed back, then make `frame` the latest.
+    fn publish(&self, frame: Box<Frame>) {
+        self.reclaim();
+        let old = self.latest.swap(Box::into_raw(frame), Ordering::AcqRel);
+        if !old.is_null() {
+            drop(unsafe { Box::from_raw(old) }); // never taken: superseded
+        }
+    }
+
     fn reclaim(&self) {
         let p = self.spent.swap(ptr::null_mut(), Ordering::AcqRel);
         if !p.is_null() {
@@ -202,13 +216,14 @@ impl Engine {
         let stats = Arc::new(Stats::default());
         let stop = Arc::new(AtomicBool::new(false));
         let period = Duration::from_secs_f32(1.0 / cfg.tick_hz.clamp(1.0, 200.0));
+        let exact = (cfg.exact_hz > cfg.tick_hz).then(|| Duration::from_secs_f32(1.0 / cfg.exact_hz.min(1000.0)));
         let paths = Arc::new(Mutex::new(Vec::new()));
         let thread = {
             let (slot, stats, stop, sim_cfg) = (slot.clone(), stats.clone(), stop.clone(), cfg.sim);
             let paths = paths.clone();
             std::thread::Builder::new()
                 .name("omg-audio-sim".into())
-                .spawn(move || sim_loop(Simulation::new(Config { sample_rate, ..sim_cfg }), sim_rx, slot, stats, paths, stop, period))
+                .spawn(move || sim_loop(Simulation::new(Config { sample_rate, ..sim_cfg }), sim_rx, slot, stats, paths, stop, period, exact))
                 .expect("spawn the simulation thread")
         };
         let mixer = Mixer::with_capacity(sample_rate, cfg.hrir, cfg.mixer_capacity);
@@ -388,6 +403,25 @@ impl Drop for Engine {
     }
 }
 
+/// One command into the simulation.
+fn handle(sim: &mut Simulation, c: SimCmd) {
+    match c {
+        SimCmd::Geometry(g) => sim.set_geometry(*g),
+        SimCmd::AddSource(id, d) => sim.add_source_as(id, d),
+        SimCmd::SetSource(id, p, a) => sim.set_source(id, p, a),
+        SimCmd::SourceGain(id, g) => sim.set_source_gain(id, g),
+        SimCmd::RemoveSource(id) => sim.remove_source(id),
+        SimCmd::AddObject(id, a, b, m) => sim.add_object_as(id, a, b, m),
+        SimCmd::SetObject(id, a, b) => sim.set_object(id, a, b),
+        SimCmd::ObjectMaterial(id, m) => sim.set_object_material(id, m),
+        SimCmd::ObjectEnabled(id, e) => sim.set_object_enabled(id, e),
+        SimCmd::RemoveObject(id) => sim.remove_object(id),
+        SimCmd::Listener(p, y, pi, r, t) => sim.set_listener_at(p, y, pi, r, t),
+        SimCmd::Config(c) => sim.set_config(c),
+        SimCmd::DebugPaths(on) => sim.set_debug_paths(on),
+    }
+}
+
 fn sim_loop(
     mut sim: Simulation,
     rx: mpsc::Receiver<SimCmd>,
@@ -396,26 +430,13 @@ fn sim_loop(
     paths: Arc<Mutex<Vec<DebugPath>>>,
     stop: Arc<AtomicBool>,
     period: Duration,
+    exact: Option<Duration>,
 ) {
     let mut next = Instant::now();
     let mut held: Vec<SimCmd> = Vec::new();
     while !stop.load(Ordering::Relaxed) {
         for c in held.drain(..).chain(std::iter::from_fn(|| rx.try_recv().ok())) {
-            match c {
-                SimCmd::Geometry(g) => sim.set_geometry(*g),
-                SimCmd::AddSource(id, d) => sim.add_source_as(id, d),
-                SimCmd::SetSource(id, p, a) => sim.set_source(id, p, a),
-                SimCmd::SourceGain(id, g) => sim.set_source_gain(id, g),
-                SimCmd::RemoveSource(id) => sim.remove_source(id),
-                SimCmd::AddObject(id, a, b, m) => sim.add_object_as(id, a, b, m),
-                SimCmd::SetObject(id, a, b) => sim.set_object(id, a, b),
-                SimCmd::ObjectMaterial(id, m) => sim.set_object_material(id, m),
-                SimCmd::ObjectEnabled(id, e) => sim.set_object_enabled(id, e),
-                SimCmd::RemoveObject(id) => sim.remove_object(id),
-                SimCmd::Listener(p, y, pi, r, t) => sim.set_listener_at(p, y, pi, r, t),
-                SimCmd::Config(c) => sim.set_config(c),
-                SimCmd::DebugPaths(on) => sim.set_debug_paths(on),
-            }
+            handle(&mut sim, c);
         }
         let t0 = Instant::now();
         let frame = Box::new(sim.tick());
@@ -425,22 +446,33 @@ fn sim_loop(
         if sim.debug_paths_enabled() {
             *paths.lock().unwrap() = sim.debug_paths();
         }
-        // free what the audio side handed back, then publish
-        slot.reclaim();
-        let old = slot.latest.swap(Box::into_raw(frame), Ordering::AcqRel);
-        if !old.is_null() {
-            drop(unsafe { Box::from_raw(old) }); // never taken: superseded
-        }
+        slot.publish(frame);
         next += period;
-        // wait for the next tick — or not: a source switched on is traced
-        // at once (a thrown ball's sound waits for its first paths)
+        let mut next_exact = Instant::now() + exact.unwrap_or(period);
+        // wait for the next tick — exact frames meanwhile (the direct
+        // paths, bends and mirror chains where everything is now: moving
+        // sounds follow at this rate) — or not: a source switched on is
+        // traced at once (a thrown ball's sound waits for its first paths)
         loop {
             let now = Instant::now();
             if next <= now {
                 next = now; // fell behind: don't try to catch up in a burst
                 break;
             }
-            match rx.recv_timeout(next - now) {
+            if let Some(e) = exact {
+                if now >= next_exact {
+                    for c in held.drain(..) {
+                        handle(&mut sim, c);
+                    }
+                    if let Some(f) = sim.tick_exact() {
+                        slot.publish(Box::new(f));
+                    }
+                    next_exact = Instant::now() + e;
+                    continue;
+                }
+            }
+            let until = if exact.is_some() { next.min(next_exact) } else { next };
+            match rx.recv_timeout(until.saturating_duration_since(now)) {
                 Ok(c) => {
                     let wakes = match &c {
                         SimCmd::AddSource(_, d) => d.active,
@@ -453,7 +485,12 @@ fn sim_loop(
                         break;
                     }
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                // the tick's time (or an exact frame's: the loop decides)
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if exact.is_none() {
+                        break;
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
         }

@@ -34,9 +34,9 @@ var paths_view: DemoPathsView
 var halos := [] # [halo node, lamp position]
 var labels: Array[Label3D] = []
 var rain_name := "off"
-# OmgWorld.quality: 0 low … 3 ultra. Medium on the CPU walk: ~10–40 ms a
-# tick here on its own thread (High peaks over the 50 ms tick in rooms)
-var quality := 1
+# OmgWorld.quality: 0 low … 3 ultra, −1 auto (the engine's tier governor
+# walks it by what a tick costs)
+var quality := -1
 var t_flicker := 0.0
 var env: Environment
 var view: SubViewport
@@ -657,7 +657,7 @@ func _unhandled_input(e: InputEvent) -> void:
 				hud.visible = not hud.visible
 				hint.visible = hud.visible
 			KEY_Q:
-				quality = (quality + 1) % 4 # medium → high → ultra → low
+				quality = (quality + 2) % 5 - 1 # auto → low → medium → high → ultra
 				world.quality = quality
 			KEY_G:
 				fine = not fine
@@ -695,7 +695,7 @@ func _process(dt: float) -> void:
 		var p := player.plan()
 		var room: String = DemoLevel.room_at(p.x, p.y, p.z + 0.5)[0]
 		var s := world.stats()
-		var q: String = ["low", "medium", "high", "ultra"][quality]
+		var q: String = ["low", "medium", "high", "ultra"][world.effective_quality()] + (" auto" if quality < 0 else "")
 		hud.text = "%d fps · %s graphics\n%s · RT60 %.2f s · enclosure %.0f%%\nrain %s · %s%s\nsim %.1f ms (%s, %s) · render load %.0f%%\nbudget %d paths / %d hrtf / %d voices\n%d/%d sources rendering · %d paths · late %d" % [
 			Engine.get_frames_per_second(), "fine" if fine else "pixel %dp" % pixel_h,
 			room, s.get("rt60", 0.0), 100.0 * s.get("enclosure", 0.0), rain_name,

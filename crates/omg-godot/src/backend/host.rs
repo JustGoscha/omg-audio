@@ -248,6 +248,7 @@ impl Host {
             tick_hz: 20.0,
             hrir: Hrir::from_bytes(Some(hrir_speakers), Some(hrir_grid)),
             mixer_capacity: 64,
+            ..EngineConfig::default()
         };
         let (engine, audio) = Engine::new(sample_rate, cfg);
         let (tx, rx) = channel();

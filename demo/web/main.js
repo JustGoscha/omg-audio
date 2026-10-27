@@ -2501,6 +2501,11 @@ async function startAudio() {
     }
   }
   worker.onmessage = (e) => {
+    if (e.data.type === 'exact') {
+      // between the ticks: the exact paths, straight on to the mixer
+      node.port.postMessage({ type: 'frame', frame: e.data.frame, kernels: [], clears: [] }, [e.data.frame]);
+      return;
+    }
     if (e.data.type !== 'tick') return;
     // the frame and the kernels built with it, straight on to the mixer
     node.port.postMessage({

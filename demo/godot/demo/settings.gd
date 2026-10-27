@@ -58,9 +58,9 @@ func _ready() -> void:
 
 	var v := _tab(tabs, "engine")
 	_section(v, "engine quality", false)
-	_choice(v, "quality", ["low", "medium", "high", "ultra"], world.quality, func(i: int) -> void:
-		demo.quality = i
-		world.quality = i)
+	_choice(v, "quality", ["auto", "low", "medium", "high", "ultra"], world.quality + 1, func(i: int) -> void:
+		demo.quality = i - 1
+		world.quality = i - 1)
 
 	_section(v, "listener tracer · drag to pin a lever over the tier")
 	_slider(v, "rays", "rays / tick", 6, 15, true)
@@ -265,10 +265,11 @@ func _refresh() -> void:
 		s.set_value_no_signal(log(maxf(1.0, val)) / log(2.0) if s.has_meta("log") else val)
 		var pinned: bool = world.get(lever) > 0
 		(sliders[lever][1] as Label).text = ("%d" % val) + ("  pinned" if pinned else "")
-	_press("quality", world.quality)
+	_press("quality", world.quality + 1)
 	var st: Dictionary = world.stats()
 	var tick: float = st.get("tick_ms", 0.0)
-	stats_label.text = "sim tick %.1f ms (%.0f %%) · %s · render load %.0f %% · %d/%d sources · %d paths · late %d" % [
+	stats_label.text = "%s · sim tick %.1f ms (%.0f %%) · %s · render load %.0f %% · %d/%d sources · %d paths · late %d" % [
+		["low", "medium", "high", "ultra"][world.effective_quality()] + (" (auto)" if world.quality < 0 else ""),
 		tick, tick / 50.0 * 100.0, "gpu" if st.get("gpu", false) else "cpu", 100.0 * st.get("load", 0.0),
 		st.get("rendering", 0), st.get("sources", 0), st.get("paths", 0), st.get("late", 0)]
 

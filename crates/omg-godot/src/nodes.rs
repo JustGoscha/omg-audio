@@ -39,6 +39,8 @@ use godot::classes::{
 use godot::meta::conv::RawPtr;
 use godot::prelude::*;
 
+use omg_audio::governor::TierGovernor;
+use omg_audio::threaded::EngineConfig;
 use omg_audio::{from_y_up, to_y_up, Compute, Config, Geometry, Material, MaterialId, ObjectId, Play, Quality, SourceDesc, SourceId, VoiceId};
 
 use crate::backend::clips::{self, Import};
@@ -471,7 +473,9 @@ pub struct OmgWorld {
     rain_intensity: f32,
     #[export]
     master_db: f32,
-    /// Simulation quality: 0 low, 1 medium, 2 high, 3 ultra.
+    /// Simulation quality: 0 low, 1 medium, 2 high, 3 ultra; −1 auto
+    /// (omg-audio's tier governor: starts low, climbs while ticks are
+    /// cheap and the audio thread calm, sheds when a tick runs long).
     #[export]
     #[init(val = 2)]
     quality: i32,
@@ -504,6 +508,9 @@ pub struct OmgWorld {
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
     sent: [f32; 13],
+    #[init(val = TierGovernor::new(3))]
+    auto_tier: TierGovernor,
+    auto_ticks: u32,
     amb_clip: Option<(usize, bool)>,
     rain_clip: Option<(usize, bool)>,
     scratch: Vec<(f32, f32)>,
@@ -639,7 +646,30 @@ impl OmgWorld {
         self.sync_listener();
         self.sync_sources();
         self.sync_doors();
+        self.govern_tier();
         self.sync_mix();
+    }
+
+    /// Quality auto: one report per finished simulation tick.
+    fn govern_tier(&mut self) {
+        if self.quality >= 0 {
+            return;
+        }
+        let g = host();
+        let Some(h) = g.as_ref() else { return };
+        let s = h.stats();
+        if s.ticks == self.auto_ticks {
+            return;
+        }
+        self.auto_ticks = s.ticks;
+        self.auto_tier.report(s.tick_ms, 1000.0 / EngineConfig::default().tick_hz, s.load);
+    }
+
+    /// The tier in effect (0 low … 3 ultra): the pinned one, or where
+    /// quality auto stands.
+    #[func]
+    fn effective_quality(&self) -> i32 {
+        if self.quality < 0 { self.auto_tier.tier() as i32 } else { self.quality }
     }
 
     /// Engine state: rt60 (s, mid band, loudest field), enclosure, sim
@@ -770,7 +800,8 @@ impl OmgWorld {
 
 impl OmgWorld {
     fn sim_config(&self) -> Config {
-        let tier = match self.quality {
+        let q = if self.quality < 0 { self.auto_tier.tier() as i32 } else { self.quality };
+        let tier = match q {
             0 => Quality::Low,
             1 => Quality::Medium,
             3 => Quality::Ultra,
@@ -1004,7 +1035,7 @@ impl OmgWorld {
             self.rain_db,
             self.rain_intensity,
             self.master_db,
-            self.quality as f32,
+            self.effective_quality() as f32,
             self.use_gpu as i32 as f32,
             self.rays as f32,
             self.bounces as f32,

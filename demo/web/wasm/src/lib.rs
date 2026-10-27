@@ -277,6 +277,27 @@ pub extern "C" fn sim_tick(x: f32, y: f32, z: f32, yaw: f32) {
     }
 }
 
+/// Between ticks: the exact paths (direct, bends, mirror chains) for the
+/// listener at (x, y, z) and the dynamic slots as the page left them —
+/// 1 and a frame in `sim_frame_*` when anything moved, else 0.
+#[no_mangle]
+pub extern "C" fn sim_tick_exact(x: f32, y: f32, z: f32, yaw: f32) -> u32 {
+    let h = sim();
+    for s in 0..DYN {
+        let d = &h.dynamic[s * 4..s * 4 + 4];
+        let at = (d[3] > 0.0).then(|| ([d[0], d[1], d[2]], d[3]));
+        h.town.set_dynamic(&mut h.sim, s, at);
+    }
+    h.sim.set_listener([x, y, z], yaw, 0.0, 0.0);
+    match h.sim.tick_exact() {
+        Some(f) => {
+            f.write_flat(&mut h.frame);
+            1
+        }
+        None => 0,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn sim_frame_ptr() -> *const f32 {
     sim().frame.as_ptr()

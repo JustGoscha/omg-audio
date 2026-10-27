@@ -67,6 +67,8 @@ onmessage = async (e) => {
     preInit = null;
     q.forEach(handle);
     setInterval(tick, 50);
+    // between the ticks: the exact paths where everything is now
+    setInterval(exact, EXACT_MS);
   } else if (preInit) {
     preInit.push(m);
   } else {
@@ -74,18 +76,36 @@ onmessage = async (e) => {
   }
 };
 
-function tick() {
-  if (!w) return;
-  // the page's door leaves (openness) and dynamic slots (balls, cars, feet)
-  const doors = new Float32Array(w.memory.buffer, w.sim_door_ptr(), 16);
-  doors.fill(-1);
-  (pose.doors || []).forEach((v, i) => { if (i < 16) doors[i] = v; });
+// exact frames between the ticks (the direct paths, bends and mirror
+// chains for where the listener and the sources are now): moving sounds
+// follow at this rate, the reverb at the tick's
+const EXACT_MS = 8;
+
+// the page's dynamic slots into the sim's buffer
+function writeDynamic() {
   const dyn = new Float32Array(w.memory.buffer, w.sim_dyn_ptr(), 24);
   dyn.fill(0);
   (pose.projs || []).forEach((p) => {
     const slot = p[0];
     if (slot >= 0 && slot < 6) dyn.set([p[1], p[2], p[3], p[4] === undefined ? 1 : p[4]], slot * 4);
   });
+}
+
+function exact() {
+  if (!w) return;
+  writeDynamic();
+  if (!w.sim_tick_exact(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw || 0)) return;
+  const frame = new Float32Array(w.memory.buffer, w.sim_frame_ptr(), w.sim_frame_len()).slice().buffer;
+  postMessage({ type: 'exact', frame }, [frame]);
+}
+
+function tick() {
+  if (!w) return;
+  // the page's door leaves (openness) and dynamic slots (balls, cars, feet)
+  const doors = new Float32Array(w.memory.buffer, w.sim_door_ptr(), 16);
+  doors.fill(-1);
+  (pose.doors || []).forEach((v, i) => { if (i < 16) doors[i] = v; });
+  writeDynamic();
   const t0 = performance.now();
   w.sim_tick(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw || 0);
   const tickMs = performance.now() - t0;

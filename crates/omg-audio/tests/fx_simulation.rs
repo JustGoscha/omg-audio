@@ -336,3 +336,36 @@ fn debug_paths_follow_the_geometry() {
     settle(&mut sim, 2);
     assert!(sim.debug_paths().is_empty(), "off again: nothing recorded");
 }
+
+/// Between full ticks, `tick_exact` moves the exact paths with the
+/// listener at once: the direct path's delay is the new distance's, the
+/// mirror chains re-solved; nothing moved, no frame.
+#[test]
+fn exact_frames_follow_the_listener_between_ticks() {
+    let mut g = Geometry::new();
+    let c = g.material(Material::CONCRETE);
+    let t = 0.2;
+    g.add_box([-t, -t, -t], [8.0 + t, 6.0 + t, 0.0], c);
+    g.add_box([-t, -t, 3.0], [8.0 + t, 6.0 + t, 3.0 + t], c);
+    g.add_box([-t, -t, 0.0], [0.0, 6.0 + t, 3.0], c);
+    g.add_box([8.0, -t, 0.0], [8.0 + t, 6.0 + t, 3.0], c);
+    g.add_box([0.0, -t, 0.0], [8.0, 0.0, 3.0], c);
+    g.add_box([0.0, 6.0, 0.0], [8.0, 6.0 + t, 3.0], c);
+    let mut sim = Simulation::new(Config::default());
+    sim.set_geometry(g);
+    let src = sim.add_source(SourceDesc::at([1.5, 3.0, 1.5]));
+    sim.set_listener([6.0, 3.0, 1.5], 0.0, 0.0, 0.0);
+    settle(&mut sim, 20);
+    assert!(sim.tick_exact().is_none(), "nothing moved: no frame");
+    let direct = |f: &Frame| f.block(src).and_then(|b| b.taps.iter().find(|t| t.key == omg_core::v3::KEY_DIRECT).copied());
+    let before = direct(&sim.tick()).expect("a direct path");
+    sim.set_listener([4.0, 3.0, 1.5], 0.0, 0.0, 0.0);
+    let f = sim.tick_exact().expect("moved: a frame");
+    let after = direct(&f).expect("still a direct path");
+    let want = 2.5 / SPEED_OF_SOUND;
+    eprintln!("direct delay {:.2} ms → {:.2} ms (want {:.2})", before.delay_s * 1e3, after.delay_s * 1e3, want * 1e3);
+    assert!((after.delay_s - want).abs() < 1e-5, "the direct path at the new distance");
+    assert!(after.gains[1] > before.gains[1] * 1.5, "closer: louder (1/d)");
+    let chains = f.block(src).unwrap().taps.iter().filter(|t| t.key >= 9_000_000).count();
+    eprintln!("{chains} mirror chains re-solved in the exact frame");
+}
