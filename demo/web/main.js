@@ -248,44 +248,35 @@ function buildMixer() {
 // freezes the worklet governor and holds both audio values manually.
 // Mirrors of the tier tables in crates/omg-scene/src/quality.rs.
 const QUAL_TIER_VALS = {
-  rays: [4096, 2048, 1024], gate: [8, 12, 16], domeRays: [384, 256, 160],
-  domeEvents: [6, 5, 4], ism: [3, 3, 2],
   v3Rays: [1024, 768, 512], v3Bounces: [6, 4, 3], v3Late: [128, 96, 48],
 };
+// the engine's load governor (omg-audio governor.rs LADDER): mix-wide
+// paths, point-HRTF paths, rendering sources, convolved sources per rung
+const LADDER = [[48, 4, 12, 2], [96, 8, 24, 4], [192, 16, 32, 8], [320, 24, 48, 16], [480, 32, 64, 64]];
 const QUAL_SLIDERS = [
-  { key: 'rays', id: 0, modes: [0, 1], label: 'trace rays', min: 256, max: 32768, step: 256, section: 'simulation · 20 Hz',
-    tip: 'Stochastic rays per reverb trace, per source. Fewer rays = a noisier RT60/level estimate that the running average smooths out — more flutter, never a different sound. The single biggest sim-CPU lever.' },
-  { key: 'ism', id: 4, modes: [0], label: 'ism order', min: 2, max: 3, step: 1,
-    tip: 'Image-source reflection order: how many wall bounces the early echoes are traced through. 3 ≈ 63 discrete reflections per source, 2 ≈ 15 — roughly halving the tap count the audio thread must render. 2 keeps the audible early pattern; the late reverb covers the rest.' },
-  { key: 'gate', id: 1, modes: [0, 1], label: 'refresh age', min: 4, max: 32, step: 1,
-    tip: 'How many 20 Hz ticks a settled scene may keep its last reverb estimate before re-tracing. Motion, door swings and level changes always re-trace immediately — this only slows the idle refresh.' },
-  { key: 'domeRays', id: 2, modes: [0, 1], label: 'dome rays', min: 32, max: 384, step: 32,
-    tip: 'Rays sampling the outdoor-ambience dome against the real geometry every tick (how rain and city noise find windows and doorways). Fewer rays = noisier direction bins under the dome’s own smoothing.' },
-  { key: 'domeEvents', id: 3, modes: [0, 1], label: 'dome events', min: 2, max: 6, step: 1,
-    tip: 'Bounces and glass panes a dome ray may cross before giving up. Deep events carry little energy (every surface multiplies the loss), so trimming them mostly cuts cost, not sound.' },
-  { key: 'v3Rays', id: 5, modes: [3, 4], label: 'v3 rays', min: 64, max: 65536, step: 64, section: 'engine v3 / v4 · listener tracer',
-    tip: 'Rays leaving your ears each 20 Hz tick (early family). Every surface they hit connects to the sources it can see. More rays = steadier early reflections; the cost scales linearly. Only used when early refl = v3 or v4. With compute = gpu the walk runs on the GPU at 8× the tier budget.' },
-  { key: 'v3Bounces', id: 6, modes: [3, 4], label: 'reflections', min: 1, max: 24, step: 1,
-    tip: 'Reflections each early ray follows. Paths up to this order become discrete echoes (taps); everything beyond is carried by the late rays. Raising it moves more of the room into precise early echoes at linear cost.' },
-  { key: 'v3Late', id: 7, modes: [3, 4], label: 'late rays', min: 16, max: 8192, step: 16,
-    tip: 'Long rays per tick that keep bouncing until the path is 3 s (v4: 4.8 s) long or has lost 60 dB — the traced reverb tail. Averaged over ~10 ticks, so even a few dozen give a stable decay; more = steadier reverb time and level.' },
-  { key: 'points', label: 'point hrtf', min: 0, max: 32, step: 1, audio: true, scale: 4, section: 'audio render · per sample',
-    tip: 'EVERY path is binaural: bus taps encode at their arrival direction into order-2 ambisonics decoded through 20 virtual speakers, each with its measured KEMAR HRIR — full ILD/ITD, slightly blurred (±20–30°). The strongest N paths additionally get a dedicated nearest-HRIR convolution (710-direction grid): pin-sharp. The precedence effect means the loudest early paths carry localization, so sharpness goes where hearing can use it; the weak tail reads as envelopment either way. Each point tap is a per-sample convolution on the AUDIO thread — the one place the GPU cannot help — hence the budget. Mix-wide: 4× this many across all sources, given to the loudest paths at your ears.' },
-  { key: 'ceiling', label: 'tap budget', min: 16, max: 160, step: 8, audio: true, scale: 4,
-    tip: 'Mix-wide tap budget, in units of four sources: the engine ranks EVERY source’s paths by how loud they arrive at your ears (fader included) and renders only the strongest 4× this many in total — a quiet source behind the club keeps its direct path, the voice in front keeps sixty. Render cost no longer grows with the number of sources. Evicted taps fade out — click-free.' },
+  { key: 'v3Rays', id: 5, label: 'rays', min: 64, max: 65536, step: 64, section: 'listener tracer · 20 Hz',
+    tip: 'Rays leaving your ears each tick. Every surface they hit connects to the sources it can see, through whatever walls are in the way. More rays = a steadier estimate; the cost scales linearly. With compute = gpu the walk runs on the GPU at 8× the tier budget.' },
+  { key: 'v3Bounces', id: 6, label: 'reflections', min: 1, max: 24, step: 1,
+    tip: 'Reflections each early ray follows (and the mirror chains the exact solver names from them). The late rays carry everything beyond.' },
+  { key: 'v3Late', id: 7, label: 'late rays', min: 16, max: 8192, step: 16,
+    tip: 'Long rays per tick that keep bouncing through the whole traced response (4.8 s) or until they have lost 60 dB — the reverb tail. Past the early window they end at random as they fade (unbiased: the survivors carry what the others would have). Averaged over ticks, so even a few dozen give a stable decay.' },
+  { key: 'rung', label: 'render budget', min: 0, max: 4, step: 1, audio: true, section: 'audio render · per sample',
+    tip: 'The audio thread’s budget, one ladder: mix-wide paths (ranked by how loud they arrive at your ears), point-HRTF paths, rendering sources and convolved sources. The engine’s governor walks it by the render time each block takes — sheds at once when a block runs late, earns rungs back after calm seconds. Drag to pin a rung.' },
+  { key: 'gpuShare', label: 'gpu share', min: 5, max: 100, step: 5, gpu: true,
+    tip: 'How much of the GPU’s time the ray walk may take, in percent. The page’s frames come first: the walk runs as short dispatches with rests between them, and its results arrive later when the GPU is busy drawing.' },
 ];
 const QUAL_TIER_TIPS = {
   auto: 'Starts at low and earns its way up: climbs a tier after ~10 s of clean running, sheds the moment a sim tick blows 40 ms or the audio thread gaps.',
-  high: 'Full budgets — 4096 trace rays, reflection order 3, 384 dome rays. The reference sound.',
-  med: 'Half the trace rays, slower idle refresh, leaner dome. Statistically the same field with slightly more reverb flutter.',
-  low: 'Quarter rays, reflection order 2, lean dome. For throttled machines — everything stays spatialized, the estimate just gets coarser.',
+  high: '1024 rays, 6 reflections, 128 late rays (×8 on the GPU). The reference sound.',
+  med: '768 rays, 4 reflections, 96 late rays. Statistically the same field, a little more flutter.',
+  low: '512 rays, 3 reflections, 48 late rays. For throttled machines — the estimate gets coarser, never a different sound.',
 };
 const QUAL_STAT_TIPS = {
-  'sim tick': 'Worker-side cost of one 20 Hz simulation tick. The budget is 50 ms; above ~40 the auto governor sheds a tier.',
-  'render load': 'Audio-thread render time as a share of realtime. Above 85% the worklet governor sheds to its floor.',
+  'sim tick': 'Worker-side cost of one 20 Hz simulation tick (with compute = gpu: the exact direct paths, bends and mirror chains, and the fold — the walk runs on the GPU). The budget is 50 ms; above ~40 the auto governor sheds a tier.',
+  'render load': 'Audio-thread render time as a share of realtime. The engine’s governor sheds rungs above 55 %, everything above 80 %.',
   gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
-  'late field': 'Where the reverb ray traces run, with the wall-clock cost of the last trace dispatch (incl. readback). GPU runs 8× the ray budget for a fraction of the CPU cost — flip it under engine modules → compute. In v3 the reverb is traced by the same listener walk as the early field — see the early cell.',
-  early: 'The ACTIVE early-reflections engine as the sim reports it; in v4 also how many sources the audio thread convolves (the 4 loudest at most). In v3/v4 with compute = gpu: the wall-clock of the last listener walk on the GPU (dispatch to readback; it folds into the sim one tick later). The sim tick then only pays for the exact direct and edge paths and the fold. “v3 · cpu” with compute = gpu means the walk fell back (the world exceeded the GPU job caps). In traced mode early is CPU-side by design: discovery is a few hundred rays per tick (~1 ms) and every found path is then solved EXACTLY by mirror reconstruction — tiny, branchy work the GPU can’t win. The heavy ray budgets (the reverb traces) are what the compute switch moves. ism and traced sound identical in open space; behind furniture only traced shadows.',
+  'gpu walk': 'The last walk on the GPU: its dispatches’ time summed, and the longest single one (how long it held the GPU at once).',
+  convolved: 'Sources whose traced reverb is convolved (v4); the others play the same response on the parametric reverb.',
 };
 
 // Movable config panels: drag by the title bar, double-click it to send
@@ -412,9 +403,10 @@ function buildQuality() {
       if (s.audio) {
         state.qual.manual = true;
         state.qual.manualVals[s.key] = v;
-        state.setAudioManual(true,
-          state.qual.manualVals.points ?? state.meters.pts,
-          state.qual.manualVals.ceiling ?? (state.meters.ceil || 160));
+        state.setAudioManual(true, v);
+      } else if (s.gpu) {
+        state.qual.gpuShare = v;
+        state.setGpuBudget?.(v / 100);
       } else {
         state.qual.over[s.key] = v;
         state.setOverride(s.id, v);
@@ -456,40 +448,32 @@ function buildQuality() {
   };
   const mods = () => state.modules || [true, true, true];
 
-  mkSwitch('early refl',
-    'Which engine produces the discrete early echoes. Both feed the identical tap contract downstream — switch mid-play, the renderer crossfades.',
+  mkSwitch('engine',
+    'Which engine renders the traced field. Both run the same rays from your ears — switch mid-play, the renderer crossfades.',
     [
-      { name: 'ism',
-        tip: 'Image-source method: the exact closed-form solution for empty shoebox rooms, routed through doorway portals. The classic engine.',
-        set: () => state.setEarly?.(0),
-        active: () => !(state.earlyMode || 0) },
-      { name: 'traced',
-        tip: 'World-mesh path tracing (C6): one listener context over the whole map — doorways are just holes the solved paths thread, walls pay mass law, furniture shadows. No portal code anywhere.',
-        set: () => state.setEarly?.(1),
-        active: () => state.earlyMode === 1 || state.earlyMode === 2 },
       { name: 'v3',
-        tip: 'Engine v3 (ENGINE_V3.md): one tracer for everything. Rays from your ears bounce through the world; every surface they hit connects to the sources it can see, through whatever walls are in the way. Early AND late, indoors and out, from one mechanism; rays passing close to an edge bend around it.',
+        tip: 'Engine v3 (ENGINE_V3.md): the traced field as discrete early echoes plus a parametric reverb (decay time and level per band, from the same trace).',
         set: () => state.setEarly?.(3),
         active: () => state.earlyMode === 3 },
       { name: 'v4',
-        tip: 'Engine v4: the same rays, and the response rendered as traced — no early/late split in time. Exact mirror paths (wall reflections, a canyon\u2019s echo seconds later, the flutter between bare walls) play as their own echoes; everything scattered is the traced reverb itself, convolved (for the 4 loudest sources; the rest keep v3\u2019s parametric reverb from the same trace).',
+        tip: 'Engine v4: the response rendered as traced — no early/late split in time. Exact mirror paths (wall reflections, a canyon\u2019s echo seconds later, the flutter between bare walls) play as their own echoes; everything scattered is the traced reverb itself, convolved (within the render budget; the rest play the same response on the parametric reverb).',
         set: () => state.setEarly?.(4),
-        active: () => state.earlyMode === 4 },
+        active: () => state.earlyMode !== 3 },
     ]);
 
   mkSwitch('compute',
-    'Where the ray workloads run. GPU dispatches the same WGSL kernels the native build uses — late-field traces run 8× denser for a fraction of the CPU cost. Statistically identical sound; only variance changes.',
+    'Where the ray walk runs. GPU dispatches the same WGSL kernel the native build uses, at 8× the rays, within its share of the GPU (gpu share). Statistically identical sound; only variance changes.',
     [
       { name: 'cpu',
         tip: 'Everything in wasm on the worker thread. The fallback and the oracle the GPU kernels are parity-tested against.',
         set: () => state.setGpu?.(false),
         active: () => !state.debug.gpu },
       { name: 'gpu',
-        tip: 'WebGPU compute: late-field reverb traces (per-room and world-mesh) + chain discovery; in v3 the whole listener walk (both ray families, next-event connections, diffraction bends) at 8× the rays, a tick late. Requires Chrome with WebGPU; greyed out when unavailable.',
+        tip: 'WebGPU compute: the whole listener walk (both ray families, next-event connections, diffraction bends) at 8× the rays, as short paced dispatches, folded a tick or two late. The exact direct paths, bends and mirror chains stay on the CPU every tick. Requires WebGPU; greyed out when unavailable.',
         set: () => { if (state.debug.gpuAvail) state.setGpu?.(true); },
         active: () => !!state.debug.gpu,
         avail: () => !!state.debug.gpuAvail },
-    ], [0, 1, 3]); // v3: the listener walk itself moves (V3.3)
+    ]);
 
   mkSwitch('diffraction',
     'Knife-edge bending around door jambs, building corners and roof lines (plus the outdoor occlusion floors). This is what keeps a source audible — bass-tilted, from the edge’s direction — when you lose the sight line.',
@@ -502,41 +486,15 @@ function buildQuality() {
         tip: 'Hard shadows: step behind a wall and the source cuts to wall-transmission only. Instructive A/B — this is what most game audio sounds like.',
         set: () => state.setModule?.(0, false),
         active: () => !mods()[0] },
-    ], [0, 1, 3]);
-
-  mkSwitch('furniture',
-    'Whether furniture participates acoustically, with its full material: occluding and filtering sight lines, REFLECTING off hard faces (a table top slaps back, solved exactly like a wall), and absorbing the late field — a furnished room decays faster than an empty one. Geometry always renders; this is ears-only.',
-    [
-      { name: 'on',
-        tip: 'Full acoustics: crouch behind the club bar and the PA dulls; the sofa and bookshelf cut the living-room RT60 nearly in half (0.43s vs 0.80s, measured).',
-        set: () => state.setModule?.(1, true),
-        active: () => mods()[1] },
-      { name: 'off',
-        tip: 'Acoustically transparent furniture: no shadows, no table-top slap, empty-room reverb. The empty-shoebox assumption, kept for A/B.',
-        set: () => state.setModule?.(1, false),
-        active: () => !mods()[1] },
-    ]);
-
-  mkSwitch('ambience',
-    'Where the ambience bed (crickets) lives in the world. Its direction and level come from geometry either way; this picks the emitter shape.',
-    [
-      { name: 'ground',
-        tip: 'Crickets in the grass: emitters spread over the outdoor ground (minus buildings and the street). In the meadow they surround you; fly up (F) and they come from below, fading and narrowing with height; fly far away and they shrink toward the town and vanish. Indoors they reach you through doors, windows and the shell, as before.',
-        set: () => state.setModule?.(2, true),
-        active: () => mods()[2] },
-      { name: 'dome',
-        tip: 'The classic skybox: the bed surrounds you from the sky and horizon wherever you are — even 1 km up. Kept for A/B.',
-        set: () => state.setModule?.(2, false),
-        active: () => !mods()[2] },
     ]);
 
   const stats = document.createElement('div');
   stats.className = 'qstats';
   // stats likewise: the late-field backend means nothing in v3 (its
   // reverb is traced inside the sim tick)
-  const statModes = { 'late field': [0, 1] };
+  const statModes = {};
   const statCells = [];
-  const cells = ['sim tick', 'render load', 'gaps', 'late field', 'early'].map((k) => {
+  const cells = ['sim tick', 'render load', 'gaps', 'gpu walk', 'convolved'].map((k) => {
     const c = document.createElement('div');
     c.className = 'cell';
     if (statModes[k]) statCells.push({ c, modes: statModes[k] });
@@ -552,7 +510,7 @@ function buildQuality() {
   reset.innerHTML = '<a href="#" title="Clear every pinned slider; the tier and the load governors take back control of all levers.">release all pins → governors</a>';
   reset.querySelector('a').onclick = (e) => {
     e.preventDefault();
-    for (const s of QUAL_SLIDERS) if (!s.audio) state.setOverride(s.id, 0);
+    for (const s of QUAL_SLIDERS) if (!s.audio && !s.gpu) state.setOverride(s.id, 0);
     state.qual.over = {};
     state.qual.manual = false;
     state.qual.manualVals = {};
@@ -588,20 +546,20 @@ function buildQuality() {
       let v; let pinned;
       if (s.audio) {
         pinned = state.qual.manual;
-        v = pinned ? (state.qual.manualVals[s.key]
-              ?? (s.key === 'points' ? state.meters.pts : state.meters.ceil))
-          : (s.key === 'points' ? state.meters.pts : state.meters.ceil || 160);
+        v = pinned ? (state.qual.manualVals.rung ?? state.meters.rung ?? 1) : (state.meters.rung ?? 1);
+      } else if (s.gpu) {
+        pinned = false;
+        v = state.qual.gpuShare ?? 20;
       } else {
         pinned = state.qual.over[s.key] != null;
         v = pinned ? state.qual.over[s.key] : QUAL_TIER_VALS[s.key][q.tier];
-        // a GPU late-field backend runs the tier ray budget at 8x
-        if (!pinned && s.key === 'rays' && state.debug.gpu) v = Math.min(v * 8, 32768);
-        // ...and a GPU v3 walk runs both v3 ray families at 8x
+        // a GPU walk runs both ray families at 8x
         if (!pinned && (s.key === 'v3Rays' || s.key === 'v3Late') && state.debug.gpu && state.debug.v3N) v *= 8;
       }
       const shown = Math.round(v * (s.scale || 1));
       if (document.activeElement !== input) input.value = shown;
-      val.textContent = `${shown}${pinned ? ' ⏚' : ''}`;
+      const text = s.audio ? `${shown} · ${LADDER[shown][0]} paths` : s.gpu ? `${shown} %` : `${shown}`;
+      val.textContent = `${text}${pinned ? ' ⏚' : ''}`;
       val.classList.toggle('pinned', !!pinned);
     }
     const tick = state.debug.tickMs || 0;
@@ -612,20 +570,11 @@ function buildQuality() {
     cells[1].classList.toggle('hot', load > 0.85);
     cells[2].textContent = `${state.debug.gaps || 0}`;
     cells[2].classList.toggle('hot', (state.debug.gaps || 0) > 0);
-    // v3 traces early AND late in one listener walk: in the sim tick on
-    // the CPU, or on the GPU (compute = gpu) folding in a tick late
-    const v3 = state.debug.early === 3 || state.debug.early === 4;
-    const vn = state.debug.early === 4 ? 'v4' : 'v3';
-    const v3gpu = v3 && state.debug.gpu && state.debug.v3N;
-    const conv = state.debug.early === 4 ? ` · ${state.debug.dense || 0} conv` : '';
-    cells[3].textContent = v3 ? (v3gpu ? `${vn} · gpu walk` : `${vn} · in sim tick`)
-      : state.debug.gpu
-        ? `gpu · ${(state.debug.gpuMs || 0).toFixed(1)}ms`
-        : 'cpu';
-    cells[4].textContent = v3 ? (v3gpu ? `${vn} · gpu ${(state.debug.v3Ms || 0).toFixed(1)}ms${conv}` : `${vn} · cpu${conv}`)
-      : !state.debug.early ? 'ism'
-        : state.debug.gpu && state.debug.wdN
-          ? `traced · gpu ${(state.debug.wdMs || 0).toFixed(1)}ms` : 'traced · cpu';
+    const gpuOn = state.debug.gpu && state.debug.v3N;
+    cells[3].textContent = gpuOn
+      ? `${(state.debug.v3Ms || 0).toFixed(1)}ms · max ${(state.debug.gpuMaxMs || 0).toFixed(1)}`
+      : 'cpu';
+    cells[4].textContent = state.debug.early === 3 ? 'v3: none' : `${state.debug.dense || 0}`;
     const btn = document.getElementById('qualbtn');
     btn.textContent = `⚙ ${state.qual.manual || Object.keys(state.qual.over).length
       ? 'custom' : ['high', 'med', 'low'][q.tier] + (q.auto ? ' ·auto' : '')}`;
@@ -2391,8 +2340,8 @@ async function startAudio() {
         state.meters.l = e.data.l;
         state.meters.r = e.data.r;
         state.meters.agc = e.data.agc;
-        state.meters.pts = e.data.pts || 0;
-        state.meters.ceil = e.data.ceil || 0;
+        state.meters.rung = e.data.rung;
+        state.meters.rendering = e.data.rendering || 0;
         state.meters.tts = e.data.tts || 0;
         if (e.data.chans) {
           state.chanHist.push(e.data.chans);
@@ -2506,8 +2455,8 @@ async function startAudio() {
     // quality-panel plumbing: pin one sim lever (value 0 = follow tier),
     // or hold both audio levers manually (freezes the worklet governor)
     state.setOverride = (id, value) => worker.postMessage({ type: 'override', id, value });
-    state.setAudioManual = (on, points, ceiling) =>
-      node.port.postMessage({ type: 'manual', on, points, ceiling });
+    state.setAudioManual = (on, rung) => node.port.postMessage({ type: 'manual', on, rung });
+    state.setGpuBudget = (v) => worker.postMessage({ type: 'gpuBudget', value: v });
     state.setGpu = (on) => {
       try { localStorage.setItem('omg-gpu', on ? '1' : '0'); } catch (_) {}
       worker.postMessage({ type: 'gpu', on });
@@ -2581,6 +2530,7 @@ async function startAudio() {
     state.debug.wdN = e.data.wdN || 0;
     state.debug.v3Ms = e.data.v3Ms || 0;
     state.debug.v3N = e.data.v3N || 0;
+    state.debug.gpuMaxMs = e.data.gpuMaxMs || 0;
     const q = state.quality;
     if (q.auto) {
       // shed on a blown budget immediately (a 20 Hz tick has 50 ms; at
@@ -3395,8 +3345,8 @@ function drawDebug() {
     y += h + 10;
   }
   const last = hist.length ? hist[hist.length - 1] : null;
-  graph(`render taps ${last ? last.taps : 0} · budget ${state.meters.pts}/src`
-    + ` · ceil ${state.meters.ceil || 160}/src`,
+  const rung = LADDER[state.meters.rung ?? 1] || LADDER[1];
+  graph(`render taps ${last ? last.taps : 0} · rung ${state.meters.rung ?? '–'}: ${rung[0]} paths, ${rung[1]} hrtf, ${rung[3]} conv`,
     90, (s) => s.taps / 96, { color: '#6ee0a0' });
   const q = state.quality || { auto: true, tier: 0 };
   graph(`sim tick ${state.debug.tickMs.toFixed(1)} ms (budget 50)`
@@ -3544,10 +3494,10 @@ function drawMeters() {
       g.fillText(line, 86, H - 26);
     }
   }
-  if (state.meters.pts) {
-    // adaptive point-HRTF budget (per source), set by the worklet from load
+  if (state.meters.rung != null) {
+    // the engine governor's rung (its point-HRTF paths)
     g.fillStyle = '#7a8496';
-    g.fillText(`hrtf ×${state.meters.pts}`, 86, H - 12);
+    g.fillText(`hrtf ×${(LADDER[state.meters.rung] || LADDER[1])[1]}`, 86, H - 12);
   }
   // 0 dB reference line
   g.strokeStyle = '#3a4658';

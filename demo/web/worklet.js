@@ -84,7 +84,7 @@ class OmgProcessor extends AudioWorkletProcessor {
       // the tuning panel: pin the governor's rung (the ladder's 0..4), or
       // hand it back
       const rung = m.type === 'manual'
-        ? (m.on ? Math.max(0, Math.min(4, [4, 8, 16, 24, 32].findIndex((p) => p >= (m.points || 0)))) : -1)
+        ? (m.on ? Math.max(0, Math.min(4, m.rung | 0)) : -1)
         : (m.idx ? 4 - 2 * m.idx : -1);
       this.w.eng_pin(rung);
     }
