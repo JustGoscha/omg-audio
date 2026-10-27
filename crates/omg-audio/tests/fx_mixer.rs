@@ -194,3 +194,76 @@ fn the_ambience_rides_the_loudness_stage() {
     let ridden = 200.0 * g_loud / g_quiet;
     assert!((loud / quiet / ridden - 1.0).abs() < 0.2, "ridden: {quiet} → {loud} (×{ridden:.0} expected)");
 }
+
+/// The audible window: a quiet source renders alone; a loud one pulls the
+/// ear's adaptation down and the quiet one drops out of the window (not
+/// rendered: costs nothing); the loud one stops, the ear recovers, the
+/// quiet one is back.
+#[test]
+fn a_loud_scene_drops_the_sounds_it_masks() {
+    use omg_audio::{Frame, ParamBlock, SourceId, Tap};
+    let block = |g: f32| {
+        let mut pb = ParamBlock { version: 1, ..Default::default() };
+        pb.taps.push(Tap { key: 0, delay_s: 0.003, dir: [1.0, 0.0, 0.0], gains: [g; 3] });
+        pb
+    };
+    let (loud, quiet) = (SourceId(0), SourceId(1));
+    let frame = Frame { version: 1, blocks: vec![(loud, block(30.0)), (quiet, block(3e-3))], ..Default::default() };
+    let noise: Vec<f32> = (0..48_000u32).map(|i| ((i.wrapping_mul(2654435761) >> 8) as f32 / 8388608.0) - 1.0).collect();
+    let mut m = Mixer::new(SR, Hrir::none());
+    m.apply(&frame);
+    // the quiet source's own level over the last second
+    let run = |m: &mut Mixer, secs: f32| -> f32 {
+        let mut e = 0.0f32;
+        let n = (secs * 20.0) as usize;
+        for k in 0..n {
+            m.apply(&frame);
+            render(m, 0.05);
+            let r = m.take_meter(quiet).rms;
+            if k + 20 >= n {
+                e += r * r / 20.0;
+            }
+        }
+        e.sqrt()
+    };
+    m.play(quiet, &clip(&noise), Play::LOOP);
+    let alone = run(&mut m, 2.0);
+    let v = m.play(loud, &clip(&noise), Play::LOOP);
+    let with_loud = run(&mut m, 3.0);
+    let agc_loud = m.agc_gain();
+    m.stop(v);
+    let after = run(&mut m, 12.0);
+    eprintln!("quiet source: alone {alone:.5}, with the loud one {with_loud:.5} (agc {agc_loud:.2}), after it {after:.5} (agc {:.2})", m.agc_gain());
+    assert!(alone > 0.0, "alone, the quiet source is heard");
+    assert_eq!(with_loud, 0.0, "the masked quiet source isn't rendered");
+    assert!(after > 0.0, "the loud one gone, the quiet one is back");
+}
+
+/// The window judges what ARRIVES: a clap's dry sound is over in 10 ms,
+/// but its reverb (1.5 s) still carries it — it renders on, ringing out,
+/// until the tail itself sinks under the window.
+#[test]
+fn a_clap_rings_out_in_the_window() {
+    use omg_audio::{Frame, ParamBlock, SourceId, Tap};
+    use omg_core::params::ReverbParams;
+    let id = SourceId(0);
+    let mut pb = ParamBlock { version: 1, ..Default::default() };
+    pb.taps.push(Tap { key: 1, delay_s: 0.003, dir: [1.0, 0.0, 0.0], gains: [1.0; 3] });
+    pb.reverb = ReverbParams { rt60: [1.5; 3], level: [0.3; 3] };
+    let frame = Frame { version: 1, blocks: vec![(id, pb)], ..Default::default() };
+    let burst: Vec<f32> = (0..480u32).map(|i| (((i.wrapping_mul(2654435761) >> 8) as f32 / 8388608.0) - 1.0) * (-(i as f32) / 80.0).exp()).collect();
+    let mut m = Mixer::new(SR, Hrir::none());
+    m.apply(&frame);
+    render(&mut m, 0.5);
+    m.play(id, &clip(&burst), Play::ONCE);
+    let mut env = Vec::new();
+    for _ in 0..30 {
+        m.apply(&frame);
+        render(&mut m, 0.05);
+        env.push(m.take_meter(id).rms);
+    }
+    let shown: Vec<String> = env.iter().step_by(3).map(|e| format!("{:.0}", 20.0 * e.max(1e-9).log10())).collect();
+    eprintln!("the clap per 150 ms (dB): {}", shown.join(" "));
+    assert!(env[10] > 0.0, "half a second on, the tail still renders: {:?}", &env[..12]);
+    assert!(env[10] < env[1], "and it decays");
+}

@@ -51,6 +51,18 @@ impl Shot {
     }
 }
 
+/// One thing on record that sounds (`PlayLog::sounding`): `clip` at
+/// `gain`, from emission time `start` (a one-shot's first sample; a loop's
+/// hand-over, −∞ for a first loop) to `end`, read at `rate`.
+pub struct Sounding<'a> {
+    pub clip: &'a Clip,
+    pub gain: f32,
+    pub start: f64,
+    pub end: f64,
+    pub rate: f32,
+    pub looped: bool,
+}
+
 #[derive(Default)]
 pub struct PlayLog {
     loops: Vec<LoopSeg>,
@@ -139,6 +151,27 @@ impl PlayLog {
             if kinds.contains(&s.kind) && s.start < now && s.stop == f64::INFINITY {
                 s.start = now;
             }
+        }
+    }
+
+    /// Everything on record that sounds between emission times `t0` and
+    /// `t1`: its clip, gain, the span it sounds [from, to) and its rate —
+    /// a loop (`looped`: at any phase) or a one-shot (read from its
+    /// beginning at `from`... see `Sounding`).
+    pub fn sounding(&self, t0: f64, t1: f64, mut f: impl FnMut(Sounding<'_>)) {
+        for (i, seg) in self.loops.iter().enumerate() {
+            let until = self.loops.get(i + 1).map_or(f64::INFINITY, |n| n.start);
+            if seg.clip.is_empty() || seg.gain == 0.0 || until <= t0 || seg.start >= t1 {
+                continue;
+            }
+            f(Sounding { clip: &seg.clip, gain: seg.gain, start: seg.start, end: until, rate: seg.rate, looped: true });
+        }
+        for s in &self.shots {
+            let end = s.end();
+            if end <= t0 || s.start >= t1 {
+                continue;
+            }
+            f(Sounding { clip: &s.clip, gain: s.gain, start: s.start, end, rate: s.rate, looped: false });
         }
     }
 

@@ -48,10 +48,17 @@ pub struct OutputStage {
     tin_phase: f32,
     tin_step: f32,
     tin_decay: f32,
+    // The mix's loudness before the adaptation: its mean square over
+    // `LOUDNESS_S` (the ear's loudness integration) — what the audible
+    // window sits under (a transient's peak drives the adaptation, not
+    // how loud the scene is).
+    loud_ms: f32,
+    loud_coef: f32,
     sample_rate: f32,
 }
 
 const AGC_TARGET: f32 = 0.35;
+const LOUDNESS_S: f32 = 0.4;
 const AGC_MAX_BOOST: f32 = 1.15;
 const AGC_MAX_CUT: f32 = 0.06;
 /// Demand (pre-AGC envelope) where fatigue starts: ≈ +10 dB over target.
@@ -85,6 +92,8 @@ impl OutputStage {
             // dullness after sustained exposure is the fatigue stage's
             // job, not the reflex's.
             env_rel: tc(0.35),
+            loud_ms: 0.0,
+            loud_coef: tc(LOUDNESS_S),
             gain_down: tc(0.05),
             gain_up_fast: tc(1.2),
             gain_up_slow: tc(45.0),
@@ -119,6 +128,11 @@ impl OutputStage {
         self.head[2].set(roll);
     }
 
+    /// The mix's loudness before the adaptation (RMS over ~0.4 s).
+    pub fn loudness(&self) -> f32 {
+        self.loud_ms.sqrt()
+    }
+
     pub fn agc_gain(&self) -> f32 {
         self.agc_gain
     }
@@ -145,6 +159,7 @@ impl OutputStage {
             Decode::Cardioid(d) => d.decode(&rotated),
         };
         let (l, r) = (l + pl, r + pr);
+        self.loud_ms += self.loud_coef * (0.5 * (l * l + r * r) - self.loud_ms);
 
         // ear adaptation
         let m = l.abs().max(r.abs());

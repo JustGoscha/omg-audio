@@ -216,13 +216,109 @@ struct Slot {
     /// forgets it.
     sounded_until: f64,
     audible_next: bool,
+    /// The audible window (`AUDIBLE_RANGE_DB`): the late fields' power
+    /// arriving (its own room's, the remote room's), when it was last
+    /// looked at, and whether it is out of the window now (not rendered).
+    late_p: f32,
+    remote_p: f32,
+    late_e: f64,
+    arrival_t: f64,
+    /// Since when its arrival has been under the window's floor (∞: not).
+    under_since: f64,
+    masked: bool,
     meter: MeterAcc,
     /// One-shots started while it had no paths (switched off, or not
     /// traced yet): restarted when it is first traced.
     unheard: Vec<u32>,
 }
 
+/// The power emitted over emission times `t0..t1` (each clip sounding in
+/// it × its gain²: a loop at its mean power, a one-shot through its power
+/// table, `POWER_BLOCK`s of the clip, over exactly the time it overlaps):
+/// (its mean, its loudest moment).
+fn emitted_over(log: &PlayLog, t0: f64, t1: f64, cache: &mut HashMap<usize, (f32, Vec<f32>)>) -> (f32, f32) {
+    if t1 <= t0 {
+        return (0.0, 0.0);
+    }
+    let (mut energy, mut max) = (0.0f64, 0.0f32);
+    log.sounding(t0, t1, |s| {
+        let (mean, blocks) = cache.entry(s.clip.as_ptr() as usize).or_insert_with(|| {
+            let blocks: Vec<f32> = s.clip.chunks(POWER_BLOCK).map(|b| b.iter().map(|x| x * x).sum::<f32>() / b.len() as f32).collect();
+            let mean = s.clip.iter().map(|x| x * x).sum::<f32>() / s.clip.len().max(1) as f32;
+            (mean, blocks)
+        });
+        let g2 = s.gain * s.gain;
+        let (a, b) = (t0.max(s.start), t1.min(s.end));
+        if s.looped {
+            energy += (g2 * *mean) as f64 * (b - a);
+            max = max.max(g2 * *mean);
+            return;
+        }
+        // the clip's blocks as emission times: block k spans
+        // start + k·B/rate .. start + (k+1)·B/rate
+        let span = POWER_BLOCK as f64 / s.rate as f64;
+        let k0 = ((a - s.start) / span).floor().max(0.0) as usize;
+        let k1 = (((b - s.start) / span).ceil().max(0.0) as usize).min(blocks.len());
+        for (k, &p) in blocks.iter().enumerate().take(k1).skip(k0) {
+            let lo = a.max(s.start + k as f64 * span);
+            let hi = b.min(s.start + (k + 1) as f64 * span);
+            if hi > lo {
+                energy += (g2 * p) as f64 * (hi - lo);
+                max = max.max(g2 * p);
+            }
+        }
+    });
+    ((energy / (t1 - t0)) as f32, max)
+}
+
 impl Slot {
+    /// What reaches the ears from `now` to `t`, read along the timeline
+    /// from what the source emitted (only what is on record: nothing after
+    /// `now`), mid band, before the fader: each tap's gain² × the loudest
+    /// it emitted over its delay span, and the late fields — energy
+    /// integrators fed with the mean power emitted (from the first arrival
+    /// on), decaying at their RT60, as they arrive at `t`. The power of the
+    /// loudest arrival.
+    fn arriving(&mut self, now: f64, t: f64, sample_rate: f32, cache: &mut HashMap<usize, (f32, Vec<f32>)>) -> f32 {
+        let sr = sample_rate as f64;
+        let pb = &self.latest;
+        let (mut a, mut first) = (0.0f32, f64::INFINITY);
+        for tap in &pb.taps {
+            let d = tap.delay_s as f64 * sr;
+            first = first.min(d);
+            a += tap.gains[1] * tap.gains[1] * emitted_over(&self.log, now - d, t - d, cache).1;
+        }
+        self.arrival_t = t;
+        if !first.is_finite() {
+            self.late_p = 0.0;
+            self.remote_p = 0.0;
+            return a;
+        }
+        // the late fields take in what was emitted up to now
+        let from = self.late_e.max(now - sr);
+        if now > from {
+            let input = emitted_over(&self.log, from, now, cache).0;
+            let dt = ((now - from) / sr) as f32;
+            // steady at level² × the input's power, following it with the
+            // room's energy decay
+            let take = |p: &mut f32, level: f32, rt60: f32| {
+                let k = if rt60 > 0.0 { (-13.8 * dt / rt60).exp() } else { 0.0 };
+                *p = *p * k + level * level * input * (1.0 - k);
+            };
+            take(&mut self.late_p, pb.reverb.level[1], pb.reverb.rt60[1]);
+            match &pb.remote {
+                Some(r) => take(&mut self.remote_p, r.send[1], r.rt60[1]),
+                None => self.remote_p = 0.0,
+            }
+            self.late_e = now;
+        }
+        // ... and arrive one first-arrival delay later, decaying on to `t`
+        let ahead = ((t - (now + first)) / sr).max(0.0) as f32;
+        let decayed = |p: f32, rt60: f32| if rt60 > 0.0 { p * (-13.8 * ahead / rt60).exp() } else { 0.0 };
+        let remote_rt = pb.remote.as_ref().map_or(0.0, |r| r.rt60[1]);
+        a + decayed(self.late_p, pb.reverb.rt60[1]) + decayed(self.remote_p, remote_rt)
+    }
+
     /// Emission-clock time after which nothing it plays can still be
     /// heard: its last sound + the longest path + the reverb's ring.
     fn quiet_after(&mut self, sample_rate: f32) -> f64 {
@@ -300,6 +396,27 @@ struct NearPlay {
 /// however many sources (examples/bench_sources.rs). Raise them on
 /// faster machines with `set_budget`.
 const MIX_TAPS: usize = 96;
+/// The audible window: a source whose power arriving at the ears is this
+/// far under how loud the scene is (the mix's loudness, ~0.4 s, before
+/// the ear adaptation) is not rendered — judged on the timeline, what its
+/// paths carry from what it emitted, tails included. A loud scene pulls
+/// the window up; a quiet one opens it. 60 dB: the range a decay is heard
+/// over.
+const AUDIBLE_RANGE_DB: f32 = 60.0;
+/// A source out of the window comes back this far above its edge.
+const AUDIBLE_HYSTERESIS_DB: f32 = 6.0;
+/// The window looks this far ahead (what arrives then was emitted a path
+/// delay before: on record already) — a source is back, its fade-in done,
+/// before its first arrival lands.
+const AUDIBLE_LOOKAHEAD_S: f64 = 0.03;
+/// The window is looked at this often (s).
+const AUDIBLE_STEP_S: f64 = 0.01;
+/// A source leaves the window after its arrival has been under it this
+/// long (a loudness integration time): a quick sound's tail, or the gap
+/// between two claps, never flips it out and back.
+const AUDIBLE_HOLD_S: f64 = 0.2;
+/// Clip power tables: samples per entry (10 ms at 48 kHz).
+const POWER_BLOCK: usize = 480;
 const MIX_POINTS: usize = 8;
 const MAX_VOICES: usize = 24;
 const MAX_CONVOLVED: usize = 8;
@@ -334,6 +451,9 @@ pub struct Mixer {
     /// v4: the most sources convolved at once (the loudest); the others
     /// play their response as the parametric reverb.
     max_convolved: usize,
+    /// Power tables of the clips played (by their data's address), for
+    /// the audible window: (mean, per `POWER_BLOCK`).
+    clip_power: HashMap<usize, (f32, Vec<f32>)>,
     head: [f32; 3],
     head_from_frames: bool,
     // scratch, preallocated
@@ -373,6 +493,7 @@ impl Mixer {
             mix_points: MIX_POINTS,
             max_voices: MAX_VOICES,
             max_convolved: MAX_CONVOLVED,
+            clip_power: HashMap::new(),
             head: [0.0; 3],
             head_from_frames: true,
             active: Vec::with_capacity(sources),
@@ -418,6 +539,12 @@ impl Mixer {
             quiet_at: f64::NEG_INFINITY,
             sounded_until: f64::NEG_INFINITY,
             audible_next: false,
+            late_p: 0.0,
+            remote_p: 0.0,
+            late_e: f64::NEG_INFINITY,
+            arrival_t: 0.0,
+            under_since: f64::INFINITY,
+            masked: false,
             meter: MeterAcc::default(),
             unheard: Vec::new(),
             convolving: false,
@@ -628,6 +755,47 @@ impl Mixer {
 
     /// Rank every sounding source's paths by loudness at the ears and
     /// share the budgets (cf. omg-web `eng_params_commit`).
+    /// The audible window, looked at every `AUDIBLE_STEP_S`: each source's
+    /// power arriving a moment ahead against the window's floor; a source
+    /// leaving or rejoining it re-ranks the mix now.
+    fn audible_window(&mut self) {
+        let sr = self.sample_rate as f64;
+        let t = self.clock + AUDIBLE_LOOKAHEAD_S * sr;
+        let floor = self.out.loudness() * 10f32.powf(-AUDIBLE_RANGE_DB / 20.0);
+        let back = 10f32.powf(AUDIBLE_HYSTERESIS_DB / 20.0);
+        let mut moved = false;
+        for s in self.slots.iter_mut() {
+            if !s.used || !s.has_block || t - s.arrival_t < AUDIBLE_STEP_S * sr {
+                continue;
+            }
+            let level = s.arriving(self.clock, t, self.sample_rate, &mut self.clip_power).sqrt() * s.fader.target_val().max(0.0);
+            // out: under the floor for a loudness integration's time; back
+            // in: over it (with hysteresis) at once
+            let under = if s.masked { level < floor * back } else { level < floor };
+            if !under {
+                s.under_since = f64::INFINITY;
+            } else if s.under_since == f64::INFINITY {
+                s.under_since = self.clock;
+            }
+            let masked = under && self.clock - s.under_since >= AUDIBLE_HOLD_S * sr;
+            if masked != s.masked {
+                s.masked = masked;
+                if masked {
+                    s.audible.set(0.0);
+                } else {
+                    // nothing it rendered before is still above the floor
+                    s.renderer.settle();
+                }
+                s.dirty = true;
+                moved = true;
+            }
+        }
+        if moved {
+            self.rebudget();
+            self.reselect();
+        }
+    }
+
     /// Every changed source's paths, chosen within its share, onto its
     /// renderer.
     fn reselect(&mut self) {
@@ -658,7 +826,7 @@ impl Mixer {
             }
             let sounding = s.quiet_at >= now;
             let fader = s.fader.target_val().max(0.0);
-            if !sounding || fader == 0.0 {
+            if !sounding || fader == 0.0 || s.masked {
                 continue;
             }
             let pb = &s.latest;
@@ -765,7 +933,12 @@ impl Mixer {
         // and on all its paths: the mix re-ranks now, not at the next
         // frame (a silent source holds no share of the paths)
         let was_silent = s.quiet_at < now;
-        if was_silent {
+        // in the window until the window has looked at what this sound
+        // will bring
+        let was_masked = std::mem::take(&mut s.masked);
+        s.under_since = f64::INFINITY;
+        // (a masked one rendered nothing above the floor: no jump either)
+        if was_silent || was_masked {
             s.audible.snap(1.0);
         } else {
             s.audible.set(1.0);
@@ -783,7 +956,7 @@ impl Mixer {
             VoiceId::NONE
         };
         s.quiet_at = s.quiet_after(sr);
-        if was_silent && s.has_block {
+        if (was_silent || was_masked) && s.has_block {
             self.rebudget();
             self.reselect();
         }
@@ -956,6 +1129,7 @@ impl Mixer {
     /// length). Real-time safe: no allocation, no locks.
     pub fn render(&mut self, l: &mut [f32], r: &mut [f32]) {
         let n = l.len().min(r.len());
+        self.audible_window();
         // who renders this block: used, not muted, not virtualized, and
         // still able to make a sound
         self.active.clear();
