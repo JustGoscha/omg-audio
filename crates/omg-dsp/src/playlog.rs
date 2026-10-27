@@ -142,6 +142,19 @@ impl PlayLog {
         }
     }
 
+    /// What sounds at emission time `t`: the loop segment playing then and
+    /// every one-shot under way, each with its gain.
+    pub fn sounding(&self, t: f64, mut f: impl FnMut(&Clip, f32)) {
+        if let Some(seg) = self.loops.iter().rev().find(|s| s.start <= t) {
+            f(&seg.clip, seg.gain);
+        }
+        for s in &self.shots {
+            if t >= s.start && t < s.end() {
+                f(&s.clip, s.gain);
+            }
+        }
+    }
+
     /// One-shots on record.
     pub fn shots(&self) -> usize {
         self.shots.len()

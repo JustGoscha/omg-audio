@@ -187,6 +187,8 @@ struct Slot {
     /// Its kernel is convolved (within the mixer's convolution budget);
     /// otherwise the block's parametric reverb plays the same response.
     convolving: bool,
+    /// Out of the audible window (see `AUDIBLE_RANGE_DB`): not rendered.
+    masked: bool,
     /// What the renderer gets: `latest` cut to this source's share of
     /// the tap budget, with hysteresis (see `select`).
     filtered: ParamBlock,
@@ -303,6 +305,14 @@ const MIX_TAPS: usize = 96;
 const MIX_POINTS: usize = 8;
 const MAX_VOICES: usize = 24;
 const MAX_CONVOLVED: usize = 8;
+/// The audible window: a source whose level at the ears falls this far
+/// under the level the ear has adapted to (the loudness stage's target
+/// over its gain) is inaudible — not rendered. A loud scene pulls the
+/// window up and quiet sounds drop out of it; in a quiet one it opens
+/// and they come back. 60 dB: the range a decay is heard over (RT60).
+const AUDIBLE_RANGE_DB: f32 = 60.0;
+/// A masked source comes back this much (dB) above the edge: no flicker.
+const AUDIBLE_HYSTERESIS_DB: f32 = 6.0;
 const SLOT_CAPACITY: usize = 16;
 /// Per-source ceilings while the mix-wide budget is off.
 const SOURCE_TAPS: usize = 160;
@@ -334,6 +344,9 @@ pub struct Mixer {
     /// v4: the most sources convolved at once (the loudest); the others
     /// play their response as the parametric reverb.
     max_convolved: usize,
+    /// RMS of each clip played (by its data's address), for the audible
+    /// window's level estimate.
+    clip_rms: HashMap<usize, f32>,
     head: [f32; 3],
     head_from_frames: bool,
     // scratch, preallocated
@@ -373,6 +386,7 @@ impl Mixer {
             mix_points: MIX_POINTS,
             max_voices: MAX_VOICES,
             max_convolved: MAX_CONVOLVED,
+            clip_rms: HashMap::new(),
             head: [0.0; 3],
             head_from_frames: true,
             active: Vec::with_capacity(sources),
@@ -421,6 +435,7 @@ impl Mixer {
             meter: MeterAcc::default(),
             unheard: Vec::new(),
             convolving: false,
+            masked: false,
         }
     }
 
@@ -645,6 +660,10 @@ impl Mixer {
         self.counts.clear();
         self.counts.resize(self.slots.len(), (0, 0));
         let mut voices: usize = 0;
+        // the audible window's floor, at the ears before the loudness
+        // stage: its target over its gain, AUDIBLE_RANGE_DB under
+        let floor = omg_dsp::output::AGC_TARGET / self.out.agc_gain().max(1e-6) * 10f32.powf(-AUDIBLE_RANGE_DB / 20.0);
+        let back = 10f32.powf(AUDIBLE_HYSTERESIS_DB / 20.0);
         for (i, s) in self.slots.iter_mut().enumerate() {
             s.loud = 0.0;
             if !s.used || !s.has_block {
@@ -653,6 +672,24 @@ impl Mixer {
             let sounding = s.quiet_at >= now;
             let fader = s.fader.target_val().max(0.0);
             if !sounding || fader == 0.0 {
+                continue;
+            }
+            // its level at the ears: the paths' energy × what it plays
+            let pb = &s.latest;
+            let paths = pb.taps.iter().map(|t| t.gains[1] * t.gains[1]).sum::<f32>()
+                + pb.reverb.level[1] * pb.reverb.level[1]
+                + pb.remote.as_ref().map_or(0.0, |r| r.send[1] * r.send[1]);
+            let mut signal = 0.0f32;
+            let rms = &mut self.clip_rms;
+            s.log.sounding(now, |c, g| {
+                let r = *rms.entry(c.as_ptr() as usize).or_insert_with(|| {
+                    (c.iter().map(|x| x * x).sum::<f32>() / c.len().max(1) as f32).sqrt()
+                });
+                signal += g * g * r * r;
+            });
+            let level = (paths * signal).sqrt() * fader;
+            s.masked = if s.masked { level < floor * back } else { level < floor };
+            if s.masked {
                 continue;
             }
             let pb = &s.latest;

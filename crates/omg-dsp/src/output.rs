@@ -51,7 +51,8 @@ pub struct OutputStage {
     sample_rate: f32,
 }
 
-const AGC_TARGET: f32 = 0.35;
+/// The level (output envelope) the ear's adaptation rides the scene to.
+pub const AGC_TARGET: f32 = 0.35;
 const AGC_MAX_BOOST: f32 = 1.15;
 const AGC_MAX_CUT: f32 = 0.06;
 /// Demand (pre-AGC envelope) where fatigue starts: ≈ +10 dB over target.
