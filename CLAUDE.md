@@ -46,6 +46,8 @@ shortcut loses. (Collected from the author's own words, Oct 25–27 2026.)
 
 ## 3. Real time over estimation and averaging
 
+- **Realism in real time — good enough for a first-person shooter.** Fast
+  moves, gunshots, doors slammed while running: the sound keeps up.
 - *"We should aim for real time over estimations and averaging. It is
   possible."* Compute what is true now, every frame, instead of smoothing
   statistics over seconds. A door closing, walking out of a room, flying
@@ -87,6 +89,10 @@ shortcut loses. (Collected from the author's own words, Oct 25–27 2026.)
 - The engine ships on its own: hosts pass geometry and tag materials with
   simple primitives. Levels, layouts and sounds are demo content in
   `demo/`, never in engine crates.
+- **Easy to drop in.** Ideally the engine takes a Godot or three.js
+  scene's own geometry and tags: drop it into a scene, tag what needs
+  tagging (with hints so an AI agent can tag materials automatically),
+  and the engine simplifies the geometry itself when it must.
 - Works on headphones and on speakers (directional cues still help on 2D
   speakers).
 
