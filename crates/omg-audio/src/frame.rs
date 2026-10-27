@@ -5,6 +5,7 @@
 
 use omg_core::params::ParamBlock;
 use omg_dsp::dense::DenseKernel;
+use omg_dsp::env::{Environment, ENV_FLAT_LEN};
 use std::sync::Arc;
 
 /// A sound source in a `Simulation` (and its channel in the `Mixer`).
@@ -58,11 +59,14 @@ pub struct Frame {
     /// or switched on: the mixer plays what they emitted while their
     /// paths were unknown from its beginning (`PlayLog::restart_unheard`).
     pub first_traced: Vec<SourceId>,
+    /// The outdoor field at the listener (ambience and rain routing):
+    /// sky inlets, enclosure, roof, nearby panes — see `crate::env`.
+    pub env: Environment,
 }
 
 /// Flat layout tag ("OMGF") and revision; bump on any layout change.
 const MAGIC: u32 = 0x4f4d_4746;
-const LAYOUT: u32 = 2;
+const LAYOUT: u32 = 3;
 const HEADER: usize = 14;
 const SKY_WORDS: usize = 6;
 
@@ -93,6 +97,8 @@ impl Frame {
     /// sky cells × 6: dir xyz, energy ×3
     /// per block: id (u32 bits), length n, then n words of
     ///            ParamBlock::write_flat
+    /// first traced: count, then ids (u32 bits)
+    /// environment: ENV_FLAT_LEN words of Environment::write_flat
     /// ```
     pub fn write_flat(&self, out: &mut Vec<f32>) {
         let bits = f32::from_bits;
@@ -121,6 +127,11 @@ impl Frame {
             out.push(bits(scratch.len() as u32));
             out.extend_from_slice(&scratch);
         }
+        out.push(bits(self.first_traced.len() as u32));
+        out.extend(self.first_traced.iter().map(|id| bits(id.0)));
+        let o = out.len();
+        out.resize(o + ENV_FLAT_LEN, 0.0);
+        self.env.write_flat(&mut out[o..]);
     }
 
     /// Parse `write_flat`'s output. None when `data` is not a frame of
@@ -159,6 +170,10 @@ impl Frame {
             blocks.push((SourceId(id), ParamBlock::read_flat(body)));
             o += 2 + n;
         }
-        Some(Frame { version, listener, time, blocks, sky, kernels: Vec::new(), first_traced: Vec::new() })
+        let nf = u(o)? as usize;
+        let first_traced = data.get(o + 1..o + 1 + nf)?.iter().map(|x| SourceId(x.to_bits())).collect();
+        o += 1 + nf;
+        let env = Environment::read_flat(data.get(o..o + ENV_FLAT_LEN)?);
+        Some(Frame { version, listener, time, blocks, sky, kernels: Vec::new(), first_traced, env })
     }
 }

@@ -7,7 +7,10 @@
 //!   muted and finished sources cost nothing;
 //! - stopping a loop ends it (after the paths in flight play out);
 //! - a one-shot on a silent source starts at full level: a clap's 3 ms
-//!   transient is not swallowed by a voice fade-in.
+//!   transient is not swallowed by a voice fade-in;
+//! - the outdoor ambience plays on the SH bus before the loudness stage:
+//!   outdoors it is heard, sealed in only its seep, and a loud bed is
+//!   ridden down by the ear adaptation like any source.
 
 use omg_audio::{clip, Config, Hrir, Mixer, Play, Simulation, SourceDesc, VoiceId};
 
@@ -152,4 +155,44 @@ fn a_clap_on_a_silent_source_is_not_faded_in() {
         eprintln!("{name}: clap after silence {first:.4}, while sounding {second:.4}: {db:+.1} dB");
         assert!(db.abs() < 1.0, "{name}: the first clap {db:+.1} dB from the second");
     }
+}
+
+/// The outdoor bed rides the same loudness stage as the scene (before,
+/// in Godot, it was added after it and only clipped).
+#[test]
+fn the_ambience_rides_the_loudness_stage() {
+    use omg_audio::env::{environment, EnvContext};
+    use omg_audio::{Frame, SkyCell};
+    // an open field: sky all around and above
+    let open: Vec<SkyCell> = (0..32)
+        .map(|i| {
+            let a = i as f32 * std::f32::consts::TAU / 32.0;
+            let (z, h) = if i % 4 == 0 { (0.95, 0.31) } else { (0.3, 0.95) };
+            SkyCell { dir: [a.cos() * h, a.sin() * h, z], energy: [0.6 / 32.0; 3] }
+        })
+        .collect();
+    let level = |amp: f32, sky: &[SkyCell]| -> (f32, f32) {
+        let mut m = Mixer::new(SR, Hrir::none());
+        m.set_ambience_gain(16.0);
+        let noise: Vec<f32> = (0..2 * 48_000u32)
+            .map(|i| amp * (((i.wrapping_mul(2654435761) >> 8) as f32 / 8388608.0) - 1.0))
+            .collect();
+        m.set_ambience(noise, false);
+        let frame = Frame { env: environment(sky, &EnvContext::default()), ..Default::default() };
+        m.apply(&frame);
+        let (l, r) = render(&mut m, 3.0);
+        let n = l.len();
+        (rms(&l[n / 2..]).max(rms(&r[n / 2..])), m.agc_gain())
+    };
+    let (quiet, g_quiet) = level(0.01, &open);
+    let (loud, g_loud) = level(2.0, &open);
+    let (sealed, _) = level(0.01, &[]);
+    eprintln!("outdoors: quiet bed {quiet:.4} (agc {g_quiet:.2}), loud bed {loud:.4} (agc {g_loud:.2}); sealed in {sealed:.5}");
+    assert!(quiet > 1e-3, "the bed is heard outdoors");
+    assert!(sealed < 0.5 * quiet, "sealed in, only its seep");
+    // 200× (46 dB) more bed: the ear adapts, and the bed is ridden by
+    // exactly that gain (it is on the bus the stage rides)
+    assert!(g_loud < 0.6 * g_quiet, "a loud bed pulls the gain down");
+    let ridden = 200.0 * g_loud / g_quiet;
+    assert!((loud / quiet / ridden - 1.0).abs() < 0.2, "ridden: {quiet} → {loud} (×{ridden:.0} expected)");
 }

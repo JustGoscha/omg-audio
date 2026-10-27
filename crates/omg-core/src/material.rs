@@ -3,7 +3,7 @@ use crate::NBANDS;
 /// Per-band acoustic surface properties. Absorption is the fraction of
 /// *energy* lost per reflection; scattering is the fraction of reflected
 /// energy that leaves diffusely (Lambertian) instead of specularly.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Material {
     pub absorption: [f32; NBANDS],
     pub scattering: f32,

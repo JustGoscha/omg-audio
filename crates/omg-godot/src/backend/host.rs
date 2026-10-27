@@ -3,8 +3,9 @@
 //!  - The ENGINE (game-thread handle) and its simulation thread come from
 //!    omg-audio unchanged.
 //!  - Its `AudioOut` lives on an OUTPUT thread here, rendering 256-frame
-//!    blocks ahead into a small ring (≈ 21 ms) together with the outdoor
-//!    beds (env.rs); Godot's audio thread only copies from the ring
+//!    blocks ahead into a small ring (≈ 21 ms) — the outdoor beds
+//!    (ambience, rain) included, in the mixer; Godot's audio thread only
+//!    copies from the ring
 //!    (nodes.rs: OmgOutputStream). Rendering on Godot's mix callback
 //!    itself would put the whole mixer on a thread that has other
 //!    deadlines; the ring isolates them for one block of latency.
@@ -25,7 +26,6 @@ use std::time::Instant;
 use omg_audio::threaded::{AudioOut, Engine, EngineConfig};
 use omg_audio::{Compute, Config, Hrir, Quality};
 
-use super::env::{environment, EnvBed, EnvContext};
 
 const BLOCK: usize = 256;
 
@@ -33,15 +33,13 @@ const BLOCK: usize = 256;
 /// Rung 1 is omg-audio's default.
 const LADDER: [(usize, usize, usize); 5] = [(48, 4, 12), (96, 8, 24), (192, 16, 32), (320, 24, 48), (480, 32, 64)];
 
-/// Commands for the output thread's own state (beds, budgets, head).
+/// Commands for the output thread's own state (beds, budgets).
 pub enum OutCmd {
     Ambience(Vec<f32>, bool),
     AmbienceGain(f32),
     RainBank(Vec<f32>),
     Rain(f32),
     RainGain(f32),
-    Head(f32, f32, f32),
-    Context(EnvContext),
     /// Pin a ladder rung (None = governor).
     Budget(Option<usize>),
 }
@@ -113,10 +111,8 @@ impl OutputReader {
 /// Everything the renderer owns.
 struct Out {
     audio: AudioOut,
-    env: EnvBed,
     rx: Receiver<OutCmd>,
     sr: f32,
-    ctx: EnvContext,
     frame_seen: u64,
     l: Vec<f32>,
     r: Vec<f32>,
@@ -138,13 +134,11 @@ impl Out {
         let t0 = Instant::now();
         while let Ok(c) = self.rx.try_recv() {
             match c {
-                OutCmd::Ambience(d, st) => self.env.set_ambience(d, st, self.sr),
-                OutCmd::AmbienceGain(g) => self.env.set_ambience_gain(g),
-                OutCmd::RainBank(b) => self.env.set_rain_bank(b),
-                OutCmd::Rain(x) => self.env.set_rain(x),
-                OutCmd::RainGain(g) => self.env.set_rain_gain(g),
-                OutCmd::Head(y, p, r) => self.env.set_head(y, p, r),
-                OutCmd::Context(c) => self.ctx = c,
+                OutCmd::Ambience(d, st) => self.audio.mixer().set_ambience(d, st),
+                OutCmd::AmbienceGain(g) => self.audio.mixer().set_ambience_gain(g),
+                OutCmd::RainBank(b) => self.audio.mixer().set_rain_bank(b),
+                OutCmd::Rain(x) => self.audio.mixer().set_rain(x),
+                OutCmd::RainGain(g) => self.audio.mixer().set_rain_gain(g),
                 OutCmd::Budget(b) => {
                     self.pinned = b.map(|r| r.min(LADDER.len() - 1));
                     self.set_rung(self.pinned.unwrap_or(self.rung));
@@ -158,9 +152,7 @@ impl Out {
         if let Some(f) = self.audio.frame() {
             if f.version != self.frame_seen {
                 self.frame_seen = f.version;
-                let env = environment(&f.sky, &self.ctx);
-                self.env.set_environment(&env);
-                sh.enclosure.store(env.enclosure.to_bits(), Ordering::Relaxed);
+                sh.enclosure.store(f.env.enclosure.to_bits(), Ordering::Relaxed);
                 // the room the listener hears: the loudest field's decay
                 let mut best = (0.0f32, 0.0f32);
                 for (_, b) in &f.blocks {
@@ -172,7 +164,6 @@ impl Out {
                 sh.rt60.store(best.1.to_bits(), Ordering::Relaxed);
             }
         }
-        self.env.process(&mut self.l, &mut self.r);
         let mut peak = 0.0f32;
         let mut sum2 = 0.0f32;
         for (o, (a, b)) in out.iter_mut().zip(self.l.iter().zip(&self.r)) {
@@ -195,10 +186,13 @@ impl Out {
         }
         self.audio.mixer().take_meters(&mut self.meter_scratch);
         let out_rms = (self.out_sum2 / self.meter_frames as f64).sqrt() as f32;
+        let (amb, rain) = self.audio.mixer().take_env_meters();
         if let Ok(mut m) = sh.meters.try_lock() {
             m.clear();
             m.extend(self.meter_scratch.iter().map(|(id, x)| (id.0, x.peak, x.rms)));
             m.push((u32::MAX, self.out_peak, out_rms));
+            m.push((u32::MAX - 1, amb.peak, amb.rms));
+            m.push((u32::MAX - 2, rain.peak, rain.rms));
         }
         self.meter_frames = 0;
         self.out_peak = 0.0;
@@ -296,10 +290,8 @@ impl Host {
         let sh = Arc::new(Shared { ring_target: AtomicUsize::new(1024), ..Default::default() });
         let mut out = Out {
             audio,
-            env: EnvBed::new(sample_rate, hrir_speakers),
             rx,
             sr: sample_rate,
-            ctx: EnvContext::default(),
             frame_seen: 0,
             l: Vec::with_capacity(4096),
             r: Vec::with_capacity(4096),
@@ -381,13 +373,13 @@ impl Host {
         let _ = self.tx.send(c);
     }
 
-    /// Head orientation at audio rate (mixer and beds).
+    /// Head orientation at audio rate.
     pub fn set_head(&mut self, yaw: f32, pitch: f32, roll: f32) {
         self.engine.set_head(yaw, pitch, roll);
-        self.send(OutCmd::Head(yaw, pitch, roll));
     }
 
-    /// The latest levels: (source id, peak, RMS), the output as `u32::MAX`.
+    /// The latest levels: (source id, peak, RMS); the output as
+    /// `u32::MAX`, the ambience bed `u32::MAX - 1`, the rain `u32::MAX - 2`.
     pub fn meters(&self) -> Vec<(u32, f32, f32)> {
         self.sh.meters.lock().map(|m| m.clone()).unwrap_or_default()
     }

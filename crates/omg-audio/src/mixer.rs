@@ -298,6 +298,13 @@ pub struct Mixer {
     near: Vec<NearPlay>,
     master: Smoothed,
     master_meter: MeterAcc,
+    /// The outdoor field (see `crate::env`): an ambience bed and rain, on
+    /// the SH bus before the loudness stage; their meters.
+    ambience: omg_dsp::ambience::Ambience,
+    rain: omg_dsp::rain::Rain,
+    has_bed: bool,
+    rain_on: bool,
+    env_meters: [MeterAcc; 2],
     clock: f64,
     next_voice: u32,
     silence: Clip,
@@ -331,6 +338,11 @@ impl Mixer {
             near: Vec::with_capacity(omg_dsp::near::MAX_VOICES),
             master: Smoothed::new(1.0, 0.02, sample_rate),
             master_meter: MeterAcc::default(),
+            ambience: omg_dsp::ambience::Ambience::new(sample_rate),
+            rain: omg_dsp::rain::Rain::new(sample_rate),
+            has_bed: false,
+            rain_on: false,
+            env_meters: [MeterAcc::default(); 2],
             clock: 0.0,
             next_voice: 1,
             silence: Clip::from(&[][..]),
@@ -522,6 +534,8 @@ impl Mixer {
                 }
             }
         }
+        self.ambience.set_environment(&frame.env);
+        self.rain.set_environment(&frame.env);
         if self.head_from_frames {
             let l = &frame.listener;
             self.set_head_inner(l.yaw, l.pitch, l.roll);
@@ -765,6 +779,47 @@ impl Mixer {
         self.master.set(gain.clamp(0.0, 4.0));
     }
 
+    /// The outdoor ambience bed: a loop (interleaved stereo when
+    /// `stereo`) at its authored loudness, slow swings flattened. It
+    /// comes in through the sky inlets of each frame's `env`.
+    pub fn set_ambience(&mut self, mut data: Vec<f32>, stereo: bool) {
+        omg_dsp::level::flatten_slow_loudness(&mut data, if stereo { 2 } else { 1 }, self.sample_rate);
+        self.has_bed = !data.is_empty();
+        self.ambience.set_loop(data, stereo);
+    }
+
+    /// The ambience bed's volume (amplitude).
+    pub fn set_ambience_gain(&mut self, gain: f32) {
+        self.ambience.set_user(gain);
+    }
+
+    /// Raindrop bank (mono, uniform 150 ms slices).
+    pub fn set_rain_bank(&mut self, bank: Vec<f32>) {
+        self.rain.set_bank(bank);
+    }
+
+    /// Rain intensity, 0 (dry) … 1 (downpour).
+    pub fn set_rain(&mut self, intensity: f32) {
+        self.rain_on |= intensity > 0.0;
+        self.rain.set_intensity(intensity);
+    }
+
+    /// The rain's volume (amplitude).
+    pub fn set_rain_gain(&mut self, gain: f32) {
+        self.rain.set_gain(gain);
+    }
+
+    /// The loudness stage's gain now (the ear's adaptation: 1 in a
+    /// normal scene, down to ~0.06 when it is very loud).
+    pub fn agc_gain(&self) -> f32 {
+        self.out.agc_gain()
+    }
+
+    /// The ambience bed's and the rain's levels since the last call.
+    pub fn take_env_meters(&mut self) -> (Meter, Meter) {
+        (self.env_meters[0].take(), self.env_meters[1].take())
+    }
+
     /// A source's output level since the last call (peak, RMS).
     pub fn take_meter(&mut self, source: SourceId) -> Meter {
         match self.index.get(&source.0) {
@@ -857,7 +912,16 @@ impl Mixer {
             }
             for j in 0..m {
                 let k = done + j;
-                let bus: [f32; NCH] = core::array::from_fn(|c| bus[c][j]);
+                let mut bus: [f32; NCH] = core::array::from_fn(|c| bus[c][j]);
+                if self.has_bed || self.rain_on {
+                    let w0 = bus[0];
+                    self.rain.process(&mut bus);
+                    let w1 = bus[0];
+                    self.ambience.process(&mut bus);
+                    let (dr, da) = (w1 - w0, bus[0] - w1);
+                    self.env_meters[1].add(2.0 * dr * dr);
+                    self.env_meters[0].add(2.0 * da * da);
+                }
                 let (mut ol, mut or) = self.out.process(&bus, pl[j], pr[j]);
                 // near-field voices: post-loudness-stage on purpose — a
                 // whisper's identity is its absolute closeness

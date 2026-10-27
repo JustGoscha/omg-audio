@@ -34,7 +34,7 @@ use std::sync::{Mutex, MutexGuard};
 use godot::classes::native::AudioFrame;
 use godot::classes::{
     AudioServer, AudioStream, AudioStreamPlayback, AudioStreamPlayer, IAudioStream, IAudioStreamPlayback, INode3D,
-    Mesh, MeshInstance3D, Node, Node3D, PhysicsRayQueryParameters3D,
+    Mesh, MeshInstance3D, Node, Node3D,
 };
 use godot::meta::conv::RawPtr;
 use godot::prelude::*;
@@ -43,7 +43,6 @@ use omg_audio::{from_y_up, to_y_up, Compute, Config, Geometry, Material, Materia
 
 use crate::backend::clips::{self, Import};
 use crate::backend::decode::ClipOptions;
-use crate::backend::env::EnvContext;
 use crate::backend::{materials, Host, OutCmd, OutputReader};
 
 const HRIR_GRID: &[u8] = include_bytes!("../../../assets/hrir_grid.bin");
@@ -505,7 +504,6 @@ pub struct OmgWorld {
     rain_clip: Option<(usize, bool)>,
     scratch: Vec<(f32, f32)>,
     head: (f32, f32, f32),
-    ctx_at: u64,
     base: Base<Node3D>,
 }
 
@@ -674,7 +672,8 @@ impl OmgWorld {
 
     /// Levels for a mixer view, refreshed ~10 times a second: source id
     /// (`OmgSource.source_id()`) → Vector2(peak, RMS) amplitude since the
-    /// refresh before; "out" → the whole output (ambience and rain too).
+    /// refresh before; "out" → the whole output, "ambience" and "rain" →
+    /// the outdoor beds.
     #[func]
     fn meters(&self) -> Dictionary<Variant, Variant> {
         let mut d = Dictionary::new();
@@ -683,6 +682,10 @@ impl OmgWorld {
                 let v = Vector2::new(peak, rms);
                 if id == u32::MAX {
                     d.set("out", v);
+                } else if id == u32::MAX - 1 {
+                    d.set("ambience", v);
+                } else if id == u32::MAX - 2 {
+                    d.set("rain", v);
                 } else {
                     d.set(id as i64, v);
                 }
@@ -849,38 +852,6 @@ impl OmgWorld {
         if (yaw, pitch, roll) != self.head {
             self.head = (yaw, pitch, roll);
             h.set_head(yaw, pitch, roll);
-        }
-        // the outdoor beds' context, ~5 times a second: a roof probe
-        // (something overhead with sky above it) against the level's
-        // collision, and the nearby panes rain patters on
-        if self.frame >= self.ctx_at {
-            self.ctx_at = self.frame + 12;
-            let mut ctx = EnvContext::default();
-            if let Some(mut space) = base.get_world_3d().and_then(|w| w.get_direct_space_state()) {
-                let o = t.origin;
-                let mut ray = |a: Vector3, b: Vector3| -> Option<Vector3> {
-                    let q = PhysicsRayQueryParameters3D::create(a, b)?;
-                    let d = space.intersect_ray(&q);
-                    d.get("position").and_then(|v| v.try_to::<Vector3>().ok())
-                };
-                if let Some(at) = ray(o + Vector3::UP * 0.3, o + Vector3::UP * 40.0) {
-                    ctx.roof = ray(at + Vector3::UP * 0.4, at + Vector3::UP * 300.0).is_none();
-                }
-            }
-            for n in tree.get_nodes_in_group("omg_door").iter_shared() {
-                let Ok(d) = n.try_cast::<OmgDoor>() else { continue };
-                if !d.bind().material.to_string().contains("glass") {
-                    continue;
-                }
-                let w = eng(d.get_global_position());
-                let v = [w[0] - p[0], w[1] - p[1], w[2] - p[2]];
-                let dist = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-                if dist < 12.0 {
-                    let k = 1.0 / dist.max(1e-3);
-                    ctx.windows.push(([v[0] * k, v[1] * k, v[2] * k], dist));
-                }
-            }
-            h.send(OutCmd::Context(ctx));
         }
     }
 

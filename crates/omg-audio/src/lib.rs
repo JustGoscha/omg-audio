@@ -25,6 +25,7 @@
 //! Coordinates: meters, right-handed, +z up ([`from_y_up`] converts).
 //! See README.md for a quick start.
 
+pub mod env;
 pub mod frame;
 pub mod geometry;
 pub mod mixer;

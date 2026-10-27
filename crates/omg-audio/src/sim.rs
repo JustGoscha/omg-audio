@@ -713,7 +713,8 @@ impl Simulation {
             self.build_kernels(tick);
         }
 
-        let sky = self.tracer.sky().into_iter().map(|(dir, energy)| SkyCell { dir, energy }).collect();
+        let sky: Vec<SkyCell> = self.tracer.sky().into_iter().map(|(dir, energy)| SkyCell { dir, energy }).collect();
+        let env = crate::env::environment(&sky, &self.outdoor_context(ear));
         Frame {
             version: tick,
             listener: self.listener,
@@ -722,6 +723,35 @@ impl Simulation {
             kernels: self.sources.iter().filter_map(|s| s.kernel.as_ref().map(|k| (s.id, k.0.clone()))).collect(),
             sky,
             first_traced,
+            env,
         }
+    }
+
+    /// Around the listener, for the outdoor field: a roof probe
+    /// (something overhead with open sky above it: rain drums on it) and
+    /// the glass panes near by (rain patters on them).
+    fn outdoor_context(&self, ear: Vec3) -> crate::env::EnvContext {
+        let up = Vec3::new(0.0, 0.0, 1.0);
+        let roof = match self.mesh.raycast(ear + up * 0.3, up) {
+            Some((t, _)) if t < 40.0 => {
+                let above = ear + up * (0.3 + t + 0.4);
+                self.mesh.raycast(above, up).is_none()
+            }
+            _ => false,
+        };
+        let windows = self
+            .objects
+            .iter()
+            .filter(|o| o.enabled && o.material == Material::GLASS)
+            .filter_map(|o| {
+                let v = (o.min + o.max) * 0.5 - ear;
+                let d = v.length();
+                (d < crate::env::WINDOW_REACH).then(|| {
+                    let k = 1.0 / d.max(1e-3);
+                    ([v.x * k, v.y * k, v.z * k], d)
+                })
+            })
+            .collect();
+        crate::env::EnvContext { roof, windows }
     }
 }
