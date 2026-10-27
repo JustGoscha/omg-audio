@@ -737,6 +737,13 @@ impl Mixer {
         }
     }
 
+    /// Every source's output level since the last call, into `out`
+    /// (cleared first).
+    pub fn take_meters(&mut self, out: &mut Vec<(SourceId, Meter)>) {
+        out.clear();
+        out.extend(self.slots.iter_mut().filter(|s| s.used).map(|s| (s.id, s.meter.take())));
+    }
+
     /// The final output level since the last call.
     pub fn take_master_meter(&mut self) -> Meter {
         self.master_meter.take()

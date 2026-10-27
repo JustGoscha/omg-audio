@@ -62,6 +62,10 @@ struct Shared {
     peak: AtomicU32,
     enclosure: AtomicU32,
     rt60: AtomicU32,
+    /// Levels for a mixer view, ~10 times a second: (source id, peak,
+    /// RMS) per source, the output (ambience and rain included) as
+    /// `u32::MAX`.
+    meters: Mutex<Vec<(u32, f32, f32)>>,
 }
 
 /// The consumer end of the output ring (Godot's audio thread).
@@ -122,6 +126,11 @@ struct Out {
     load_s: f64,
     load_frames: usize,
     calm: u32,
+    // meters
+    meter_frames: usize,
+    out_peak: f32,
+    out_sum2: f64,
+    meter_scratch: Vec<(omg_audio::SourceId, omg_audio::Meter)>,
 }
 
 impl Out {
@@ -165,13 +174,35 @@ impl Out {
         }
         self.env.process(&mut self.l, &mut self.r);
         let mut peak = 0.0f32;
+        let mut sum2 = 0.0f32;
         for (o, (a, b)) in out.iter_mut().zip(self.l.iter().zip(&self.r)) {
             let (a, b) = (a.clamp(-1.0, 1.0), b.clamp(-1.0, 1.0));
             peak = peak.max(a.abs()).max(b.abs());
+            sum2 += 0.5 * (a * a + b * b);
             *o = (a, b);
         }
         sh.peak.store(peak.to_bits(), Ordering::Relaxed);
+        self.meter(sh, peak, sum2, n);
         self.govern(sh, t0.elapsed().as_secs_f64(), n);
+    }
+
+    fn meter(&mut self, sh: &Shared, peak: f32, sum2: f32, frames: usize) {
+        self.out_peak = self.out_peak.max(peak);
+        self.out_sum2 += sum2 as f64;
+        self.meter_frames += frames;
+        if (self.meter_frames as f32) < self.sr / 10.0 {
+            return;
+        }
+        self.audio.mixer().take_meters(&mut self.meter_scratch);
+        let out_rms = (self.out_sum2 / self.meter_frames as f64).sqrt() as f32;
+        if let Ok(mut m) = sh.meters.try_lock() {
+            m.clear();
+            m.extend(self.meter_scratch.iter().map(|(id, x)| (id.0, x.peak, x.rms)));
+            m.push((u32::MAX, self.out_peak, out_rms));
+        }
+        self.meter_frames = 0;
+        self.out_peak = 0.0;
+        self.out_sum2 = 0.0;
     }
 
     fn set_rung(&mut self, r: usize) {
@@ -275,6 +306,10 @@ impl Host {
             load_s: 0.0,
             load_frames: 0,
             calm: 0,
+            meter_frames: 0,
+            out_peak: 0.0,
+            out_sum2: 0.0,
+            meter_scratch: Vec::new(),
         };
         out.set_rung(1);
         sh.rung.store(1, Ordering::Relaxed);
@@ -348,6 +383,11 @@ impl Host {
     pub fn set_head(&mut self, yaw: f32, pitch: f32, roll: f32) {
         self.engine.set_head(yaw, pitch, roll);
         self.send(OutCmd::Head(yaw, pitch, roll));
+    }
+
+    /// The latest levels: (source id, peak, RMS), the output as `u32::MAX`.
+    pub fn meters(&self) -> Vec<(u32, f32, f32)> {
+        self.sh.meters.lock().map(|m| m.clone()).unwrap_or_default()
     }
 
     pub fn stats(&self) -> Stats {

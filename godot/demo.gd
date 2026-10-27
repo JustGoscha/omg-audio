@@ -295,8 +295,8 @@ func _viewport() -> void:
 # (the image fills the window); fine/full: the window's own pixels.
 func _size_view(full: bool) -> void:
 	var win := get_viewport().get_visible_rect().size
-	if full:
-		view.size = Vector2i(win)
+	if full: # the window's pixels (the 2D layer is scaled with the window)
+		view.size = get_window().size
 	else:
 		view.size = Vector2i(roundi(pixel_h * win.x / maxf(1.0, win.y)), pixel_h)
 

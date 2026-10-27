@@ -223,6 +223,14 @@ pub struct OmgSource {
     #[export]
     #[init(val = true)]
     active: bool,
+    /// A mixer fader over `level_db` (dB), for the listener's own mix:
+    /// the scene's levels stay what the script sets.
+    #[export]
+    volume_db: f32,
+    /// Muted on the mixer: not traced or heard (costs nothing), whatever
+    /// `active` says.
+    #[export]
+    muted: bool,
     id: Option<SourceId>,
     /// Voices of one-shots in flight, by clip id (for stop_clip).
     voices: Vec<(i64, VoiceId)>,
@@ -394,6 +402,7 @@ impl IAudioStreamPlayback for OmgOutputPlayback {
 struct SourceRec {
     id: SourceId,
     level_db: f32,
+    volume_db: f32,
     file: GString,
     file_clip: Option<usize>,
     /// What loops now: (clip id, voice).
@@ -662,6 +671,25 @@ impl OmgWorld {
         d
     }
 
+    /// Levels for a mixer view, refreshed ~10 times a second: source id
+    /// (`OmgSource.source_id()`) → Vector2(peak, RMS) amplitude since the
+    /// refresh before; "out" → the whole output (ambience and rain too).
+    #[func]
+    fn meters(&self) -> Dictionary<Variant, Variant> {
+        let mut d = Dictionary::new();
+        if let Some(h) = host().as_ref() {
+            for (id, peak, rms) in h.meters() {
+                let v = Vector2::new(peak, rms);
+                if id == u32::MAX {
+                    d.set("out", v);
+                } else {
+                    d.set(id as i64, v);
+                }
+            }
+        }
+        d
+    }
+
     /// The last tick's strongest traced paths (with `debug_paths` on;
     /// empty otherwise), strongest first: each {source: the OmgSource node
     /// (null if gone), energy: mid-band, relative, points:
@@ -858,10 +886,10 @@ impl OmgWorld {
             let Ok(mut src) = n.try_cast::<OmgSource>() else { continue };
             let key = src.instance_id();
             let pos = eng(src.get_global_position());
-            let on = src.bind().active && src.is_visible_in_tree();
-            let (file, level_db, playing) = {
+            let on = src.bind().active && !src.bind().muted && src.is_visible_in_tree();
+            let (file, level_db, volume_db, playing) = {
                 let b = src.bind();
-                (b.file.clone(), b.level_db, b.playing)
+                (b.file.clone(), b.level_db, b.volume_db, b.playing)
             };
             if !self.sources.contains_key(&key) {
                 let id = {
@@ -871,7 +899,7 @@ impl OmgWorld {
                 };
                 self.sources.insert(
                     key,
-                    SourceRec { id, level_db, file: GString::new(), file_clip: None, looping: None, seen: frame },
+                    SourceRec { id, level_db, volume_db: 0.0, file: GString::new(), file_clip: None, looping: None, seen: frame },
                 );
                 // plays queued before the source was linked
                 let pending = {
@@ -892,6 +920,10 @@ impl OmgWorld {
             if level_db != rec.level_db {
                 rec.level_db = level_db;
                 h.engine.set_source_loudness(rec.id, db(level_db - 90.0));
+            }
+            if volume_db != rec.volume_db {
+                rec.volume_db = volume_db;
+                h.engine.set_volume(rec.id, db(volume_db));
             }
             if file != rec.file {
                 rec.file = file.clone();
