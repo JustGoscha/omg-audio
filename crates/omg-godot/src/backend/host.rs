@@ -24,14 +24,12 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use omg_audio::threaded::{AudioOut, Engine, EngineConfig};
+use omg_audio::governor::{Governor, LADDER};
 use omg_audio::{Compute, Config, Hrir, Quality};
 
 
 const BLOCK: usize = 256;
 
-/// Budget ladder (mix-wide taps, point-HRTF paths, rendering sources).
-/// Rung 1 is omg-audio's default.
-const LADDER: [(usize, usize, usize); 5] = [(48, 4, 12), (96, 8, 24), (192, 16, 32), (320, 24, 48), (480, 32, 64)];
 
 /// Commands for the output thread's own state (beds, budgets).
 pub enum OutCmd {
@@ -116,12 +114,7 @@ struct Out {
     frame_seen: u64,
     l: Vec<f32>,
     r: Vec<f32>,
-    // governor
-    rung: usize,
-    pinned: Option<usize>,
-    load_s: f64,
-    load_frames: usize,
-    calm: u32,
+    gov: Governor,
     // meters
     meter_frames: usize,
     out_peak: f32,
@@ -140,8 +133,8 @@ impl Out {
                 OutCmd::Rain(x) => self.audio.mixer().set_rain(x),
                 OutCmd::RainGain(g) => self.audio.mixer().set_rain_gain(g),
                 OutCmd::Budget(b) => {
-                    self.pinned = b.map(|r| r.min(LADDER.len() - 1));
-                    self.set_rung(self.pinned.unwrap_or(self.rung));
+                    self.gov.pin(self.audio.mixer(), b);
+                    sh.rung.store(self.gov.rung(), Ordering::Relaxed);
                 }
             }
         }
@@ -199,44 +192,15 @@ impl Out {
         self.out_sum2 = 0.0;
     }
 
-    fn set_rung(&mut self, r: usize) {
-        self.rung = r;
-        let (t, p, v) = LADDER[r];
-        self.audio.mixer().set_budget(t, p, v);
-    }
-
-    /// 0.25 s windows of render time vs audio time (the worklet's rules).
+    /// The shared governor (omg-audio), and the stats a HUD reads.
     fn govern(&mut self, sh: &Shared, secs: f64, frames: usize) {
-        self.load_s += secs;
-        self.load_frames += frames;
-        if (self.load_frames as f32) < self.sr / 4.0 {
-            return;
+        if self.gov.report(self.audio.mixer(), secs, frames) {
+            sh.load.store(self.gov.load().to_bits(), Ordering::Relaxed);
+            let (rendering, paths, _) = self.audio.mixer().occupancy();
+            sh.rendering.store(rendering, Ordering::Relaxed);
+            sh.paths.store(paths, Ordering::Relaxed);
+            sh.rung.store(self.gov.rung(), Ordering::Relaxed);
         }
-        let ratio = (self.load_s / (self.load_frames as f64 / self.sr as f64)) as f32;
-        self.load_s = 0.0;
-        self.load_frames = 0;
-        sh.load.store(ratio.to_bits(), Ordering::Relaxed);
-        let (rendering, paths, _) = self.audio.mixer().occupancy();
-        sh.rendering.store(rendering, Ordering::Relaxed);
-        sh.paths.store(paths, Ordering::Relaxed);
-        if self.pinned.is_none() {
-            if ratio > 0.80 && self.rung > 0 {
-                self.set_rung(0);
-                self.calm = 0;
-            } else if ratio > 0.55 && self.rung > 0 {
-                self.set_rung(self.rung - 1);
-                self.calm = 0;
-            } else if ratio < 0.30 {
-                self.calm += 1;
-                if self.calm >= 4 && self.rung + 1 < LADDER.len() {
-                    self.calm = 0;
-                    self.set_rung(self.rung + 1);
-                }
-            } else {
-                self.calm = 0;
-            }
-        }
-        sh.rung.store(self.rung, Ordering::Relaxed);
     }
 }
 
@@ -295,17 +259,13 @@ impl Host {
             frame_seen: 0,
             l: Vec::with_capacity(4096),
             r: Vec::with_capacity(4096),
-            rung: 1,
-            pinned: None,
-            load_s: 0.0,
-            load_frames: 0,
-            calm: 0,
+            gov: Governor::new(sample_rate),
             meter_frames: 0,
             out_peak: 0.0,
             out_sum2: 0.0,
             meter_scratch: Vec::new(),
         };
-        out.set_rung(1);
+        out.gov.apply(out.audio.mixer());
         sh.rung.store(1, Ordering::Relaxed);
         Self {
             sample_rate,

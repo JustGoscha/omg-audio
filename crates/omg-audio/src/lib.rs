@@ -28,6 +28,7 @@
 pub mod env;
 pub mod frame;
 pub mod geometry;
+pub mod governor;
 pub mod mixer;
 pub mod sim;
 // threads: native, and wasm under Emscripten (pthreads as Web Workers);
