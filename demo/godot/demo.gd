@@ -470,19 +470,68 @@ func _load() -> void:
 	create_tween().tween_method(func(db: float) -> void: AudioServer.set_bus_volume_db(bus, db), -40.0, 0.0, 0.8)
 	loaded.emit()
 
-# T: a flashlight in the player's hand (right of and below the eyes).
+# T: a flashlight in the player's hand (right of and below the eyes). A
+# handheld torch: its light falls off with the square of the distance
+# (spot_attenuation 2), bright on what is near and faded into the night
+# by ~12 m; the range window takes the rest smoothly to zero at 16 m (no
+# visible edge, and a short shadow cone). The beam carries a reflector's
+# pattern (_torch_beam).
 func _torch() -> void:
 	torch = SpotLight3D.new()
 	torch.position = Vector3(0.18, -0.22, 0.0)
 	torch.light_color = Color(0.95, 0.97, 1.0)
-	torch.light_energy = 3.0
-	torch.spot_range = 30.0
-	torch.spot_angle = 24.0
-	torch.spot_attenuation = 0.8
+	torch.light_energy = 24.0
+	torch.spot_range = 16.0
+	torch.spot_angle = 26.0
+	torch.spot_attenuation = 2.0
+	if RenderingServer.get_current_rendering_method() != "gl_compatibility":
+		torch.spot_angle_attenuation = 2.0 # near flat: the pattern shapes the beam
+		torch.light_projector = _torch_beam()
+	else:
+		# no light projectors in Compatibility (the web build), and its
+		# cone renders flat: a plain disc about as bright overall as the
+		# patterned beam
+		torch.light_energy = 10.0
 	torch.shadow_enabled = true
-	torch.light_volumetric_fog_energy = 4.0 # a visible beam in the night air
+	torch.light_volumetric_fog_energy = 0.5 # a visible beam in the night air
 	torch.visible = false
 	player.cam.add_child(torch)
+
+# The torch's beam pattern, projected through its cone (the image's
+# inscribed circle is the cone's edge): a reflector torch's hot spot with
+# a faint bright rim and a darker band just outside it, then a dim,
+# slightly warmer spill with one more faint ring, and a soft outer edge.
+# Radially symmetric: one quadrant from a radial profile, mirrored.
+static func _torch_beam() -> ImageTexture:
+	const N := 256
+	const H := N / 2
+	var prof: Array[PackedByteArray] = [] # r (0..1 in 1/512 steps) → sRGB
+	for i in 513:
+		var r := i / 512.0
+		var hot := exp(-pow(r / 0.3, 6.0)) # flat top, defined edge
+		var spill := 0.34 * (1.0 - smoothstep(0.78, 1.0, r))
+		var l := spill + (1.0 - spill) * hot
+		l *= 1.0 + 0.2 * exp(-pow((r - 0.285) / 0.03, 2.0)) \
+			- 0.22 * exp(-pow((r - 0.39) / 0.035, 2.0)) \
+			+ 0.15 * exp(-pow((r - 0.64) / 0.04, 2.0))
+		var warm := smoothstep(0.28, 0.48, r)
+		var c := Color(l, l * (1.0 - 0.03 * warm), l * (1.0 - 0.1 * warm)).linear_to_srgb()
+		prof.append(PackedByteArray([c.r8, c.g8, c.b8]))
+	var data := PackedByteArray()
+	data.resize(N * N * 3)
+	data.fill(0)
+	for y in H:
+		for x in H:
+			var r := Vector2(x + 0.5, y + 0.5).length() / H
+			if r >= 1.0:
+				continue # outside the cone: dark
+			var px: PackedByteArray = prof[roundi(r * 512.0)]
+			for o: int in [((H + y) * N + H + x) * 3, ((H + y) * N + H - 1 - x) * 3,
+					((H - 1 - y) * N + H + x) * 3, ((H - 1 - y) * N + H - 1 - x) * 3]:
+				data[o] = px[0]
+				data[o + 1] = px[1]
+				data[o + 2] = px[2]
+	return ImageTexture.create_from_image(Image.create_from_data(N, N, false, Image.FORMAT_RGB8, data))
 
 # Every lamp also gets a glowing dot of a fixed few pixels: at 240p a lamp
 # is often smaller than a pixel and drops out of the image, although in
