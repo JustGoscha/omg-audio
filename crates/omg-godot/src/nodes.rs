@@ -498,6 +498,12 @@ pub struct OmgWorld {
     #[export]
     #[init(val = true)]
     engine_v4: bool,
+    /// Engine v5 (on v4): the reverb's late paths reused across ticks,
+    /// reconnected exactly to where the listener is — half the late
+    /// tail's noise for ~2 % of the tick.
+    #[export]
+    #[init(val = true)]
+    engine_v5: bool,
     /// Record each tick's strongest traced paths for `paths()` (a debug
     /// view). Off: the tracer records nothing.
     #[export]
@@ -507,7 +513,7 @@ pub struct OmgWorld {
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 13],
+    sent: [f32; 14],
     #[init(val = TierGovernor::new(3))]
     auto_tier: TierGovernor,
     auto_ticks: u32,
@@ -829,6 +835,7 @@ impl OmgWorld {
             quality,
             compute: if self.use_gpu { Compute::Gpu } else { Compute::Cpu },
             v4: self.engine_v4,
+            v5: self.engine_v4 && self.engine_v5,
             sample_rate: engine_rate(),
             gpu_budget: self.gpu_budget.clamp(0.02, 1.0),
             ..Config::default()
@@ -853,7 +860,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 13];
+        self.sent = [f32::NAN; 14];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -1044,6 +1051,7 @@ impl OmgWorld {
             self.debug_paths as i32 as f32,
             self.engine_v4 as i32 as f32,
             self.gpu_budget,
+            self.engine_v5 as i32 as f32,
         ];
         let cfg = self.sim_config();
         let mut g = host();

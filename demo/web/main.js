@@ -458,7 +458,11 @@ function buildQuality() {
       { name: 'v4',
         tip: 'Engine v4: the response rendered as traced — no early/late split in time. Exact mirror paths (wall reflections, a canyon\u2019s echo seconds later, the flutter between bare walls) play as their own echoes; everything scattered is the traced reverb itself, convolved (within the render budget; the rest play the same response on the parametric reverb).',
         set: () => state.setEarly?.(4),
-        active: () => state.earlyMode !== 3 },
+        active: () => state.earlyMode === 4 },
+      { name: 'v5',
+        tip: 'Engine v5: v4, with the reverb\u2019s late paths reused across ticks — each reconnected exactly to where you are now (the solid angle its first bounce subtends, what lies between, its new delay), so every tick averages the last eight ticks\u2019 paths: half the late tail\u2019s noise, for ~2 % of the tick. A door or a moved source drops what it touched.',
+        set: () => state.setEarly?.(5),
+        active: () => state.earlyMode === 5 },
     ]);
 
   mkSwitch('compute',
@@ -2465,7 +2469,7 @@ async function startAudio() {
     state.setDebugRays = (on) => worker.postMessage({ type: 'debug', on });
     state.setEarly = (mode) => {
       state.earlyMode = mode;
-      try { localStorage.setItem('omg-early-v4', ['ism', 'traced', 'traced', 'v3', 'v4'][mode] || 'v4'); } catch (_) {}
+      try { localStorage.setItem('omg-early-v5', ['ism', 'traced', 'traced', 'v3', 'v4', 'v5'][mode] || 'v5'); } catch (_) {}
       worker.postMessage({ type: 'early', mode });
     };
     state.setMute = (srcs, on) => worker.postMessage({ type: 'mute', srcs, on });
@@ -2475,18 +2479,19 @@ async function startAudio() {
       worker.postMessage({ type: 'module', id, on });
     };
     // a real setting: ?early=v4|v3|traced|ism wins, else the remembered
-    // choice, else v4 (the traced response rendered as traced; v3,
+    // choice, else v5 (v4's traced response, its late paths reused; v4, v3,
     // traced and ism stay selectable). The storage key is versioned:
     // choices remembered under an older default reset once.
     {
       const p = (new URLSearchParams(location.search).get('early') || '').toLowerCase();
       let stored = null;
-      try { stored = localStorage.getItem('omg-early-v4'); } catch (_) {}
+      try { stored = localStorage.getItem('omg-early-v5'); } catch (_) {}
       const pick = p === 'traced' || p === 'pt' ? 1
         : p === 'ism' ? 0
           : p === 'v3' ? 3
             : p === 'v4' ? 4
-              : stored === 'ism' ? 0 : stored === 'traced' ? 1 : stored === 'v3' ? 3 : 4;
+              : p === 'v5' ? 5
+                : stored === 'ism' ? 0 : stored === 'traced' ? 1 : stored === 'v3' ? 3 : stored === 'v4' ? 4 : 5;
       state.earlyMode = pick;
       if (pick) worker.postMessage({ type: 'early', mode: pick });
       // remembered module switches (default on)

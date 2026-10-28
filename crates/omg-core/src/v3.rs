@@ -914,6 +914,7 @@ impl SourceState {
         direct: Option<Tap>,
         edge_taps: &mut Vec<Tap>,
         reflected: [f32; NBANDS],
+        shared: f32,
     ) -> SourceField {
         let mut taps: Vec<Tap> = Vec::new();
         if let Some(t) = direct {
@@ -989,7 +990,12 @@ impl SourceState {
                 return 0.0;
             }
             let per_tick = (q / (e * e)).max(self.dense_var[w] as f64);
-            (per_tick / self.dense_ticks[w].max(1.0) as f64).sqrt() as f32
+            // v5: a tick's estimate holds the pool's paths too, each in
+            // `shared` ticks — the ticks averaged hold that many fewer
+            // distinct paths (counted as independent, the error would be
+            // √shared too small: noise judged a change)
+            let ticks = (self.dense_ticks[w] as f64 + shared as f64 - 1.0) / shared as f64;
+            (per_tick / ticks.max(1.0)).sqrt() as f32
         });
         let end = dense.len() as f32 * DENSE_BIN_S;
         impulses.retain(|i| i[0] < end);
@@ -1087,6 +1093,38 @@ impl SourceState {
 }
 
 /// Fresh per-tick accumulators for one source.
+/// v5: a late path past its first bounce (diffuse there: what follows
+/// doesn't depend on where the listener stood) — reconnected to the
+/// listener's next positions (`Tracer::reuse_late`).
+struct LateRecord {
+    /// The first bounce: where, its normal (towards the listener's side),
+    /// how far from the listener, at what incidence (cos).
+    v1: Vec3,
+    n1: Vec3,
+    r1: f32,
+    cos1: f32,
+    /// Everything the path deposited past it: (source id, energy, delay,
+    /// spread), as walked (× 1/rays of its tick).
+    deps: Vec<(u32, [f32; NBANDS], f32, f32)>,
+}
+
+/// v5: the late paths of the last `LATE_POOL_TICKS` ticks.
+struct PoolTick {
+    records: Vec<LateRecord>,
+    /// The late rays walked that tick (every one a sample, reusable or
+    /// not), the listener, and the sources (id, position) then.
+    rays: f32,
+    listener: Vec3,
+    sources: Vec<(u32, Vec3)>,
+}
+
+/// v5: ticks of late paths reused (each tick's estimate averages its own
+/// rays and theirs: ×(1 + this) samples, standing still or moving).
+const LATE_POOL_TICKS: usize = 7;
+/// … from listener positions at most this far from where it is now (the
+/// reconnection is exact at any distance; far, its weights scatter).
+const LATE_POOL_REACH_M: f32 = 3.0;
+
 struct Acc {
     early: HashMap<u32, Bin>,
     echo: Echogram,
@@ -1104,6 +1142,37 @@ struct Acc {
 impl Acc {
     fn new(t_free: f32, v4: bool) -> Self {
         Self { early: HashMap::new(), echo: Echogram::new(), t_free, total: [0.0; NBANDS], dense: Vec::new(), v4, sq_scale: 1.0 }
+    }
+
+    /// Every contribution × `f` (an estimate's weight: its samples' share
+    /// of a pooled average); the squared-energy channel × f².
+    fn scale(&mut self, f: f32) {
+        for b in 0..NBANDS {
+            self.total[b] *= f;
+        }
+        for d in &mut self.dense {
+            for c in 0..6 {
+                d[c] *= f;
+            }
+            d[6] *= f * f;
+        }
+        for bin in &mut self.echo.bins {
+            for b in 0..NBANDS {
+                bin[b] *= f;
+            }
+        }
+        for d in &mut self.echo.dirs {
+            for k in 0..3 {
+                d[k] *= f;
+            }
+        }
+        for b in self.early.values_mut() {
+            for band in 0..NBANDS {
+                b.e[band] *= f;
+            }
+            b.ed *= f;
+            b.dir = b.dir * f;
+        }
     }
 
     /// Add another walk's contributions — a disjoint set of paths (the
@@ -1192,6 +1261,13 @@ pub struct Tracer {
     /// Engine v4: keep the whole traced response (see `RESPONSE_MAX_S`):
     /// every SourceField carries `dense`, coherent arrivals are taps.
     pub v4: bool,
+    /// Engine v5 (on v4): the late family's paths are reused across ticks
+    /// — past their first (diffuse) bounce, reconnected exactly to where
+    /// the listener is now (`reuse_late`).
+    pub v5: bool,
+    late_pool: std::collections::VecDeque<PoolTick>,
+    /// The world signature the pool was walked in (a door moved: gone).
+    late_pool_sig: u64,
     /// v4: a signature of the world's movable parts (panels) last tick: a
     /// door closing ends every source's settled average.
     world_sig: u64,
@@ -1393,6 +1469,9 @@ impl Tracer {
             chains: HashMap::new(),
             rejected: HashMap::new(),
             v4: false,
+            v5: false,
+            late_pool: std::collections::VecDeque::new(),
+            late_pool_sig: 0,
             world_sig: 0,
             debug: false,
             debug_paths: Vec::new(),
@@ -1418,6 +1497,13 @@ impl Tracer {
             .collect()
     }
 
+    /// v4: a source's measured per-tick scatter of the dense response's
+    /// fresh trace around its mean, per history window (variance of ln
+    /// fresh/mean) — the estimate's own noise.
+    pub fn dense_scatter(&self, id: u32) -> Option<[f32; HISTORY_WINDOWS]> {
+        self.state.get(&id).map(|s| s.dense_var)
+    }
+
     /// Forget a source's history (it moved discontinuously, or left).
     pub fn reset(&mut self, id: u32) {
         self.state.remove(&id);
@@ -1426,7 +1512,17 @@ impl Tracer {
     }
 
     /// Forget every average (the listener crossed a surface).
+    /// How many ticks' estimates share each walked path (v5: the pool's).
+    pub(crate) fn shared_ticks(&self) -> f32 {
+        if self.v5 && self.v4 {
+            (1 + LATE_POOL_TICKS) as f32
+        } else {
+            1.0
+        }
+    }
+
     fn forget_all(&mut self) {
+        self.late_pool.clear();
         self.state.clear();
         self.chains.clear();
         self.rejected.clear();
@@ -1523,6 +1619,7 @@ impl Tracer {
 
         // 5. smooth over ticks and build each source's field
         let mut out = Vec::with_capacity(sources.len());
+        let shared = self.shared_ticks();
         for (si, s) in sources.iter().enumerate() {
             let t_free = accs[si].t_free;
             let acc = core::mem::replace(
@@ -1533,7 +1630,7 @@ impl Tracer {
             if self.v4 {
                 let total = acc.total;
                 st.fold_v4(acc, budget, listener, s.pos);
-                out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total));
+                out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared));
             } else {
                 st.fold(acc.early, acc.echo, budget);
                 out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
@@ -1592,16 +1689,38 @@ impl Tracer {
             coherent && loud && refl >= 1 && refl <= MAX_COHERENT_REFL && (v4 || refl > bounces || rel >= EARLY_S)
         };
         let mut branches: Vec<Branch> = Vec::new();
+        // v5: the late family walks into estimates of its own — the rays
+        // that bounced diffusely first (A: what follows doesn't depend on
+        // where the listener stood) and the rest (B) — and the pool's
+        // paths join A (`reuse_late`)
+        let pooling = self.v5 && self.v4;
+        let (mut late_a, mut late_b): (Vec<Acc>, Vec<Acc>) = if pooling {
+            (accs.iter().map(|a| Acc::new(a.t_free, a.v4)).collect(), accs.iter().map(|a| Acc::new(a.t_free, a.v4)).collect())
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let mut records: Vec<LateRecord> = Vec::new();
+        let mut ray_deps: Vec<(usize, [f32; NBANDS], f32, f32)> = Vec::new();
+        let mut late_rays = 0usize;
         for (dirs, lo, hi, segments, nee) in fams {
         if dirs.is_empty() || lo > hi {
             continue;
         }
         let inv_n = 1.0 / dirs.len() as f32;
         let counts = |order: u32| order >= lo && order <= hi;
+        let pooled = pooling && lo > 0;
+        if pooled {
+            late_rays = dirs.len();
+        }
         for &d0 in dirs {
             let first = rot_apply(&rot, d0);
             branches.clear();
             branches.push(Branch::start(listener, first));
+            // v5: this ray's first bounce (diffuse, nothing on the way
+            // there: A) and what it deposits
+            let mut first_bounce: Option<(Vec3, Vec3, f32, f32)> = None;
+            let mut reusable = pooled;
+            ray_deps.clear();
             while let Some(br) = branches.pop() {
             let Branch {
                 mut origin,
@@ -1691,11 +1810,18 @@ impl Tracer {
                         }
                         // a sphere hit only knows the path to within the
                         // sphere: its arrival is spread over r/c each way
-                        deposit_spread(&mut accs[si], &self.cells, e, l_s / SPEED_OF_SOUND, first, r / SPEED_OF_SOUND);
+                        if pooled {
+                            ray_deps.push((si, e, l_s / SPEED_OF_SOUND, r / SPEED_OF_SOUND));
+                        } else {
+                            deposit_spread(&mut accs[si], &self.cells, e, l_s / SPEED_OF_SOUND, first, r / SPEED_OF_SOUND);
+                        }
                     }
                 }
 
                 if let Some((te, a, u, ei)) = edge {
+                    if seg == 0 {
+                        reusable = false;
+                    }
                     last_edge = Some(ei);
                     // bend around the edge at the closest approach
                     if bend_from.is_none() {
@@ -1802,7 +1928,11 @@ impl Tracer {
                         if debug {
                             keep_path(dbg, s.id, e[1], &verts, s.pos);
                         }
-                        deposit(&mut accs[si], &self.cells, e, (length + r) / SPEED_OF_SOUND, first);
+                        if pooled {
+                            ray_deps.push((si, e, (length + r) / SPEED_OF_SOUND, 0.0));
+                        } else {
+                            deposit(&mut accs[si], &self.cells, e, (length + r) / SPEED_OF_SOUND, first);
+                        }
                     }
                 }
 
@@ -1818,6 +1948,9 @@ impl Tracer {
                 // the draw: its echo selection, a salience test against
                 // the diffuse estimate, was calibrated on it.)
                 let split_here = v4 && !split && p_t >= SPLIT_T2;
+                if split_here && seg == 0 {
+                    reusable = false;
+                }
                 if split_here {
                     split = true;
                     // the wall as a whole: the same price a segment
@@ -1851,6 +1984,9 @@ impl Tracer {
                     0.0
                 };
                 if pt > 0.0 && self.rng.next_f32() < pt {
+                    if seg == 0 {
+                        reusable = false;
+                    }
                     let (t2, beyond) = world.through(p, dir, &mat, &mut self.hits);
                     for b in 0..NBANDS {
                         thr[b] *= t2[b] / pt;
@@ -1889,6 +2025,9 @@ impl Tracer {
                 mirror_thr *= keep[1] * (1.0 - mat.scattering);
                 loud &= mirror_thr >= COHERENT_FLOOR;
                 if self.rng.next_f32() < mat.scattering {
+                    if seg == 0 && reusable {
+                        first_bounce = Some((p, normal, length, -dir.dot(normal)));
+                    }
                     dir = (normal + self.rng.unit_sphere()).normalize();
                     if dir.dot(normal) < 1e-3 {
                         dir = normal;
@@ -1897,15 +2036,107 @@ impl Tracer {
                     bent = false;
                     coherent = false;
                 } else {
+                    if seg == 0 {
+                        reusable = false;
+                    }
                     dir = dir - normal * (2.0 * dir.dot(normal));
                     specular = true;
                 }
                 origin = p + normal * EPS;
             }
             }
+            if pooled {
+                let a = reusable && first_bounce.is_some();
+                let into = if a { &mut late_a } else { &mut late_b };
+                for &(si, e, delay, half) in &ray_deps {
+                    deposit_spread(&mut into[si], &self.cells, e, delay, first, half);
+                }
+                if let (true, Some((v1, n1, r1, cos1))) = (a, first_bounce) {
+                    if !ray_deps.is_empty() {
+                        let deps = ray_deps.iter().map(|&(si, e, d, h)| (sources[si].id, e, d, h)).collect();
+                        records.push(LateRecord { v1, n1, r1, cos1, deps });
+                    }
+                }
+            }
         }
+        }
+        if pooling && late_rays > 0 {
+            self.reuse_late(world, listener, sources, late_rays as f32, records, &mut late_a);
+            for (acc, (a, b)) in accs.iter_mut().zip(late_a.into_iter().zip(late_b)) {
+                acc.merge(a);
+                acc.merge(b);
+            }
         }
         sky_acc
+    }
+
+    /// v5: the late family's diffuse-first estimate (`fresh`: this tick's
+    /// rays, × 1/rays) joined by the pool's paths, reconnected to where
+    /// the listener is now — per source the average over this tick's rays
+    /// and every pooled tick's in which the source stood where it stands
+    /// (those rays all count, reusable or not: the rest added nothing
+    /// to this estimate). A pooled path is weighted by how the solid
+    /// angle of its first bounce changed (cos θ / r², the reconnection's
+    /// Jacobian), priced through whatever is between, its delays moved by
+    /// the new first leg, its air by the new length: exact, unbiased.
+    /// Then this tick's paths join the pool.
+    fn reuse_late(&mut self, world: &World, listener: Vec3, sources: &[Source], rays: f32, records: Vec<LateRecord>, fresh: &mut [Acc]) {
+        if self.late_pool_sig != self.world_sig {
+            self.late_pool.clear();
+            self.late_pool_sig = self.world_sig;
+        }
+        let mut reused: Vec<Acc> = fresh.iter().map(|a| Acc::new(a.t_free, a.v4)).collect();
+        let mut samples = vec![0.0f32; sources.len()];
+        for tick in &self.late_pool {
+            if (tick.listener - listener).length() > LATE_POOL_REACH_M {
+                continue;
+            }
+            // the sources standing where they stood then
+            let still: Vec<bool> =
+                sources.iter().map(|s| tick.sources.iter().any(|(id, p)| *id == s.id && (*p - s.pos).length() < 1e-3)).collect();
+            for (n, &ok) in samples.iter_mut().zip(&still) {
+                if ok {
+                    *n += tick.rays;
+                }
+            }
+            for rec in &tick.records {
+                let to = listener - rec.v1;
+                let r1 = to.length();
+                if r1 < 1e-3 {
+                    continue;
+                }
+                let cos1 = to.dot(rec.n1) / r1;
+                if cos1 <= 1e-3 {
+                    continue; // the bounce faces away: it doesn't reach here
+                }
+                let jac = (cos1 / (r1 * r1)) / (rec.cos1 / (rec.r1 * rec.r1));
+                let t = world.transmission(listener, rec.v1 + rec.n1 * (2.0 * EPS), &mut self.hits);
+                let dir = (rec.v1 - listener) * (1.0 / r1);
+                let shift = (r1 - rec.r1) / SPEED_OF_SOUND;
+                for &(id, e, delay, half) in &rec.deps {
+                    let Some(si) = sources.iter().position(|s| s.id == id) else { continue };
+                    if !still[si] {
+                        continue;
+                    }
+                    let (a0, a1) = (air_attenuation(delay * SPEED_OF_SOUND), air_attenuation((delay + shift) * SPEED_OF_SOUND));
+                    let e2: [f32; NBANDS] = core::array::from_fn(|b| {
+                        let air = if a0[b] > 0.0 { (a1[b] / a0[b]).powi(2) } else { 0.0 };
+                        e[b] * tick.rays * jac * t[b] * t[b] * air
+                    });
+                    deposit_spread(&mut reused[si], &self.cells, e2, delay + shift, dir, half);
+                }
+            }
+        }
+        for ((f, r), &n) in fresh.iter_mut().zip(reused.iter_mut()).zip(&samples) {
+            let total = rays + n;
+            f.scale(rays / total);
+            r.scale(1.0 / total);
+            let r = std::mem::replace(r, Acc::new(0.0, false));
+            f.merge(r);
+        }
+        let snapshot = sources.iter().map(|s| (s.id, s.pos)).collect();
+        self.late_pool.push_front(PoolTick { records, rays, listener, sources: snapshot });
+        self.late_pool.truncate(LATE_POOL_TICKS);
     }
 
     /// Cache (or refresh) the chain `planes` for source `id`.

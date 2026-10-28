@@ -195,6 +195,14 @@ pub extern "C" fn sim_set_v4(on: u32) {
     h.reconfigure();
 }
 
+/// Engine v5 (on v4): the late paths reused across ticks.
+#[no_mangle]
+pub extern "C" fn sim_set_v5(on: u32) {
+    let h = sim();
+    h.cfg.v5 = on != 0;
+    h.reconfigure();
+}
+
 #[no_mangle]
 pub extern "C" fn sim_v4() -> u32 {
     sim().cfg.v4 as u32

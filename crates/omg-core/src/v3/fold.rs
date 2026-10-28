@@ -470,6 +470,7 @@ impl Tracer {
         // `SourceState::fold` / `field` as `trace` (a source this walk
         // didn't carry keeps its state)
         let mut out = Vec::with_capacity(sources.len());
+        let shared = self.shared_ticks();
         for (si, s) in sources.iter().enumerate() {
             let t_free = (s.pos - listener).length() / SPEED_OF_SOUND;
             let block = walked.as_ref().filter(|_| fresh).and_then(|w| {
@@ -493,7 +494,7 @@ impl Tracer {
                 }
             }
             out.push(if self.v4 {
-                st.field_v4(t_free, direct[si], &mut edge_taps[si], total)
+                st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared)
             } else {
                 st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], total)
             });

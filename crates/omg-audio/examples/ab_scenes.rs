@@ -32,6 +32,9 @@
 //!    re-traced response adds on top of the tail's own grain (flicker),
 //!    standing still and turning (the hands circle with the look).
 //!
+//! v5 (v4 with its late paths reused across ticks) unless `-- v3` or
+//! NOREUSE=1 (v4). ONLY=noise: the dense response's per-tick noise.
+//!
 //! GPU=1 walks on the GPU (whole walks, synchronous); GPU=live runs the
 //! live walk the apps use (pooled late rays, paced, a tick or more late)
 //! in real time — the ticks then wait for the wall clock.
@@ -86,6 +89,7 @@ impl Rig {
             v4,
             compute,
             seed: std::env::var("SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(Config::default().seed),
+            v5: v4 && std::env::var("NOREUSE").is_err(),
             kernel_thread: false,
             kernel_step_samples: 1 << 24, // HEAD: whole kernels in the tick, like a fast kernel thread
             ..Config::default()
@@ -753,10 +757,34 @@ fn church(v4: bool) {
     }
 }
 
+/// The dense response's per-tick noise: a source standing still (in A,
+/// concrete; in the stone nave), the listener still, then walking: the
+/// measured scatter of each history window's fresh trace (sd of ln
+/// fresh/mean, %) — what reusing paths across ticks is to shrink.
+fn dense_noise(v4: bool) {
+    for (name, church, walk) in [("A, still", false, false), ("A, walking", false, true), ("nave, still", true, false)] {
+        let mut rig = Rig::new(v4);
+        if church {
+            rig.sim.set_geometry(church_geometry());
+        }
+        let (src, lis) = if church { ([8.4f32, 9.0, 1.25], [8.0f32, 9.0, 1.7]) } else { ([2.0, 2.0, 1.5], [5.5, 4.0, 1.7]) };
+        let id = rig.sim.add_source(SourceDesc { position: src, gain: 1.0, active: true });
+        rig.sim.set_listener(lis, 0.0, 0.0, 0.0);
+        for k in 0..120 {
+            let x = if walk { lis[0] - 0.07 * (k as f32 * 0.3).sin() } else { lis[0] };
+            rig.sim.set_listener([x, lis[1], lis[2]], 0.0, 0.0, 0.0);
+            rig.sim.tick();
+        }
+        let v = rig.sim.dense_scatter(id).unwrap_or_default();
+        let show: Vec<String> = v.iter().map(|x| format!("{:.0}", 100.0 * x.max(0.0).sqrt())).collect();
+        println!("dense noise {name:12} per window (4 ms … 4 s), sd %: {}", show.join(" "));
+    }
+}
+
 fn main() {
     let v4 = !std::env::args().any(|a| a == "v3");
     let only = std::env::var("ONLY").unwrap_or_default();
-    println!("engine {}", if v4 { "v4" } else { "v3" });
+    println!("engine {}", if !v4 { "v3" } else if std::env::var("NOREUSE").is_ok() { "v4" } else { "v5" });
     if only.is_empty() || only == "clap" {
         clap(v4);
     }
@@ -783,5 +811,8 @@ fn main() {
     }
     if only.is_empty() || only == "church" {
         church(v4);
+    }
+    if only == "noise" {
+        dense_noise(v4);
     }
 }

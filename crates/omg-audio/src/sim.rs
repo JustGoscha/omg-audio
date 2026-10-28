@@ -104,6 +104,10 @@ pub struct Config {
     /// convolved dense response (no early/late split, no parametric
     /// reverb). CPU and GPU walks alike.
     pub v4: bool,
+    /// Engine v5 (on v4): the late family's paths are reused across ticks,
+    /// each reconnected exactly to where the listener is now — ×8 samples
+    /// for the reverb's estimate, standing still or moving (`Tracer::v5`).
+    pub v5: bool,
     /// The mixer's sample rate (v4 builds its convolution kernels for it).
     pub sample_rate: f32,
     /// v4: build convolution kernels on a thread of their own (off the
@@ -142,6 +146,7 @@ impl Default for Config {
             max_traced_sources: 64,
             seed: 0x0e3_5eed,
             v4: true,
+            v5: true,
             sample_rate: 48_000.0,
             kernel_thread: true,
             max_kernels: 64,
@@ -344,6 +349,7 @@ impl Simulation {
             tracer: {
                 let mut t = Tracer::new(cfg.seed);
                 t.v4 = cfg.v4;
+                t.v5 = cfg.v5;
                 t
             },
             walker: None,
@@ -385,6 +391,7 @@ impl Simulation {
         let rebuild = cfg.compute != self.cfg.compute || cfg.v4 != self.cfg.v4 || cfg.gpu_budget != self.cfg.gpu_budget;
         self.cfg = cfg;
         self.tracer.v4 = cfg.v4;
+        self.tracer.v5 = cfg.v5;
         if rebuild {
             self.make_walker();
         }
@@ -399,6 +406,7 @@ impl Simulation {
         // the smoothed fields belong to the old world
         self.tracer = Tracer::new(self.cfg.seed);
         self.tracer.v4 = self.cfg.v4;
+        self.tracer.v5 = self.cfg.v5;
         self.tracer.debug = self.debug_paths;
         for s in &mut self.sources {
             s.traced = None;
@@ -668,6 +676,12 @@ impl Simulation {
 
     /// v4: a source's latest dense (scattered) response, unit source
     /// (see `DenseResponse`); None in v3 or before its first trace.
+    /// v4: the dense response's measured per-tick scatter, per history
+    /// window (variance of ln fresh/mean: the trace's own noise).
+    pub fn dense_scatter(&self, id: SourceId) -> Option<[f32; omg_core::v3::HISTORY_WINDOWS]> {
+        self.tracer.dense_scatter(id.0)
+    }
+
     pub fn dense_response(&self, id: SourceId) -> Option<&DenseResponse> {
         self.sources.iter().find(|s| s.id == id).and_then(|s| s.dense.as_ref())
     }
