@@ -79,7 +79,13 @@ const DELAY_BIN_S: f32 = 0.002;
 const BIN_DT: f32 = 0.010;
 const MAX_TIME: f32 = 3.0;
 const SPEED_OF_SOUND: f32 = 343.0;
-const AIR_ABS = vec3<f32>(1.0e-4, 5.0e-4, 3.0e-3);
+// material.rs AIR_SUBBANDS_PER_M: ISO 9613-1, eight sub-bands per band
+const AIR_LOW_A = vec4<f32>(4.1257e-06, 8.1734e-06, 1.6117e-05, 3.1495e-05);
+const AIR_LOW_B = vec4<f32>(6.0495e-05, 1.1261e-04, 1.9881e-04, 3.2448e-04);
+const AIR_MID_A = vec4<f32>(4.5564e-04, 5.7254e-04, 6.9598e-04, 8.3217e-04);
+const AIR_MID_B = vec4<f32>(9.9816e-04, 1.2242e-03, 1.5580e-03, 2.0742e-03);
+const AIR_HIGH_A = vec4<f32>(2.9243e-03, 4.3570e-03, 6.7144e-03, 1.0581e-02);
+const AIR_HIGH_B = vec4<f32>(1.6881e-02, 2.7020e-02, 4.3026e-02, 6.7554e-02);
 const MIN_DIST: f32 = 0.3;
 const EPS: f32 = 1e-3;
 // v3.rs MAX_WALL_M: the thickest solid a ray goes through as one wall
@@ -605,7 +611,12 @@ fn seg_transmission(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
 }
 
 fn air(dist: f32) -> vec3<f32> {
-    return exp(-AIR_ABS * dist);
+    let w = vec4<f32>(0.125);
+    let e = vec3<f32>(
+        dot(exp(-AIR_LOW_A * dist) + exp(-AIR_LOW_B * dist), w),
+        dot(exp(-AIR_MID_A * dist) + exp(-AIR_MID_B * dist), w),
+        dot(exp(-AIR_HIGH_A * dist) + exp(-AIR_HIGH_B * dist), w));
+    return sqrt(e);
 }
 
 // --------------------------------------------------------- diffraction

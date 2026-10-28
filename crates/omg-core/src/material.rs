@@ -207,14 +207,22 @@ impl Material {
     }
 }
 
-/// Frequency-dependent air absorption, amplitude decay per meter
-/// (crude fit of ISO 9613-1 at 20 °C / 50 % RH for the three bands).
-pub const AIR_ABSORPTION_PER_M: [f32; NBANDS] = [1.0e-4, 5.0e-4, 3.0e-3];
+/// Atmospheric absorption (ISO 9613-1: 20 °C, 50 % RH, 101.325 kPa —
+/// 0.4 / 4.7 / 30 / 105 dB/km at 125 Hz / 1 / 4 / 8 kHz), per band as eight
+/// log-spaced sub-bands (energy decay per metre at each one's centre;
+/// low 20–314 Hz, mid 314–2100 Hz, high 2100–16000 Hz). A band's energy
+/// over a path is their mean (pink: equal energy per octave): its top
+/// dies first, its bottom carries — a bell kilometres away loses its
+/// shimmer, not its tone. No fixed dB/km per band holds that. (Within
+/// 0.2 dB of the standard integrated finely up to 1 km, 1.5 dB at 3 km.)
+pub const AIR_SUBBANDS_PER_M: [[f32; 8]; NBANDS] = [
+    [4.1257e-06, 8.1734e-06, 1.6117e-05, 3.1495e-05, 6.0495e-05, 1.1261e-04, 1.9881e-04, 3.2448e-04],
+    [4.5564e-04, 5.7254e-04, 6.9598e-04, 8.3217e-04, 9.9816e-04, 1.2242e-03, 1.5580e-03, 2.0742e-03],
+    [2.9243e-03, 4.3570e-03, 6.7144e-03, 1.0581e-02, 1.6881e-02, 2.7020e-02, 4.3026e-02, 6.7554e-02],
+];
 
+/// Amplitude per band left after `dist` metres of air (the whole path's
+/// length: a band's loss is not the product of its segments').
 pub fn air_attenuation(dist: f32) -> [f32; NBANDS] {
-    let mut a = [0.0; NBANDS];
-    for b in 0..NBANDS {
-        a[b] = (-AIR_ABSORPTION_PER_M[b] * dist).exp();
-    }
-    a
+    core::array::from_fn(|b| (AIR_SUBBANDS_PER_M[b].iter().map(|k| (-k * dist).exp()).sum::<f32>() * 0.125).sqrt())
 }

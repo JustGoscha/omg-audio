@@ -1,13 +1,13 @@
 //! Effect: frequency-dependent air absorption, in isolation
-//! (`material::AIR_ABSORPTION_PER_M`, `material::air_attenuation`).
+//! (`material::AIR_SUBBANDS_PER_M`, `material::air_attenuation`).
 //!
-//! Physical claim guaranteed: amplitude decays as exp(−a_b·d) per band;
-//! highs attenuate far more than lows; the loss is monotonic in distance,
-//! exactly unity at 0 m, multiplicative over path segments
-//! (air(a+b) = air(a)·air(b)), and its per-km magnitudes are in the
-//! ISO 9613-1 ballpark (20 °C / 50 % RH) for the band centres
-//! 125 Hz / 790 Hz / 5.6 kHz. The early-field solvers apply exactly this
-//! factor on top of 1/r spreading.
+//! Physical claim guaranteed: per band, the energy ISO 9613-1 (20 °C /
+//! 50 % RH) leaves of pink sound after a path — the standard's own
+//! formula, integrated finely over the band, within 0.5 dB; highs
+//! attenuate far more than lows; the loss is monotonic in distance and
+//! exactly unity at 0 m; a band's top dies first, so its loss per km
+//! falls with distance. The early-field solvers apply exactly this factor
+//! on top of 1/r spreading.
 //!
 //! Combined in the demo: long outdoor paths in `omg_scene::world::WorldSim`
 //! (street / courtyard sources) — air turns far sources dull.
@@ -19,7 +19,7 @@ mod common;
 
 use common::{flat_opaque, v};
 use omg_core::ism::image_source_taps;
-use omg_core::material::{air_attenuation, Material, AIR_ABSORPTION_PER_M};
+use omg_core::material::{air_attenuation, Material};
 use omg_core::rng::Rng;
 use omg_core::scene::Shoebox;
 use omg_core::tracer::{estimate_reverb, trace, Echogram};
@@ -39,9 +39,6 @@ fn highs_attenuate_more_than_lows() {
         let a = air_attenuation(d);
         assert!(a[0] > a[1] && a[1] > a[2], "d={d}: {a:?} not low > mid > high");
     }
-    // and the coefficient table itself is ordered
-    assert!(AIR_ABSORPTION_PER_M[0] < AIR_ABSORPTION_PER_M[1]);
-    assert!(AIR_ABSORPTION_PER_M[1] < AIR_ABSORPTION_PER_M[2]);
 }
 
 #[test]
@@ -58,40 +55,61 @@ fn monotonic_in_distance() {
     }
 }
 
+/// ISO 9613-1 (pure-tone attenuation coefficient, dB/m).
+fn iso_alpha(f: f64) -> f64 {
+    let (t, hr, pa, pr, t0, t01) = (293.15f64, 50.0f64, 101.325f64, 101.325f64, 293.15f64, 273.16f64);
+    let c = -6.8346 * (t01 / t).powf(1.261) + 4.6151;
+    let h = hr * (pr * 10f64.powf(c) / pa);
+    let fro = (pa / pr) * (24.0 + 4.04e4 * h * (0.02 + h) / (0.391 + h));
+    let frn = (pa / pr) * (t / t0).powf(-0.5) * (9.0 + 280.0 * h * (-4.170 * ((t / t0).powf(-1.0 / 3.0) - 1.0)).exp());
+    8.686 * f * f
+        * (1.84e-11 * (pa / pr).powi(-1) * (t / t0).sqrt()
+            + (t / t0).powf(-2.5) * (0.01275 * (-2239.1 / t).exp() / (fro + f * f / fro) + 0.1068 * (-3352.0 / t).exp() / (frn + f * f / frn)))
+}
+
 #[test]
-fn magnitude_at_300m_matches_formula() {
-    let a = air_attenuation(300.0);
-    // closed form, written out independently of the constant table:
-    // exp(-1e-4·300), exp(-5e-4·300), exp(-3e-3·300)
-    let want = [0.970_446f32, 0.860_708, 0.406_570];
-    for b in 0..NBANDS {
-        assert!((a[b] - want[b]).abs() < 1e-4, "band {b}: {} want {}", a[b], want[b]);
-        let formula = (-AIR_ABSORPTION_PER_M[b] * 300.0).exp();
-        assert!((a[b] - formula).abs() < 1e-6);
+fn bands_match_the_standard_integrated() {
+    let bands = [(20.0f64, 314.0f64), (314.0, 2100.0), (2100.0, 16000.0)];
+    for d in [100.0f32, 1000.0, 3000.0] {
+        let a = air_attenuation(d);
+        for (b, &(lo, hi)) in bands.iter().enumerate() {
+            // pink: equal energy per log-frequency, 256 points
+            let n = 256;
+            let e: f64 = (0..n)
+                .map(|k| {
+                    let f = lo * (hi / lo).powf((k as f64 + 0.5) / n as f64);
+                    10f64.powf(-iso_alpha(f) * d as f64 / 10.0)
+                })
+                .sum::<f64>()
+                / n as f64;
+            let want = 10.0 * e.log10();
+            let got = 20.0 * (a[b] as f64).log10();
+            // (the band's bottom edge carries all far: 2 dB at 3 km, where
+            // the high band is 45 dB down)
+            let tol = if d > 1000.0 { 2.0 } else { 0.5 };
+            assert!((got - want).abs() < tol, "band {b} at {d} m: {got:.2} dB, ISO {want:.2} dB");
+        }
+    }
+}
+
+#[test]
+fn a_band_top_dies_first() {
+    // dB lost per km falls with distance (the band's bottom carries on)
+    for b in 1..NBANDS {
+        let db = |d: f32| -20.0 * air_attenuation(d)[b].log10() / (d / 1000.0);
+        assert!(db(3000.0) < db(300.0), "band {b}: {} dB/km at 3 km vs {} at 300 m", db(3000.0), db(300.0));
     }
 }
 
 #[test]
 fn per_km_loss_is_in_the_iso_9613_ballpark() {
-    // dB per km = −20·log10(air(1000 m))
+    // dB per km = −20·log10(air(1000 m)): ≈0.4 dB/km @125 Hz, ≈3–5 dB/km
+    // @0.8–1 kHz, ≈25–60 dB/km @4–8 kHz
     let a = air_attenuation(1000.0);
     let db_km: [f32; NBANDS] = core::array::from_fn(|b| -20.0 * a[b].log10());
-    // ISO 9613-1, 20 °C / 50 % RH: ≈0.4 dB/km @125 Hz, ≈3–5 dB/km
-    // @0.8–1 kHz, ≈25–60 dB/km @4–8 kHz. Generous brackets: this is a
-    // three-band fit, the claim is "right order of magnitude per band".
     assert!(db_km[0] > 0.1 && db_km[0] < 2.0, "low {:.2} dB/km", db_km[0]);
     assert!(db_km[1] > 1.5 && db_km[1] < 10.0, "mid {:.2} dB/km", db_km[1]);
     assert!(db_km[2] > 15.0 && db_km[2] < 70.0, "high {:.2} dB/km", db_km[2]);
-}
-
-#[test]
-fn multiplicative_over_segments() {
-    for (x, y) in [(3.0f32, 7.0f32), (50.0, 250.0), (0.5, 999.5)] {
-        let (ax, ay, axy) = (air_attenuation(x), air_attenuation(y), air_attenuation(x + y));
-        for b in 0..NBANDS {
-            assert!((ax[b] * ay[b] - axy[b]).abs() < 1e-5 * axy[b].max(1e-3), "band {b}: {x}+{y}");
-        }
-    }
 }
 
 #[test]
@@ -111,8 +129,8 @@ fn far_direct_tap_carries_the_air_tilt() {
     image_source_taps(&room, v(800.0, 500.0, 500.0), lis, 0, &mut taps);
     let far_tilt_db = 20.0 * (taps[0].gains[2] / taps[0].gains[0]).log10();
     assert!(
-        far_tilt_db < -7.0 && far_tilt_db > -9.0,
-        "300 m high-vs-low tilt {far_tilt_db:.2} dB, want ≈ −7.6 dB"
+        far_tilt_db < -8.5 && far_tilt_db > -10.5,
+        "300 m high-vs-low tilt {far_tilt_db:.2} dB, want ≈ −9.6 dB (ISO 9613-1)"
     );
 }
 
