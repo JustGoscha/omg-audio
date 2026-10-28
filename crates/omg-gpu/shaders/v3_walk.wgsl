@@ -33,7 +33,7 @@
 // rare edge the grid's 2 m sampling skips — see v3_probe.rs), and the
 // echogram's direction sums start at EARLY_S (the only part read).
 //
-// WALK_LAYOUT_VERSION 5 — must match omg_core::v3::fold and layout.rs:
+// WALK_LAYOUT_VERSION 7 — must match omg_core::v3::fold and layout.rs:
 //   Job {rot0@0, n_early@12, rot1@16, n_late@28, rot2@32, bounces@44,
 //        listener@48, seed@60, k@64, nee@68, late_nee@72, n_sources@76,
 //        n_panels@80, n_pockets@84, has_grade@88, grade@92, debug@96,
@@ -104,7 +104,7 @@ const HALF_PI: f32 = 1.57079632679;
 const FX_SCALE: f32 = 17592186044416.0; // 2^44
 const TWO32: f32 = 4294967296.0;
 const NO_EDGE: u32 = 0xFFFFFFFFu;
-// a sliced ray's state (Job.steps; omg-gpu v3.rs): origin 0..3,
+// a sliced early ray's state (Job.steps_pass; omg-gpu v3.rs): origin 0..3,
 // dir 3..6, thr 6..9, length 9, refl 10, flags 11, mirror_thr 12,
 // bends 13, bend_from 14..17, last_edge 17, segment 18, rng 19, first
 // direction 20..23, first cell 23, alive 27
@@ -141,20 +141,17 @@ struct Job {
     edge_hi: vec3<f32>,
     v4: u32,
     // a sliced walk (0: every ray walked whole in this one dispatch — the
-    // classic walk): `steps` (low 16 bits) segments per ray per dispatch,
-    // a tick's walk being several dispatches (`pass`, high 16 bits; the
-    // early rays start in pass 0 and are done after the last). The late
-    // rays are a persistent pool across ticks: each lane keeps its ray in
-    // `dbg` from `state_off` and starts a new one (counted in the word
-    // after the outputs) when its ray ended; the early rays' states follow
-    // the lanes'. `late_w` weights the late rays (1 / the host's smoothed
-    // births per tick); `late_reset` ends every lane's ray in pass 0 (a
-    // moved world, a new listener epoch). No slicing while debug captures
+    // classic walk; omg_core::v3::fold::WalkJob::live): `steps` (low 16
+    // bits) segments per early ray per dispatch, a tick's walk being
+    // several dispatches (`pass`, high 16 bits; the early rays start in
+    // pass 0 and are done after the last, their states in `dbg` from
+    // `state_off`). Late rays walk whole in pass 0 (a live walk leaves them
+    // to the CPU: V3Walker::walks_late). No slicing while debug captures
     // the early rays' polylines.
     steps_pass: u32,
     state_off: u32,
-    late_w: f32,
-    late_reset: u32,
+    _r0: u32,
+    _r1: u32,
 }
 
 struct Node {
@@ -873,20 +870,16 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     let nee = select(job.nee, job.late_nee, late);
     let steps = job.steps_pass & 0xFFFFu;
     let pass_idx = job.steps_pass >> 16u;
-    let pooled = late && steps > 0u;
-    let sliced = pooled || (!late && steps > 0u && job.debug == 0u);
-    // early rays walked whole (debug capture) run in pass 0 only
-    if (!late && !sliced && pass_idx > 0u) { return; }
-    let inv_n = select(1.0 / f32(n), job.late_w, pooled);
+    let sliced = !late && steps > 0u && job.debug == 0u;
+    // rays walked whole (the late family, debug capture) run in pass 0 only
+    if (!sliced && pass_idx > 0u) { return; }
+    let inv_n = 1.0 / f32(n);
     let n_src = min(job.n_sources, MAX_SOURCES);
     let diffraction = job.n_edges > 0u;
 
-    // a pooled lane can start several rays in one walk (one per
-    // dispatch): each from its own seed and direction, never a replay
-    let born_in = select(0u, pass_idx, pooled);
-    rng_state = pcg_hash(job.seed ^ pcg_hash(ray * 0x9E3779B9u + 0x7F4A7C15u) ^ pcg_hash(born_in + 0x51ED27u));
+    rng_state = pcg_hash(job.seed ^ pcg_hash(ray * 0x9E3779B9u + 0x7F4A7C15u));
 
-    let d0 = fib((idx + born_in * 0x9E37u) % n, n);
+    let d0 = fib(idx, n);
     let first = vec3<f32>(dot(job.rot0, d0), dot(job.rot1, d0), dot(job.rot2, d0));
     ray_first = first;
     ray_cell = cell_of(first);
@@ -933,53 +926,46 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     var p_last_edge = NO_EDGE;
     var p_seg = 0u;
 
-    // a sliced ray goes on where the last dispatch left it; a late lane
-    // whose ray ended (or was reset) starts a new one, counted; an early
-    // ray starts in pass 0 and, once done, sits out the tick's later passes
-    let so = job.state_off + select(n_late + idx, idx, late) * STATE_WORDS;
+    // a sliced ray starts in pass 0, goes on where the last dispatch left
+    // it and, once done, sits out the tick's later passes
+    let so = job.state_off + idx * STATE_WORDS;
     var seg0 = 0u;
-    if (sliced) {
-        let alive = dbg[so + 27u] == 1u;
-        if (!late && pass_idx > 0u && !alive) { return; }
-        let resume = alive && select(pass_idx > 0u, pass_idx > 0u || job.late_reset == 0u, late);
-        if (resume) {
-            origin = vec3<f32>(bitcast<f32>(dbg[so]), bitcast<f32>(dbg[so + 1u]), bitcast<f32>(dbg[so + 2u]));
-            dir = vec3<f32>(bitcast<f32>(dbg[so + 3u]), bitcast<f32>(dbg[so + 4u]), bitcast<f32>(dbg[so + 5u]));
-            thr = vec3<f32>(bitcast<f32>(dbg[so + 6u]), bitcast<f32>(dbg[so + 7u]), bitcast<f32>(dbg[so + 8u]));
-            length_m = bitcast<f32>(dbg[so + 9u]);
-            refl = dbg[so + 10u];
-            let flags = dbg[so + 11u];
-            specular = (flags & 1u) != 0u;
-            mirror_only = (flags & 2u) != 0u;
-            loud = (flags & 4u) != 0u;
-            bent = (flags & 8u) != 0u;
-            have_bend_from = (flags & 16u) != 0u;
-            mirror_thr = bitcast<f32>(dbg[so + 12u]);
-            bends = dbg[so + 13u];
-            bend_from = vec3<f32>(bitcast<f32>(dbg[so + 14u]), bitcast<f32>(dbg[so + 15u]), bitcast<f32>(dbg[so + 16u]));
-            last_edge = dbg[so + 17u];
-            seg0 = dbg[so + 18u];
-            rng_state = dbg[so + 19u];
-            ray_first = vec3<f32>(bitcast<f32>(dbg[so + 20u]), bitcast<f32>(dbg[so + 21u]), bitcast<f32>(dbg[so + 22u]));
-            ray_cell = dbg[so + 23u];
-            split = (flags & 32u) != 0u;
-            has_pending = dbg[so + 55u] == 1u;
-            if (has_pending) {
-                let q = so + 28u;
-                p_origin = vec3<f32>(bitcast<f32>(dbg[q]), bitcast<f32>(dbg[q + 1u]), bitcast<f32>(dbg[q + 2u]));
-                p_dir = vec3<f32>(bitcast<f32>(dbg[q + 3u]), bitcast<f32>(dbg[q + 4u]), bitcast<f32>(dbg[q + 5u]));
-                p_thr = vec3<f32>(bitcast<f32>(dbg[q + 6u]), bitcast<f32>(dbg[q + 7u]), bitcast<f32>(dbg[q + 8u]));
-                p_length = bitcast<f32>(dbg[q + 9u]);
-                p_refl = dbg[q + 10u];
-                p_flags = dbg[q + 11u];
-                p_mirror_thr = bitcast<f32>(dbg[q + 12u]);
-                p_bends = dbg[q + 13u];
-                p_bend_from = vec3<f32>(bitcast<f32>(dbg[q + 14u]), bitcast<f32>(dbg[q + 15u]), bitcast<f32>(dbg[q + 16u]));
-                p_last_edge = dbg[q + 17u];
-                p_seg = dbg[q + 18u];
-            }
-        } else if (late) {
-            add_fx(SKY_WORDS + job.n_sources * SOURCE_WORDS, FX_SCALE);
+    if (sliced && pass_idx > 0u) {
+        if (dbg[so + 27u] != 1u) { return; }
+        origin = vec3<f32>(bitcast<f32>(dbg[so]), bitcast<f32>(dbg[so + 1u]), bitcast<f32>(dbg[so + 2u]));
+        dir = vec3<f32>(bitcast<f32>(dbg[so + 3u]), bitcast<f32>(dbg[so + 4u]), bitcast<f32>(dbg[so + 5u]));
+        thr = vec3<f32>(bitcast<f32>(dbg[so + 6u]), bitcast<f32>(dbg[so + 7u]), bitcast<f32>(dbg[so + 8u]));
+        length_m = bitcast<f32>(dbg[so + 9u]);
+        refl = dbg[so + 10u];
+        let flags = dbg[so + 11u];
+        specular = (flags & 1u) != 0u;
+        mirror_only = (flags & 2u) != 0u;
+        loud = (flags & 4u) != 0u;
+        bent = (flags & 8u) != 0u;
+        have_bend_from = (flags & 16u) != 0u;
+        mirror_thr = bitcast<f32>(dbg[so + 12u]);
+        bends = dbg[so + 13u];
+        bend_from = vec3<f32>(bitcast<f32>(dbg[so + 14u]), bitcast<f32>(dbg[so + 15u]), bitcast<f32>(dbg[so + 16u]));
+        last_edge = dbg[so + 17u];
+        seg0 = dbg[so + 18u];
+        rng_state = dbg[so + 19u];
+        ray_first = vec3<f32>(bitcast<f32>(dbg[so + 20u]), bitcast<f32>(dbg[so + 21u]), bitcast<f32>(dbg[so + 22u]));
+        ray_cell = dbg[so + 23u];
+        split = (flags & 32u) != 0u;
+        has_pending = dbg[so + 55u] == 1u;
+        if (has_pending) {
+            let q = so + 28u;
+            p_origin = vec3<f32>(bitcast<f32>(dbg[q]), bitcast<f32>(dbg[q + 1u]), bitcast<f32>(dbg[q + 2u]));
+            p_dir = vec3<f32>(bitcast<f32>(dbg[q + 3u]), bitcast<f32>(dbg[q + 4u]), bitcast<f32>(dbg[q + 5u]));
+            p_thr = vec3<f32>(bitcast<f32>(dbg[q + 6u]), bitcast<f32>(dbg[q + 7u]), bitcast<f32>(dbg[q + 8u]));
+            p_length = bitcast<f32>(dbg[q + 9u]);
+            p_refl = dbg[q + 10u];
+            p_flags = dbg[q + 11u];
+            p_mirror_thr = bitcast<f32>(dbg[q + 12u]);
+            p_bends = dbg[q + 13u];
+            p_bend_from = vec3<f32>(bitcast<f32>(dbg[q + 14u]), bitcast<f32>(dbg[q + 15u]), bitcast<f32>(dbg[q + 16u]));
+            p_last_edge = dbg[q + 17u];
+            p_seg = dbg[q + 18u];
         }
     }
 
@@ -1118,7 +1104,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
                 add_fx(o, e.x);
                 add_fx(o + 1u, e.y);
                 add_fx(o + 2u, e.z);
-                let dm = first * e.y;
+                let dm = ray_first * e.y;
                 add_fx(o + 3u, dm.x);
                 add_fx(o + 4u, dm.y);
                 add_fx(o + 5u, dm.z);
@@ -1261,7 +1247,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     push_vert(origin);
     }
     if (sliced) {
-        dbg[so + 27u] = 0u; // ended (a late lane starts a new ray next pass)
+        dbg[so + 27u] = 0u; // ended
         dbg[so + 55u] = 0u;
     }
 }
@@ -1273,10 +1259,6 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
     let w = gid.x;
     let n_out = SKY_WORDS + job.n_sources * SOURCE_WORDS;
-    if ((job.steps_pass & 0xFFFFu) > 0u && w == n_out) {
-        out[w] = read_fx(w) / FX_SCALE; // the pool's births this dispatch
-        return;
-    }
     if (w >= n_out) { return; }
     if (w < SKY_WORDS) {
         out[w] = read_fx(w) / FX_SCALE;

@@ -126,7 +126,7 @@ function tick() {
     type: 'tick', frame, kernels, clears, state: state.buffer, envOff: w.sim_env_off(), tickMs,
     gpu: gpu && gpuOn ? 1 : 0, gpuAvail: gpu ? 1 : 0,
     gpuMs: gpu ? gpu.stats().ms : 0, v3Ms: gpu ? gpu.stats().ms : 0, v3N: gpu ? gpu.stats().walks : 0,
-    gpuMaxMs: gpu ? gpu.stats().maxMs : 0,
+    gpuMaxMs: gpu ? gpu.stats().maxMs : 0, gpuRays: w.sim_gpu_rays_share ? w.sim_gpu_rays_share() : 1,
     early: w.sim_v4() ? 4 : 3, rays, dense: w.sim_dense_count(),
   }, [frame, ...kernels.map((k) => k.buf), state.buffer, ...(rays ? [rays] : [])]);
 }

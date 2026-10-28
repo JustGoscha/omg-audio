@@ -28,6 +28,15 @@ pub trait V3Walker: Send {
     fn last_max_ms(&self) -> f32 {
         self.last_ms()
     }
+
+    /// Whether this walker walks the late family too. A live GPU walk
+    /// doesn't: a late ray's hundreds of bounces run one after another,
+    /// the one thing a GPU is slowest at — sliced across walks they would
+    /// carry where the listener was seconds ago — so the CPU walks them,
+    /// whole, from where the listener is (`Tracer::trace_walked`).
+    fn walks_late(&self) -> bool {
+        true
+    }
 }
 
 /// One v3 tick: through `walker` when there is one, else (or when it
@@ -42,7 +51,9 @@ pub fn trace_with(
     walker: Option<&mut dyn V3Walker>,
 ) -> Vec<SourceField> {
     if let Some(w) = walker {
-        if let Some(fields) = tracer.trace_walked(world, listener, sources, budget, &mut |job| w.walk(job)) {
+        // the late family at the CPU's own count when the walker leaves it
+        let cpu_late = (!w.walks_late()).then_some(cpu_budget.late_rays);
+        if let Some(fields) = tracer.trace_walked(world, listener, sources, budget, cpu_late, &mut |job| w.walk(job)) {
             return fields;
         }
     }

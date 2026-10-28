@@ -255,11 +255,11 @@ const QUAL_TIER_VALS = {
 const LADDER = [[48, 4, 12, 2], [96, 8, 24, 4], [192, 16, 32, 8], [320, 24, 48, 16], [480, 32, 64, 64]];
 const QUAL_SLIDERS = [
   { key: 'v3Rays', id: 5, label: 'rays', min: 64, max: 65536, step: 64, section: 'listener tracer · 20 Hz',
-    tip: 'Rays leaving your ears each tick. Every surface they hit connects to the sources it can see, through whatever walls are in the way. More rays = a steadier estimate; the cost scales linearly. With compute = gpu the walk runs on the GPU at 8× the tier budget.' },
+    tip: 'Rays leaving your ears each tick. Every surface they hit connects to the sources it can see, through whatever walls are in the way. More rays = a steadier estimate; the cost scales linearly. With compute = gpu these rays run on the GPU at up to 8× the tier budget — as many as let a walk land every tick within the gpu share.' },
   { key: 'v3Bounces', id: 6, label: 'reflections', min: 1, max: 24, step: 1,
     tip: 'Reflections each early ray follows (and the mirror chains the exact solver names from them). The late rays carry everything beyond.' },
   { key: 'v3Late', id: 7, label: 'late rays', min: 16, max: 8192, step: 16,
-    tip: 'Long rays per tick that keep bouncing through the whole traced response (4.8 s) or until they have lost 60 dB — the reverb tail. Past the early window they end at random as they fade (unbiased: the survivors carry what the others would have). Averaged over ticks, so even a few dozen give a stable decay.' },
+    tip: 'Long rays per tick that keep bouncing through the whole traced response (4.8 s) or until they have lost 60 dB — the reverb tail. Past the early window they end at random as they fade (unbiased: the survivors carry what the others would have). Averaged over ticks, so even a few dozen give a stable decay. Always walked on the CPU, whole, from where you are now: hundreds of bounces in a row are what a GPU is slowest at.' },
   { key: 'rung', label: 'render budget', min: 0, max: 4, step: 1, audio: true, section: 'audio render · per sample',
     tip: 'The audio thread’s budget, one ladder: mix-wide paths (ranked by how loud they arrive at your ears), point-HRTF paths, rendering sources and convolved sources. The engine’s governor walks it by the render time each block takes — sheds at once when a block runs late, earns rungs back after calm seconds. Drag to pin a rung.' },
   { key: 'gpuShare', label: 'gpu share', min: 5, max: 100, step: 5, gpu: true,
@@ -267,12 +267,12 @@ const QUAL_SLIDERS = [
 ];
 const QUAL_TIER_TIPS = {
   auto: 'Starts at low and earns its way up: climbs a tier after ~10 s of clean running, sheds the moment a sim tick blows 40 ms or the audio thread gaps.',
-  high: '1024 rays, 6 reflections, 128 late rays (×8 on the GPU). The reference sound.',
+  high: '1024 rays (×8 on the GPU), 6 reflections, 128 late rays. The reference sound.',
   med: '768 rays, 4 reflections, 96 late rays. Statistically the same field, a little more flutter.',
   low: '512 rays, 3 reflections, 48 late rays. For throttled machines — the estimate gets coarser, never a different sound.',
 };
 const QUAL_STAT_TIPS = {
-  'sim tick': 'Worker-side cost of one 20 Hz simulation tick (with compute = gpu: the exact direct paths, bends and mirror chains, and the fold — the walk runs on the GPU). The budget is 50 ms; above ~40 the auto governor sheds a tier.',
+  'sim tick': 'Worker-side cost of one 20 Hz simulation tick (with compute = gpu: the exact direct paths, bends and mirror chains, the late rays and the fold — the early rays walk on the GPU). The budget is 50 ms; above ~40 the auto governor sheds a tier.',
   'render load': 'Audio-thread render time as a share of realtime. The engine’s governor sheds rungs above 55 %, everything above 80 %.',
   gaps: 'Browser-inserted silences: missed audio deadlines. Any nonzero count means audible dropouts happened.',
   'gpu walk': 'The last walk on the GPU: its dispatches’ time summed, and the longest single one (how long it held the GPU at once).',
@@ -462,14 +462,14 @@ function buildQuality() {
     ]);
 
   mkSwitch('compute',
-    'Where the ray walk runs. GPU dispatches the same WGSL kernel the native build uses, at 8× the rays, within its share of the GPU (gpu share). Statistically identical sound; only variance changes.',
+    'Where the ray walk runs. GPU dispatches the same WGSL kernel the native build uses for the early rays, at 8× the rays, within its share of the GPU (gpu share). Statistically identical sound; only variance changes.',
     [
       { name: 'cpu',
         tip: 'Everything in wasm on the worker thread. The fallback and the oracle the GPU kernels are parity-tested against.',
         set: () => state.setGpu?.(false),
         active: () => !state.debug.gpu },
       { name: 'gpu',
-        tip: 'WebGPU compute: the whole listener walk (both ray families, next-event connections, diffraction bends) at 8× the rays, as short paced dispatches, folded a tick or two late. The exact direct paths, bends and mirror chains stay on the CPU every tick. Requires WebGPU; greyed out when unavailable.',
+        tip: 'WebGPU compute: the early rays (next-event connections, diffraction bends) at 8×, as short paced dispatches, folded a tick late. The late rays — hundreds of bounces in a row, what a GPU is slowest at — stay on the CPU, walked whole from where you are with each walk, as do the exact direct paths, bends and mirror chains. Requires WebGPU; greyed out when unavailable.',
         set: () => { if (state.debug.gpuAvail) state.setGpu?.(true); },
         active: () => !!state.debug.gpu,
         avail: () => !!state.debug.gpuAvail },
@@ -553,8 +553,9 @@ function buildQuality() {
       } else {
         pinned = state.qual.over[s.key] != null;
         v = pinned ? state.qual.over[s.key] : QUAL_TIER_VALS[s.key][q.tier];
-        // a GPU walk runs both ray families at 8x
-        if (!pinned && (s.key === 'v3Rays' || s.key === 'v3Late') && state.debug.gpu && state.debug.v3N) v *= 8;
+        // a GPU walk runs the early rays at up to 8x — as many as land a
+        // walk every tick within its share (the late rays are the CPU's)
+        if (s.key === 'v3Rays' && state.debug.gpu && state.debug.v3N) v = Math.round((pinned ? v : v * 8) * (state.debug.gpuRays ?? 1));
       }
       const shown = Math.round(v * (s.scale || 1));
       if (document.activeElement !== input) input.value = shown;
@@ -2517,6 +2518,7 @@ async function startAudio() {
       + (e.data.tickMs || 0) * 0.1; // decaying peak-ish: spikes stay visible
     state.debug.gpu = e.data.gpu || 0;
     state.debug.gpuAvail = e.data.gpuAvail || 0;
+    state.debug.gpuRays = e.data.gpuRays ?? 1;
     // remembered compute choice, applied once the driver reports in
     // (posting earlier would race the worker's own gpu init)
     if (!state.gpuPrefDone && state.debug.gpuAvail) {

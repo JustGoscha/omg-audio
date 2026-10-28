@@ -38,19 +38,28 @@ pub enum Quality {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compute {
     Cpu,
-    /// The walk on the GPU through wgpu (feature `gpu`): 8× the rays of
-    /// the CPU tier for the same tick. Results arrive one tick late (the
-    /// GPU never blocks the tick). Without an adapter, without the
-    /// feature, or for a tick beyond the kernel's caps (> 64 traced
-    /// sources or > 64 objects), the tick runs on the CPU instead.
+    /// The early rays on the GPU through wgpu (feature `gpu`): 8× the
+    /// CPU tier's for the same tick, arriving a tick late (the GPU never
+    /// blocks the tick). The late rays stay on the CPU, walked whole with
+    /// each walk — hundreds of bounces in a row are what a GPU is slowest
+    /// at. Without an adapter, without the feature, or for a tick beyond
+    /// the kernel's caps (> 64 traced sources or > 64 objects), the tick
+    /// runs on the CPU instead.
     Gpu,
     /// `Gpu`, but each tick waits for its own walk (offline renders,
     /// tests: deterministic timing, no frame of latency).
     GpuSync,
 }
 
+/// The share of a tick a live GPU walk's own time may fill at the GPU
+/// budget: the rest is its passes' round trips.
+const GPU_TICK_SHARE: f32 = 0.7;
+/// The fewest of the tier's GPU rays a live walk shrinks to.
+const GPU_RAYS_MIN: f32 = 0.125;
+
 impl Quality {
-    /// The tracer budget of this tier on the CPU (`gpu = false`) or GPU.
+    /// The tracer budget of this tier on the CPU (`gpu = false`) or GPU
+    /// (8× the early rays; the late rays are the CPU's either way).
     pub fn budget(self, gpu: bool) -> Budget {
         let (rays, bounces, late) = match self {
             Quality::Low => (512, 3, 48),
@@ -59,7 +68,7 @@ impl Quality {
             Quality::Ultra => (2048, 8, 256),
             Quality::Custom(b) => return b,
         };
-        let (rays, late) = if gpu { ((rays * 8).min(65536), (late * 8).min(8192)) } else { (rays, late) };
+        let rays = if gpu { (rays * 8).min(65536) } else { rays };
         Budget {
             rays,
             bounces,
@@ -118,6 +127,9 @@ pub struct Config {
     /// the game's frames counts against it — and its results arrive
     /// later when the GPU is busy drawing.
     pub gpu_budget: f32,
+    /// The host's tick period (s). `Compute::Gpu` sizes its walk to land
+    /// every tick within `gpu_budget`.
+    pub tick_s: f32,
 }
 
 impl Default for Config {
@@ -135,6 +147,7 @@ impl Default for Config {
             kernel_step_samples: 4 * 4096,
             kernel_every_ticks: 1,
             gpu_budget: 0.2,
+            tick_s: 0.05,
         }
     }
 }
@@ -250,6 +263,11 @@ pub struct Simulation {
     /// last one was handed over.
     kernel_job: Option<(SourceId, KernelBuilder, DenseResponse, f32)>,
     kernel_sent: u64,
+    /// `Compute::Gpu`: the share of the tier's GPU rays a walk carries —
+    /// what lets it land every tick within `gpu_budget` — and the last
+    /// walk time it was sized from.
+    gpu_rays: f32,
+    gpu_seen: f32,
 }
 
 /// v4's kernel builder on a thread of its own: responses in, kernels out.
@@ -335,6 +353,8 @@ impl Simulation {
             kernel_members: Vec::new(),
             kernel_job: None,
             kernel_sent: 0,
+            gpu_rays: 1.0,
+            gpu_seen: 0.0,
         };
         s.make_walker();
         s
@@ -396,6 +416,12 @@ impl Simulation {
     /// 0 on the CPU).
     pub fn gpu_walk_ms(&self) -> f32 {
         self.walker.as_ref().map_or(0.0, |w| w.last_ms())
+    }
+
+    /// The share of the tier's GPU rays the live walk carries (1: all; it
+    /// shrinks so a walk lands every tick within the GPU's share).
+    pub fn gpu_rays_share(&self) -> f32 {
+        self.gpu_rays
     }
 
     /// The last GPU walk's longest single dispatch (ms): how long it held
@@ -772,7 +798,19 @@ impl Simulation {
             })
             .collect();
         let gpu = self.walker.is_some();
-        let budget = self.cfg.quality.budget(gpu);
+        let mut budget = self.cfg.quality.budget(gpu);
+        if gpu && self.cfg.compute == Compute::Gpu {
+            // a walk every tick within the GPU's share: as many of the
+            // tier's GPU rays as that leaves room for (the walk's time
+            // grows with them), the reverb as fresh as the ticks
+            let ms = self.walker.as_ref().map_or(0.0, |w| w.last_ms());
+            if ms > 0.0 && ms != self.gpu_seen {
+                self.gpu_seen = ms;
+                let fits = GPU_TICK_SHARE * self.cfg.gpu_budget * self.cfg.tick_s * 1e3;
+                self.gpu_rays = (self.gpu_rays * (fits / ms).clamp(0.7, 1.1)).clamp(GPU_RAYS_MIN, 1.0);
+            }
+            budget.rays = ((budget.rays as f32 * self.gpu_rays) as u32).max(64);
+        }
         let cpu_budget = self.cfg.quality.budget(false);
         let world = World { grade: self.grade, pockets: &[], ..World::new(&self.mesh, &self.panels) };
         let walker = self.walker.as_mut().map(|w| &mut **w as &mut dyn V3Walker);

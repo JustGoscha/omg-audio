@@ -29,7 +29,8 @@
 //!   20 n_panels  21 n_pockets  22 has_grade  23 grade
 //!   24 debug  25 n_edges  26 off_panels  27 off_pockets  (scene words)
 //!   28..31 edge bounds lo  31 off_edges   32..35 edge bounds hi
-//!   35..40 reserved (0)
+//!   35 v4  36 a live walk's pass word (`slice_word`; 0 for a whole
+//!   walk)  37 state_off  38..40 reserved (0)
 //! scene: sources (SRC_WORDS = 12 each): pos xyz, weight, t_free, id,
 //!          direct visibility xyz, fixed-point norm, 0, 0
 //!        panels (PANEL_WORDS = 16):  min xyz, scattering, max xyz, 0,
@@ -55,7 +56,7 @@
 use super::*;
 
 /// Bump on ANY change to the flat formats above or in v3_walk.wgsl.
-pub const WALK_LAYOUT_VERSION: u32 = 6;
+pub const WALK_LAYOUT_VERSION: u32 = 7;
 /// Direction cells for early binning (and the sky).
 pub const CELLS: usize = N_CELLS;
 /// Early delay bins: the early window over the delay bin width.
@@ -228,7 +229,6 @@ impl WalkJob {
     pub fn n_late(&self) -> u32 {
         self.words[7]
     }
-    /// Threads to launch: one per ray of either family.
     /// Dispatches a sliced walk takes at `steps` segments a ray each: the
     /// early rays' longest walk (a sliced walk's early rays don't split:
     /// v3_walk.wgsl).
@@ -237,6 +237,28 @@ impl WalkJob {
             return 1;
         }
         (self.words[11] + 1 + super::MAX_BENDS).div_ceil(steps).max(1)
+    }
+
+    /// Plan this job as a live (sliced) walk: the early rays
+    /// `SLICE_STEPS` segments per dispatch, their states kept between the
+    /// walk's dispatches (none while debug captures them whole: pass 0
+    /// walks them); late rays, if the job carries any, walk whole in pass
+    /// 0 — a live walker leaves them to the CPU (`V3Walker::walks_late`).
+    /// `max_passes` caps the dispatches (0: none).
+    pub fn live(&self, max_passes: u32) -> LiveWalk {
+        let n_early = self.n_early();
+        // the states after the debug records' room (kept for every early
+        // ray, so toggling debug doesn't move them)
+        let state_off = n_early * DEBUG_WORDS as u32;
+        let states = if self.debug() { 0 } else { n_early as usize };
+        let mut header = self.header().to_vec();
+        header[37] = state_off;
+        let passes = self.passes(SLICE_STEPS);
+        LiveWalk {
+            header,
+            passes: if max_passes > 0 { passes.min(max_passes) } else { passes },
+            state_words: state_off as usize + states * STATE_WORDS,
+        }
     }
 
     pub fn n_rays(&self) -> u32 {
@@ -257,6 +279,25 @@ impl WalkJob {
     pub fn debug(&self) -> bool {
         self.words[24] != 0
     }
+}
+
+/// Segments per early ray per dispatch in a live (sliced) walk; they
+/// walk whole within the walk's passes.
+pub const SLICE_STEPS: u32 = 2;
+
+/// Header word 36 of a live walk's dispatch `pass`.
+pub fn slice_word(pass: u32) -> u32 {
+    SLICE_STEPS | (pass << 16)
+}
+
+/// One live walk, planned (`WalkJob::live`): the header (word 36 per pass
+/// from `slice_word`), its dispatches, and the words the kernel's state
+/// buffer (binding 7) needs.
+#[derive(Clone, Debug)]
+pub struct LiveWalk {
+    pub header: Vec<u32>,
+    pub passes: u32,
+    pub state_words: usize,
 }
 
 /// A finished walk: the binned output of one job.
@@ -324,39 +365,61 @@ pub fn edge_nearest(es: &mut EdgeSet, o: Vec3, d: Vec3, t_end: f32) -> Option<(f
 impl Tracer {
     /// `trace`, with the ray walk done by `walk` (the GPU kernel). The
     /// direct and edge paths, the EMA and the field construction run here
-    /// exactly as in `trace`. Returns None when the walker refused (or the
-    /// world exceeds the flat caps) — the caller traces on the CPU instead.
+    /// exactly as in `trace`. `cpu_late`: the walker leaves the late family
+    /// to the CPU — the job carries none, and with each fresh walk that
+    /// many late rays are walked here, whole, from where the listener is
+    /// now (`V3Walker::walks_late`). Returns None when the walker refused
+    /// (or the world exceeds the flat caps) — the caller traces on the
+    /// CPU instead.
     pub fn trace_walked(
         &mut self,
         world: &World,
         listener: Vec3,
         sources: &[Source],
         budget: Budget,
+        cpu_late: Option<u32>,
         walk: &mut dyn FnMut(&WalkJob) -> Walk,
     ) -> Option<Vec<SourceField>> {
         if sources.len() > MAX_SOURCES || world.panels.len() > MAX_PANELS || world.pockets.len() > MAX_POCKETS {
             return None;
         }
-        let dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
+        let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
         let (direct, vis, edge_taps) = self.prepare(world, listener, sources, budget);
         let rot = random_rotation(&mut self.rng);
         let seed = (self.rng.next_u64() >> 32) as u32;
         let edges = if budget.diffraction { self.edges.as_ref() } else { None };
-        let mut job = WalkJob::build(world, listener, sources, budget, rot, seed, self.debug, &vis, edges).v4(self.v4);
+        let job_budget = if cpu_late.is_some() { Budget { late_rays: 0, ..budget } } else { budget };
+        let mut job = WalkJob::build(world, listener, sources, job_budget, rot, seed, self.debug, &vis, edges).v4(self.v4);
         job.epoch = self.epoch;
         let walked = match walk(&job) {
             Walk::Refused => return None,
             Walk::Pending => None,
             Walk::Fresh(w) => Some(w),
         };
+        let fresh = walked.as_ref().is_some_and(|w| w.epoch == self.epoch);
         // the mirror chains the kernel leaves to the CPU (named by a few
         // mirror rays here, solved exactly), folded in with a fresh walk
         let chains = walked.as_ref().map(|_| self.walked_chains(world, listener, sources, budget));
-        Some(self.fold_walked(listener, sources, budget, direct, edge_taps, dbg, walked, chains))
+        // and the late family, when the walker leaves it to the CPU
+        let late = match cpu_late {
+            Some(n) if n > 0 && fresh => {
+                let mut accs: Vec<Acc> = sources
+                    .iter()
+                    .map(|s| Acc::new((s.pos - listener).length() / SPEED_OF_SOUND, self.v4))
+                    .collect();
+                let late_budget = Budget { late_rays: n, ..budget };
+                let sky = self.walk_rays(world, listener, sources, late_budget, &vis, false, &mut accs, &mut dbg);
+                Some((accs, sky))
+            }
+            _ => None,
+        };
+        Some(self.fold_walked(listener, sources, budget, direct, edge_taps, dbg, walked, chains, late))
     }
 
     /// Fold a walk's binned contributions (or none, while one is in
-    /// flight) into the smoothed state and build every source's field.
+    /// flight) — with the CPU-solved chains and the CPU's late family, if
+    /// any, on top — into the smoothed state and build every source's
+    /// field.
     #[allow(clippy::too_many_arguments)]
     fn fold_walked(
         &mut self,
@@ -368,12 +431,24 @@ impl Tracer {
         mut dbg: Vec<(u32, f32, Vec<Vec3>)>,
         walked: Option<Walked>,
         chains: Option<Vec<Acc>>,
+        late: Option<(Vec<Acc>, Vec<([f32; NBANDS], Vec3)>)>,
     ) -> Vec<SourceField> {
         // a walk launched before the listener crossed a surface describes
         // the other side: drop it, the next one is from here
         let fresh = walked
             .as_ref()
             .is_some_and(|w| w.epoch == self.epoch && w.data.len() >= output_words(w.ids.len()));
+        let (late_accs, late_sky) = match late {
+            Some((a, sky)) => (a, Some(sky)),
+            None => (Vec::new(), None),
+        };
+        // per source: what goes on top of the walk's own bins
+        let mut extra: Vec<Vec<Acc>> = sources.iter().map(|_| Vec::new()).collect();
+        for list in [chains.unwrap_or_default(), late_accs] {
+            for (x, acc) in extra.iter_mut().zip(list) {
+                x.push(acc);
+            }
+        }
         if fresh {
             let w = walked.as_ref().unwrap();
             if self.debug {
@@ -386,7 +461,14 @@ impl Tracer {
             let sky: Vec<([f32; NBANDS], Vec3)> = (0..self.sky.len())
                 .map(|ci| {
                     let e = &w.data[ci * SLOT..ci * SLOT + SLOT];
-                    ([e[0], e[1], e[2]], Vec3::new(e[3], e[4], e[5]))
+                    let (mut b, mut d) = ([e[0], e[1], e[2]], Vec3::new(e[3], e[4], e[5]));
+                    if let Some(l) = late_sky.as_ref().and_then(|l| l.get(ci)) {
+                        for k in 0..NBANDS {
+                            b[k] += l.0[k];
+                        }
+                        d = d + l.1;
+                    }
+                    (b, d)
                 })
                 .collect();
             self.fold_sky(sky.into_iter(), budget, listener);
@@ -410,112 +492,90 @@ impl Tracer {
             });
             let st = self.state.entry(s.id).or_default();
             let mut total = [0.0f32; NBANDS];
-            if self.v4 {
-                if let Some(blk) = block {
-                    // the walk's dense response, as `deposit` bins it, and
-                    // the echogram (the RT60 readout) summed from it
-                    let mut acc = Acc::new(t_free, true);
-                    let mut last = 0;
-                    for bin in 0..DENSE_BINS {
-                        let o = bin * DENSE_SLOT;
-                        if blk[o..o + DENSE_SLOT].iter().any(|&x| x != 0.0) {
-                            last = bin + 1;
-                        }
-                    }
-                    acc.dense = (0..last)
-                        .map(|bin| core::array::from_fn(|c| blk[bin * DENSE_SLOT + c]))
-                        .collect();
-                    for (bin, d) in acc.dense.iter().enumerate() {
-                        let j = (bin as f32 * DENSE_BIN_S / BIN_DT) as usize;
-                        if j < acc.echo.bins.len() {
-                            for b in 0..NBANDS {
-                                acc.echo.bins[j][b] += d[b] * LEGACY_UNITS;
-                            }
-                        }
-                    }
-                    let o = DENSE_WORDS;
-                    acc.total = [blk[o], blk[o + 1], blk[o + 2]];
-                    // the CPU-solved chains on top (the kernel skipped them)
-                    if let Some(c) = chains.as_ref().and_then(|c| c.get(si)) {
-                        for (k, b) in &c.early {
-                            acc.early.insert(*k, *b);
-                            for band in 0..NBANDS {
-                                acc.total[band] += b.e[band];
-                            }
-                        }
-                    }
-                    total = acc.total;
-                    st.fold_v4(acc, budget, listener, s.pos);
-                }
-                out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total));
-                continue;
-            }
             if let Some(blk) = block {
-                // the walk's accumulators, as `deposit` would have built them
-                let mut early: HashMap<u32, Bin> = HashMap::new();
-                for cell in 0..CELLS {
-                    for db in 0..DELAY_BINS {
-                        let o = (cell * DELAY_BINS + db) * SLOT;
-                        let e = [blk[o], blk[o + 1], blk[o + 2]];
-                        if !e.iter().any(|&x| x > 0.0) {
-                            continue;
-                        }
-                        let key = KEY_EARLY_BASE + cell as u32 * 256 + db as u32;
-                        early.insert(
-                            key,
-                            Bin {
-                                e,
-                                // (unused downstream: the tap delay is pinned
-                                // to the bin; kept for the EMA's symmetry)
-                                ed: e[1] * (t_free + (db as f32 + 0.5) * DELAY_BIN_S),
-                                dir: Vec3::new(blk[o + 3], blk[o + 4], blk[o + 5]),
-                                last: 0.0,
-                            },
-                        );
-                    }
+                let mut acc = if self.v4 { walked_dense(blk, t_free) } else { walked_early(blk, t_free) };
+                for x in extra[si].drain(..) {
+                    acc.merge(x);
                 }
-                let mut echo = Echogram::new();
-                for bin in 0..ECHO_BINS.min(echo.bins.len()) {
-                    let o = EARLY_WORDS + bin * SLOT;
-                    for b in 0..NBANDS {
-                        echo.bins[bin][b] = blk[o + b] * LEGACY_UNITS;
-                    }
-                    for k in 0..3 {
-                        echo.dirs[bin][k] = blk[o + 3 + k] * LEGACY_UNITS;
-                    }
+                total = acc.total;
+                if self.v4 {
+                    st.fold_v4(acc, budget, listener, s.pos);
+                } else {
+                    st.fold(acc.early, acc.echo, budget);
                 }
-                let o = EARLY_WORDS + ECHO_WORDS;
-                total = [blk[o], blk[o + 1], blk[o + 2]];
-                // the CPU-solved chains on top (the kernel skipped them)
-                if let Some(acc) = chains.as_ref().and_then(|c| c.get(si)) {
-                    for (k, b) in &acc.early {
-                        let cur = early.entry(*k).or_default();
-                        for band in 0..NBANDS {
-                            cur.e[band] += b.e[band];
-                            total[band] += b.e[band];
-                        }
-                        cur.ed += b.ed;
-                        cur.dir = cur.dir + b.dir;
-                        cur.last = b.last;
-                    }
-                    for (bin, add) in echo.bins.iter_mut().zip(acc.echo.bins.iter()) {
-                        for band in 0..NBANDS {
-                            bin[band] += add[band];
-                        }
-                    }
-                    for (d, add) in echo.dirs.iter_mut().zip(acc.echo.dirs.iter()) {
-                        for k in 0..3 {
-                            d[k] += add[k];
-                        }
-                    }
-                }
-
-                st.fold(early, echo, budget);
             }
-            out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], total));
+            out.push(if self.v4 {
+                st.field_v4(t_free, direct[si], &mut edge_taps[si], total)
+            } else {
+                st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], total)
+            });
         }
         out
     }
+}
+
+/// A v4 walk's source block as `deposit` would have built it: the dense
+/// response, and the echogram (the RT60 readout) summed from it.
+fn walked_dense(blk: &[f32], t_free: f32) -> Acc {
+    let mut acc = Acc::new(t_free, true);
+    let mut last = 0;
+    for bin in 0..DENSE_BINS {
+        let o = bin * DENSE_SLOT;
+        if blk[o..o + DENSE_SLOT].iter().any(|&x| x != 0.0) {
+            last = bin + 1;
+        }
+    }
+    acc.dense = (0..last).map(|bin| core::array::from_fn(|c| blk[bin * DENSE_SLOT + c])).collect();
+    for (bin, d) in acc.dense.iter().enumerate() {
+        let j = (bin as f32 * DENSE_BIN_S / BIN_DT) as usize;
+        if j < acc.echo.bins.len() {
+            for b in 0..NBANDS {
+                acc.echo.bins[j][b] += d[b] * LEGACY_UNITS;
+            }
+        }
+    }
+    let o = DENSE_WORDS;
+    acc.total = [blk[o], blk[o + 1], blk[o + 2]];
+    acc
+}
+
+/// A v3 walk's source block as `deposit` would have built it: the early
+/// bins, the echogram, the totals.
+fn walked_early(blk: &[f32], t_free: f32) -> Acc {
+    let mut acc = Acc::new(t_free, false);
+    for cell in 0..CELLS {
+        for db in 0..DELAY_BINS {
+            let o = (cell * DELAY_BINS + db) * SLOT;
+            let e = [blk[o], blk[o + 1], blk[o + 2]];
+            if !e.iter().any(|&x| x > 0.0) {
+                continue;
+            }
+            let key = KEY_EARLY_BASE + cell as u32 * 256 + db as u32;
+            acc.early.insert(
+                key,
+                Bin {
+                    e,
+                    // (unused downstream: the tap delay is pinned to the
+                    // bin; kept for the EMA's symmetry)
+                    ed: e[1] * (t_free + (db as f32 + 0.5) * DELAY_BIN_S),
+                    dir: Vec3::new(blk[o + 3], blk[o + 4], blk[o + 5]),
+                    last: 0.0,
+                },
+            );
+        }
+    }
+    for bin in 0..ECHO_BINS.min(acc.echo.bins.len()) {
+        let o = EARLY_WORDS + bin * SLOT;
+        for b in 0..NBANDS {
+            acc.echo.bins[bin][b] = blk[o + b] * LEGACY_UNITS;
+        }
+        for k in 0..3 {
+            acc.echo.dirs[bin][k] = blk[o + 3 + k] * LEGACY_UNITS;
+        }
+    }
+    let o = EARLY_WORDS + ECHO_WORDS;
+    acc.total = [blk[o], blk[o + 1], blk[o + 2]];
+    acc
 }
 
 #[cfg(test)]
@@ -558,14 +618,14 @@ mod tests {
         let early = |f: &SourceField| f.taps.iter().filter(|t| t.key >= KEY_EARLY_BASE && t.key < 20_000).count();
         let near = Vec3::new(3.0, 0.0, 1.6);
         for _ in 0..3 {
-            let f = tracer.trace_walked(&world, near, &src, budget, &mut walk(false)).unwrap();
+            let f = tracer.trace_walked(&world, near, &src, budget, None, &mut walk(false)).unwrap();
             assert!(early(&f[0]) > 0, "a fresh walk on this side lands");
         }
         // fly through the wall: this tick's answer is the old side's job
         let far = Vec3::new(-3.0, 0.0, 1.6);
-        let f = tracer.trace_walked(&world, far, &src, budget, &mut walk(true)).unwrap();
+        let f = tracer.trace_walked(&world, far, &src, budget, None, &mut walk(true)).unwrap();
         assert_eq!(early(&f[0]), 0, "the walk from the other side of the wall was folded in");
-        let f = tracer.trace_walked(&world, far, &src, budget, &mut walk(false)).unwrap();
+        let f = tracer.trace_walked(&world, far, &src, budget, None, &mut walk(false)).unwrap();
         assert!(early(&f[0]) > 0, "the next walk, from this side, lands again");
     }
 

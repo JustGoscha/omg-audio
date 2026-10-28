@@ -16,6 +16,13 @@
 //!    lags (dB off the slow walk at the same spot), and clicks.
 //!  - tone: 500 Hz from 60 m away in the field, the listener still: the
 //!    level's wobble (flanging, warble) in 20 ms windows.
+//!  - fly: noise in A; the listener flies through the A | B wall (not the
+//!    door) at 6 m/s, into A and out of it: how long the level takes to
+//!    settle where it stops, and how far off it is the first 0.5 s.
+//!
+//! GPU=1 walks on the GPU (whole walks, synchronous); GPU=live runs the
+//! live walk the apps use (pooled late rays, paced, a tick or more late)
+//! in real time — the ticks then wait for the wall clock.
 use omg_audio::{clip, Config, Geometry, Hrir, Material, Mixer, Play, Simulation, SourceDesc, SourceId};
 
 const SR: f32 = 48_000.0;
@@ -50,11 +57,19 @@ struct Rig {
     mix: Mixer,
     blocks: usize,
     exact: bool,
+    /// GPU=live: the wall clock of the last tick (ticks keep real time).
+    live: Option<std::time::Instant>,
 }
 
 impl Rig {
     fn new(v4: bool) -> Self {
-        let compute = if std::env::var("GPU").is_ok() { omg_audio::Compute::GpuSync } else { omg_audio::Compute::Cpu };
+        let gpu = std::env::var("GPU").ok();
+        let live = gpu.as_deref() == Some("live");
+        let compute = match gpu {
+            Some(_) if live => omg_audio::Compute::Gpu,
+            Some(_) => omg_audio::Compute::GpuSync,
+            None => omg_audio::Compute::Cpu,
+        };
         let cfg = Config {
             v4,
             compute,
@@ -66,7 +81,7 @@ impl Rig {
         sim.set_geometry(geometry());
         let mix = Mixer::new(SR, Hrir::none());
         let exact = std::env::var("NOEXACT").is_err();
-        Self { sim, mix, blocks: 0, exact }
+        Self { sim, mix, blocks: 0, exact, live: live.then(std::time::Instant::now) }
     }
 
     /// Render one 10 ms block (ticking every 50 ms; exact frames between
@@ -74,6 +89,13 @@ impl Rig {
     /// output's (left, right).
     fn block(&mut self) -> ([f32; BLOCK], [f32; BLOCK]) {
         if self.blocks % TICK_BLOCKS == 0 {
+            if let Some(t) = &mut self.live {
+                let left = 0.05 - t.elapsed().as_secs_f32();
+                if left > 0.0 {
+                    std::thread::sleep(std::time::Duration::from_secs_f32(left));
+                }
+                *t = std::time::Instant::now();
+            }
             let f = self.sim.tick();
             self.mix.apply(&f);
         } else if self.exact {
@@ -288,8 +310,11 @@ fn walk_out(v4: bool) {
     let at = |x: f32| slow.iter().min_by(|a, b| (a.0 - x).abs().total_cmp(&(b.0 - x).abs())).unwrap().1;
     let err: Vec<f32> = fast.iter().map(|&(x, l)| l - at(x)).collect();
     let rms = (err.iter().map(|e| e * e).sum::<f32>() / err.len() as f32).sqrt();
-    let worst = err.iter().cloned().fold(0.0f32, |a, b| if b.abs() > a.abs() { b } else { a });
-    println!("walk out: 1.4 m/s vs 0.2 m/s — off by {rms:.1} dB RMS (worst {worst:+.1} dB) · clicks {clicks} (slow walk {slow_clicks})");
+    let (wi, worst) = err.iter().cloned().enumerate().fold((0, 0.0f32), |a, (i, b)| if b.abs() > a.1.abs() { (i, b) } else { a });
+    println!(
+        "walk out: 1.4 m/s vs 0.2 m/s — off by {rms:.1} dB RMS (worst {worst:+.1} dB at x {:.1}) · clicks {clicks} (slow walk {slow_clicks})",
+        fast[wi].0
+    );
     let show: Vec<String> = [6.0, 8.0, 9.0, 11.0, 13.0, 14.5, 16.0, 19.0]
         .iter()
         .map(|&x| {
@@ -384,6 +409,39 @@ fn still(v4: bool) {
     println!("still in the room: level {mean:.1} dB, wobble ±{sd:.2} dB (range {:.1} dB) · {} kernels rebuilt in 2 s", hi - lo, kernels);
 }
 
+/// Fly through the A | B wall at 6 m/s (y 1, away from the door) from
+/// `from` to `to` and stop there: the level per 100 ms from the crossing
+/// on, against where it settles.
+fn fly_through(v4: bool, from: f32, to: f32) -> String {
+    let mut rig = Rig::new(v4);
+    let src = rig.sim.add_source(SourceDesc { position: [3.0, 3.0, 1.5], gain: 1.0, active: true });
+    rig.sim.set_listener([from, 1.0, 1.7], 0.0, 0.0, 0.0);
+    rig.mix.play(src, &clip(&noise(96_000, 13)), Play::LOOP);
+    rig.run(4.0);
+    let before = db(steady(&mut rig, src, 1.0));
+    let mut x = from;
+    let step = 6.0 * BLOCK as f32 / SR * (to - from).signum();
+    while (to - x) * step.signum() > 0.0 {
+        x = if (to - x).abs() < step.abs() { to } else { x + step };
+        rig.sim.set_listener([x, 1.0, 1.7], 0.0, 0.0, 0.0);
+        rig.block();
+        rig.mix.take_meter(src);
+    }
+    let after = trace(&mut rig, src, 5.0);
+    let fin = after[40..].iter().sum::<f32>() / 10.0;
+    let off = after[..5].iter().map(|l| (l - fin).abs()).fold(0.0f32, f32::max);
+    let show = after.iter().take(15).map(|x| format!("{x:.0}")).collect::<Vec<_>>().join(" ");
+    format!(
+        "x {from} → {to}: {before:.1} → {fin:.1} dB, settles in {} (first 0.5 s off by up to {off:.1} dB)\n      per 100 ms: {show}",
+        settle(&after, fin)
+    )
+}
+
+fn fly(v4: bool) {
+    println!("fly into A: {}", fly_through(v4, 11.0, 5.0));
+    println!("fly out of A: {}", fly_through(v4, 5.0, 11.0));
+}
+
 fn main() {
     let v4 = !std::env::args().any(|a| a == "v3");
     let only = std::env::var("ONLY").unwrap_or_default();
@@ -405,5 +463,8 @@ fn main() {
     }
     if only.is_empty() || only == "tone" {
         tone(v4);
+    }
+    if only.is_empty() || only == "fly" {
+        fly(v4);
     }
 }

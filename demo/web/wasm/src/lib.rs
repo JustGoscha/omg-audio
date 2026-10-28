@@ -18,7 +18,7 @@
 pub mod town;
 
 use omg_audio::governor::Governor;
-use omg_core::v3::fold::{self as walkfmt, Walk, WalkJob, Walked};
+use omg_core::v3::fold::{self as walkfmt, LiveWalk, Walk, WalkJob, Walked};
 use omg_audio::{clip, normalize, Clip, Compute, Config, Frame, Hrir, Mixer, Play, Quality, Simulation, SourceId, VoiceId};
 use omg_dsp::dense::DenseKernel;
 use std::collections::HashMap;
@@ -381,27 +381,19 @@ pub extern "C" fn sim_nsrc() -> u32 {
 // simulation's own mesh (`sim_mesh_*`). Each tick the walker leaves its
 // job here; gpu.js takes it (`sim_v3_take`), runs it as `sim_v3_passes`
 // short dispatches paced to the GPU budget, and hands the result back
-// (`sim_v3_inject`) — folded in the tick after. The late rays are a
-// persistent pool across walks (their state stays on the GPU); the
-// bookkeeping is here, as omg-gpu's is for native.
-
-/// Segments per ray per dispatch (omg-gpu SLICE_STEPS).
-const SLICE_STEPS: u32 = 2;
-const BIRTHS_EMA: f32 = 0.2;
+// (`sim_v3_inject`) — folded in the tick after. The GPU walks the early
+// rays; the late family is the CPU's, walked whole with each fresh walk
+// (`V3Walker::walks_late`), as natively.
 
 #[derive(Default)]
 struct Bridge {
     /// The newest job not yet taken (newest wins).
     job: Option<WalkJob>,
-    /// The job gpu.js took: (source ids, epoch, passes, output words).
-    taken: Option<(Vec<u32>, u32, u32, usize)>,
+    /// The job gpu.js took (source ids, epoch) and its plan.
+    taken: Option<(Vec<u32>, u32, LiveWalk)>,
     result: Option<Walked>,
     words: Vec<u32>,
     stage: Vec<f32>,
-    /// The pool: lanes, state offset, epoch, smoothed births per walk.
-    pool: Option<(u32, u32, u32, f32)>,
-    reset: bool,
-    dbg_words: usize,
     gpu_ms: f32,
     gpu_max_ms: f32,
 }
@@ -430,6 +422,10 @@ impl omg_audio::V3Walker for JsWalker {
 
     fn last_max_ms(&self) -> f32 {
         bridge().gpu_max_ms
+    }
+
+    fn walks_late(&self) -> bool {
+        false
     }
 }
 
@@ -509,12 +505,18 @@ pub extern "C" fn sim_gpu_disable() {
     let b = bridge();
     b.job = None;
     b.result = None;
-    b.pool = None;
 }
 
 #[no_mangle]
 pub extern "C" fn sim_gpu_on() -> u32 {
     (sim().cfg.compute != Compute::Cpu) as u32
+}
+
+/// The share of the tier's GPU rays the walk carries (it shrinks so a
+/// walk lands every tick within the GPU's share).
+#[no_mangle]
+pub extern "C" fn sim_gpu_rays_share() -> f32 {
+    sim().sim.gpu_rays_share()
 }
 
 /// Take the newest walk job: its words (header + scene) in
@@ -523,25 +525,11 @@ pub extern "C" fn sim_gpu_on() -> u32 {
 pub extern "C" fn sim_v3_take() -> u32 {
     let b = bridge();
     let Some(job) = b.job.take() else { return 0 };
-    let (n_early, n_late) = (job.n_early() as usize, job.n_late());
-    let state_off = n_early * walkfmt::DEBUG_WORDS;
-    let fresh = match b.pool {
-        Some((lanes, off, epoch, _)) => lanes != n_late || off as usize != state_off || epoch != job.epoch,
-        None => true,
-    };
-    if fresh {
-        b.pool = Some((n_late, state_off as u32, job.epoch, n_late.max(1) as f32));
-    }
-    let (_, _, _, births) = b.pool.expect("set above");
-    b.reset = fresh;
-    b.dbg_words = state_off + (n_late as usize + n_early) * walkfmt::STATE_WORDS;
+    let live = job.live(0);
     b.words.clear();
-    b.words.extend_from_slice(&job.words);
-    b.words[37] = state_off as u32;
-    b.words[38] = (1.0 / births.max(1.0)).to_bits();
-    let passes = job.passes(SLICE_STEPS);
-    let out = walkfmt::output_words(job.n_sources()) + 1; // + the births
-    b.taken = Some((job.ids.clone(), job.epoch, passes, out));
+    b.words.extend_from_slice(&live.header);
+    b.words.extend_from_slice(job.scene());
+    b.taken = Some((job.ids.clone(), job.epoch, live));
     b.words.len() as u32
 }
 
@@ -553,36 +541,24 @@ pub extern "C" fn sim_v3_job_ptr() -> *const u32 {
 /// The taken job's dispatches, and header word 36 for pass `pass`.
 #[no_mangle]
 pub extern "C" fn sim_v3_passes() -> u32 {
-    bridge().taken.as_ref().map_or(0, |t| t.2)
+    bridge().taken.as_ref().map_or(0, |t| t.2.passes)
 }
 
 #[no_mangle]
 pub extern "C" fn sim_v3_word36(pass: u32) -> u32 {
-    SLICE_STEPS | (pass << 16)
-}
-
-/// Header word 39 of pass 0: start every late lane's ray anew.
-#[no_mangle]
-pub extern "C" fn sim_v3_reset() -> u32 {
-    bridge().reset as u32
+    walkfmt::slice_word(pass)
 }
 
 /// Words the kernel's state buffer (binding 7) needs for the taken job.
 #[no_mangle]
 pub extern "C" fn sim_v3_dbg_words() -> u32 {
-    bridge().dbg_words as u32
+    bridge().taken.as_ref().map_or(0, |t| t.2.state_words) as u32
 }
 
-/// Output words of the taken job (the births word included).
+/// Output words of the taken job.
 #[no_mangle]
 pub extern "C" fn sim_v3_out_words() -> u32 {
-    bridge().taken.as_ref().map_or(0, |t| t.3) as u32
-}
-
-/// gpu.js had to make a new state buffer: the pool's rays are gone.
-#[no_mangle]
-pub extern "C" fn sim_v3_pool_lost() {
-    bridge().pool = None;
+    bridge().taken.as_ref().map_or(0, |t| walkfmt::output_words(t.0.len())) as u32
 }
 
 /// Staging for the result: `n` f32 words.
@@ -598,15 +574,12 @@ pub extern "C" fn sim_v3_buf_ptr(n: u32) -> *mut f32 {
 #[no_mangle]
 pub extern "C" fn sim_v3_inject(n: u32, gpu_ms: f32, gpu_max_ms: f32) {
     let b = bridge();
-    let Some((ids, epoch, _, out)) = b.taken.take() else { return };
+    let Some((ids, epoch, _)) = b.taken.take() else { return };
+    let out = walkfmt::output_words(ids.len());
     if (n as usize) < out {
         return; // malformed: the next walk refreshes
     }
-    let born = b.stage[out - 1].round();
-    if let Some(p) = &mut b.pool {
-        p.3 += BIRTHS_EMA * (born - p.3);
-    }
-    let data = b.stage[..out - 1].to_vec();
+    let data = b.stage[..out].to_vec();
     b.result = Some(Walked { ids, data, debug: Vec::new(), epoch });
     b.gpu_ms = gpu_ms;
     b.gpu_max_ms = gpu_max_ms;

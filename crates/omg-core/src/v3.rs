@@ -1004,6 +1004,41 @@ impl Acc {
     fn new(t_free: f32, v4: bool) -> Self {
         Self { early: HashMap::new(), echo: Echogram::new(), t_free, total: [0.0; NBANDS], dense: Vec::new(), v4, sq_scale: 1.0 }
     }
+
+    /// Add another walk's contributions — a disjoint set of paths (the
+    /// CPU's late family onto a GPU walk's early one).
+    fn merge(&mut self, o: Acc) {
+        for b in 0..NBANDS {
+            self.total[b] += o.total[b];
+        }
+        if self.dense.len() < o.dense.len() {
+            self.dense.resize(o.dense.len(), [0.0; 7]);
+        }
+        for (d, x) in self.dense.iter_mut().zip(&o.dense) {
+            for c in 0..7 {
+                d[c] += x[c];
+            }
+        }
+        for (bin, x) in self.echo.bins.iter_mut().zip(&o.echo.bins) {
+            for b in 0..NBANDS {
+                bin[b] += x[b];
+            }
+        }
+        for (d, x) in self.echo.dirs.iter_mut().zip(&o.echo.dirs) {
+            for k in 0..3 {
+                d[k] += x[k];
+            }
+        }
+        for (k, b) in o.early {
+            let cur = self.early.entry(k).or_default();
+            for band in 0..NBANDS {
+                cur.e[band] += b.e[band];
+            }
+            cur.ed += b.ed;
+            cur.dir = cur.dir + b.dir;
+            cur.last = b.last;
+        }
+    }
 }
 
 
@@ -1335,7 +1370,6 @@ impl Tracer {
         sources: &[Source],
         budget: Budget,
     ) -> Vec<SourceField> {
-        let n = budget.rays.max(1);
         let mut accs: Vec<Acc> = sources
             .iter()
             .map(|s| Acc::new((s.pos - listener).length() / SPEED_OF_SOUND, self.v4))
@@ -1343,15 +1377,72 @@ impl Tracer {
 
         let debug = self.debug;
         let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
-        let mut verts: Vec<Vec3> = Vec::new();
 
         // 1. direct, visibility, edge next-event paths (shared with the
         // externally walked tick, fold.rs)
         let (direct, vis, mut edge_taps) = self.prepare(world, listener, sources, budget);
 
+        // 2. the ray walk, both families
+        let sky_acc = self.walk_rays(world, listener, sources, budget, &vis, true, &mut accs, &mut dbg);
+
+        if debug {
+            dbg.sort_by(|a, b| b.1.total_cmp(&a.1));
+            self.debug_paths = dbg;
+        }
+        self.fold_sky(sky_acc.into_iter(), budget, listener);
+
+        // 4b. the exact solver's chains: named by a few mirror rays,
+        // solved every tick while cached
+        self.find_chains(world, listener, sources, budget, chain_finders(budget));
+        self.solve_chains(world, listener, sources, budget, &mut accs);
+
+
+
+        // 5. smooth over ticks and build each source's field
+        let mut out = Vec::with_capacity(sources.len());
+        for (si, s) in sources.iter().enumerate() {
+            let t_free = accs[si].t_free;
+            let acc = core::mem::replace(
+                &mut accs[si],
+                Acc::new(0.0, self.v4),
+            );
+            let st = self.state.entry(s.id).or_default();
+            if self.v4 {
+                let total = acc.total;
+                st.fold_v4(acc, budget, listener, s.pos);
+                out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total));
+            } else {
+                st.fold(acc.early, acc.echo, budget);
+                out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
+            }
+        }
+        out
+    }
+
+    /// Step 2 of a tick: the ray walk, deposited into `accs` (one per
+    /// source) and `dbg`; returns the sky cells' escapes. The EARLY family
+    /// (paths with 0..=bounces reflections, `budget.rays` rays) only when
+    /// `early`, then the LATE family (everything beyond, `budget.late_rays`)
+    /// — a live GPU walk leaves only the late family to the CPU
+    /// (`trace_walked`): long serial walks are what a GPU is slowest at.
+    #[allow(clippy::too_many_arguments)]
+    fn walk_rays(
+        &mut self,
+        world: &World,
+        listener: Vec3,
+        sources: &[Source],
+        budget: Budget,
+        vis: &[[f32; NBANDS]],
+        early: bool,
+        accs: &mut [Acc],
+        dbg: &mut Vec<(u32, f32, Vec<Vec3>)>,
+    ) -> Vec<([f32; NBANDS], Vec3)> {
+        let n = budget.rays.max(1);
+        let debug = self.debug;
+        let mut verts: Vec<Vec3> = Vec::new();
         // 2. rays: stratified (Fibonacci) and randomly rotated per tick
         let rot = random_rotation(&mut self.rng);
-        let primary = fibonacci_sphere(n as usize);
+        let primary = if early { fibonacci_sphere(n as usize) } else { Vec::new() };
         let mut picks: Vec<(usize, f32)> = Vec::new();
         let mut imp: Vec<f32> = Vec::new();
         // Three estimators, disjoint per path, so every path is counted
@@ -1473,7 +1564,7 @@ impl Tracer {
                             thr[b] * t[b] * t[b] * air[b] * air[b] * w * gate[b]
                         });
                         if debug {
-                            keep_path(&mut dbg, s.id, e[1], &verts, s.pos);
+                            keep_path(dbg, s.id, e[1], &verts, s.pos);
                         }
                         // a sphere hit only knows the path to within the
                         // sphere: its arrival is spread over r/c each way
@@ -1586,7 +1677,7 @@ impl Tracer {
                             thr[b] * keep[b] * t[b] * t[b] * air[b] * air[b] * w
                         });
                         if debug {
-                            keep_path(&mut dbg, s.id, e[1], &verts, s.pos);
+                            keep_path(dbg, s.id, e[1], &verts, s.pos);
                         }
                         deposit(&mut accs[si], &self.cells, e, (length + r) / SPEED_OF_SOUND, first);
                     }
@@ -1688,39 +1779,7 @@ impl Tracer {
             }
         }
         }
-
-        if debug {
-            dbg.sort_by(|a, b| b.1.total_cmp(&a.1));
-            self.debug_paths = dbg;
-        }
-        self.fold_sky(sky_acc.into_iter(), budget, listener);
-
-        // 4b. the exact solver's chains: named by a few mirror rays,
-        // solved every tick while cached
-        self.find_chains(world, listener, sources, budget, chain_finders(budget));
-        self.solve_chains(world, listener, sources, budget, &mut accs);
-
-
-
-        // 5. smooth over ticks and build each source's field
-        let mut out = Vec::with_capacity(sources.len());
-        for (si, s) in sources.iter().enumerate() {
-            let t_free = accs[si].t_free;
-            let acc = core::mem::replace(
-                &mut accs[si],
-                Acc::new(0.0, self.v4),
-            );
-            let st = self.state.entry(s.id).or_default();
-            if self.v4 {
-                let total = acc.total;
-                st.fold_v4(acc, budget, listener, s.pos);
-                out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total));
-            } else {
-                st.fold(acc.early, acc.echo, budget);
-                out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
-            }
-        }
-        out
+        sky_acc
     }
 
     /// Cache (or refresh) the chain `planes` for source `id`.

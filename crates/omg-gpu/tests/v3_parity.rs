@@ -40,7 +40,7 @@ fn cpu_tick(t: &mut Tracer, w: &World, lis: Vec3, srcs: &[Source], b: Budget) ->
 }
 
 fn gpu_tick(g: &mut GpuV3Tracer, t: &mut Tracer, w: &World, lis: Vec3, srcs: &[Source], b: Budget) -> Vec<SourceField> {
-    t.trace_walked(w, lis, srcs, b, &mut |job| Walk::Fresh(g.walk(job).expect("walk")))
+    t.trace_walked(w, lis, srcs, b, None, &mut |job| Walk::Fresh(g.walk(job).expect("walk")))
         .expect("job within caps")
 }
 
@@ -680,7 +680,7 @@ fn v3_walk_speed_probe() {
     let mut ta = Tracer::new(3);
     let (sim_ms, fresh) = cadence(&mut || {
         let mut got = false;
-        ta.trace_walked(&w, lis, &srcs, gpu_b, &mut |job| {
+        ta.trace_walked(&w, lis, &srcs, gpu_b, Some(cpu_b.late_rays), &mut |job| {
             let r = walker.walk(job);
             got = matches!(r, Walk::Fresh(_));
             r
