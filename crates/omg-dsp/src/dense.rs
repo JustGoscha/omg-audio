@@ -101,6 +101,11 @@ pub struct DenseKernel {
     n_tail: usize,
     /// Impulse response length in samples (kernel time).
     pub len: usize,
+    /// Replaces a response that changed beyond its noise (a door shut, a
+    /// step into another space): the convolver drops what the old one
+    /// still had to play (`DenseConv::cut`). Travels in the flat words as
+    /// the sign of the length.
+    pub cut: bool,
 }
 
 impl core::fmt::Debug for DenseKernel {
@@ -112,6 +117,12 @@ impl core::fmt::Debug for DenseKernel {
 impl DenseKernel {
     pub fn is_empty(&self) -> bool {
         self.n_head == 0
+    }
+
+    /// Mark the kernel as replacing a stale response (see `cut`).
+    pub fn mark_cut(&mut self) {
+        self.cut = true;
+        self.data[0].re = -(self.len as f32);
     }
 
     fn head(&self, p: usize, c: usize) -> &[C] {
@@ -151,7 +162,8 @@ impl DenseKernel {
         if words.len() < 4 {
             return None;
         }
-        let (len, n_head, n_mid, n_tail) = (words[0] as usize, words[1] as usize, words[2] as usize, words[3] as usize);
+        let (cut, len) = (words[0] < 0.0, words[0].abs() as usize);
+        let (n_head, n_mid, n_tail) = (words[1] as usize, words[2] as usize, words[3] as usize);
         if words.len() != Self::flat_len(n_head, n_mid, n_tail) || n_head > HEAD_PARTS || n_mid > MID_PARTS {
             return None;
         }
@@ -165,7 +177,7 @@ impl DenseKernel {
         } else {
             words.chunks_exact(2).map(|p| C::new(p[0], p[1])).collect()
         };
-        Some(Self { data, n_head, n_mid, n_tail, len })
+        Some(Self { data, n_head, n_mid, n_tail, len, cut })
     }
 }
 
@@ -362,7 +374,7 @@ impl KernelBuilder {
             sample_rate,
             gain,
             seed,
-            kernel: DenseKernel { data, n_head, n_mid, n_tail, len },
+            kernel: DenseKernel { data, n_head, n_mid, n_tail, len, cut: false },
             next: 0,
             at: 2,
             ir: core::array::from_fn(|_| vec![0.0; TAIL_B]),
@@ -456,8 +468,27 @@ impl Fdl {
 /// The per-source convolver (audio thread). Feed it the source as of
 /// its free-field arrival; it adds the dense response to the bus's
 /// first-order channels.
+///
+/// A kernel never switches in place: each stage (head, mid, tail)
+/// computes its next block with the kernel it used last AND the new one
+/// and crossfades between them over that block (raised cosine) — the
+/// response changes without a step at any block boundary, so a kernel
+/// arriving every tick (a door swinging) glides. None fades out the same
+/// way, and what the stages already landed ahead plays out. The input
+/// history is only ever the true recent input: after a pause (no kernel
+/// for longer than the landed output, or the renderer not running it —
+/// `discontinuity`) the convolver starts over from silence (its head
+/// fading in when the input is already sounding).
 pub struct DenseConv {
+    /// The kernel wanted now.
     kernel: Option<Arc<DenseKernel>>,
+    /// The kernel each stage (head, mid, tail) last computed with.
+    live: [Option<Arc<DenseKernel>>; 3],
+    /// The input history is the true recent input (false: start over).
+    fed: bool,
+    /// Samples run with no kernel anywhere: after `RING` everything the
+    /// stages landed has played and the convolver stops.
+    drained: usize,
     fh: RealFft,
     fm: RealFft,
     ft: RealFft,
@@ -473,10 +504,12 @@ pub struct DenseConv {
     tail_hist: Vec<f32>,
     tail_fdl: Fdl,
     /// The tail block in progress: its input, its partial spectra per
-    /// channel, the step it is at (1..=TAIL_STEPS, 0 = none) and the
+    /// channel for the kernel it fades from and the one it fades to, the
+    /// two kernels, the step it is at (1..=TAIL_STEPS, 0 = none) and the
     /// convolution time its output starts at.
     tail_in: Vec<f32>,
-    tail_acc: Vec<Vec<C>>,
+    tail_acc: [Vec<Vec<C>>; 2],
+    tail_pair: [Option<Arc<DenseKernel>>; 2],
     tail_step: usize,
     tail_at: u64,
     /// Output being played (one head block per FOA channel).
@@ -487,11 +520,14 @@ pub struct DenseConv {
     ring: [Vec<f32>; FOA],
     acc: Vec<C>,
     acc_m: Vec<C>,
-    time: Vec<f32>,
-    time_m: Vec<f32>,
-    time_t: Vec<f32>,
+    time: [Vec<f32>; 2],
+    time_m: [Vec<f32>; 2],
+    time_t: [Vec<f32>; 2],
     spec: Vec<C>,
     spec_m: Vec<C>,
+    spec_t: Vec<C>,
+    /// Raised-cosine fade-ins over a head, mid and tail block.
+    fade: [Vec<f32>; 3],
     /// Samples of silent input in a row (asleep after the kernel's length).
     quiet: usize,
     asleep: bool,
@@ -503,10 +539,35 @@ impl Default for DenseConv {
     }
 }
 
+/// Two kernels the same (both none, or one shared kernel).
+fn same(a: &Option<Arc<DenseKernel>>, b: &Option<Arc<DenseKernel>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Σ over `n` partitions of the input spectra × the kernel's, in time.
+fn convolve<'a>(f: &mut RealFft, fdl: &Fdl, n: usize, part: impl Fn(usize) -> &'a [C], acc: &mut [C], time: &mut [f32]) {
+    acc.iter_mut().for_each(|v| *v = C::default());
+    for p in 0..n {
+        mul_acc(acc, fdl.get(p), part(p));
+    }
+    f.inverse(acc, time);
+}
+
+fn raised_cosine(n: usize) -> Vec<f32> {
+    (0..n).map(|j| 0.5 - 0.5 * (core::f32::consts::PI * (j as f32 + 0.5) / n as f32).cos()).collect()
+}
+
 impl DenseConv {
     pub fn new() -> Self {
         Self {
             kernel: None,
+            live: [None, None, None],
+            fed: false,
+            drained: RING,
             fh: RealFft::new(2 * HEAD_B),
             fm: RealFft::new(2 * MID_B),
             ft: RealFft::new(2 * TAIL_B),
@@ -519,7 +580,8 @@ impl DenseConv {
             tail_hist: vec![0.0; 2 * TAIL_B],
             tail_fdl: Fdl::new(1, TAIL_B + 1),
             tail_in: vec![0.0; 2 * TAIL_B],
-            tail_acc: Vec::new(),
+            tail_acc: [Vec::new(), Vec::new()],
+            tail_pair: [None, None],
             tail_step: 0,
             tail_at: 0,
             out: core::array::from_fn(|_| vec![0.0; HEAD_B]),
@@ -527,45 +589,130 @@ impl DenseConv {
             ring: core::array::from_fn(|_| vec![0.0; RING]),
             acc: vec![C::default(); HEAD_B + 1],
             acc_m: vec![C::default(); MID_B + 1],
-            time: vec![0.0; 2 * HEAD_B],
-            time_m: vec![0.0; 2 * MID_B],
-            time_t: vec![0.0; 2 * TAIL_B],
+            time: core::array::from_fn(|_| vec![0.0; 2 * HEAD_B]),
+            time_m: core::array::from_fn(|_| vec![0.0; 2 * MID_B]),
+            time_t: core::array::from_fn(|_| vec![0.0; 2 * TAIL_B]),
             spec: vec![C::default(); HEAD_B + 1],
             spec_m: vec![C::default(); MID_B + 1],
+            spec_t: Vec::new(),
+            fade: [raised_cosine(HEAD_B), raised_cosine(MID_B), raised_cosine(TAIL_B)],
             quiet: 0,
             asleep: true,
         }
     }
 
-    /// Swap in a kernel (None: silence). Takes effect from the next block;
-    /// the input history is kept, so the response changes, not the noise.
+    /// The kernel to convolve from now on (None: fade to silence). Each
+    /// stage crossfades to it over its next block; the input history is
+    /// kept, so the response changes, not the noise.
     pub fn set_kernel(&mut self, k: Option<Arc<DenseKernel>>) {
+        let k = k.filter(|k| !k.is_empty());
         if let Some(k) = &k {
             self.tail_fdl.ensure(k.n_tail.max(1));
-            if self.tail_acc.is_empty() && k.n_tail > 0 {
-                self.tail_acc = vec![vec![C::default(); TAIL_B + 1]; FOA];
+            if self.tail_acc[0].is_empty() && k.n_tail > 0 {
+                self.tail_acc = core::array::from_fn(|_| vec![vec![C::default(); TAIL_B + 1]; FOA]);
+                self.spec_t = vec![C::default(); TAIL_B + 1];
+            }
+            self.drained = 0;
+        }
+        self.kernel = k;
+    }
+
+    /// The response so far is wrong (the world changed beyond the
+    /// estimates' noise: a door shut, a step into another space), so
+    /// what it would still play cannot reach the listener any more: the
+    /// output the stages landed ahead fades out over a head block, the
+    /// head crossfades to `k`, and the later stages start `k` from
+    /// silence at their next blocks (the input history stays: `k`
+    /// convolves what was emitted before too).
+    pub fn cut(&mut self, k: Option<Arc<DenseKernel>>) {
+        self.set_kernel(k);
+        if !self.fed {
+            return;
+        }
+        let now = (self.blocks as usize * HEAD_B) % RING;
+        for r in &mut self.ring {
+            for j in 0..RING {
+                let g = if j < HEAD_B { 1.0 - self.fade[0][j] } else { 0.0 };
+                r[(now + j) % RING] *= g;
             }
         }
-        self.kernel = k.filter(|k| !k.is_empty());
+        self.live[1] = None;
+        self.live[2] = None;
+        // the tail block in progress was the old response's: it lands nothing
+        self.tail_pair = [None, None];
+    }
+
+    /// The input skipped ahead (the renderer did not run this convolver
+    /// for a while): its history is no longer the recent input — start
+    /// over from silence, fading in.
+    pub fn discontinuity(&mut self) {
+        self.fed = false;
+    }
+
+    /// The longest response any stage still plays (samples).
+    fn longest(&self) -> usize {
+        self.live.iter().chain(core::iter::once(&self.kernel)).flatten().map(|k| k.len).max().unwrap_or(0)
     }
 
     pub fn kernel_len(&self) -> usize {
-        self.kernel.as_ref().map_or(0, |k| k.len + HEAD_B)
+        match self.longest() {
+            0 => 0,
+            n => n + HEAD_B,
+        }
     }
 
+    /// Something to play: a kernel, a stage fading out of one, or output
+    /// landed ahead still to come.
     pub fn has_kernel(&self) -> bool {
-        self.kernel.is_some()
+        self.kernel.is_some() || self.live.iter().any(|k| k.is_some()) || self.drained < RING
     }
 
     /// Nothing to compute: no kernel, or silent for longer than it rings.
     pub fn idle(&self) -> bool {
-        self.kernel.is_none() || self.asleep
+        !self.has_kernel() || self.asleep
+    }
+
+    /// Forget the input and everything landed: silence, as new.
+    fn clear(&mut self) {
+        self.head_fdl.clear();
+        self.mid_fdl.clear();
+        self.tail_fdl.clear();
+        self.hist.iter_mut().for_each(|v| *v = 0.0);
+        self.mid_hist.iter_mut().for_each(|v| *v = 0.0);
+        self.tail_hist.iter_mut().for_each(|v| *v = 0.0);
+        for r in &mut self.ring {
+            r.iter_mut().for_each(|v| *v = 0.0);
+        }
+        for o in &mut self.out {
+            o.iter_mut().for_each(|v| *v = 0.0);
+        }
+        self.fill = 0;
+        self.out_pos = HEAD_B;
+        self.tail_step = 0;
+        self.tail_pair = [None, None];
+        self.blocks = 0;
     }
 
     /// `x`: the source (free-field arrival time), one sample per bus
     /// sample from `off`; adds into `bus[0..4][off..]`.
     pub fn process(&mut self, x: &[f32], bus: &mut BusBlock, off: usize) {
-        let Some(k) = self.kernel.clone() else { return };
+        if !self.has_kernel() {
+            self.fed = false;
+            return;
+        }
+        if !self.fed {
+            // start over from silence. Input starting from silence (a
+            // source that was quiet: a clap) continues it exactly; input
+            // already sounding would start the response with a step —
+            // the head fades in (the later stages grow from silence)
+            self.clear();
+            let k = self.kernel.clone();
+            let head = if x.first().is_some_and(|&v| v != 0.0) { None } else { k.clone() };
+            self.live = [head, k.clone(), k];
+            self.quiet = 0;
+            self.asleep = false;
+            self.fed = true;
+        }
         for (i, &v) in x.iter().enumerate() {
             if v != 0.0 {
                 self.quiet = 0;
@@ -580,36 +727,33 @@ impl DenseConv {
                 self.out_pos += 1;
             }
             if self.fill == HEAD_B {
-                self.block(&k);
+                self.block();
             }
         }
     }
 
     /// One head block of input is complete: its output for the next block,
     /// and the mid and tail stages' share of the work.
-    fn block(&mut self, k: &DenseKernel) {
+    fn block(&mut self) {
         self.fill = 0;
         let silent = self.hist[HEAD_B..].iter().all(|&v| v == 0.0);
         if silent {
             self.quiet += HEAD_B;
         }
-        if self.asleep || (silent && self.quiet > k.len + 3 * TAIL_B) {
+        if self.kernel.is_none() && self.live.iter().all(|k| k.is_none()) {
+            self.drained += HEAD_B;
+        }
+        if self.asleep || (silent && self.quiet > self.longest() + 3 * TAIL_B) {
             if !self.asleep {
-                // ring-out done: forget everything (resuming must not
+                // rung out: forget everything (resuming must not
                 // convolve stale spectra)
                 self.asleep = true;
-                self.head_fdl.clear();
-                self.mid_fdl.clear();
-                self.tail_fdl.clear();
-                self.hist.iter_mut().for_each(|v| *v = 0.0);
-                self.mid_hist.iter_mut().for_each(|v| *v = 0.0);
-                self.tail_hist.iter_mut().for_each(|v| *v = 0.0);
-                for r in &mut self.ring {
-                    r.iter_mut().for_each(|v| *v = 0.0);
-                }
-                self.tail_step = 0;
-                self.blocks = 0;
+                self.clear();
             }
+            // silence in, silence out: the stages take the kernel as is
+            let k = self.kernel.clone();
+            self.live = [k.clone(), k.clone(), k];
+            self.drained = if self.kernel.is_some() { 0 } else { RING };
             for c in 0..FOA {
                 self.out[c].iter_mut().for_each(|v| *v = 0.0);
             }
@@ -630,93 +774,134 @@ impl DenseConv {
         self.head_fdl.push(&self.spec);
         self.hist.copy_within(HEAD_B.., 0);
         let t0 = (kblk as usize * HEAD_B) % RING;
+        let ks = [self.live[0].clone(), self.kernel.clone()];
+        let fading = !same(&ks[0], &ks[1]);
         for c in 0..FOA {
-            self.acc.iter_mut().for_each(|v| *v = C::default());
-            for p in 0..k.n_head {
-                mul_acc(&mut self.acc, self.head_fdl.get(p), k.head(p, c));
+            let mut have = [false; 2];
+            for (w, k) in ks.iter().enumerate().take(if fading { 2 } else { 1 }) {
+                if let Some(k) = k {
+                    convolve(&mut self.fh, &self.head_fdl, k.n_head, |p| k.head(p, c), &mut self.acc, &mut self.time[w]);
+                    have[w] = true;
+                }
             }
-            self.fh.inverse(&self.acc, &mut self.time);
             // overlap-save: the second half is valid; plus whatever the
             // mid and tail stages landed for this stretch
             let ring = &mut self.ring[c];
             for j in 0..HEAD_B {
-                self.out[c][j] = self.time[HEAD_B + j] + ring[t0 + j];
+                let mut y = if have[0] { self.time[0][HEAD_B + j] } else { 0.0 };
+                if fading {
+                    let n = if have[1] { self.time[1][HEAD_B + j] } else { 0.0 };
+                    y += self.fade[0][j] * (n - y);
+                }
+                self.out[c][j] = y + ring[t0 + j];
                 ring[t0 + j] = 0.0;
             }
         }
+        self.live[0] = ks[1].clone();
         self.out_pos = 0;
         let done = (kblk + 1) * HEAD_B as u64;
         // mid: a mid block of input complete → its output, due 3072
         // samples on (the mid kernel starts at HEAD_LEN), into the ring
         if done % MID_B as u64 == 0 {
-            self.mid_block(k, done);
+            self.mid_block(done);
         }
         // tail: a tail block complete → start it; one step per head block
         if done % TAIL_B as u64 == 0 {
-            if k.n_tail > 0 && !self.tail_acc.is_empty() {
+            if !self.tail_acc[0].is_empty() {
                 self.tail_in.copy_from_slice(&self.tail_hist);
                 self.tail_step = 1;
+                self.tail_pair = [self.live[2].clone(), self.kernel.clone()];
+                self.live[2] = self.kernel.clone();
                 // its output: convolution times [done - TAIL_B + MID_END, + TAIL_B)
                 self.tail_at = done - TAIL_B as u64 + MID_END as u64;
             }
             self.tail_hist.copy_within(TAIL_B.., 0);
         }
         if self.tail_step > 0 {
-            self.tail_work(k);
+            self.tail_work();
         }
     }
 
-    fn mid_block(&mut self, k: &DenseKernel, done: u64) {
-        if k.n_mid > 0 {
-            self.fm.forward(&self.mid_hist, &mut self.spec_m);
-            self.mid_fdl.push(&self.spec_m);
-            let start = (done - MID_B as u64 + HEAD_LEN as u64) as usize;
-            for c in 0..FOA {
-                self.acc_m.iter_mut().for_each(|v| *v = C::default());
-                for p in 0..k.n_mid {
-                    mul_acc(&mut self.acc_m, self.mid_fdl.get(p), k.mid(p, c));
-                }
-                self.fm.inverse(&self.acc_m, &mut self.time_m);
-                let ring = &mut self.ring[c];
-                for j in 0..MID_B {
-                    ring[(start + j) % RING] += self.time_m[MID_B + j];
+    fn mid_block(&mut self, done: u64) {
+        self.fm.forward(&self.mid_hist, &mut self.spec_m);
+        self.mid_fdl.push(&self.spec_m);
+        self.mid_hist.copy_within(MID_B.., 0);
+        let ks = [self.live[1].clone(), self.kernel.clone()];
+        self.live[1] = ks[1].clone();
+        let fading = !same(&ks[0], &ks[1]);
+        let n_mid = |k: &Option<Arc<DenseKernel>>| k.as_ref().map_or(0, |k| k.n_mid);
+        if n_mid(&ks[0]) == 0 && n_mid(&ks[1]) == 0 {
+            return;
+        }
+        let start = (done - MID_B as u64 + HEAD_LEN as u64) as usize;
+        for c in 0..FOA {
+            let mut have = [false; 2];
+            for (w, k) in ks.iter().enumerate().take(if fading { 2 } else { 1 }) {
+                if let Some(k) = k.as_ref().filter(|k| k.n_mid > 0) {
+                    convolve(&mut self.fm, &self.mid_fdl, k.n_mid, |p| k.mid(p, c), &mut self.acc_m, &mut self.time_m[w]);
+                    have[w] = true;
                 }
             }
+            let ring = &mut self.ring[c];
+            for j in 0..MID_B {
+                let mut y = if have[0] { self.time_m[0][MID_B + j] } else { 0.0 };
+                if fading {
+                    let n = if have[1] { self.time_m[1][MID_B + j] } else { 0.0 };
+                    y += self.fade[1][j] * (n - y);
+                }
+                ring[(start + j) % RING] += y;
+            }
         }
-        self.mid_hist.copy_within(MID_B.., 0);
     }
 
     /// One step of the tail block in progress: step 1 transforms its
     /// input, the next `TAIL_STEPS - 2 - FOA` accumulate the partitions
-    /// (spread evenly), the last `FOA` transform one channel each back
-    /// into the ring — all done 2 head blocks before its output is due
-    /// (the tail kernel starts at MID_END: a whole tail block of slack).
-    fn tail_work(&mut self, k: &DenseKernel) {
+    /// (spread evenly; both kernels while it fades), the last `FOA`
+    /// transform one channel each back into the ring — all done 2 head
+    /// blocks before its output is due (the tail kernel starts at
+    /// MID_END: a whole tail block of slack).
+    fn tail_work(&mut self) {
         let step = self.tail_step;
         let mac_steps = TAIL_STEPS - 2 - FOA;
+        let fading = !same(&self.tail_pair[0], &self.tail_pair[1]);
+        let n_tail = |k: &Option<Arc<DenseKernel>>, fdl: &Fdl| k.as_ref().map_or(0, |k| k.n_tail.min(fdl.spectra.len()));
         if step == 1 {
-            let mut spec = core::mem::take(&mut self.tail_acc[0]);
-            self.ft.forward(&self.tail_in, &mut spec);
-            self.tail_fdl.push(&spec);
-            self.tail_acc[0] = spec;
-            for a in &mut self.tail_acc {
+            self.ft.forward(&self.tail_in, &mut self.spec_t);
+            self.tail_fdl.push(&self.spec_t);
+            for a in self.tail_acc.iter_mut().flatten() {
                 a.iter_mut().for_each(|v| *v = C::default());
             }
         } else if step <= mac_steps + 1 {
-            let n = k.n_tail.min(self.tail_fdl.spectra.len());
-            let (lo, hi) = (n * (step - 2) / mac_steps, n * (step - 1) / mac_steps);
-            for q in lo..hi {
-                for c in 0..FOA {
-                    mul_acc(&mut self.tail_acc[c], self.tail_fdl.get(q), k.tail(q, c));
+            for w in 0..if fading { 2 } else { 1 } {
+                let Some(k) = &self.tail_pair[w] else { continue };
+                let n = n_tail(&self.tail_pair[w], &self.tail_fdl);
+                let (lo, hi) = (n * (step - 2) / mac_steps, n * (step - 1) / mac_steps);
+                for q in lo..hi {
+                    for c in 0..FOA {
+                        mul_acc(&mut self.tail_acc[w][c], self.tail_fdl.get(q), k.tail(q, c));
+                    }
                 }
             }
         } else {
             let c = step - mac_steps - 2;
-            self.ft.inverse(&self.tail_acc[c], &mut self.time_t);
-            let ring = &mut self.ring[c];
-            let at = self.tail_at as usize;
-            for j in 0..TAIL_B {
-                ring[(at + j) % RING] += self.time_t[TAIL_B + j];
+            let mut have = [false; 2];
+            for w in 0..if fading { 2 } else { 1 } {
+                if n_tail(&self.tail_pair[w], &self.tail_fdl) > 0 {
+                    self.ft.inverse(&self.tail_acc[w][c], &mut self.time_t[w]);
+                    have[w] = true;
+                }
+            }
+            if have[0] || have[1] {
+                let ring = &mut self.ring[c];
+                let at = self.tail_at as usize;
+                for j in 0..TAIL_B {
+                    let mut y = if have[0] { self.time_t[0][TAIL_B + j] } else { 0.0 };
+                    if fading {
+                        let n = if have[1] { self.time_t[1][TAIL_B + j] } else { 0.0 };
+                        y += self.fade[2][j] * (n - y);
+                    }
+                    ring[(at + j) % RING] += y;
+                }
             }
         }
         self.tail_step = if step >= mac_steps + 1 + FOA { 0 } else { step + 1 };
@@ -748,8 +933,17 @@ mod tests {
         let k = Arc::new(build_kernel(&r, sr, 1.0, 3));
         let mut conv = DenseConv::new();
         conv.set_kernel(Some(k));
-        let n = 36_000;
-        let x: Vec<f32> = (0..n).map(|i| if i % 997 == 0 || i == 5 { 1.0 } else { ((i * 31 % 17) as f32 - 8.0) * 0.01 }).collect();
+        // a fresh convolver fades in (its kernel lands on a source already
+        // playing): silence first, so the fade-in is silent too
+        let lead = 3 * TAIL_B;
+        let n = lead + 36_000;
+        let x: Vec<f32> = (0..n)
+            .map(|i| match i.checked_sub(lead) {
+                None => 0.0,
+                Some(i) if i % 997 == 0 || i == 5 => 1.0,
+                Some(i) => ((i * 31 % 17) as f32 - 8.0) * 0.01,
+            })
+            .collect();
         let mut got: [Vec<f32>; 4] = core::array::from_fn(|_| Vec::with_capacity(n));
         let mut i = 0;
         while i < n {
@@ -852,5 +1046,108 @@ mod tests {
         let x: f32 = ir[3][lo..hi].iter().map(|v| v * v).sum::<f32>() / 160.0;
         let y: f32 = ir[1][lo..hi].iter().map(|v| v * v).sum::<f32>() / 160.0;
         assert!((x / e - 1.0).abs() < 0.15 && y < 0.01 * e, "fully one-sided: X {x:.3e}, Y {y:.3e}");
+    }
+
+    fn run(conv: &mut DenseConv, x: &[f32], out: &mut Vec<f32>) {
+        for chunk in x.chunks(77) {
+            let mut bus: BusBlock = [[0.0; 128]; NCH];
+            conv.process(chunk, &mut bus, 0);
+            out.extend_from_slice(&bus[0][..chunk.len()]);
+        }
+    }
+
+    fn sine(n: usize, f: f32) -> Vec<f32> {
+        (0..n).map(|i| (core::f32::consts::TAU * f * i as f32 / 48_000.0).sin()).collect()
+    }
+
+    /// The largest second difference over `y[a..b]` (a step's signature).
+    fn kink(y: &[f32], a: usize, b: usize) -> f32 {
+        (a.max(2)..b).map(|i| (y[i] - 2.0 * y[i - 1] + y[i - 2]).abs()).fold(0.0, f32::max)
+    }
+
+    fn decaying(n: usize, tau: f32) -> DenseResponse {
+        resp((0..n).map(|i| {
+            let e = (-(i as f32) / tau).exp() * 1e-3;
+            [e, e, e * 0.5, 0.2 * e, 0.1 * e, 0.0]
+        }).collect())
+    }
+
+    /// A new kernel lands without a step: every stage crossfades to it
+    /// over its own block (here twice as loud — the same noise, so the
+    /// output is the old one scaled, gliding from 1× to 2×).
+    #[test]
+    fn a_new_kernel_glides_in_without_a_step() {
+        let r = decaying(400, 60.0);
+        let a = Arc::new(build_kernel(&r, 48_000.0, 1.0, 5));
+        let b = Arc::new(build_kernel(&r, 48_000.0, 2.0, 5));
+        let mut conv = DenseConv::new();
+        conv.set_kernel(Some(a));
+        let x = sine(80_000, 110.0);
+        let mut y = Vec::new();
+        run(&mut conv, &x[..40_000], &mut y);
+        conv.set_kernel(Some(b));
+        run(&mut conv, &x[40_000..], &mut y);
+        let before = kink(&y, 20_000, 40_000);
+        let after = kink(&y, 40_000, 80_000);
+        // the output doubles: its own second difference doubles too
+        assert!(after < 2.5 * before, "a step at the swap: {after:.3e} vs {before:.3e} before");
+        let rms = |a: usize, b: usize| (y[a..b].iter().map(|v| v * v).sum::<f32>() / (b - a) as f32).sqrt();
+        let ratio = rms(70_000, 80_000) / rms(30_000, 40_000);
+        assert!((ratio - 2.0).abs() < 0.1, "the new kernel plays: ×{ratio:.2}");
+    }
+
+    /// Dropped, the response fades out (what was landed ahead plays);
+    /// back within the ring-out, it fades in again — no step, and no
+    /// stale input convolved.
+    #[test]
+    fn a_dropped_kernel_fades_out_and_back() {
+        let r = decaying(400, 60.0);
+        let a = Arc::new(build_kernel(&r, 48_000.0, 1.0, 5));
+        let mut conv = DenseConv::new();
+        conv.set_kernel(Some(a.clone()));
+        let x = sine(90_000, 110.0);
+        let mut y = Vec::new();
+        run(&mut conv, &x[..40_000], &mut y);
+        conv.set_kernel(None);
+        run(&mut conv, &x[40_000..44_000], &mut y);
+        conv.set_kernel(Some(a));
+        run(&mut conv, &x[44_000..], &mut y);
+        let before = kink(&y, 20_000, 40_000);
+        let after = kink(&y, 40_000, 90_000);
+        assert!(after < 1.5 * before, "a step: {after:.3e} vs {before:.3e} before");
+    }
+
+    /// After a pause the convolver starts over: nothing it held before
+    /// plays (silence in → silence out).
+    #[test]
+    fn a_pause_plays_nothing_stale() {
+        let r = decaying(400, 60.0);
+        let mut conv = DenseConv::new();
+        conv.set_kernel(Some(Arc::new(build_kernel(&r, 48_000.0, 1.0, 5))));
+        let x = sine(30_000, 110.0);
+        let mut y = Vec::new();
+        run(&mut conv, &x, &mut y);
+        conv.discontinuity();
+        let mut z = Vec::new();
+        run(&mut conv, &vec![0.0; 20_000], &mut z);
+        assert!(z.iter().all(|&v| v == 0.0), "stale output after a pause");
+    }
+
+    /// Cut, the old response stops within a head block: nothing it had
+    /// landed ahead plays on (here the input stops at the cut too).
+    #[test]
+    fn a_cut_stops_the_old_response_at_once() {
+        let r = decaying(1500, 400.0);
+        let mut conv = DenseConv::new();
+        conv.set_kernel(Some(Arc::new(build_kernel(&r, 48_000.0, 1.0, 5))));
+        let x = sine(40_000, 110.0);
+        let mut y = Vec::new();
+        run(&mut conv, &x, &mut y);
+        conv.cut(None);
+        let mut z = Vec::new();
+        run(&mut conv, &vec![0.0; 20_000], &mut z);
+        let late = z[2 * HEAD_B..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let before = y[30_000..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(late < 1e-6 * before, "the old response plays on: {late:.3e} (it was {before:.3e})");
     }
 }

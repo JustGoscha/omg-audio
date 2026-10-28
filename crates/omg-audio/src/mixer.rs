@@ -647,8 +647,21 @@ impl Mixer {
                 _ => false,
             };
             if !same {
+                // gone while the source still has paths: the simulation
+                // dropped it as stale (the response changed beyond its
+                // noise — a door shut), so what it still had to play
+                // can't reach the listener any more — or replaced by one built for the changed response
+                let cut = (k.is_none() && s.kernel.is_some()) || k.is_some_and(|k| k.cut);
                 s.kernel = k.cloned();
-                if s.convolving {
+                if s.convolving && cut {
+                    s.renderer.cut_dense_kernel(s.kernel.clone());
+                    if s.kernel.is_none() {
+                        // the parametric copy of the current response meanwhile
+                        s.convolving = false;
+                        s.reapply = true;
+                        s.dirty = true;
+                    }
+                } else if s.convolving {
                     s.renderer.set_dense_kernel(s.kernel.clone());
                     if s.kernel.is_none() {
                         // back to the parametric reverb

@@ -128,18 +128,28 @@ pub const MAX_COHERENT_TAPS: usize = 48;
 /// flickering; any move restores the budget's EMA.
 const STILL_ALPHA_FLOOR: f32 = 0.02;
 /// v4's history test: a window of the dense response restarts from the
-/// fresh trace when the two differ by more than this many standard errors.
-const HISTORY_Z: f32 = 4.0;
+/// fresh trace when one tick lands this many standard errors from its
+/// mean (a door shut, a step into another space). Wide: the trace's
+/// estimates are heavy-tailed (one strong late path lifts a tick), and a
+/// smaller real change still shows as a drift (`HISTORY_DRIFT_Z`).
+const HISTORY_JUMP_Z: f32 = 8.0;
+/// …or when the ticks since the fresh trace last crossed the mean, taken
+/// together, lie this many standard errors to one side of it (their
+/// summed deviation over √ticks, two ticks at least: a CUSUM). A slow
+/// drift is followed within a few ticks; noise sums to nothing, however
+/// skewed (most ticks land below a mean the rare strong path lifts — a
+/// count of ticks on one side would restart on that alone).
+const HISTORY_DRIFT_Z: f32 = 4.0;
 /// Weight of a tick in a window's measured scatter (`dense_var`).
 const HISTORY_VAR_EMA: f32 = 0.1;
-/// A window whose fresh trace lands on the same side of its mean this many
-/// ticks in a row restarts (a steady scene does so by chance once in
-/// 2^(n−1) ticks: 0.2 %) — a drift too slow for the per-tick test (a GPU
-/// pool filling, a source creeping closer) is followed, not averaged in.
-const HISTORY_RUN: i32 = 10;
 /// History windows: from the free-field arrival, the first 4 ms, then each
 /// twice as long as the one before (4–8 ms, 8–16 ms, … past 4 s).
 pub const HISTORY_WINDOWS: usize = 12;
+
+/// History window `w`'s length (s): 4 ms, 4 ms, 8 ms, … doubling.
+fn history_width(w: usize) -> f32 {
+    0.004 * (1u32 << w.saturating_sub(1)) as f32
+}
 
 fn history_window(bin: usize) -> usize {
     // in 2 ms units
@@ -442,7 +452,8 @@ impl DenseResponse {
     /// the larger total (0 = the same, 2 = disjoint), per history window
     /// (the first 4 ms from the free-field arrival, then each twice as
     /// long), counting only the windows that differ beyond the two
-    /// estimates' noise (`HISTORY_Z` standard errors, as the history test).
+    /// estimates' noise (`HISTORY_JUMP_Z` standard errors, as the history
+    /// test's jump).
     pub fn change_from(&self, other: &DenseResponse) -> f32 {
         self.compare(other, true)
     }
@@ -475,10 +486,10 @@ impl DenseResponse {
                 if x <= 0.0 || y <= 0.0 {
                     // there in one, not in the other: real if the one is sure
                     let (v, n) = if x > 0.0 { (x, self.noise[w]) } else { (y, other.noise[w]) };
-                    return if n * HISTORY_Z < 1.0 { v } else { 0.0 };
+                    return if n * HISTORY_JUMP_Z < 1.0 { v } else { 0.0 };
                 }
                 let se = (self.noise[w] * self.noise[w] + other.noise[w] * other.noise[w]).sqrt();
-                if (x / y).ln().abs() > HISTORY_Z * se {
+                if (x / y).ln().abs() > HISTORY_JUMP_Z * se {
                     (x - y).abs()
                 } else {
                     0.0
@@ -620,12 +631,18 @@ struct SourceState {
     /// correlated contributions).
     dense_var: [f32; HISTORY_WINDOWS],
     /// v4: per history window, how many ticks in a row the fresh trace
-    /// came out on the same side of the mean (+ above, − below): a drift
-    /// the per-tick test is too fine to see (`HISTORY_RUN`).
+    /// came out on the same side of the mean (+ above, − below) and their
+    /// summed deviation in standard errors: a drift the per-tick test is
+    /// too coarse to see (`HISTORY_DRIFT_Z`).
     dense_run: [i32; HISTORY_WINDOWS],
+    dense_drift: [f32; HISTORY_WINDOWS],
+    /// v4: the measured scatter of the whole response's energy (the
+    /// first test: `fold_v4`).
+    dense_var_all: f32,
     /// v4: where listener and source were last tick.
     at: Option<(Vec3, Vec3)>,
-    /// v4: the world changed — the next fresh trace replaces the response.
+    /// v4: the world changed since the last tick (a door moved): the
+    /// response follows as when moving — the tests say what changed.
     restart: bool,
 }
 
@@ -726,16 +743,25 @@ impl SourceState {
     /// v4's step 5a: one tick in. The solved chains are exact: this
     /// tick's energies as they are. The dense response is a running mean
     /// per history window only while the fresh trace agrees with it — a
-    /// window whose fresh energy lies more than `HISTORY_Z` standard
-    /// errors from its mean (both estimates' noise, from their effective
-    /// sample counts) has changed, and restarts from the fresh trace at
-    /// once: a door, a step into another space, a moved source are heard
-    /// the tick they happen; a still scene's noise still averages out.
-    /// Moving, a window's mean spans at most the budget's late EMA.
+    /// window whose fresh energy lies `HISTORY_JUMP_Z` standard errors
+    /// from its mean (both estimates' noise, from their effective sample
+    /// counts, or as measured), or drifts `HISTORY_DRIFT_Z` to one side
+    /// over a few ticks, has changed and restarts from the fresh trace: a
+    /// door, a step into another space, a moved source are heard the tick
+    /// they happen; a still scene's noise averages out. Moving (or the
+    /// world changing: a door swinging), a window's mean spans fewer
+    /// ticks: as many as the motion leaves its arrivals in place — a step
+    /// of `d` moves every path by at most `d`, a share `d / (c · width)` of
+    /// a window `width` long (the late windows, spanning hundreds of
+    /// metres of path, keep averaging under a turning head's hands); at
+    /// most the budget's late EMA.
     fn fold_v4(&mut self, acc: Acc, budget: Budget, listener: Vec3, source: Vec3) {
         let first = self.echo.is_none();
         let world_changed = std::mem::take(&mut self.restart);
-        let moved = self.at != Some((listener, source));
+        let step = match self.at {
+            Some((l, s)) => (listener - l).length() + (source - s).length(),
+            None => 0.0,
+        };
         self.at = Some((listener, source));
         // coherent arrivals (solved chains): exact, no history
         self.early = acc.early.into_iter().filter(|(_, b)| b.e.iter().any(|&e| e > 1e-12)).collect();
@@ -752,9 +778,35 @@ impl SourceState {
             sums[w][2] += h[1] as f64;
             sums[w][3] += h[6] as f64;
         }
-        let floor = if moved { budget.late_ema.clamp(STILL_ALPHA_FLOOR, 1.0) } else { STILL_ALPHA_FLOOR };
+        // the whole response first: a tick holds hundreds of contributions
+        // where a window may hold one, so a door shut or a step into
+        // another space shows in the total at once even where no window
+        // alone can tell it from its noise — every window restarts. (The
+        // world changing is the prior for it: the bar drops to the drift's.)
+        let (ft, fqt, ht) = sums.iter().fold((0.0, 0.0, 0.0), |a, w| (a.0 + w[0], a.1 + w[1], a.2 + w[2]));
+        let hqt: f64 = (0..HISTORY_WINDOWS).map(|w| sums[w][3] / self.dense_ticks[w].max(1.0) as f64).sum();
+        let all = !first
+            && if ft > 0.0 && ht > 0.0 {
+                let var = (fqt / (ft * ft) + hqt / (ht * ht)).max(self.dense_var_all as f64);
+                let dev = (ft / ht).ln();
+                let bar = if world_changed { HISTORY_DRIFT_Z } else { HISTORY_JUMP_Z };
+                let all = dev.abs() > bar as f64 * var.sqrt();
+                if !all {
+                    let d2 = (dev * dev).min(9.0 * var) as f32;
+                    self.dense_var_all += HISTORY_VAR_EMA * (d2 - self.dense_var_all);
+                }
+                all
+            } else {
+                (ft > 0.0) != (ht > 0.0)
+            };
+        let moving = budget.late_ema.clamp(STILL_ALPHA_FLOOR, 1.0);
         let mut alpha = [1.0f32; HISTORY_WINDOWS];
         for w in 0..HISTORY_WINDOWS {
+            let floor = if world_changed {
+                moving
+            } else {
+                (step / (SPEED_OF_SOUND * history_width(w))).clamp(STILL_ALPHA_FLOOR, moving)
+            };
             let [fe, fq, he, hq] = sums[w];
             let n_f = if fq > 0.0 { fe * fe / fq } else { 0.0 };
             let n_h = if hq > 0.0 { he * he / hq * self.dense_ticks[w] as f64 } else { 0.0 };
@@ -762,28 +814,42 @@ impl SourceState {
             // effective sample counts', or as measured, whichever is wider
             let var = (1.0 / n_f.max(1.0) + 1.0 / n_h.max(1.0)).max(self.dense_var[w] as f64);
             let dev = if fe > 0.0 && he > 0.0 { (fe / he).ln() } else { 0.0 };
+            let z = dev / var.sqrt().max(1e-6);
             let changed = first
-                || world_changed
+                || all
                 || if fe > 0.0 && he > 0.0 {
-                    dev.abs() > HISTORY_Z as f64 * var.sqrt()
+                    z.abs() > HISTORY_JUMP_Z as f64
                 } else if he > 0.0 {
                     // nothing where the mean expects contributions
-                    n_h / self.dense_ticks[w].max(1.0) as f64 > HISTORY_Z as f64
+                    n_h / self.dense_ticks[w].max(1.0) as f64 > HISTORY_JUMP_Z as f64
                 } else {
                     // contributions where the mean has none
-                    n_f > HISTORY_Z as f64
+                    n_f > HISTORY_JUMP_Z as f64
                 };
-            if !first && !world_changed && fe > 0.0 && he > 0.0 {
-                self.dense_var[w] += HISTORY_VAR_EMA * (dev * dev) as f32 - HISTORY_VAR_EMA * self.dense_var[w];
+            // the drift test: the run on one side of the mean, summed
+            let (run, drift) = (&mut self.dense_run[w], &mut self.dense_drift[w]);
+            if (z > 0.0 && *run < 0) || (z < 0.0 && *run > 0) {
+                *run = 0;
+                *drift = 0.0;
             }
-            // the run test: a mean the fresh trace keeps landing on one
-            // side of is out of date, however small each step
-            let run = &mut self.dense_run[w];
-            *run = if dev > 0.0 { (*run).max(0) + 1 } else if dev < 0.0 { (*run).min(0) - 1 } else { *run };
-            let changed = changed || run.abs() >= HISTORY_RUN;
+            if z != 0.0 {
+                *run += z.signum() as i32;
+                *drift += z as f32;
+            }
+            let drifted = run.abs() >= 2 && drift.abs() / (run.abs() as f32).sqrt() > HISTORY_DRIFT_Z;
+            let changed = changed || drifted;
+            if changed {
+                *run = 0;
+                *drift = 0.0;
+            } else if !first && fe > 0.0 && he > 0.0 {
+                // the scatter learns from ticks that agree only (a change
+                // learnt as noise would hide the next one), an outlier
+                // counting at most 3 standard errors
+                let d2 = (dev * dev).min(9.0 * var) as f32;
+                self.dense_var[w] += HISTORY_VAR_EMA * (d2 - self.dense_var[w]);
+            }
             if changed {
                 self.dense_age[w] = 0;
-                *run = 0;
             }
             let run = 1.0 / (self.dense_age[w] + 1) as f32;
             alpha[w] = run.max(floor);
@@ -1060,6 +1126,13 @@ pub struct Tracer {
     sky_age: u32,
     sky_var: f32,
     sky_at: Option<Vec3>,
+    /// The sky's drift test (as the dense response's): the run of ticks
+    /// on one side of its mean and their summed deviation.
+    sky_run: i32,
+    sky_drift: f32,
+    /// The world changed since the last tick (a door moved): the sky
+    /// follows as when moving.
+    sky_world: bool,
     /// Where the listener was last tick: crossing a surface since then
     /// (flying through a wall) drops every average — the rays that built
     /// it can't reach the new side.
@@ -1272,6 +1345,9 @@ impl Tracer {
             sky_primed: false,
             sky_age: 0,
             sky_var: 0.0,
+            sky_run: 0,
+            sky_drift: 0.0,
+            sky_world: false,
             sky_at: None,
             last_listener: None,
             epoch: 0,
@@ -1323,31 +1399,43 @@ impl Tracer {
         self.epoch = self.epoch.wrapping_add(1);
     }
 
-    /// Step 4b, shared with the externally walked fold: average the sky.
     /// Step 4b, shared with the externally walked fold: the sky. A running
-    /// mean (moving, at most the budget's EMA) while the fresh escapes
-    /// agree with it — the whole sky's energy within `HISTORY_Z` of its
-    /// measured scatter; beyond it (a door shut, a step indoors) it
+    /// mean (moving or the world changing, at most the budget's EMA) while
+    /// the fresh escapes agree with it — the whole sky's energy within
+    /// `HISTORY_JUMP_Z` of its measured scatter, and not drifting
+    /// (`HISTORY_DRIFT_Z`); beyond it (a door shut, a step indoors) it
     /// restarts from this tick's escapes at once.
     fn fold_sky(&mut self, fresh: impl Iterator<Item = ([f32; NBANDS], Vec3)>, budget: Budget, listener: Vec3) {
         let fresh: Vec<([f32; NBANDS], Vec3)> = fresh.collect();
         let f_tot: f32 = fresh.iter().map(|c| c.0[1]).sum();
         let h_tot: f32 = self.sky.iter().map(|c| c.0[1]).sum();
-        let moved = self.sky_at != Some(listener);
+        let moved = self.sky_at != Some(listener) || std::mem::take(&mut self.sky_world);
         self.sky_at = Some(listener);
         let changed = !self.sky_primed
             || match (f_tot > 0.0, h_tot > 0.0) {
                 (true, true) => {
                     let d = (f_tot / h_tot).ln();
-                    let c = d.abs() > HISTORY_Z * self.sky_var.sqrt();
+                    // (a 1 % floor: a sky just primed has no scatter yet)
+                    let z = d / self.sky_var.max(1e-4).sqrt();
                     self.sky_var += HISTORY_VAR_EMA * (d * d - self.sky_var);
-                    c
+                    if (z > 0.0 && self.sky_run < 0) || (z < 0.0 && self.sky_run > 0) {
+                        self.sky_run = 0;
+                        self.sky_drift = 0.0;
+                    }
+                    if z != 0.0 {
+                        self.sky_run += z.signum() as i32;
+                        self.sky_drift += z;
+                    }
+                    z.abs() > HISTORY_JUMP_Z
+                        || (self.sky_run.abs() >= 2 && self.sky_drift.abs() / (self.sky_run.abs() as f32).sqrt() > HISTORY_DRIFT_Z)
                 }
                 (false, false) => false,
                 _ => true,
             };
         if changed {
             self.sky_age = 0;
+            self.sky_run = 0;
+            self.sky_drift = 0.0;
         }
         let floor = if moved { budget.ema.clamp(STILL_ALPHA_FLOOR, 1.0) } else { STILL_ALPHA_FLOOR };
         let a = (1.0 / (self.sky_age + 1) as f32).max(floor);
@@ -2051,9 +2139,10 @@ impl Tracer {
         }
         self.last_listener = Some(listener);
         // the world changed (an object moved, a door closed): every cached
-        // solve is redone now and v4's responses restart from the next
-        // trace (a GPU pool's rays walk on, through the new world: a reset
-        // pool takes seconds to fill)
+        // solve is redone now, and v4's responses and the sky follow the
+        // next traces as when moving (their history tests say what changed:
+        // a door swinging shut must not make every tick a fresh, noisy
+        // estimate)
         let sig = panels_sig(world.panels);
         if sig != self.world_sig {
             self.world_sig = sig;
@@ -2063,7 +2152,7 @@ impl Tracer {
             self.rejected.clear();
             self.edge_cache.clear();
             self.ear_vis = None;
-            self.sky_primed = false;
+            self.sky_world = true;
             for st in self.state.values_mut() {
                 st.restart = true;
             }

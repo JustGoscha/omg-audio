@@ -219,6 +219,9 @@ struct Src {
     /// from one (with the response, gain and tick it was built from).
     dense: Option<DenseResponse>,
     kernel: Option<(Arc<DenseKernel>, DenseResponse, f32, u64)>,
+    /// v4: its kernel was dropped as stale; the next one built replaces
+    /// a response that can't reach the listener any more (`DenseKernel::cut`).
+    kernel_cut: bool,
 }
 
 struct Obj {
@@ -263,7 +266,7 @@ pub struct Simulation {
     /// v4, building in the tick: the kernel under construction (source,
     /// builder, the response and gain it is built from), and when the
     /// last one was handed over.
-    kernel_job: Option<(SourceId, KernelBuilder, DenseResponse, f32)>,
+    kernel_job: Option<(SourceId, KernelBuilder, DenseResponse, f32, bool)>,
     kernel_sent: u64,
     /// `Compute::Gpu`: the share of the tier's GPU rays a walk carries —
     /// what lets it land every tick within `gpu_budget` — sized from the
@@ -277,7 +280,7 @@ pub struct Simulation {
 
 /// v4's kernel builder on a thread of its own: responses in, kernels out.
 struct KernelWorker {
-    jobs: std::sync::mpsc::Sender<(SourceId, DenseResponse, f32, f32, f32, u64)>,
+    jobs: std::sync::mpsc::Sender<(SourceId, DenseResponse, f32, f32, f32, u64, bool)>,
     done: std::sync::mpsc::Receiver<(SourceId, Arc<DenseKernel>, DenseResponse, f32, u64)>,
     /// Sources with a build in flight.
     busy: Vec<SourceId>,
@@ -285,13 +288,17 @@ struct KernelWorker {
 
 impl KernelWorker {
     fn start() -> Option<Self> {
-        let (jt, jr) = std::sync::mpsc::channel::<(SourceId, DenseResponse, f32, f32, f32, u64)>();
+        let (jt, jr) = std::sync::mpsc::channel::<(SourceId, DenseResponse, f32, f32, f32, u64, bool)>();
         let (dt, dr) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             .name("omg-kernels".into())
             .spawn(move || {
-                while let Ok((id, resp, gain, sr, max_s, tick)) = jr.recv() {
-                    let k = Arc::new(build_kernel_max(&resp, sr, gain, id.0, max_s));
+                while let Ok((id, resp, gain, sr, max_s, tick, cut)) = jr.recv() {
+                    let mut k = build_kernel_max(&resp, sr, gain, id.0, max_s);
+                    if cut {
+                        k.mark_cut();
+                    }
+                    let k = Arc::new(k);
                     if dt.send((id, k, resp, gain, tick)).is_err() {
                         break;
                     }
@@ -506,6 +513,7 @@ impl Simulation {
             traced: None,
             dense: None,
             kernel: None,
+            kernel_cut: false,
         });
     }
 
@@ -707,6 +715,7 @@ impl Simulation {
             };
             if stale {
                 s.kernel = None;
+                s.kernel_cut = true;
             }
         }
         if self.kernel_job.as_ref().is_some_and(|j| !members.contains(&j.0)) {
@@ -745,10 +754,11 @@ impl Simulation {
                 if w.busy.len() >= KERNEL_QUEUE {
                     break;
                 }
-                let s = &self.sources[i];
+                let s = &mut self.sources[i];
                 let d = s.dense.clone().expect("listed above");
-                if w.jobs.send((s.id, d, s.gain, sr, max_s, tick)).is_ok() {
+                if w.jobs.send((s.id, d, s.gain, sr, max_s, tick, s.kernel_cut)).is_ok() {
                     w.busy.push(s.id);
+                    s.kernel_cut = false;
                 }
             }
             return;
@@ -757,17 +767,21 @@ impl Simulation {
         // same work on any host)
         if self.kernel_job.is_none() && (self.kernel_sent == 0 || tick >= self.kernel_sent + self.cfg.kernel_every_ticks) {
             if let Some(&(_, i)) = todo.first() {
-                let s = &self.sources[i];
+                let s = &mut self.sources[i];
                 let d = s.dense.clone().expect("listed above");
                 let b = KernelBuilder::new(&d, sr, s.gain, s.id.0, max_s);
-                self.kernel_job = Some((s.id, b, d, s.gain));
+                self.kernel_job = Some((s.id, b, d, s.gain, std::mem::take(&mut s.kernel_cut)));
             }
         }
-        if let Some((_, b, _, _)) = &mut self.kernel_job {
+        if let Some((_, b, _, _, _)) = &mut self.kernel_job {
             if b.step(self.cfg.kernel_step_samples.max(1)) {
-                let (id, b, d, g) = self.kernel_job.take().expect("checked");
+                let (id, b, d, g, cut) = self.kernel_job.take().expect("checked");
                 if let Some(s) = self.sources.iter_mut().find(|s| s.id == id && s.dense.is_some()) {
-                    s.kernel = Some((Arc::new(b.finish()), d, g, tick));
+                    let mut k = b.finish();
+                    if cut {
+                        k.mark_cut();
+                    }
+                    s.kernel = Some((Arc::new(k), d, g, tick));
                 }
                 self.kernel_sent = tick;
             }

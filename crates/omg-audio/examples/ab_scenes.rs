@@ -20,6 +20,18 @@
 //!    door) at 6 m/s, into A and out of it: how long the level takes to
 //!    settle where it stops, and how far off it is the first 0.5 s.
 //!
+//!  - crackle: an organ-like bass (70–280 Hz) in A — the output above
+//!    4 kHz is nothing the source holds: every burst there is a
+//!    discontinuity (a kernel swapped or dropped, a jump in a path or the
+//!    reverb's input). A door between A and B swinging shut and open, the
+//!    walk out, the fly through the wall, standing still: bursts over
+//!    −45 / −35 dB (5 ms windows against the output's level).
+//!  - church: a clap 0.4 m in front of the listener in a stone nave
+//!    (16 × 22 × 15 m): the tail's level per 20 ms against the same clap
+//!    with the response frozen at the clap (no new frames) — what the
+//!    re-traced response adds on top of the tail's own grain (flicker),
+//!    standing still and turning (the hands circle with the look).
+//!
 //! GPU=1 walks on the GPU (whole walks, synchronous); GPU=live runs the
 //! live walk the apps use (pooled late rays, paced, a tick or more late)
 //! in real time — the ticks then wait for the wall clock.
@@ -79,7 +91,7 @@ impl Rig {
         };
         let mut sim = Simulation::new(cfg);
         sim.set_geometry(geometry());
-        let mix = Mixer::new(SR, Hrir::none());
+        let mix = Mixer::new(SR, if std::env::var("HRIR").is_ok() { Hrir::builtin() } else { Hrir::none() });
         let exact = std::env::var("NOEXACT").is_err();
         Self { sim, mix, blocks: 0, exact, live: live.then(std::time::Instant::now) }
     }
@@ -442,6 +454,264 @@ fn fly(v4: bool) {
     println!("fly out of A: {}", fly_through(v4, 5.0, 11.0));
 }
 
+/// High-pass biquad (RBJ, Q 0.707).
+struct Hp {
+    b: [f32; 3],
+    a: [f32; 2],
+    x: [f32; 2],
+    y: [f32; 2],
+}
+
+impl Hp {
+    fn new(fc: f32) -> Self {
+        let w = 2.0 * std::f32::consts::PI * fc / SR;
+        let (s, c) = w.sin_cos();
+        let al = s / (2.0 * std::f32::consts::FRAC_1_SQRT_2);
+        let a0 = 1.0 + al;
+        Self { b: [(1.0 + c) / 2.0 / a0, -(1.0 + c) / a0, (1.0 + c) / 2.0 / a0], a: [-2.0 * c / a0, (1.0 - al) / a0], x: [0.0; 2], y: [0.0; 2] }
+    }
+
+    fn tick(&mut self, x: f32) -> f32 {
+        let y = self.b[0] * x + self.b[1] * self.x[0] + self.b[2] * self.x[1] - self.a[0] * self.y[0] - self.a[1] * self.y[1];
+        self.x = [x, self.x[0]];
+        self.y = [y, self.y[0]];
+        y
+    }
+}
+
+/// Bursts above 4 kHz in the output: 5 ms windows of the high-passed
+/// signal against the output's mean square over the last 200 ms.
+struct Crackle {
+    hp: [Hp; 2],
+    win: Vec<(f32, f32)>,
+    acc: (f32, f32, usize),
+}
+
+impl Crackle {
+    fn new() -> Self {
+        Self { hp: [Hp::new(4000.0), Hp::new(4000.0)], win: Vec::new(), acc: (0.0, 0.0, 0) }
+    }
+
+    fn feed(&mut self, out: &[f32]) {
+        for &x in out {
+            let h0 = self.hp[0].tick(x);
+            let h = self.hp[1].tick(h0);
+            self.acc.0 += h * h;
+            self.acc.1 += x * x;
+            self.acc.2 += 1;
+            if self.acc.2 == 240 {
+                self.win.push((self.acc.0 / 240.0, self.acc.1 / 240.0));
+                self.acc = (0.0, 0.0, 0);
+            }
+        }
+    }
+
+    /// (windows over −45 dB, over −35 dB, the worst in dB, seconds)
+    fn report(&self) -> (usize, usize, f32, f32) {
+        let (mut a, mut b, mut worst) = (0, 0, -200.0f32);
+        for i in 40..self.win.len() {
+            let r = self.win[i - 40..i].iter().map(|w| w.1).sum::<f32>() / 40.0;
+            let d = 10.0 * (self.win[i].0.max(1e-20) / r.max(1e-20)).log10();
+            a += (d > -45.0) as usize;
+            b += (d > -35.0) as usize;
+            worst = worst.max(d);
+        }
+        (a, b, worst, self.win.len() as f32 * 0.005)
+    }
+}
+
+fn organ(n: usize) -> Vec<f32> {
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / SR;
+            [70.0f32, 140.0, 210.0, 280.0].iter().map(|f| (2.0 * std::f32::consts::PI * f * t).sin() * 0.12).sum()
+        })
+        .collect()
+}
+
+fn crackle(v4: bool) {
+    let show = |name: &str, c: &Crackle| {
+        let (a, b, w, secs) = c.report();
+        println!("crackle {name:22} bursts over −45 dB {:5.1}/s, over −35 dB {:5.1}/s, worst {w:6.1} dB", a as f32 / secs, b as f32 / secs);
+    };
+    // the bass a second long: a whole number of periods of every partial
+    let bass = clip(&organ(48_000));
+    // still
+    {
+        let mut rig = Rig::new(v4);
+        let src = rig.sim.add_source(SourceDesc { position: [2.0, 2.0, 1.5], gain: 1.0, active: true });
+        rig.sim.set_listener([5.5, 4.0, 1.7], 0.0, 0.0, 0.0);
+        rig.mix.play(src, &bass, Play::LOOP);
+        rig.run(3.0);
+        let mut c = Crackle::new();
+        for _ in 0..600 {
+            let (l, _) = rig.block();
+            c.feed(&l);
+        }
+        show("still", &c);
+    }
+    // a door swinging shut over 0.8 s, 1.2 s closed, open over 0.8 s,
+    // 1.2 s open — four times; the listener in B
+    for (name, at) in [("door, listener in B", [11.0f32, 3.0]), ("door, listener in A", [5.0, 4.0])] {
+        let mut rig = Rig::new(v4);
+        let src = rig.sim.add_source(SourceDesc { position: [3.0, 3.0, 1.5], gain: 1.0, active: true });
+        let leaf = rig.sim.add_object([7.95, 2.5, 0.0], [8.05, 2.5, 2.1], Material::DOOR);
+        rig.sim.set_listener([at[0], at[1], 1.7], 0.0, 0.0, 0.0);
+        rig.mix.play(src, &bass, Play::LOOP);
+        rig.run(3.0);
+        let mut c = Crackle::new();
+        for _ in 0..4 {
+            for (frames, from, to) in [(80, 1.0f32, 0.0f32), (120, 0.0, 0.0), (80, 0.0, 1.0), (120, 1.0, 1.0)] {
+                for k in 0..frames {
+                    let open = from + (to - from) * (k + 1) as f32 / frames as f32;
+                    rig.sim.set_object(leaf, [7.95, 2.5, 0.0], [8.05, 2.5 + (1.0 - open) * 1.0, 2.1]);
+                    rig.sim.set_object_enabled(leaf, open < 0.999);
+                    let (l, _) = rig.block();
+                    c.feed(&l);
+                }
+            }
+        }
+        show(name, &c);
+    }
+    // the walk out of A through B into the field, and back
+    {
+        let mut rig = Rig::new(v4);
+        let src = rig.sim.add_source(SourceDesc { position: [2.0, 3.0, 1.5], gain: 1.0, active: true });
+        rig.sim.set_listener([5.0, 3.0, 1.7], 0.0, 0.0, 0.0);
+        rig.mix.play(src, &bass, Play::LOOP);
+        rig.run(3.0);
+        let mut c = Crackle::new();
+        let mut x = 5.0f32;
+        for dir in [1.0f32, -1.0] {
+            for _ in 0..(15.0 / 1.4 * 100.0) as usize {
+                x += dir * 1.4 * BLOCK as f32 / SR;
+                rig.sim.set_listener([x, 3.0, 1.7], 0.0, 0.0, 0.0);
+                let (l, _) = rig.block();
+                c.feed(&l);
+            }
+        }
+        show("walk out and back", &c);
+    }
+    // flying through the A | B wall at 6 m/s, to and fro
+    {
+        let mut rig = Rig::new(v4);
+        let src = rig.sim.add_source(SourceDesc { position: [3.0, 3.0, 1.5], gain: 1.0, active: true });
+        rig.sim.set_listener([5.0, 1.0, 1.7], 0.0, 0.0, 0.0);
+        rig.mix.play(src, &bass, Play::LOOP);
+        rig.run(3.0);
+        let mut c = Crackle::new();
+        let mut x = 5.0f32;
+        for _ in 0..3 {
+            for (to, hold) in [(11.0f32, 100), (5.0, 100)] {
+                while (to - x).abs() > 1e-3 {
+                    let step = 6.0 * BLOCK as f32 / SR;
+                    x = if (to - x).abs() < step { to } else { x + step * (to - x).signum() };
+                    rig.sim.set_listener([x, 1.0, 1.7], 0.0, 0.0, 0.0);
+                    let (l, _) = rig.block();
+                    c.feed(&l);
+                }
+                for _ in 0..hold {
+                    let (l, _) = rig.block();
+                    c.feed(&l);
+                }
+            }
+        }
+        show("fly through the wall", &c);
+    }
+}
+
+fn church_geometry() -> Geometry {
+    let mut g = Geometry::new();
+    let stone = g.material(Material::STONE);
+    let (x1, y1, h, t) = (16.0, 22.0, 15.0, 0.6);
+    g.add_box([-t, -t, -t], [x1 + t, y1 + t, 0.0], stone);
+    g.add_box([-t, -t, h], [x1 + t, y1 + t, h + t], stone);
+    g.add_box([-t, -t, 0.0], [0.0, y1 + t, h], stone);
+    g.add_box([x1, -t, 0.0], [x1 + t, y1 + t, h], stone);
+    g.add_box([0.0, -t, 0.0], [x1, 0.0, h], stone);
+    g.add_box([0.0, y1, 0.0], [x1, y1 + t, h], stone);
+    g
+}
+
+/// The tail of a clap in the nave, 20 ms levels (dB) for 3 s: the
+/// simulation ticking on (`live`), or frozen at the clap.
+fn church_tail(v4: bool, live: bool, turn: f32) -> (Vec<f32>, usize) {
+    let mut rig = Rig::new(v4);
+    rig.sim.set_geometry(church_geometry());
+    let ear = [8.0f32, 9.0, 1.7];
+    let hands_at = |yaw: f32| [ear[0] + 0.4 * yaw.cos(), ear[1] + 0.4 * yaw.sin(), ear[2] - 0.45];
+    let mut yaw = 0.0f32;
+    let hands = rig.sim.add_source(SourceDesc { position: hands_at(yaw), gain: 1.0, active: true });
+    rig.sim.set_listener(ear, yaw, 0.0, 0.0);
+    rig.run(4.0);
+    // TONAL=1: a 60 ms bass burst instead of the noise clap — its tail
+    // holds nothing above 4 kHz but what a discontinuity adds
+    let tonal = std::env::var("TONAL").is_ok();
+    let burst: Vec<f32> = if tonal {
+        (0..2880).map(|i| {
+            let t = i as f32 / SR;
+            let w = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / 2880.0).cos();
+            w * ((2.0 * std::f32::consts::PI * 150.0 * t).sin() + 0.5 * (2.0 * std::f32::consts::PI * 300.0 * t).sin())
+        }).collect()
+    } else {
+        noise(240, 7).iter().enumerate().map(|(i, x)| x * (-(i as f32) / 40.0).exp()).collect()
+    };
+    rig.mix.play(hands, &clip(&burst), Play::ONCE);
+    let mut cr = Crackle::new();
+    let mut lv = Vec::new();
+    let mut kernels = std::collections::HashSet::new();
+    for _ in 0..150 {
+        let mut e = 0.0;
+        for _ in 0..2 {
+            if live {
+                yaw += turn * BLOCK as f32 / SR;
+                rig.sim.set_source(hands, hands_at(yaw), true);
+                rig.sim.set_listener(ear, yaw, 0.0, 0.0);
+                let (l, r) = rig.block();
+                cr.feed(&l);
+                e += l.iter().chain(r.iter()).map(|x| x * x).sum::<f32>();
+            } else {
+                rig.blocks += 1;
+                let (mut l, mut r) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
+                rig.mix.render(&mut l, &mut r);
+                e += l.iter().chain(r.iter()).map(|x| x * x).sum::<f32>();
+            }
+            if let Some(k) = rig.sim.dense_response(hands) {
+                kernels.insert(k.bins.len() as u64 ^ (k.bins.iter().map(|b| b[1]).sum::<f32>().to_bits() as u64) << 20);
+            }
+        }
+        lv.push(10.0 * (e / (4 * BLOCK) as f32).max(1e-20).log10());
+    }
+    if live && tonal {
+        let (a, b, w, secs) = cr.report();
+        println!("      tonal clap tail: bursts over −45 dB {:.1}/s, over −35 dB {:.1}/s, worst {w:.1} dB", a as f32 / secs, b as f32 / secs);
+    }
+    (lv, kernels.len())
+}
+
+fn church(v4: bool) {
+    for (name, turn) in [("still", 0.0f32), ("turning 90°/s", std::f32::consts::FRAC_PI_2)] {
+        let (frozen, _) = church_tail(v4, false, 0.0);
+        let (live, n) = church_tail(v4, true, turn);
+        let peak = frozen.iter().cloned().fold(f32::MIN, f32::max);
+        // the tail from 100 ms on, down to 50 dB under the peak
+        let d: Vec<f32> = (5..frozen.len()).filter(|&i| frozen[i] > peak - 50.0).map(|i| live[i] - frozen[i]).collect();
+        let mean = d.iter().sum::<f32>() / d.len().max(1) as f32;
+        let sd = (d.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / d.len().max(1) as f32).sqrt();
+        // window to window: how much faster the live tail jumps
+        let jump = |v: &[f32]| (6..v.len()).filter(|&i| frozen[i] > peak - 50.0).map(|i| (v[i] - v[i - 1]).abs()).sum::<f32>() / d.len().max(1) as f32;
+        println!(
+            "church clap, {name:14}: live − frozen {mean:+.2} dB, flicker ±{sd:.2} dB · 20 ms steps {:.2} dB (frozen {:.2}) · {} responses during the tail",
+            jump(&live),
+            jump(&frozen),
+            n
+        );
+        let show = |v: &[f32]| v.iter().step_by(10).take(15).map(|x| format!("{:.0}", x - peak)).collect::<Vec<_>>().join(" ");
+        println!("      live   per 200 ms: {}", show(&live));
+        println!("      frozen per 200 ms: {}", show(&frozen));
+    }
+}
+
 fn main() {
     let v4 = !std::env::args().any(|a| a == "v3");
     let only = std::env::var("ONLY").unwrap_or_default();
@@ -466,5 +736,11 @@ fn main() {
     }
     if only.is_empty() || only == "fly" {
         fly(v4);
+    }
+    if only.is_empty() || only == "crackle" {
+        crackle(v4);
+    }
+    if only.is_empty() || only == "church" {
+        church(v4);
     }
 }

@@ -534,6 +534,8 @@ pub struct Renderer {
     onset: PathDelay,
     /// Engine v4: the dense (scattered) response, convolved.
     dense: crate::dense::DenseConv,
+    /// The engine time the convolver's input continues at.
+    dense_at: f64,
     /// Turn the dense output about z by this (a host whose bus is in the
     /// listener's yaw frame while its kernels are in the world's: the
     /// web), smoothed. 0: the bus and the kernels share a frame.
@@ -649,6 +651,7 @@ impl Renderer {
             grid,
             onset: PathDelay::new(1.0),
             dense: crate::dense::DenseConv::new(),
+            dense_at: f64::NAN,
             dense_yaw: Smoothed::new(0.0, 0.03, sample_rate),
             since_params: 0,
             update_interval: 0.05 * sample_rate as f64,
@@ -705,6 +708,12 @@ impl Renderer {
     /// (`dense::build_kernel`, built off the audio thread); None stops it.
     pub fn set_dense_kernel(&mut self, k: Option<std::sync::Arc<crate::dense::DenseKernel>>) {
         self.dense.set_kernel(k);
+    }
+
+    /// `set_dense_kernel` for a response that changed beyond its noise:
+    /// what the old one still had to play is dropped (`DenseConv::cut`).
+    pub fn cut_dense_kernel(&mut self, k: Option<std::sync::Arc<crate::dense::DenseKernel>>) {
+        self.dense.cut(k);
     }
 
     /// The listener's yaw for the dense output (see `dense_yaw`).
@@ -1121,6 +1130,12 @@ impl Renderer {
         pr: &mut [f32],
     ) {
         let n = gain.len().min(BLOCK).min(pl.len()).min(pr.len());
+        // a pause (the mixer didn't run this source): the convolver's
+        // input history is not the recent input any more
+        if self.dense_at != now {
+            self.dense.discontinuity();
+        }
+        self.dense_at = now + n as f64;
         let src = Src::Log { log, now, gain };
         let mut off = 0;
         while off < n {
