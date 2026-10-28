@@ -25,7 +25,7 @@ var STATIC := [
 	["bells", Vector2(10, 321), 25.5, "", spl(30.0, 100, 104)],
 	["fountain", DemoLevel.FOUNTAIN, 0.8, "fountain48.ogg", spl(0.2, 76, 76)],
 ]
-var CLUB_LEVEL := spl(5.0, 104, 104) - 6.0206 # power split over 4 sample-locked speakers
+var CLUB_LEVEL := spl(5.0, 104, 112) - 6.0206 # 112 dB at 1 m (a real club PA), power split over 4 sample-locked speakers
 var BALL_LEVEL := spl(0.9, 89, 89)
 var CAR_LEVEL := spl(2.2, 92, 86)
 var FEET_LEVEL := spl(1.0, 78, 62)

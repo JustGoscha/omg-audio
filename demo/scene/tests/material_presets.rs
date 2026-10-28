@@ -39,8 +39,11 @@ fn presets_are_physical() {
     for m in all {
         assert!(m.absorption.iter().all(|a| (0.0..=1.0).contains(a)));
         assert!((0.0..=1.0).contains(&m.scattering));
-        // mass law: transmission never rises with frequency
-        assert!(m.transmission[0] >= m.transmission[1] && m.transmission[1] >= m.transmission[2], "{m:?}");
+        // mass law: the bass passes most; above it a thin plate's
+        // coincidence dip (glass near 3 kHz) may lift the highs a little
+        // over the mids, never far
+        let t = m.transmission;
+        assert!(t[0] >= t[1] && t[0] >= t[2] && t[2] <= 1.2 * t[1], "{m:?}");
     }
     let s = Material::simple(0.3, 0.2);
     assert_eq!(s.absorption, [0.3; 3]);

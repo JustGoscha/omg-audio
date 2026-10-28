@@ -97,6 +97,8 @@ const ECHO_MERGE_COS: f32 = 0.9;
 /// Distances below this are clamped (a source on a wall is not infinite).
 const MIN_DIST: f32 = 0.3;
 const EPS: f32 = 1e-3;
+/// The thickest solid a ray goes through as one wall (`World::through`).
+const MAX_WALL_M: f32 = 3.0;
 /// v2 echogram units: energy per 0.5 m receiver sphere = true / 16.
 const LEGACY_UNITS: f32 = 1.0 / 16.0;
 /// Tap key of the direct path; early bins start above it.
@@ -124,9 +126,10 @@ const DISTINCT_SPAN_S: f32 = 0.004;
 /// Coherent taps per source at most (the renderer's cost).
 pub const MAX_COHERENT_TAPS: usize = 48;
 /// Standing still, each tick's response is averaged in with weight
-/// 1/(ticks still + 1), down to this: the estimate converges instead of
-/// flickering; any move restores the budget's EMA.
-const STILL_ALPHA_FLOOR: f32 = 0.02;
+/// 1/(ticks still + 1), down to this (~10 s of ticks): the estimate
+/// converges instead of flickering — its history tests, not a short
+/// memory, follow what changes; any move restores the budget's EMA.
+const STILL_ALPHA_FLOOR: f32 = 0.005;
 /// v4's history test: a window of the dense response restarts from the
 /// fresh trace when one tick lands this many standard errors from its
 /// mean (a door shut, a step into another space). Wide: the trace's
@@ -252,6 +255,22 @@ impl<'a> World<'a> {
 
     fn raycast(&self, p: Vec3, d: Vec3) -> Option<GeomHit> {
         WithPanels { base: self.mesh, panels: self.panels }.raycast_hit(p, d)
+    }
+
+    /// A walking ray going on through the surface it hit at `p`: the far
+    /// face of the solid behind it (the next hit of the same material
+    /// within `MAX_WALL_M`; none: a thin shell, or an object box — crossed
+    /// at once), priced exactly as a segment through it is
+    /// (`transmission`: the wall at its own thickness, once). The energy
+    /// per band, and where the ray goes on.
+    pub fn through(&self, p: Vec3, dir: Vec3, mat: &Material, hits: &mut Vec<SegHit>) -> ([f32; NBANDS], Vec3) {
+        let inside = p + dir * EPS;
+        let far = match self.raycast(inside, dir) {
+            Some(h) if h.material == *mat && h.t < MAX_WALL_M => inside + dir * h.t,
+            _ => p,
+        };
+        let t = self.transmission(p - dir * EPS, far + dir * EPS, hits);
+        (core::array::from_fn(|b| t[b] * t[b]), far + dir * (2.0 * EPS))
     }
 
     /// Per-band amplitude of the segment a→b: mesh walls by their real
@@ -429,8 +448,13 @@ impl Branch {
 /// Hard cap on late-family segments per ray (the time and energy limits
 /// end it first in any real room).
 const LATE_MAX_SEGMENTS: u32 = 600;
-/// Late rays stop once they have lost this much (60 dB).
-const LATE_FLOOR: f32 = 1e-6;
+/// Late rays stop once they have lost this much (80 dB: `DENSE_FLOOR`).
+const LATE_FLOOR: f32 = 1e-8;
+/// v4: the dense response ends this far under its loudest bin (80 dB): the
+/// tail decays on (physically it never stops), but past this nothing of it
+/// is heard under any adaptation — at 60 dB a long room's tail ended
+/// audibly, still 56 dB under a clap's peak.
+pub const DENSE_FLOOR: f32 = 1e-8;
 
 /// v4: the scattered part of a source's response at the listener, from
 /// its free-field arrival on: per `bin_s` bin, the energy per band and
@@ -876,7 +900,7 @@ impl SourceState {
     /// v4's step 5b: the direct path and edge bends are taps, and so are
     /// the solved mirror chains standing out most (`MAX_COHERENT_TAPS`);
     /// the rest join the dense response at their delay. The dense
-    /// response ends 60 dB below its loudest bin.
+    /// response ends `DENSE_FLOOR` (80 dB) below its loudest bin.
     fn field_v4(
         &self,
         t_free: f32,
@@ -929,7 +953,7 @@ impl SourceState {
             }
         }
         let peak = dense.iter().map(|d| d[1]).fold(0.0f32, f32::max);
-        while dense.last().is_some_and(|d| d[1] < peak * 1e-6) {
+        while dense.last().is_some_and(|d| d[1] < peak * DENSE_FLOOR) {
             dense.pop();
         }
         // the old renderer's and the HUD's readouts, from the response
@@ -1785,11 +1809,13 @@ impl Tracer {
                 let split_here = v4 && !split && p_t >= SPLIT_T2;
                 if split_here {
                     split = true;
-                    let t_thr: [f32; NBANDS] =
-                        core::array::from_fn(|b| thr[b] * mat.transmission[b] * mat.transmission[b]);
-                    let t_mirror = mirror_thr * mat.transmission[1] * mat.transmission[1];
+                    // the wall as a whole: the same price a segment
+                    // through it pays (both faces, its thickness, once)
+                    let (t2, beyond) = world.through(p, dir, &mat, &mut self.hits);
+                    let t_thr: [f32; NBANDS] = core::array::from_fn(|b| thr[b] * t2[b]);
+                    let t_mirror = mirror_thr * t2[1];
                     branches.push(Branch {
-                        origin: p + dir * (2.0 * EPS),
+                        origin: beyond,
                         dir,
                         thr: t_thr,
                         length,
@@ -1814,12 +1840,13 @@ impl Tracer {
                     0.0
                 };
                 if pt > 0.0 && self.rng.next_f32() < pt {
+                    let (t2, beyond) = world.through(p, dir, &mat, &mut self.hits);
                     for b in 0..NBANDS {
-                        thr[b] *= mat.transmission[b] * mat.transmission[b] / pt;
+                        thr[b] *= t2[b] / pt;
                     }
-                    mirror_thr *= mat.transmission[1] * mat.transmission[1];
+                    mirror_thr *= t2[1];
                     loud &= mirror_thr >= COHERENT_FLOOR;
-                    origin = p + dir * (2.0 * EPS);
+                    origin = beyond;
                     continue; // straight on; `specular` unchanged
                 }
                 let before = thr.iter().fold(0.0f32, |a, &b| a.max(b));

@@ -161,7 +161,7 @@ function cycleRain() {
 const MIXER = [
   { name: 'music', srcs: [0], base: 90, def: 72, meters: [0], spl: true },
   { name: 'voice', srcs: [1], base: 84, def: 65, meters: [1], spl: true },
-  { name: 'club', srcs: [2], base: 104, def: 104, meters: [2], spl: true },
+  { name: 'club', srcs: [2], base: 104, def: 112, meters: [2], spl: true }, // a real club PA
   { name: 'flute', srcs: [3], base: 88, def: 76, meters: [3], spl: true },
   { name: 'radio', srcs: [4], base: 80, def: 64, meters: [4], spl: true },
   { name: 'owls', srcs: [5, 6], base: 74, def: 66, meters: [5, 6], spl: true },

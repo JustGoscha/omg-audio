@@ -27,8 +27,10 @@ use omg_scene::walkthrough::{
     GLASS_TRANSMISSION, HEAVY_GLASS_TRANSMISSION, HEAVY_PANEL_TRANSMISSION,
 };
 
-fn falling(s: [f32; NBANDS]) -> bool {
-    s.windows(2).all(|w| w[0] > w[1]) && s.iter().all(|&v| v > 0.0 && v < 1.0)
+/// Lows pass most. (Not strictly falling: real elements' highs stop
+/// falling — thin glass's coincidence dip near 3 kHz, a door's gaps.)
+fn bass_passes_most(s: [f32; NBANDS]) -> bool {
+    s[1..].iter().all(|&v| s[0] > v) && s.iter().all(|&v| v > 0.0 && v < 1.0)
 }
 
 #[test]
@@ -39,14 +41,15 @@ fn fillers_obey_mass_law_and_heavy_is_tighter() {
         ("wood leaf", DOOR_PANEL_TRANSMISSION),
         ("steel leaf", HEAVY_PANEL_TRANSMISSION),
     ] {
-        assert!(falling(s), "{name}: lows must pass more than highs: {s:?}");
+        assert!(bass_passes_most(s), "{name}: lows must pass most: {s:?}");
     }
     for b in 0..NBANDS {
         assert!(HEAVY_GLASS_TRANSMISSION[b] < GLASS_TRANSMISSION[b], "laminated < single, band {b}");
         assert!(HEAVY_PANEL_TRANSMISSION[b] < DOOR_PANEL_TRANSMISSION[b], "steel < wood, band {b}");
     }
     let tilt = |s: [f32; NBANDS]| s[0] / s[2];
-    assert!(tilt(HEAVY_GLASS_TRANSMISSION) > 3.0 * tilt(GLASS_TRANSMISSION), "laminated glazing booms");
+    // measured classes: laminated Rw ≈ 37 tilts ~2.3× as much as 4 mm Rw ≈ 29
+    assert!(tilt(HEAVY_GLASS_TRANSMISSION) > 2.0 * tilt(GLASS_TRANSMISSION), "laminated glazing booms");
     assert_eq!(glass_transmission(false), GLASS_TRANSMISSION);
     assert_eq!(glass_transmission(true), HEAVY_GLASS_TRANSMISSION);
 }

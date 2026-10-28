@@ -82,7 +82,9 @@ const SPEED_OF_SOUND: f32 = 343.0;
 const AIR_ABS = vec3<f32>(1.0e-4, 5.0e-4, 3.0e-3);
 const MIN_DIST: f32 = 0.3;
 const EPS: f32 = 1e-3;
-const LATE_FLOOR: f32 = 1e-6;
+// v3.rs MAX_WALL_M: the thickest solid a ray goes through as one wall
+const MAX_WALL_M: f32 = 3.0;
+const LATE_FLOOR: f32 = 1e-8;
 const LATE_MAX_SEGMENTS: u32 = 600u;
 const EARTH: f32 = 1e-4;
 const REF_THICKNESS_M: f32 = 0.15;
@@ -568,6 +570,25 @@ fn crosses_earth(a: vec3<f32>, b: vec3<f32>) -> bool {
         }
     }
     return (t1 - t0 - covered) * len > 0.1;
+}
+
+// World::through: a walking ray going on through the surface it hit at
+// `p` — the far face of the solid behind it (the next hit of the same
+// material within MAX_WALL_M; none: a thin shell or an object box,
+// crossed at once), priced as a segment through it: the energy per band
+// (xyz) and where the ray goes on (written to `beyond`).
+var<private> beyond: vec3<f32>;
+fn through(p: vec3<f32>, dir: vec3<f32>, hit: Hit) -> vec3<f32> {
+    let inside = p + dir * EPS;
+    let h = raycast_world(inside, dir);
+    var far = p;
+    if (h.t < MAX_WALL_M && all(h.absorption == hit.absorption) && h.scattering == hit.scattering
+        && all(h.transmission == hit.transmission)) {
+        far = inside + dir * h.t;
+    }
+    let t = seg_transmission(p - dir * EPS, far + dir * EPS);
+    beyond = far + dir * (2.0 * EPS);
+    return t * t;
 }
 
 // World::transmission: per-band amplitude of the segment a→b.
@@ -1189,12 +1210,14 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (split_here) {
             split = true;
             has_pending = true;
-            p_origin = p + dir * (2.0 * EPS);
+            // the wall as a whole (v3.rs World::through)
+            let tw = through(p, dir, hit);
+            p_origin = beyond;
             p_dir = dir;
-            p_thr = thr * t2;
+            p_thr = thr * tw;
             p_length = length_m;
             p_refl = refl;
-            p_mirror_thr = mirror_thr * t2.y;
+            p_mirror_thr = mirror_thr * tw.y;
             p_flags = select(0u, 1u, specular) | select(0u, 2u, mirror_only)
                 | select(0u, 4u, loud && p_mirror_thr >= COHERENT_FLOOR) | select(0u, 8u, bent)
                 | select(0u, 16u, have_bend_from);
@@ -1205,10 +1228,11 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         let pt = select(select(0.0, min(max(p_t, 0.02), 0.5), p_t > 1e-5), 0.0, split_here);
         if (pt > 0.0 && rand_f32() < pt) {
-            thr = thr * t2 / pt;
-            mirror_thr = mirror_thr * t2.y;
+            let tw = through(p, dir, hit);
+            thr = thr * tw / pt;
+            mirror_thr = mirror_thr * tw.y;
             loud = loud && mirror_thr >= COHERENT_FLOOR;
-            origin = p + dir * (2.0 * EPS);
+            origin = beyond;
             continue; // straight on; `specular` unchanged
         }
         let before = max(max(thr.x, thr.y), thr.z);

@@ -85,6 +85,7 @@ impl Rig {
         let cfg = Config {
             v4,
             compute,
+            seed: std::env::var("SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(Config::default().seed),
             kernel_thread: false,
             kernel_step_samples: 1 << 24, // HEAD: whole kernels in the tick, like a fast kernel thread
             ..Config::default()
@@ -152,9 +153,12 @@ fn clap(v4: bool) {
     let burst: Vec<f32> = noise(240, 7).iter().enumerate().map(|(i, x)| x * (-(i as f32) / 40.0).exp()).collect();
     rig.mix.play(hands, &clip(&burst), Play::ONCE);
     let mut env = Vec::new();
-    for _ in 0..400 {
+    for i in 0..400 {
         rig.block();
         env.push(rig.mix.take_meter(hands).rms);
+        if std::env::var("XCLAP").is_ok() && (115..135).contains(&i) {
+            eprintln!("{} ms: {:.1} dB, rendering {:?}, ear {:?}", i * 10, 20.0 * env[i].max(1e-12).log10(), rig.mix.occupancy(), rig.mix.ear());
+        }
     }
     let peak = env.iter().cloned().fold(0.0f32, f32::max);
     let rel: Vec<f32> = env.iter().map(|&e| db(e / peak)).collect();
@@ -344,17 +348,22 @@ fn tone(v4: bool) {
     let t: Vec<f32> = (0..48_000).map(|i| (2.0 * std::f32::consts::PI * 500.0 * i as f32 / SR).sin() * 0.5).collect();
     rig.mix.play(src, &clip(&t), Play::LOOP);
     rig.run(3.0);
-    // 20 ms windows of the left output
+    // 20 ms windows of the source as it arrives (before the ear, whose
+    // adaptation is not the simulation's wobble)
     let mut lv = Vec::new();
     for _ in 0..200 {
-        let (a, _) = rig.block();
-        let (b, _) = rig.block();
-        let e = a.iter().chain(b.iter()).map(|x| x * x).sum::<f32>() / (2 * BLOCK) as f32;
-        lv.push(db(e.sqrt()));
+        rig.block();
+        let a = rig.mix.take_meter(src).rms;
+        rig.block();
+        let b = rig.mix.take_meter(src).rms;
+        lv.push(db(((a * a + b * b) / 2.0).sqrt()));
     }
     let mean = lv.iter().sum::<f32>() / lv.len() as f32;
     let sd = (lv.iter().map(|l| (l - mean).powi(2)).sum::<f32>() / lv.len() as f32).sqrt();
     let (lo, hi) = lv.iter().fold((f32::MAX, f32::MIN), |(a, b), &l| (a.min(l), b.max(l)));
+    if std::env::var("SHOW").is_ok() {
+        println!("      per 20 ms: {}", lv.iter().map(|x| format!("{:.1}", x - mean)).collect::<Vec<_>>().join(" "));
+    }
     println!("tone 60 m, still: level {mean:.1} dB, wobble ±{sd:.2} dB (range {:.1} dB)", hi - lo);
 }
 
@@ -697,15 +706,17 @@ fn church_tail(v4: bool, live: bool, turn: f32) -> (Vec<f32>, usize) {
                 yaw += turn * BLOCK as f32 / SR;
                 rig.sim.set_source(hands, hands_at(yaw), true);
                 rig.sim.set_listener(ear, yaw, 0.0, 0.0);
-                let (l, r) = rig.block();
+                let (l, _) = rig.block();
                 cr.feed(&l);
-                e += l.iter().chain(r.iter()).map(|x| x * x).sum::<f32>();
             } else {
                 rig.blocks += 1;
                 let (mut l, mut r) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
                 rig.mix.render(&mut l, &mut r);
-                e += l.iter().chain(r.iter()).map(|x| x * x).sum::<f32>();
             }
+            // the clap as it arrives (before the ear: its adaptation is
+            // the same in both runs, not the response's doing)
+            let m = rig.mix.take_meter(hands).rms;
+            e += m * m * (2 * BLOCK) as f32;
             if let Some(k) = rig.sim.dense_response(hands) {
                 kernels.insert(k.bins.len() as u64 ^ (k.bins.iter().map(|b| b[1]).sum::<f32>().to_bits() as u64) << 20);
             }

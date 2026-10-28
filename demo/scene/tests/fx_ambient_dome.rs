@@ -114,10 +114,12 @@ fn glass_passes_the_dome_with_its_spectrum() {
         assert!(t[0] > 2.0 * t[2], "glass favours lows: {t:?}");
         tilt[i] = t[0] / t[2];
         // the bass/treble tilt is the pane's energy tilt (g_lo/g_hi)²,
-        // give or take the shell's own mass-law seep
+        // give or take the shell's own mass-law seep (with real values — a
+        // laminated pane nearly as tight as the wall — the concrete's bass
+        // seep tilts it up to ~2×)
         let g = omg_scene::walkthrough::glass_transmission(heavy);
         let pane_tilt = (g[0] / g[2]).powi(2);
-        assert!((0.7..1.5).contains(&(tilt[i] / pane_tilt)), "tilt {} vs pane {pane_tilt}", tilt[i]);
+        assert!((0.7..2.0).contains(&(tilt[i] / pane_tilt)), "tilt {} vs pane {pane_tilt}", tilt[i]);
     }
     assert!(tilt[1] > 2.0 * tilt[0], "laminated glazing is darker: {tilt:?}");
 }

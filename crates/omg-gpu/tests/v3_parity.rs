@@ -599,9 +599,17 @@ fn v3_flutter_train_matches_cpu() {
     eprintln!("flutter train past 80 ms: cpu {} taps, gpu {} taps", c.len(), gg.len());
     assert!(gg.len() >= 15, "the GPU path flutters too: {gg:?}");
     // chains are found at random (and then kept): either path may be a
-    // few orders further along — what both found must be the same
-    let shared = gg.iter().filter(|x| c.contains(x)).count();
-    assert!(shared * 10 >= gg.len().min(c.len()) * 9, "same arrivals (±0.25 ms): cpu {c:?} gpu {gg:?}");
+    // few orders further along, past a gap in its train — over the span
+    // both trains cover without one (two flutter periods), what both
+    // found must be the same
+    let gapless = |v: &[i32]| -> i32 {
+        let period = (2.0 * 4.0 / 343.0 * 2000.0) as i32;
+        v.windows(2).find(|w| w[1] - w[0] > 2 * period).map_or(*v.last().unwrap_or(&0), |w| w[0])
+    };
+    let span = gapless(&c).min(gapless(&gg));
+    let (cs, gs): (Vec<i32>, Vec<i32>) = (c.iter().copied().filter(|&x| x <= span).collect(), gg.iter().copied().filter(|&x| x <= span).collect());
+    let shared = gs.iter().filter(|x| cs.contains(x)).count();
+    assert!(shared * 10 >= gs.len().min(cs.len()) * 9, "same arrivals (±0.25 ms) up to {span}: cpu {c:?} gpu {gg:?}");
 }
 
 #[test]

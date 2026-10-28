@@ -9,17 +9,23 @@ pub struct Material {
     pub scattering: f32,
     /// Amplitude transmitted THROUGH a 15 cm wall of this material, per
     /// band (mass law: lows pass, highs die — the "club rumble" physics).
-    /// Other thicknesses: `transmission_at(thickness)`.
+    /// Other thicknesses: `transmission_at(thickness)`. Walls: the sound
+    /// reduction index R of real constructions (Sharp's single-wall model
+    /// with the EN 12354-1 loss factor, which agrees with its Annex B
+    /// estimate Rw ≈ 37.5·log m′ − 42), 2 dB flanking, as the amplitude
+    /// 10^(−R/20) at 15 cm; doors and glazing: measured Rw classes.
     pub transmission: [f32; NBANDS],
 }
 
 pub const REF_THICKNESS_M: f32 = 0.15;
 
 impl Material {
+    /// Poured concrete (2300 kg/m³): R ≈ 34 / 52 / 68 dB at 15 cm, 41 / 59
+    /// / 75 at 35 cm.
     pub const CONCRETE: Material = Material {
         absorption: [0.01, 0.02, 0.04],
         scattering: 0.10,
-        transmission: [0.10, 0.014, 0.0015],
+        transmission: [0.021, 0.0025, 0.0004],
     };
     pub const DRYWALL: Material = Material {
         absorption: [0.20, 0.08, 0.05],
@@ -41,11 +47,12 @@ impl Material {
         scattering: 0.30,
         transmission: [0.30, 0.100, 0.0300],
     };
-    /// Plastered single-leaf brick — the European interior/exterior wall.
+    /// Plastered single-leaf brick — the European interior/exterior wall
+    /// (R ≈ 36 / 53 / 73 dB at 24 cm).
     pub const BRICK: Material = Material {
         absorption: [0.02, 0.03, 0.04],
         scattering: 0.12,
-        transmission: [0.045, 0.008, 0.0012],
+        transmission: [0.022, 0.004, 0.0005],
     };
     pub const GRASS: Material = Material {
         absorption: [0.11, 0.26, 0.60],
@@ -54,7 +61,8 @@ impl Material {
     };
 
     // ---- Presets for level authors -------------------------------------
-    // Bands: low < 250 Hz, mid 250–2500 Hz, high > 2500 Hz. Where the
+    // Bands: low < 314 Hz, mid 314–2100 Hz, high > 2100 Hz (the DSP's
+    // crossovers: `omg_dsp::bands`). Where the
     // demo already used a material, the preset carries IDENTICAL numbers
     // (so a level moved onto the engine sounds the same); new ones come
     // from published octave-band tables, mapped low ≈ 125 Hz, mid ≈ mean
@@ -63,10 +71,11 @@ impl Material {
     /// Dressed stone masonry (the demo's cathedral stone): hard, with the
     /// relief of real stonework (arcades, capitals, rough ashlar) as a
     /// high scattering fraction.
+    /// Transmission: sandstone (2200 kg/m³), R ≈ 46 / 68 / 73 dB at 50 cm.
     pub const STONE: Material = Material {
         absorption: [0.015, 0.03, 0.06],
         scattering: 0.35,
-        transmission: [0.10, 0.014, 0.0015],
+        transmission: [0.018, 0.0018, 0.0006],
     };
     /// Wood panelling / timber boards (= `WOOD_PANEL`).
     pub const WOOD: Material = Material::WOOD_PANEL;
@@ -75,30 +84,33 @@ impl Material {
     /// `GLASS` transmission). Meant as a thin element: as an engine object
     /// (box) or a mesh material with thickness `REF_THICKNESS_M`, the
     /// transmission applies as given.
+    /// Single 4 mm pane (Rw ≈ 29: R ≈ 14 / 29 / 28 dB, the coincidence dip
+    /// near 3 kHz).
     pub const GLASS: Material = Material {
         absorption: [0.01, 0.02, 0.04],
         scattering: 0.10,
-        transmission: [0.50, 0.32, 0.20],
+        transmission: [0.19, 0.037, 0.039],
     };
-    /// Laminated / double glazing (the demo's club windows): bass thumps
-    /// through, mids and highs die.
+    /// Acoustic laminated / double glazing (the demo's club windows, Rw ≈
+    /// 37: R ≈ 23 / 39 / 44 dB): bass thumps through, mids and highs die.
     pub const HEAVY_GLASS: Material = Material {
         absorption: [0.01, 0.02, 0.04],
         scattering: 0.10,
-        transmission: [0.18, 0.05, 0.012],
+        transmission: [0.069, 0.011, 0.006],
     };
-    /// A closed interior door leaf: ~4 cm wood panel (the demo's door).
+    /// A closed interior door leaf: a ~4 cm wood panel with its gaps (Rw
+    /// ≈ 20: R ≈ 15 / 22 / 22 dB).
     pub const DOOR: Material = Material {
         absorption: [0.20, 0.10, 0.08],
         scattering: 0.15,
-        transmission: [0.28, 0.12, 0.05],
+        transmission: [0.17, 0.08, 0.08],
     };
-    /// A heavy steel door: metal faces, the transmission of the demo's
-    /// blast door (nearly a wall when shut).
+    /// A heavy sealed door — steel, or an acoustic door (VDI 3728 class
+    /// Rw ≈ 40: R ≈ 28 / 42 / 46 dB): nearly a wall when shut.
     pub const HEAVY_DOOR: Material = Material {
         absorption: [0.05, 0.09, 0.02],
         scattering: 0.10,
-        transmission: [0.10, 0.03, 0.01],
+        transmission: [0.042, 0.008, 0.005],
     };
     /// Rough, bare soil — the ground under a level. Absorption: "soil,
     /// rough" 0.15/0.25/0.40/0.55/0.60/0.60 (125 Hz–4 kHz; C. M. Harris,

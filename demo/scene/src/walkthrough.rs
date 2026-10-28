@@ -535,12 +535,12 @@ pub fn doors() -> Vec<Door> {
 pub const DOOR_HALF_WIDTH: f32 = 0.55;
 
 /// Single-pane glass, per band (much leakier than any wall).
-pub const GLASS_TRANSMISSION: [f32; NBANDS] = [0.50, 0.32, 0.20];
+pub const GLASS_TRANSMISSION: [f32; NBANDS] = omg_core::material::Material::GLASS.transmission;
 
 /// Laminated/double glazing (club windows): mass law with an air gap —
 /// bass thumps through, mids and highs die. This is what makes a club
 /// BOOM from outside instead of hissing.
-pub const HEAVY_GLASS_TRANSMISSION: [f32; NBANDS] = [0.18, 0.05, 0.012];
+pub const HEAVY_GLASS_TRANSMISSION: [f32; NBANDS] = omg_core::material::Material::HEAVY_GLASS.transmission;
 
 /// The pane transmission a glass aperture actually has.
 pub fn glass_transmission(heavy: bool) -> [f32; NBANDS] {
@@ -548,10 +548,10 @@ pub fn glass_transmission(heavy: bool) -> [f32; NBANDS] {
 }
 
 /// A closed door: ~4 cm wood panel filling the aperture (mass law).
-pub const DOOR_PANEL_TRANSMISSION: [f32; NBANDS] = [0.28, 0.12, 0.05];
+pub const DOOR_PANEL_TRANSMISSION: [f32; NBANDS] = omg_core::material::Material::DOOR.transmission;
 
 /// A heavy steel blast door (the bunker): nearly a wall when shut.
-pub const HEAVY_PANEL_TRANSMISSION: [f32; NBANDS] = [0.10, 0.03, 0.01];
+pub const HEAVY_PANEL_TRANSMISSION: [f32; NBANDS] = omg_core::material::Material::HEAVY_DOOR.transmission;
 
 /// Half-width of the portal blend zone: within this distance of a doorway
 /// the acoustics of both connected rooms are simulated and crossfaded.

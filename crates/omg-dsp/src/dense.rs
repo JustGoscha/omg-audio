@@ -270,16 +270,21 @@ fn synth(resp: &DenseResponse, sample_rate: f32, gain: f32, seed: u32, from: usi
 /// above -60 dB (memory and cost: ~30 MB per source per 20 s).
 pub const MAX_KERNEL_S: f32 = 10.0;
 
-/// A response traced up to the end of the window while still ringing
-/// (above 60 dB under its loudest bin) is continued along its own decay —
-/// past the mixing time a diffuse field only decays, exponentially, at
-/// the rate its last second shows (per band; the energy vector keeps its
-/// last share) — until -60 dB or `MAX_KERNEL_S`. None: nothing to do.
+/// A diffuse tail still ringing where the trace ends (above
+/// `DENSE_FLOOR`, 80 dB under its loudest bin) is continued along its own
+/// decay — past the mixing time a diffuse field only decays,
+/// exponentially, at the rate its last second shows (per band; the energy
+/// vector keeps its last share) — until -80 dB or `MAX_KERNEL_S`. The
+/// trace ends where its rays stop reaching (the traced window, or, in a
+/// ringing room, where the last of them were thinned out ~60 dB down:
+/// played as traced, the room's tail stopped there). Diffuse: most bins
+/// of its last second carry energy — a sparse end (a few late echoes
+/// outdoors) is not a field to continue. None: nothing to do.
 fn continue_tail(resp: &DenseResponse, max_s: f32) -> Option<DenseResponse> {
     let n = resp.bins.len();
-    let window = omg_core::v3::RESPONSE_MAX_S;
-    if n == 0 || (n as f32) * resp.bin_s < window - 0.05 {
-        return None; // ended on its own
+    let last_second = ((1.0 / resp.bin_s) as usize).min(n);
+    if n == 0 || resp.bins[n - last_second..].iter().filter(|b| b[1] > 0.0).count() * 2 < last_second {
+        return None; // not a diffuse field at its end
     }
     let peak = resp.bins.iter().map(|b| b[1]).fold(0.0f32, f32::max);
     let fit_from = n.saturating_sub((1.0 / resp.bin_s) as usize);
@@ -308,17 +313,28 @@ fn continue_tail(resp: &DenseResponse, max_s: f32) -> Option<DenseResponse> {
         slope[b] = k as f32;
         end[b] = ((sy - k * sx) / m + k * (n - 1) as f64).exp() as f32;
     }
-    if end[1] < peak * 1e-6 {
+    if end[1] < peak * omg_core::v3::DENSE_FLOOR {
         return None;
     }
     let last = resp.bins[n - 1];
     let share = if last[1] > 0.0 { [last[3] / last[1], last[4] / last[1], last[5] / last[1]] } else { [0.0; 3] };
     let max_bins = (max_s.min(MAX_KERNEL_S) / resp.bin_s) as usize;
     let mut out = resp.clone();
+    // where the last second's rays left a bin (nearly) empty — 20 dB
+    // under the decay: sampling, not silence; a diffuse field's own grain
+    // stays — the decay's expected energy (played as traced, each was a
+    // dropout in the tail)
+    for i in fit_from..n {
+        let back = (n - 1 - i) as f32;
+        let e: [f32; 3] = core::array::from_fn(|b| end[b] * (-slope[b] * back).exp());
+        if out.bins[i][1] < 0.01 * e[1] {
+            out.bins[i] = [e[0], e[1], e[2], share[0] * e[1], share[1] * e[1], share[2] * e[1]];
+        }
+    }
     let mut i = 1usize;
     while n + i < max_bins {
         let e: [f32; 3] = core::array::from_fn(|b| end[b] * (slope[b] * i as f32).exp());
-        if e[1] < peak * 1e-6 {
+        if e[1] < peak * omg_core::v3::DENSE_FLOOR {
             break;
         }
         out.bins.push([e[0], e[1], e[2], share[0] * e[1], share[1] * e[1], share[2] * e[1]]);
@@ -1011,8 +1027,8 @@ mod tests {
         assert!(DenseKernel::from_flat(flat[..flat.len() - 2].to_vec()).is_none(), "truncated words are refused");
     }
 
-    /// A response cut by the traced window while still ringing goes on
-    /// at its own decay until -60 dB; one that ended on its own doesn't.
+    /// A diffuse response still ringing where the trace ends goes on at
+    /// its own decay until -80 dB; a sparse end (late echoes) doesn't.
     #[test]
     fn a_ringing_tail_continues_at_its_own_decay() {
         let window = omg_core::v3::RESPONSE_MAX_S;
@@ -1026,9 +1042,13 @@ mod tests {
         let r = resp(bins);
         let c = continue_tail(&r, MAX_KERNEL_S).expect("continued");
         let len_s = c.bins.len() as f32 * 0.002;
-        assert!((len_s - 6.0).abs() < 0.2, "continued to -60 dB at ~6 s, got {len_s:.2} s");
+        // RT60 6 s: −80 dB at 8 s
+        assert!((len_s - 8.0).abs() < 0.2, "continued to -80 dB at ~8 s, got {len_s:.2} s");
         let short = resp(r.bins[..1000].to_vec());
-        assert!(continue_tail(&short, MAX_KERNEL_S).is_none(), "a tail that ended on its own stays");
+        let c = continue_tail(&short, MAX_KERNEL_S).expect("a diffuse tail cut short goes on");
+        assert!((c.bins.len() as f32 * 0.002 - 8.0).abs() < 0.2, "on its own decay");
+        let sparse: Vec<[f32; 6]> = r.bins.iter().enumerate().map(|(i, b)| if i % 7 == 0 { *b } else { [0.0; 6] }).collect();
+        assert!(continue_tail(&resp(sparse), MAX_KERNEL_S).is_none(), "late echoes aren't a field to continue");
     }
 
     /// The impulse response carries the traced energy per bin (W), and
@@ -1082,17 +1102,20 @@ mod tests {
         let b = Arc::new(build_kernel(&r, 48_000.0, 2.0, 5));
         let mut conv = DenseConv::new();
         conv.set_kernel(Some(a));
-        let x = sine(80_000, 110.0);
+        // (the kernels ring ~2.2 s, continued to −80 dB: measured past that)
+        let x = sine(330_000, 110.0);
         let mut y = Vec::new();
-        run(&mut conv, &x[..40_000], &mut y);
+        run(&mut conv, &x[..160_000], &mut y);
         conv.set_kernel(Some(b));
-        run(&mut conv, &x[40_000..], &mut y);
-        let before = kink(&y, 20_000, 40_000);
-        let after = kink(&y, 40_000, 80_000);
-        // the output doubles: its own second difference doubles too
-        assert!(after < 2.5 * before, "a step at the swap: {after:.3e} vs {before:.3e} before");
+        run(&mut conv, &x[160_000..], &mut y);
+        // around the swap (every stage's fade in it) against the same
+        // output's own roughness once settled at the new level: a step
+        // would stand out
+        let swap = kink(&y, 155_000, 175_000);
+        let settled = kink(&y, 290_000, 330_000);
+        assert!(swap < 1.5 * settled, "a step at the swap: {swap:.3e} vs {settled:.3e} settled");
         let rms = |a: usize, b: usize| (y[a..b].iter().map(|v| v * v).sum::<f32>() / (b - a) as f32).sqrt();
-        let ratio = rms(70_000, 80_000) / rms(30_000, 40_000);
+        let ratio = rms(310_000, 330_000) / rms(140_000, 160_000);
         assert!((ratio - 2.0).abs() < 0.1, "the new kernel plays: ×{ratio:.2}");
     }
 

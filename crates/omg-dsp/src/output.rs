@@ -49,6 +49,7 @@ pub struct OutputStage {
     reflex: Smoothed,
     /// The safety limiter's peak envelope (output, after the adaptation).
     peak: f32,
+    peak_att: f32,
     peak_rel: f32,
     countdown: u32,
     // Temporary threshold shift ("club ears"): sustained levels far above
@@ -124,8 +125,11 @@ const REFLEX_OFF_S: f32 = 1.0;
 const REFLEX_DECAY: f32 = 0.5;
 const REFLEX_DECAY_S: f32 = 10.0;
 const REFLEX_REST_S: f32 = 2.0;
-/// The safety limiter: output peaks kept under this (before the tanh).
+/// The safety limiter: output peaks kept under this (before the tanh),
+/// reaching for them within ~1 ms (an instant gain step is a click of its
+/// own; what overshoots in that millisecond, the tanh rounds).
 const LIMIT: f32 = 0.9;
+const LIMIT_ATTACK_S: f32 = 0.001;
 /// Fatigue builds above this short-term level (dB SPL), fully at +10 dB.
 const TTS_DB: f32 = 100.0;
 /// Muffle cutoff range: log-swept 18 kHz (none) → 1.4 kHz (full fatigue).
@@ -172,6 +176,7 @@ impl OutputStage {
             gain: Smoothed::new(1.0, 0.01, sample_rate),
             reflex: Smoothed::new(1.0, 0.01, sample_rate),
             peak: 0.0,
+            peak_att: tc(LIMIT_ATTACK_S),
             peak_rel: (-1.0 / (0.2 * sample_rate)).exp(),
             countdown: 0,
             tts: 0.0,
@@ -309,10 +314,10 @@ impl OutputStage {
         self.tts_lp.1 += self.tts_coef * (gr - self.tts_lp.1);
         let ol = gl + self.tts * (self.tts_lp.0 - gl);
         let or_ = gr + self.tts * (self.tts_lp.1 - gr);
-        // the safety limiter: instant on a peak over `LIMIT`, letting go
-        // over ~0.2 s (what the adaptation has not caught yet: a shot)
+        // the safety limiter: within ~1 ms on a peak over `LIMIT`, letting
+        // go over ~0.2 s (what the adaptation has not caught yet: a shot)
         let p = ol.abs().max(or_.abs());
-        self.peak = if p > self.peak { p } else { self.peak * self.peak_rel + p * (1.0 - self.peak_rel) };
+        self.peak = if p > self.peak { self.peak + self.peak_att * (p - self.peak) } else { self.peak * self.peak_rel + p * (1.0 - self.peak_rel) };
         let lim = if self.peak > LIMIT { LIMIT / self.peak } else { 1.0 };
         ((ol * lim + ring).tanh(), (or_ * lim + ring).tanh())
     }
