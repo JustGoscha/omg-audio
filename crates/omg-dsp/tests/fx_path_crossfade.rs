@@ -109,8 +109,10 @@ fn vanished_path_fades_out() {
     assert!(rms(&y[67_200..72_000]) < 1e-4 * before, "must be gone after ~1 s");
 }
 
-/// A brand-new path fades in from silence at its final delay (it does not
-/// pop on at full level).
+/// A brand-new path fades in from silence at its final delay: it does not
+/// pop on at full level (no click, quiet in its first millisecond), and it
+/// is there at once to the ear (~20 ms time constant: landed within 0.1 s
+/// — a door opening is heard when it opens).
 #[test]
 fn new_path_fades_in() {
     let mut r = Renderer::new(SR);
@@ -122,9 +124,13 @@ fn new_path_fades_in() {
         y.push(bus[0]);
     }
     assert!(max_step(&y) < 0.14, "fade-in click: {}", max_step(&y));
+    // the fade starts with the update (t = 0); the tone reaches the path
+    // 5 ms later: its first 5 ms play well under full level
     let early = rms(&y[240..480]) * 2f32.sqrt();
+    let at_100ms = rms(&y[4_800..5_280]) * 2f32.sqrt();
     let late = rms(&y[19_200..24_000]) * 2f32.sqrt();
-    assert!(early < 0.15 && (late - 1.0).abs() < 0.01, "fade-in: early {early}, late {late}");
+    assert!(early < 0.45, "fade-in: {early} in its first 5 ms");
+    assert!((at_100ms - 1.0).abs() < 0.03 && (late - 1.0).abs() < 0.01, "fade-in: {at_100ms} at 0.1 s, {late} late");
 }
 
 /// Self-check of the metrics: a hard switch (instant 90° phase jump, what

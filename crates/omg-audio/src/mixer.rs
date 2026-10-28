@@ -416,13 +416,11 @@ impl Slot {
         }
         self.admitted_next.sort_unstable();
         core::mem::swap(&mut self.admitted, &mut self.admitted_next);
+        // the parametric reverb stays fed while the kernel plays the
+        // scattered field (`Renderer::set_convolving` mutes its output): a
+        // source leaving the convolution budget crossfades to a warm one
         self.filtered.reverb = pb.reverb;
         self.filtered.remote = pb.remote;
-        if self.convolving {
-            // the kernel plays the scattered field: no parametric copy
-            self.filtered.reverb.level = [0.0; 3];
-            self.filtered.remote = None;
-        }
         self.filtered.version = pb.version;
         self.filtered.onset_s = pb.onset_s;
     }
@@ -691,27 +689,19 @@ impl Mixer {
                 _ => false,
             };
             if !same {
-                // gone while the source still has paths: the simulation
-                // dropped it as stale (the response changed beyond its
-                // noise — a door shut), so what it still had to play
-                // can't reach the listener any more — or replaced by one built for the changed response
-                let cut = (k.is_none() && s.kernel.is_some()) || k.is_some_and(|k| k.cut);
+                // a new kernel crossfades in (each convolution stage at its
+                // next block, over the input it already had); none: back
+                // to the parametric reverb, which has been fed all along
                 s.kernel = k.cloned();
-                if s.convolving && cut {
-                    s.renderer.cut_dense_kernel(s.kernel.clone());
-                    if s.kernel.is_none() {
-                        // the parametric copy of the current response meanwhile
-                        s.convolving = false;
-                        s.reapply = true;
-                        s.dirty = true;
-                    }
-                } else if s.convolving {
+                // (withdrawn: the convolver keeps its input for the next one)
+                if let Some(k) = &s.kernel {
+                    s.renderer.set_dense_warm(Some(k));
+                }
+                if s.convolving {
                     s.renderer.set_dense_kernel(s.kernel.clone());
                     if s.kernel.is_none() {
-                        // back to the parametric reverb
                         s.convolving = false;
-                        s.reapply = true;
-                        s.dirty = true;
+                        s.renderer.set_convolving(false);
                     }
                 }
             }
@@ -754,6 +744,11 @@ impl Mixer {
                 self.index.remove(&s.id.0);
                 if s.kernel.take().is_some() {
                     s.renderer.set_dense_kernel(None);
+                }
+                s.renderer.set_dense_warm(None);
+                if s.convolving {
+                    s.convolving = false;
+                    s.renderer.set_convolving(false);
                 }
             }
         }
@@ -804,8 +799,7 @@ impl Mixer {
             if want != s.convolving {
                 s.convolving = want;
                 s.renderer.set_dense_kernel(if want { s.kernel.clone() } else { None });
-                s.reapply = true;
-                s.dirty = true;
+                s.renderer.set_convolving(want);
             }
         }
     }
@@ -1152,6 +1146,12 @@ impl Mixer {
 
     pub fn agc_gain(&self) -> f32 {
         self.out.agc_gain()
+    }
+
+    /// The ear (adaptation, reflex, fatigue) on or off; off, the scene
+    /// plays at its own level (the safety limiter stays).
+    pub fn set_ear(&mut self, on: bool) {
+        self.out.set_ear(on);
     }
 
     /// Hearing fatigue after sustained loudness, 0 (fresh) … 1 (dulled).

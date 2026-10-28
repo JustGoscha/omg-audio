@@ -67,8 +67,31 @@ const DEFAULT_POINT_TAPS: usize = 24;
 /// doorway carries ~145 taps/source vs ~20 in the open square, and the
 /// bottom half sits far below the masking threshold of the top.
 const DEFAULT_TAP_CEILING: usize = 160;
-/// Time constant of every per-tap parameter smoother.
-const TAP_TAU_S: f32 = 0.05;
+/// Time constant of every per-tap parameter smoother: about one exact
+/// frame (120 Hz), so a change — a door shut, a path appearing — lands
+/// within ~25 ms (3 τ) without a click; slower, a 30 dB drop dragged on
+/// for ~170 ms.
+const TAP_TAU_S: f32 = 0.008;
+/// Time constant of a path appearing or vanishing (a new key; a key gone):
+/// at once to the ear, never a click.
+const APPEAR_TAU_S: f32 = 0.02;
+/// Time constant of a same-key delay jump's crossfade (the path's old and
+/// new delay overlap): a crossfade between two copies of one sound at
+/// different delays sweeps the phase between them, and a slower sweep
+/// keeps it from being heard as a pitch blip.
+const RETARGET_TAU_S: f32 = 0.05;
+/// A slot's smoother rate: gliding, appearing / vanishing, or crossfading
+/// a delay jump.
+const GLIDE: u8 = 0;
+const APPEAR: u8 = 1;
+const RETARGET: u8 = 2;
+/// Time constant of the parametric reverbs' level and colour (their
+/// state rings on inside; only the send follows the paths).
+const FDN_TAU_S: f32 = 0.02;
+/// Time constant of the crossfade between a source's convolved dense
+/// response and its parametric reverb (`set_convolving`): about the time
+/// the convolution's later stages take to land after a kernel change.
+const CONV_XFADE_TAU_S: f32 = 0.06;
 /// Closing linear tail of a released slot (see `TapState::release_floor`).
 const TAIL_SAMPLES: u32 = 240;
 /// Angular spread of the remote-reverb lines around the doorway (±~30°).
@@ -111,6 +134,9 @@ struct TapState {
     release_floor: f32,
     /// Samples left in the closing linear tail (0 = not in it).
     tail: u32,
+    /// Its smoothers' rate (`GLIDE`, `APPEAR`, `RETARGET`): a path born or
+    /// released fades on its rate; a fade-in that landed glides again.
+    rate: u8,
 }
 
 impl TapState {
@@ -162,7 +188,35 @@ impl TapState {
         (end, faded)
     }
 
-    fn release(&mut self) {
+    /// Every smoother of the slot on `rate`'s time constant.
+    fn set_rate(&mut self, rate: u8, coefs: &[f32; 3]) {
+        self.rate = rate;
+        let c = coefs[rate as usize];
+        self.g_low.set_coef(c);
+        self.g_high.set_coef(c);
+        self.lp_coef.set_coef(c);
+        for g in &mut self.g_sh {
+            g.set_coef(c);
+        }
+    }
+
+    /// A fade-in that has landed goes back to gliding (looked at when an
+    /// update arrives: block and per-sample rendering switch at the same
+    /// sample).
+    fn settle_fade(&mut self, coefs: &[f32; 3]) {
+        if self.rate != GLIDE && self.key.is_some() {
+            let (t, c) = (self.g_sh[0].target_val(), self.g_sh[0].current());
+            if (c - t).abs() <= 1e-3 * t.abs().max(1e-6) {
+                self.set_rate(GLIDE, coefs);
+            }
+        }
+    }
+
+    /// Fade the slot out on `rate`: `RETARGET` when its path goes on in
+    /// another slot (a delay jump: the two crossfade), `APPEAR` when the
+    /// path is gone.
+    fn release(&mut self, rate: u8, coefs: &[f32; 3]) {
+        self.set_rate(rate, coefs);
         self.key = None;
         self.release_floor = 0.0015 * self.g_sh[0].current().abs();
         self.tail = 0;
@@ -250,7 +304,8 @@ impl Src<'_> {
 
 /// What every group of one block shares.
 struct GroupCx<'a, 'b> {
-    pw: &'a [f32; BLOCK],
+    /// `pw` per rate (`GLIDE`, `APPEAR`, `RETARGET`).
+    pw: &'a [[f32; BLOCK]; 3],
     grid: Option<&'a HrirGrid>,
     c_low: f32,
     c_high: f32,
@@ -260,6 +315,11 @@ struct GroupCx<'a, 'b> {
     bus: &'a mut BusBlock,
     pl: &'a mut [f32],
     pr: &'a mut [f32],
+}
+
+/// Slot index of lane `l` of a group (spare lanes repeat lane 0).
+fn idx_of(group: &[u16], l: usize) -> usize {
+    group[if l < group.len() { l } else { 0 }] as usize
 }
 
 /// The tap slots `group` (≤ L of them) over one block, side by side:
@@ -273,7 +333,9 @@ struct GroupCx<'a, 'b> {
 /// channel and sample, vectorized over samples). Spare lanes repeat
 /// lane 0 and are thrown away. True when a slot was freed.
 fn tap_group<const L: usize>(taps: &mut [TapState], group: &[u16], cx: &mut GroupCx) -> bool {
-    let (pw, m, off) = (cx.pw, cx.m, cx.off);
+    let (m, off) = (cx.m, cx.off);
+    // each slot's smoother curve: gliding, or fading in / out
+    let pws: [&[f32; BLOCK]; L] = core::array::from_fn(|l| &cx.pw[taps[idx_of(group, l)].rate as usize]);
     // block scratch on the stack (measured: faster than keeping it in
     // the renderer, zeroing included)
     let mut dd = [[0.0f64; L]; BLOCK]; // delays, then emission times
@@ -289,6 +351,7 @@ fn tap_group<const L: usize>(taps: &mut [TapState], group: &[u16], cx: &mut Grou
     let mut loud = [false; L];
     for l in 0..c {
         let tap = &mut taps[idx[l]];
+        let pw = pws[l];
         (end[l], faded[l]) = tap.lifecycle(pw, m, &mut fade[l]);
         if end[l] > 0 {
             // skip silent stretches (smoothers still move); gains are
@@ -329,8 +392,8 @@ fn tap_group<const L: usize>(taps: &mut [TapState], group: &[u16], cx: &mut Grou
     let s = &ss;
     let (c_low, c_high) = (cx.c_low, cx.c_high);
     for (i, sh) in shaped.iter_mut().enumerate() {
-        let p = pw[i];
         for l in 0..L {
+            let p = pws[l][i];
             let x = lp[l].tick(s[l][i], lpc[l].0 + lpc[l].1 * p);
             sh[l] = eq[l].tick(x, glo[l].0 + glo[l].1 * p, ghi[l].0 + ghi[l].1 * p, c_low, c_high);
         }
@@ -340,6 +403,7 @@ fn tap_group<const L: usize>(taps: &mut [TapState], group: &[u16], cx: &mut Grou
     for l in 0..c {
         let e = end[l];
         let tap = &mut taps[idx[l]];
+        let pw = pws[l];
         if e > 0 {
             let pe = pw[e - 1];
             if loud[l] {
@@ -562,6 +626,9 @@ pub struct Renderer {
     updates_seen: u32,
     fdn: Fdn,
     fdn_level: Smoothed,
+    /// The parametric reverbs' share of the output: 1, or 0 while the
+    /// convolved dense response plays instead (`set_convolving`).
+    fdn_mix: Smoothed,
     send_low: Smoothed,
     send_high: Smoothed,
     send_eq: TapEq,
@@ -586,7 +653,9 @@ pub struct Renderer {
     /// time constant): block rendering evaluates them in closed form,
     /// `target + (cur − target)·pw[i]` — the same one-pole curve, without
     /// a per-sample dependency chain.
-    pw: [f32; BLOCK],
+    pw: [[f32; BLOCK]; 3],
+    /// The per-sample decay factors per rate (`GLIDE`, `APPEAR`, `RETARGET`).
+    coefs: [f32; 3],
     sample_rate: f32,
     retarget_thresh: f32,
     /// Per-source point-render budget (see `DEFAULT_POINT_TAPS`).
@@ -634,7 +703,7 @@ impl Renderer {
             ]
         });
         let conv_taps = grid.as_ref().map_or(1, |g| g.taps);
-        let tap_coef = Smoothed::new(0.0, TAP_TAU_S, sample_rate).coef() as f64;
+        let coefs = [TAP_TAU_S, APPEAR_TAU_S, RETARGET_TAU_S].map(|tau| Smoothed::new(0.0, tau, sample_rate).coef());
         Self {
             src_line: DelayLine::new((sample_rate * LIVE_LINE_S) as usize + READ_SLACK),
             active: Vec::with_capacity(MAX_TAPS),
@@ -653,6 +722,7 @@ impl Renderer {
                     conv: PointConv::new(conv_taps, sample_rate),
                     release_floor: 0.0,
                     tail: 0,
+                    rate: GLIDE,
                 })
                 .collect(),
             grid,
@@ -667,23 +737,25 @@ impl Renderer {
             last_version: u64::MAX,
             updates_seen: 0,
             fdn: Fdn::new(sample_rate),
-            fdn_level: Smoothed::new(0.0, 0.2, sample_rate),
-            send_low: Smoothed::new(1.0, 0.2, sample_rate),
-            send_high: Smoothed::new(1.0, 0.2, sample_rate),
+            fdn_level: Smoothed::new(0.0, FDN_TAU_S, sample_rate),
+            fdn_mix: Smoothed::new(1.0, CONV_XFADE_TAU_S, sample_rate),
+            send_low: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
+            send_high: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
             send_eq: TapEq::default(),
             remote_fdn: Fdn::new(sample_rate),
-            remote_level: Smoothed::new(0.0, 0.2, sample_rate),
-            remote_low: Smoothed::new(1.0, 0.2, sample_rate),
-            remote_high: Smoothed::new(1.0, 0.2, sample_rate),
+            remote_level: Smoothed::new(0.0, FDN_TAU_S, sample_rate),
+            remote_low: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
+            remote_high: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
             remote_eq: TapEq::default(),
             remote_lp: OnePoleLp::default(),
-            remote_lp_coef: Smoothed::new(1.0, 0.1, sample_rate),
-            remote_sh: [Smoothed::new(0.0, 0.1, sample_rate); NCH],
+            remote_lp_coef: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
+            remote_sh: [Smoothed::new(0.0, FDN_TAU_S, sample_rate); NCH],
             remote_spread: [[0.0; NCH]; NLINES],
             fdn_dirs: core::array::from_fn(|i| encode_gains(corner_dirs[i])),
             c_low: OnePoleLp::coef(LOW_SHELF_HZ, sample_rate),
             c_high: OnePoleLp::coef(HIGH_SHELF_HZ, sample_rate),
-            pw: core::array::from_fn(|i| tap_coef.powi(i as i32 + 1) as f32),
+            pw: coefs.map(|c| core::array::from_fn(|i| (c as f64).powi(i as i32 + 1) as f32)),
+            coefs,
             sample_rate,
             retarget_thresh: RETARGET_MS * 1e-3 * sample_rate,
             point_budget: DEFAULT_POINT_TAPS,
@@ -718,10 +790,23 @@ impl Renderer {
         self.dense.set_kernel(k);
     }
 
-    /// `set_dense_kernel` for a response that changed beyond its noise:
-    /// what the old one still had to play is dropped (`DenseConv::cut`).
-    pub fn cut_dense_kernel(&mut self, k: Option<std::sync::Arc<crate::dense::DenseKernel>>) {
-        self.dense.cut(k);
+    /// Engine v4: whether the dense response plays through its kernel
+    /// (`true`) or through the parametric reverb (the block's
+    /// `reverb`/`remote`, which stay fed either way): the two crossfade, and
+    /// the convolver keeps its input while it doesn't play (`warm`), so a
+    /// switch either way is never a restart from silence.
+    pub fn set_convolving(&mut self, on: bool) {
+        self.fdn_mix.set(if on { 0.0 } else { 1.0 });
+    }
+
+    /// Keep the convolver's input history while it has no kernel playing
+    /// (`k`: the source's kernel in the simulation — it may convolve again;
+    /// the history is sized for it). None: let it go.
+    pub fn set_dense_warm(&mut self, k: Option<&std::sync::Arc<crate::dense::DenseKernel>>) {
+        if let Some(k) = k {
+            self.dense.prepare(k);
+        }
+        self.dense.set_warm(k.is_some());
     }
 
     /// The listener's yaw for the dense output (see `dense_yaw`).
@@ -824,6 +909,7 @@ impl Renderer {
         for g in [
             &mut self.dense_yaw,
             &mut self.fdn_level,
+            &mut self.fdn_mix,
             &mut self.send_low,
             &mut self.send_high,
             &mut self.remote_level,
@@ -906,11 +992,16 @@ impl Renderer {
             incoming.truncate(self.tap_ceiling);
         }
 
+        // fade-ins that landed glide from now on
+        for &i in &self.active {
+            self.taps[i as usize].settle_fade(&self.coefs);
+        }
+
         // Fade out slots whose path no longer exists.
         for slot in &mut self.taps {
             if let Some(k) = slot.key {
                 if !incoming.iter().any(|t| t.key == k) {
-                    slot.release();
+                    slot.release(APPEAR, &self.coefs);
                 }
             }
         }
@@ -927,7 +1018,8 @@ impl Renderer {
 
         // paths that glide on (their slots), and paths born this update
         let mut moved: Vec<usize> = Vec::new();
-        let mut born: Vec<&omg_core::params::Tap> = Vec::new();
+        // (a path born of a delay jump crossfades with its old slot)
+        let mut born: Vec<(&omg_core::params::Tap, bool)> = Vec::new();
         for t in incoming {
             let tg = targets_of(t, self.sample_rate);
             let want_point = self.grid.is_some() && point_keys.contains(&t.key);
@@ -966,9 +1058,9 @@ impl Renderer {
                 other => {
                     // Path identity changed (or new): crossfade, never glide.
                     if let Some(i) = other {
-                        self.taps[i].release();
+                        self.taps[i].release(RETARGET, &self.coefs);
                     }
-                    born.push(t);
+                    born.push((t, other.is_some()));
                 }
             }
         }
@@ -981,7 +1073,7 @@ impl Renderer {
             .iter()
             .map(|&i| self.taps[i].delay)
             .min_by(|a, b| a.target_val().total_cmp(&b.target_val()));
-        for t in born {
+        for (t, crossfade) in born {
             let tg = targets_of(t, self.sample_rate);
             let want_point = self.grid.is_some() && point_keys.contains(&t.key);
             if let Some(j) = self.taps.iter().position(|s| s.free()) {
@@ -989,6 +1081,7 @@ impl Renderer {
                     self.active.push(j as u16);
                 }
                 let slot = &mut self.taps[j];
+                slot.set_rate(if self.snap_born { GLIDE } else if crossfade { RETARGET } else { APPEAR }, &self.coefs);
                 slot.key = Some(t.key);
                 slot.point = want_point;
                 slot.base_dir = t.dir;
@@ -1236,13 +1329,14 @@ impl Renderer {
             && self.send_eq.quiet(1e-9)
             && self.remote_eq.quiet(1e-9)
             && self.remote_lp.state.abs() < 1e-9;
-        let dense = self.dense.has_kernel();
+        let dense = self.dense.has_kernel() || self.dense.is_warm();
         if quiet && !dense {
             for _ in 0..m {
                 self.onset.tick();
             }
             for g in [
                 &mut self.fdn_level,
+                &mut self.fdn_mix,
                 &mut self.send_low,
                 &mut self.send_high,
                 &mut self.remote_level,
@@ -1261,6 +1355,7 @@ impl Renderer {
             if quiet {
                 for g in [
                     &mut self.fdn_level,
+                    &mut self.fdn_mix,
                     &mut self.send_low,
                     &mut self.send_high,
                     &mut self.remote_level,
@@ -1419,6 +1514,7 @@ impl Renderer {
         // whose input AND tail are silent goes to sleep — most sources are
         // inaudible at any moment; waking is instant.
         let own_level = self.fdn_level.tick();
+        let mix = self.fdn_mix.tick();
         let own_gate = if own_level > 1e-6 || self.fdn_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
         let wet_in = self.send_eq.tick(
             x * own_gate,
@@ -1430,7 +1526,7 @@ impl Renderer {
         // energy-calibrated on the way in (`Fdn::energy_norm`)
         let [own_norm, rem_norm] = self.norm_at(RESELECT_EVERY - 1 - self.reselect_countdown);
         let own_in = if self.mute_own_fdn { 0.0 } else { wet_in * own_norm };
-        fdn_step(&mut self.fdn, &mut self.fdn_idle, own_in, 1.0, own_level, own_gate, &self.fdn_dirs, foa);
+        fdn_step(&mut self.fdn, &mut self.fdn_idle, own_in, 1.0, own_level * mix, own_gate, &self.fdn_dirs, foa);
 
         // Coupled-room wet: source room's reverb as a directional emitter
         // at the doorway (mono sum — a distant aperture, not a diffuse field
@@ -1452,7 +1548,7 @@ impl Renderer {
             self.remote_sh[k].tick();
         }
         let rem_in = if self.mute_remote { 0.0 } else { rin * rem_norm };
-        fdn_step(&mut self.remote_fdn, &mut self.remote_idle, rem_in, 1.0, rem_level, rem_gate, &self.remote_spread, foa);
+        fdn_step(&mut self.remote_fdn, &mut self.remote_idle, rem_in, 1.0, rem_level * mix, rem_gate, &self.remote_spread, foa);
     }
 
     /// The FDNs' input normalization `k` samples into a re-selection
@@ -1484,17 +1580,18 @@ impl Renderer {
         for (j, &x) in x.iter().enumerate() {
             let [own_norm, rem_norm] = self.norm_at(k0 + j as u32);
             let own_level = self.fdn_level.tick();
+            let mix = self.fdn_mix.tick();
             let gate = if own_level > 1e-6 || self.fdn_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
             let wet_in = self.send_eq.tick(x * gate, self.send_low.tick(), self.send_high.tick(), c_low, c_high);
             own_in[j] = if self.mute_own_fdn { 0.0 } else { wet_in * own_norm };
-            own_lvl[j] = own_level;
+            own_lvl[j] = own_level * mix;
             own_gate[j] = gate;
             let rem_level = self.remote_level.tick();
             let gate = if rem_level > 1e-6 || self.remote_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
             let rpre = self.remote_lp.tick(x * gate, self.remote_lp_coef.tick());
             let rin = self.remote_eq.tick(rpre, self.remote_low.tick(), self.remote_high.tick(), c_low, c_high);
             rem_in[j] = if self.mute_remote { 0.0 } else { rin * rem_norm };
-            rem_lvl[j] = rem_level;
+            rem_lvl[j] = rem_level * mix;
             rem_gate[j] = gate;
         }
         let own = FdnFeed { input: &own_in[..m], pre: 1.0, lvl: &own_lvl[..m], gate: &own_gate[..m] };

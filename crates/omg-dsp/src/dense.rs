@@ -101,11 +101,6 @@ pub struct DenseKernel {
     n_tail: usize,
     /// Impulse response length in samples (kernel time).
     pub len: usize,
-    /// Replaces a response that changed beyond its noise (a door shut, a
-    /// step into another space): the convolver drops what the old one
-    /// still had to play (`DenseConv::cut`). Travels in the flat words as
-    /// the sign of the length.
-    pub cut: bool,
 }
 
 impl core::fmt::Debug for DenseKernel {
@@ -117,12 +112,6 @@ impl core::fmt::Debug for DenseKernel {
 impl DenseKernel {
     pub fn is_empty(&self) -> bool {
         self.n_head == 0
-    }
-
-    /// Mark the kernel as replacing a stale response (see `cut`).
-    pub fn mark_cut(&mut self) {
-        self.cut = true;
-        self.data[0].re = -(self.len as f32);
     }
 
     fn head(&self, p: usize, c: usize) -> &[C] {
@@ -162,7 +151,7 @@ impl DenseKernel {
         if words.len() < 4 {
             return None;
         }
-        let (cut, len) = (words[0] < 0.0, words[0].abs() as usize);
+        let len = words[0].abs() as usize;
         let (n_head, n_mid, n_tail) = (words[1] as usize, words[2] as usize, words[3] as usize);
         if words.len() != Self::flat_len(n_head, n_mid, n_tail) || n_head > HEAD_PARTS || n_mid > MID_PARTS {
             return None;
@@ -177,7 +166,7 @@ impl DenseKernel {
         } else {
             words.chunks_exact(2).map(|p| C::new(p[0], p[1])).collect()
         };
-        Some(Self { data, n_head, n_mid, n_tail, len, cut })
+        Some(Self { data, n_head, n_mid, n_tail, len })
     }
 }
 
@@ -433,7 +422,7 @@ impl KernelBuilder {
             sample_rate,
             gain,
             seed,
-            kernel: DenseKernel { data, n_head, n_mid, n_tail, len, cut: false },
+            kernel: DenseKernel { data, n_head, n_mid, n_tail, len },
             next: 0,
             at: 2,
             ir: core::array::from_fn(|_| vec![0.0; TAIL_B]),
@@ -590,6 +579,13 @@ pub struct DenseConv {
     /// Samples of silent input in a row (asleep after the kernel's length).
     quiet: usize,
     asleep: bool,
+    /// Keep the input history with no kernel (the source may convolve
+    /// again any moment): a kernel set later convolves the true recent
+    /// input from its first block, instead of starting from silence.
+    warm: bool,
+    /// How far back a warm convolver's input matters (the prepared
+    /// kernel's length): silence longer than that is nothing to keep.
+    warm_len: usize,
 }
 
 impl Default for DenseConv {
@@ -657,7 +653,29 @@ impl DenseConv {
             fade: [raised_cosine(HEAD_B), raised_cosine(MID_B), raised_cosine(TAIL_B)],
             quiet: 0,
             asleep: true,
+            warm: false,
+            warm_len: 0,
         }
+    }
+
+    /// Keep the input history while there is no kernel (see `warm`).
+    pub fn set_warm(&mut self, on: bool) {
+        self.warm = on;
+    }
+
+    /// Size the input history for `k` without playing it: kept warm, the
+    /// convolver then holds as much past input as `k` reaches back.
+    pub fn prepare(&mut self, k: &DenseKernel) {
+        self.warm_len = self.warm_len.max(k.len);
+        self.tail_fdl.ensure(k.n_tail.max(1));
+        if self.tail_acc[0].is_empty() && k.n_tail > 0 {
+            self.tail_acc = core::array::from_fn(|_| vec![vec![C::default(); TAIL_B + 1]; FOA]);
+            self.spec_t = vec![C::default(); TAIL_B + 1];
+        }
+    }
+
+    pub fn is_warm(&self) -> bool {
+        self.warm
     }
 
     /// The kernel to convolve from now on (None: fade to silence). Each
@@ -676,31 +694,6 @@ impl DenseConv {
         self.kernel = k;
     }
 
-    /// The response so far is wrong (the world changed beyond the
-    /// estimates' noise: a door shut, a step into another space), so
-    /// what it would still play cannot reach the listener any more: the
-    /// output the stages landed ahead fades out over a head block, the
-    /// head crossfades to `k`, and the later stages start `k` from
-    /// silence at their next blocks (the input history stays: `k`
-    /// convolves what was emitted before too).
-    pub fn cut(&mut self, k: Option<Arc<DenseKernel>>) {
-        self.set_kernel(k);
-        if !self.fed {
-            return;
-        }
-        let now = (self.blocks as usize * HEAD_B) % RING;
-        for r in &mut self.ring {
-            for j in 0..RING {
-                let g = if j < HEAD_B { 1.0 - self.fade[0][j] } else { 0.0 };
-                r[(now + j) % RING] *= g;
-            }
-        }
-        self.live[1] = None;
-        self.live[2] = None;
-        // the tail block in progress was the old response's: it lands nothing
-        self.tail_pair = [None, None];
-    }
-
     /// The input skipped ahead (the renderer did not run this convolver
     /// for a while): its history is no longer the recent input — start
     /// over from silence, fading in.
@@ -710,7 +703,8 @@ impl DenseConv {
 
     /// The longest response any stage still plays (samples).
     fn longest(&self) -> usize {
-        self.live.iter().chain(core::iter::once(&self.kernel)).flatten().map(|k| k.len).max().unwrap_or(0)
+        let warm = if self.warm { self.warm_len } else { 0 };
+        self.live.iter().chain(core::iter::once(&self.kernel)).flatten().map(|k| k.len).max().unwrap_or(0).max(warm)
     }
 
     pub fn kernel_len(&self) -> usize {
@@ -755,7 +749,7 @@ impl DenseConv {
     /// `x`: the source (free-field arrival time), one sample per bus
     /// sample from `off`; adds into `bus[0..4][off..]`.
     pub fn process(&mut self, x: &[f32], bus: &mut BusBlock, off: usize) {
-        if !self.has_kernel() {
+        if !self.has_kernel() && !self.warm {
             self.fed = false;
             return;
         }
@@ -1199,21 +1193,35 @@ mod tests {
         assert!(z.iter().all(|&v| v == 0.0), "stale output after a pause");
     }
 
-    /// Cut, the old response stops within a head block: nothing it had
-    /// landed ahead plays on (here the input stops at the cut too).
+    /// Kept warm with no kernel, a convolver handed one later convolves the
+    /// input it already had: the response to a click played before the
+    /// kernel arrived is there in full (no restart from silence).
     #[test]
-    fn a_cut_stops_the_old_response_at_once() {
-        let r = decaying(1500, 400.0);
-        let mut conv = DenseConv::new();
-        conv.set_kernel(Some(Arc::new(build_kernel(&r, 48_000.0, 1.0, 5))));
-        let x = sine(40_000, 110.0);
+    fn a_warm_convolver_keeps_the_input_it_had() {
+        let r = decaying(400, 60.0);
+        let k = Arc::new(build_kernel(&r, 48_000.0, 1.0, 5));
+        let run_with = |warm: bool| -> f32 {
+            let mut conv = DenseConv::new();
+            conv.set_warm(warm);
+            conv.prepare(&k);
+            let mut x = vec![0.0f32; 40_000];
+            x[1_000] = 1.0;
+            let mut y = Vec::new();
+            run(&mut conv, &x[..6_000], &mut y);
+            conv.set_kernel(Some(k.clone()));
+            run(&mut conv, &x[6_000..], &mut y);
+            // the response 0.5 s after the click (well past the hand-over)
+            y[24_000..30_000].iter().map(|v| v * v).sum::<f32>()
+        };
+        let mut reference = DenseConv::new();
+        reference.set_kernel(Some(k.clone()));
+        let mut x = vec![0.0f32; 40_000];
+        x[1_000] = 1.0;
         let mut y = Vec::new();
-        run(&mut conv, &x, &mut y);
-        conv.cut(None);
-        let mut z = Vec::new();
-        run(&mut conv, &vec![0.0; 20_000], &mut z);
-        let late = z[2 * HEAD_B..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
-        let before = y[30_000..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
-        assert!(late < 1e-6 * before, "the old response plays on: {late:.3e} (it was {before:.3e})");
+        run(&mut reference, &x, &mut y);
+        let want: f32 = y[24_000..30_000].iter().map(|v| v * v).sum();
+        let (warm, cold) = (run_with(true), run_with(false));
+        assert!((warm / want - 1.0).abs() < 0.01, "warm: {warm:.3e} vs {want:.3e}");
+        assert!(cold < 1e-3 * want, "cold: the click is lost ({cold:.3e})");
     }
 }

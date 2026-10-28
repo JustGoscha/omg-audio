@@ -46,6 +46,11 @@ impl Smoothed {
         self.coef
     }
 
+    /// Change the time constant (as a per-sample decay factor, `coef`).
+    pub fn set_coef(&mut self, coef: f32) {
+        self.coef = coef;
+    }
+
     /// Where a block renderer that ticked this smoother's state by hand
     /// (see `coef`, `target_val`) left it.
     pub fn set_current(&mut self, cur: f32) {

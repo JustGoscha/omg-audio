@@ -70,6 +70,9 @@ pub struct OutputStage {
     tin_phase: f32,
     tin_step: f32,
     tin_decay: f32,
+    /// The ear on (adaptation, reflex, fatigue, tinnitus) — off, the
+    /// stage only decodes and limits (the levels still measured).
+    ear: bool,
     sample_rate: f32,
 }
 
@@ -188,8 +191,15 @@ impl OutputStage {
             tin_phase: 0.0,
             tin_step: core::f32::consts::TAU * TIN_HZ / sample_rate,
             tin_decay: (-1.0 / (2.5 * sample_rate)).exp(),
+            ear: true,
             sample_rate,
         }
+    }
+
+    /// The ear on or off. Off, the scene plays at its own level: no
+    /// adaptation, no reflex, no fatigue (the safety limiter stays).
+    pub fn set_ear(&mut self, on: bool) {
+        self.ear = on;
     }
 
     pub fn is_binaural(&self) -> bool {
@@ -242,6 +252,15 @@ impl OutputStage {
     /// glide there sample by sample.
     fn control(&mut self) {
         let short = spl_db(self.short_ms);
+        if !self.ear {
+            self.adapt_db = short.max(self.adapt_db - 0.1);
+            self.gain.set(1.0);
+            self.reflex.set(1.0);
+            self.reflex_db = 0.0;
+            self.tts = 0.0;
+            self.tts_coef = 1.0;
+            return;
+        }
         self.adapt_db += if short > self.adapt_db {
             (self.adapt_up * (short - self.adapt_db)).min(self.adapt_slew)
         } else {
@@ -293,7 +312,8 @@ impl OutputStage {
         // as it fades (~8 s to silence) — a static tone reads as a bug,
         // a drifting one reads as your ears.
         let m = l.abs().max(r.abs());
-        self.tin = (self.tin + (m - TIN_THRESH).max(0.0) * 2e-4).min(1.0) * self.tin_decay;
+        let excite = if self.ear { (m - TIN_THRESH).max(0.0) * 2e-4 } else { 0.0 };
+        self.tin = (self.tin + excite).min(1.0) * self.tin_decay;
         let ring = if self.tin > 1e-4 {
             let step = self.tin_step * (1.0 + 0.08 * self.tin);
             self.tin_phase = (self.tin_phase + step) % core::f32::consts::TAU;

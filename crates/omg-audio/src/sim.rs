@@ -224,9 +224,6 @@ struct Src {
     /// from one (with the response, gain and tick it was built from).
     dense: Option<DenseResponse>,
     kernel: Option<(Arc<DenseKernel>, DenseResponse, f32, u64)>,
-    /// v4: its kernel was dropped as stale; the next one built replaces
-    /// a response that can't reach the listener any more (`DenseKernel::cut`).
-    kernel_cut: bool,
 }
 
 struct Obj {
@@ -256,7 +253,7 @@ pub struct Simulation {
     /// them), and where everything was at the last frame.
     last_sky: Vec<SkyCell>,
     last_env: omg_dsp::env::Environment,
-    exact_at: Option<(Vec3, Vec<Vec3>)>,
+    exact_at: Option<(Vec3, Vec<Vec3>, u64)>,
     next_source: u32,
     next_object: u32,
     panels: Vec<(Vec3, Vec3, Material)>,
@@ -271,7 +268,7 @@ pub struct Simulation {
     /// v4, building in the tick: the kernel under construction (source,
     /// builder, the response and gain it is built from), and when the
     /// last one was handed over.
-    kernel_job: Option<(SourceId, KernelBuilder, DenseResponse, f32, bool)>,
+    kernel_job: Option<(SourceId, KernelBuilder, DenseResponse, f32)>,
     kernel_sent: u64,
     /// `Compute::Gpu`: the share of the tier's GPU rays a walk carries —
     /// what lets it land every tick within `gpu_budget` — sized from the
@@ -285,7 +282,7 @@ pub struct Simulation {
 
 /// v4's kernel builder on a thread of its own: responses in, kernels out.
 struct KernelWorker {
-    jobs: std::sync::mpsc::Sender<(SourceId, DenseResponse, f32, f32, f32, u64, bool)>,
+    jobs: std::sync::mpsc::Sender<(SourceId, DenseResponse, f32, f32, f32, u64)>,
     done: std::sync::mpsc::Receiver<(SourceId, Arc<DenseKernel>, DenseResponse, f32, u64)>,
     /// Sources with a build in flight.
     busy: Vec<SourceId>,
@@ -293,17 +290,13 @@ struct KernelWorker {
 
 impl KernelWorker {
     fn start() -> Option<Self> {
-        let (jt, jr) = std::sync::mpsc::channel::<(SourceId, DenseResponse, f32, f32, f32, u64, bool)>();
+        let (jt, jr) = std::sync::mpsc::channel::<(SourceId, DenseResponse, f32, f32, f32, u64)>();
         let (dt, dr) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             .name("omg-kernels".into())
             .spawn(move || {
-                while let Ok((id, resp, gain, sr, max_s, tick, cut)) = jr.recv() {
-                    let mut k = build_kernel_max(&resp, sr, gain, id.0, max_s);
-                    if cut {
-                        k.mark_cut();
-                    }
-                    let k = Arc::new(k);
+                while let Ok((id, resp, gain, sr, max_s, tick)) = jr.recv() {
+                    let k = Arc::new(build_kernel_max(&resp, sr, gain, id.0, max_s));
                     if dt.send((id, k, resp, gain, tick)).is_err() {
                         break;
                     }
@@ -327,8 +320,10 @@ const KERNEL_CHANGE: f32 = 0.15;
 /// A kernel this far from its source's current response beyond the
 /// estimates' noise (`DenseResponse::change_from`: a quarter of the
 /// envelope's energy moved — the listener stepped into another space) is
-/// dropped at once — the block's parametric copy of the current response
-/// plays until the new kernel lands, never the old room's.
+/// withdrawn at once and rebuilt before anything else: meanwhile the
+/// block's parametric reverb plays the current response (it has been fed
+/// all along, so it takes over warm), and the rebuilt kernel crossfades
+/// back in over the input the convolver kept.
 const KERNEL_STALE: f32 = 0.5;
 /// Builds queued on the kernel thread at once.
 const KERNEL_QUEUE: usize = 4;
@@ -522,7 +517,6 @@ impl Simulation {
             traced: None,
             dense: None,
             kernel: None,
-            kernel_cut: false,
         });
     }
 
@@ -721,16 +715,12 @@ impl Simulation {
         self.kernel_members.extend(cand.iter().map(|c| c.1));
         let members = &self.kernel_members;
         for s in &mut self.sources {
-            if !members.contains(&s.id) {
-                s.kernel = None;
-            }
             let stale = match (&s.kernel, &s.dense) {
                 (Some((_, from, _, _)), Some(d)) => from.change_from(d) > KERNEL_STALE,
                 _ => false,
             };
-            if stale {
+            if !members.contains(&s.id) || stale {
                 s.kernel = None;
-                s.kernel_cut = true;
             }
         }
         if self.kernel_job.as_ref().is_some_and(|j| !members.contains(&j.0)) {
@@ -771,9 +761,8 @@ impl Simulation {
                 }
                 let s = &mut self.sources[i];
                 let d = s.dense.clone().expect("listed above");
-                if w.jobs.send((s.id, d, s.gain, sr, max_s, tick, s.kernel_cut)).is_ok() {
+                if w.jobs.send((s.id, d, s.gain, sr, max_s, tick)).is_ok() {
                     w.busy.push(s.id);
-                    s.kernel_cut = false;
                 }
             }
             return;
@@ -785,18 +774,14 @@ impl Simulation {
                 let s = &mut self.sources[i];
                 let d = s.dense.clone().expect("listed above");
                 let b = KernelBuilder::new(&d, sr, s.gain, s.id.0, max_s);
-                self.kernel_job = Some((s.id, b, d, s.gain, std::mem::take(&mut s.kernel_cut)));
+                self.kernel_job = Some((s.id, b, d, s.gain));
             }
         }
-        if let Some((_, b, _, _, _)) = &mut self.kernel_job {
+        if let Some((_, b, _, _)) = &mut self.kernel_job {
             if b.step(self.cfg.kernel_step_samples.max(1)) {
-                let (id, b, d, g, cut) = self.kernel_job.take().expect("checked");
+                let (id, b, d, g) = self.kernel_job.take().expect("checked");
                 if let Some(s) = self.sources.iter_mut().find(|s| s.id == id && s.dense.is_some()) {
-                    let mut k = b.finish();
-                    if cut {
-                        k.mark_cut();
-                    }
-                    s.kernel = Some((Arc::new(k), d, g, tick));
+                    s.kernel = Some((Arc::new(b.finish()), d, g, tick));
                 }
                 self.kernel_sent = tick;
             }
@@ -825,7 +810,7 @@ impl Simulation {
         self.frame_no += 1;
         let version = self.frame_no;
         let ear = v3(self.listener.position);
-        self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect()));
+        self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect(), self.objects_sig()));
 
         self.panels.clear();
         for o in self.objects.iter().filter(|o| o.enabled) {
@@ -958,9 +943,13 @@ impl Simulation {
     /// instead of the tick's. None when nothing moved since the last frame.
     pub fn tick_exact(&mut self) -> Option<Frame> {
         let ear = v3(self.listener.position);
+        let sig = self.objects_sig();
+        // something moved: the listener, a source, or an object (a door
+        // shutting is heard at the next exact frame, not the next tick)
         let moved = match &self.exact_at {
-            Some((l, ps)) => {
+            Some((l, ps, o)) => {
                 (*l - ear).length() > 1e-4
+                    || *o != sig
                     || ps.len() != self.sources.len()
                     || self.sources.iter().zip(ps).any(|(s, p)| (s.pos - *p).length() > 1e-4)
             }
@@ -969,7 +958,7 @@ impl Simulation {
         if !moved || self.frame_no == 0 {
             return None;
         }
-        self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect()));
+        self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect(), sig));
         self.panels.clear();
         for o in self.objects.iter().filter(|o| o.enabled) {
             self.panels.push((o.min, o.max, o.material));
@@ -1012,6 +1001,17 @@ impl Simulation {
             first_traced: Vec::new(),
             env: self.last_env.clone(),
         })
+    }
+
+    /// A signature of the enabled objects (where they are, what they are).
+    fn objects_sig(&self) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for o in self.objects.iter().filter(|o| o.enabled) {
+            for x in [o.min.x, o.min.y, o.min.z, o.max.x, o.max.y, o.max.z, o.material.transmission[1]] {
+                h = (h ^ x.to_bits() as u64).wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        h
     }
 
     /// Around the listener, for the outdoor field: a roof probe
