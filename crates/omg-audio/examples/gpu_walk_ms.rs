@@ -93,7 +93,8 @@ fn main() {
 /// POOL=1: the live (async, pooled) walk against the synchronous whole
 /// walk — walk time per tick and the settled dense response of a source
 /// indoors (total energy, RT60). WARM=ticks before measuring (40; the live
-/// pool fills over seconds), EARLY= / LATE= ray counts over Medium's.
+/// pool fills over seconds), EARLY= / LATE= ray counts over Medium's,
+/// TRACE=1 the live walk's dense energy every 0.5 s from the start.
 #[allow(dead_code)]
 pub fn pool_compare() {
     use omg_audio::Compute;
@@ -115,6 +116,10 @@ pub fn pool_compare() {
         for k in 0..warm + 80 {
             let t0 = Instant::now();
             sim.tick();
+            if std::env::var("TRACE").is_ok() && k % 10 == 0 && compute == Compute::Gpu {
+                let e = sim.dense_response(id).map_or(0.0, |d| d.bins.iter().map(|b| b[1]).sum::<f32>());
+                eprintln!("  t {:.1} s: dense {:.2} dB", k as f32 * 0.05, 10.0 * e.max(1e-12).log10());
+            }
             if k >= warm {
                 ms += sim.gpu_walk_ms();
                 n += 1;

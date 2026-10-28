@@ -132,6 +132,11 @@ const STILL_ALPHA_FLOOR: f32 = 0.02;
 const HISTORY_Z: f32 = 4.0;
 /// Weight of a tick in a window's measured scatter (`dense_var`).
 const HISTORY_VAR_EMA: f32 = 0.1;
+/// A window whose fresh trace lands on the same side of its mean this many
+/// ticks in a row restarts (a steady scene does so by chance once in
+/// 2^(n−1) ticks: 0.2 %) — a drift too slow for the per-tick test (a GPU
+/// pool filling, a source creeping closer) is followed, not averaged in.
+const HISTORY_RUN: i32 = 10;
 /// History windows: from the free-field arrival, the first 4 ms, then each
 /// twice as long as the one before (4–8 ms, 8–16 ms, … past 4 s).
 pub const HISTORY_WINDOWS: usize = 12;
@@ -614,6 +619,10 @@ struct SourceState {
     /// effective sample count misses (rare strong paths, one ray's many
     /// correlated contributions).
     dense_var: [f32; HISTORY_WINDOWS],
+    /// v4: per history window, how many ticks in a row the fresh trace
+    /// came out on the same side of the mean (+ above, − below): a drift
+    /// the per-tick test is too fine to see (`HISTORY_RUN`).
+    dense_run: [i32; HISTORY_WINDOWS],
     /// v4: where listener and source were last tick.
     at: Option<(Vec3, Vec3)>,
     /// v4: the world changed — the next fresh trace replaces the response.
@@ -767,8 +776,14 @@ impl SourceState {
             if !first && !world_changed && fe > 0.0 && he > 0.0 {
                 self.dense_var[w] += HISTORY_VAR_EMA * (dev * dev) as f32 - HISTORY_VAR_EMA * self.dense_var[w];
             }
+            // the run test: a mean the fresh trace keeps landing on one
+            // side of is out of date, however small each step
+            let run = &mut self.dense_run[w];
+            *run = if dev > 0.0 { (*run).max(0) + 1 } else if dev < 0.0 { (*run).min(0) - 1 } else { *run };
+            let changed = changed || run.abs() >= HISTORY_RUN;
             if changed {
                 self.dense_age[w] = 0;
+                *run = 0;
             }
             let run = 1.0 / (self.dense_age[w] + 1) as f32;
             alpha[w] = run.max(floor);
