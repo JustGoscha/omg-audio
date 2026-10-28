@@ -56,6 +56,8 @@ pub enum Compute {
 const GPU_TICK_SHARE: f32 = 0.7;
 /// The fewest of the tier's GPU rays a live walk shrinks to.
 const GPU_RAYS_MIN: f32 = 0.125;
+/// Walks between two re-measurements of what the rays cost.
+const GPU_SIZING_PROBE: u32 = 200;
 
 impl Quality {
     /// The tracer budget of this tier on the CPU (`gpu = false`) or GPU
@@ -264,10 +266,13 @@ pub struct Simulation {
     kernel_job: Option<(SourceId, KernelBuilder, DenseResponse, f32)>,
     kernel_sent: u64,
     /// `Compute::Gpu`: the share of the tier's GPU rays a walk carries —
-    /// what lets it land every tick within `gpu_budget` — and the last
-    /// walk time it was sized from.
+    /// what lets it land every tick within `gpu_budget` — sized from the
+    /// walk's time against its rays (`size_gpu_walk`).
     gpu_rays: f32,
     gpu_seen: f32,
+    gpu_prev: Option<(f32, f32)>,
+    gpu_slope: Option<f32>,
+    gpu_walks: u32,
 }
 
 /// v4's kernel builder on a thread of its own: responses in, kernels out.
@@ -355,6 +360,9 @@ impl Simulation {
             kernel_sent: 0,
             gpu_rays: 1.0,
             gpu_seen: 0.0,
+            gpu_prev: None,
+            gpu_slope: None,
+            gpu_walks: 0,
         };
         s.make_walker();
         s
@@ -416,6 +424,38 @@ impl Simulation {
     /// 0 on the CPU).
     pub fn gpu_walk_ms(&self) -> f32 {
         self.walker.as_ref().map_or(0.0, |w| w.last_ms())
+    }
+
+    /// A walk every tick within the GPU's share: as many of the tier's GPU
+    /// rays as that leaves room for. A walk's time is its rays' (when the
+    /// GPU is full) plus its bounces' in a row (one thread's latency, the
+    /// same for 96 rays as for 6144): fewer rays only help in the first
+    /// case, so the rays shrink only while the time measurably follows
+    /// them — else the walk keeps them all and lands when it can.
+    fn size_gpu_walk(&mut self) {
+        let ms = self.walker.as_ref().map_or(0.0, |w| w.last_ms());
+        if ms <= 0.0 || ms == self.gpu_seen {
+            return;
+        }
+        self.gpu_seen = ms;
+        self.gpu_walks = self.gpu_walks.wrapping_add(1);
+        // the time one share of rays costs, from two walks at different
+        // shares (the results land a walk late: shares move slowly)
+        if let Some((s0, m0)) = self.gpu_prev.filter(|(s0, _)| (s0 - self.gpu_rays).abs() > 0.05) {
+            self.gpu_slope = Some(((ms - m0) / (self.gpu_rays - s0)).max(0.0));
+        }
+        self.gpu_prev = Some((self.gpu_rays, ms));
+        let fits = GPU_TICK_SHARE * self.cfg.gpu_budget * self.cfg.tick_s * 1e3;
+        // re-measure now and then: the scene (and with it the slope) moves
+        let probe = self.gpu_slope.is_none() || self.gpu_walks % GPU_SIZING_PROBE == 0;
+        self.gpu_rays = if ms <= fits {
+            self.gpu_rays * 1.1
+        } else if probe || self.gpu_slope.is_some_and(|k| k * self.gpu_rays > 0.25 * ms) {
+            self.gpu_rays * (fits / ms).clamp(0.7, 0.9)
+        } else {
+            1.0
+        }
+        .clamp(GPU_RAYS_MIN, 1.0);
     }
 
     /// The share of the tier's GPU rays the live walk carries (1: all; it
@@ -800,15 +840,7 @@ impl Simulation {
         let gpu = self.walker.is_some();
         let mut budget = self.cfg.quality.budget(gpu);
         if gpu && self.cfg.compute == Compute::Gpu {
-            // a walk every tick within the GPU's share: as many of the
-            // tier's GPU rays as that leaves room for (the walk's time
-            // grows with them), the reverb as fresh as the ticks
-            let ms = self.walker.as_ref().map_or(0.0, |w| w.last_ms());
-            if ms > 0.0 && ms != self.gpu_seen {
-                self.gpu_seen = ms;
-                let fits = GPU_TICK_SHARE * self.cfg.gpu_budget * self.cfg.tick_s * 1e3;
-                self.gpu_rays = (self.gpu_rays * (fits / ms).clamp(0.7, 1.1)).clamp(GPU_RAYS_MIN, 1.0);
-            }
+            self.size_gpu_walk();
             budget.rays = ((budget.rays as f32 * self.gpu_rays) as u32).max(64);
         }
         let cpu_budget = self.cfg.quality.budget(false);

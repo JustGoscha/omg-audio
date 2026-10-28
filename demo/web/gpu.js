@@ -7,11 +7,11 @@
 // frames come first — and hands the result back, folded the tick after.
 // Any failure: the driver reports none and the walk stays on the CPU.
 
-const V3_VERSION = 7; // omg_core::v3::fold::WALK_LAYOUT_VERSION
+const V3_VERSION = 8; // omg_core::v3::fold::WALK_LAYOUT_VERSION
 const V3_SKY = 384;
 const V3_SRC = 17164; // SOURCE_WORDS
 const V3_MAX_SRC = 64;
-const V3_SCENE_WORDS = 64 * 12 + 256 * 16 + 8 * 8 + 16384 * 8; // fold MAX_SCENE_WORDS
+const V3_SCENE_WORDS = 64 * 12 + 256 * 16 + 8 * 8 + 65536 / 32; // fold MAX_SCENE_WORDS
 
 export async function initGpu(wasm) {
   if (!navigator.gpu || !wasm.sim_v3_version || wasm.sim_v3_version() !== V3_VERSION) return null;
@@ -40,6 +40,8 @@ export async function initGpu(wasm) {
   const nodes = staticBuf(wasm.sim_mesh_nodes_len(), wasm.sim_mesh_nodes_ptr());
   const prims = staticBuf(wasm.sim_mesh_prims_len(), wasm.sim_mesh_prims_ptr());
   const mats = staticBuf(wasm.sim_mesh_mats_len(), wasm.sim_mesh_mats_ptr());
+  // the diffraction edges and their search grid (EdgeSet::flat)
+  const edges = staticBuf(wasm.sim_mesh_edges_len(), wasm.sim_mesh_edges_ptr());
   const outBytes = (V3_SKY + V3_MAX_SRC * V3_SRC) * 4;
   const job = device.createBuffer({ size: 160, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const scene = device.createBuffer({ size: V3_SCENE_WORDS * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -73,6 +75,7 @@ export async function initGpu(wasm) {
         { binding: 4, resource: { buffer: scene } },
         { binding: 5, resource: { buffer: acc } },
         { binding: 7, resource: { buffer: state } },
+        { binding: 8, resource: { buffer: edges } },
       ],
     });
     return true;
@@ -100,7 +103,12 @@ export async function initGpu(wasm) {
     floorLatency(performance.now() - t0);
   }
 
-  async function run(words, passes, w36, outWords, budget) {
+  // with timestamps, the last walk's GPU time per pass: the passes then go
+  // out without waiting for each (a round trip in a worker is a good part
+  // of a frame), spaced by rests sized from it
+  let passMs = null;
+
+  async function run(words, passes, w36, outWords, budget, done) {
     const nRays = words[3] + words[7];
     if (!query && walks % 16 === 0) await probeLatency();
     device.queue.writeBuffer(scene, 0, words.subarray(40));
@@ -108,6 +116,9 @@ export async function initGpu(wasm) {
     let longest = 0;
     let waited = 0;
     const stamped = query ? Math.min(passes, MAX_STAMPED) : 0;
+    const open = stamped === passes && passMs !== null;
+    const gap = open ? passMs * (1 / budget - 1) : 0;
+    let rest = null;
     for (let pass = 0; pass < passes; pass++) {
       const hdr = words.slice(0, 40);
       hdr[36] = w36[pass];
@@ -136,6 +147,12 @@ export async function initGpu(wasm) {
       }
       const t0 = performance.now();
       device.queue.submit([enc.finish()]);
+      if (open) {
+        // the last pass's rest runs while its result comes back
+        if (last) rest = sleep(gap);
+        else await sleep(gap);
+        continue;
+      }
       await device.queue.onSubmittedWorkDone();
       // submit to done less the round trip: waiting behind the page's
       // frames counts too
@@ -161,11 +178,14 @@ export async function initGpu(wasm) {
       }
       query.read.unmap();
       if (stamped === passes && gpu > 0) {
-        floorLatency((waited - gpu) / passes);
-        return { data, sum: gpu, longest: max };
+        if (!open) floorLatency((waited - gpu) / passes);
+        passMs = gpu / passes;
+        sum = gpu;
+        longest = max;
       }
     }
-    return { data, sum, longest };
+    done(data, sum, longest);
+    if (rest) await rest;
   }
 
   return {
@@ -180,16 +200,20 @@ export async function initGpu(wasm) {
       const passes = w.sim_v3_passes();
       const w36 = Array.from({ length: passes }, (_, p) => w.sim_v3_word36(p));
       const outWords = w.sim_v3_out_words();
-      run(words, passes, w36, outWords, Math.min(1, Math.max(0.02, budget)))
-        .then(({ data, sum, longest }) => {
-          new Float32Array(w.memory.buffer, w.sim_v3_buf_ptr(data.length), data.length).set(data);
-          w.sim_v3_inject(data.length, sum, longest);
-          lastMs = sum;
-          maxMs = longest;
-          walks++;
-        })
+      run(words, passes, w36, outWords, Math.min(1, Math.max(0.02, budget)), (data, sum, longest) => {
+        new Float32Array(w.memory.buffer, w.sim_v3_buf_ptr(data.length), data.length).set(data);
+        w.sim_v3_inject(data.length, sum, longest);
+        lastMs = sum;
+        maxMs = longest;
+        walks++;
+      })
         .catch((e) => console.warn('[gpu] walk failed:', e))
-        .finally(() => { busy = false; });
+        .finally(() => {
+          busy = false;
+          // the newest tick's job, if one came in meanwhile: walks land as
+          // fast as the share allows, not on the next tick after
+          this.pump(w, budget);
+        });
     },
     stats: () => ({ ms: lastMs, maxMs, walks }),
   };

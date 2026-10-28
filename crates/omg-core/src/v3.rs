@@ -2553,6 +2553,15 @@ pub struct EdgeSet {
     filled: Vec<bool>,
 }
 
+/// Words before the edges in `EdgeSet::flat`.
+pub const EDGE_FLAT_HEADER: usize = 16;
+
+/// A grid cell's hash in `EdgeSet::flat`'s table (v3_walk.wgsl
+/// `cell_slot`): wrapping u32 arithmetic, the same on both sides.
+pub fn edge_cell_hash(k: (i32, i32, i32)) -> u32 {
+    (k.0 as u32).wrapping_mul(73_856_093) ^ (k.1 as u32).wrapping_mul(19_349_663) ^ (k.2 as u32).wrapping_mul(83_492_791)
+}
+
 fn cell_key(p: Vec3) -> (i32, i32, i32) {
     (
         (p.x / EDGE_CELL).floor() as i32,
@@ -2570,6 +2579,10 @@ impl EdgeSet {
                 by_edge.entry((i.min(j), i.max(j))).or_default().push(ti as u32);
             }
         }
+        // in vertex order: two builds of one mesh agree edge for edge (the
+        // GPU's copy, `flat`, is indexed like this one)
+        let mut by_edge: Vec<_> = by_edge.into_iter().collect();
+        by_edge.sort_unstable_by_key(|(k, _)| *k);
         let mut edges = Vec::new();
         for ((i, j), tris) in by_edge {
             let (a, b) = (mesh.positions[i as usize], mesh.positions[j as usize]);
@@ -2622,6 +2635,39 @@ impl EdgeSet {
             hi: hi + r,
             filled: vec![false; n],
         }
+    }
+
+    /// The set flattened for the GPU walk (v3_walk.wgsl `nearest_edge`,
+    /// binding 8), u32 words: a header (edges, slots, slots' offset, lists'
+    /// offset, then 0 to `EDGE_FLAT_HEADER`), the edges (a xyz, 0, b xyz, 0
+    /// as f32 bits), the grid as an open-addressed table of `slots` cells
+    /// (kx, ky, kz, start, count; count 0 = empty; probed linearly from
+    /// `edge_cell_hash`), and the cells' edge lists. Built from one mesh
+    /// twice, the order is the same (`build` sorts).
+    pub fn flat(&self) -> Vec<u32> {
+        let f = |x: f32| x.to_bits();
+        let slots = (self.grid.len() * 2).next_power_of_two().max(2);
+        let mut w = vec![0u32; EDGE_FLAT_HEADER];
+        for (a, b) in &self.edges {
+            w.extend_from_slice(&[f(a.x), f(a.y), f(a.z), 0, f(b.x), f(b.y), f(b.z), 0]);
+        }
+        let off_slots = w.len();
+        w.resize(off_slots + slots * 5, 0);
+        let off_lists = w.len();
+        let mut keys: Vec<_> = self.grid.keys().copied().collect();
+        keys.sort_unstable();
+        for k in keys {
+            let list = &self.grid[&k];
+            let mut h = edge_cell_hash(k) as usize & (slots - 1);
+            while w[off_slots + h * 5 + 4] != 0 {
+                h = (h + 1) & (slots - 1);
+            }
+            let (o, start) = (off_slots + h * 5, (w.len() - off_lists) as u32);
+            w[o..o + 5].copy_from_slice(&[k.0 as u32, k.1 as u32, k.2 as u32, start, list.len() as u32]);
+            w.extend_from_slice(list);
+        }
+        w[..4].copy_from_slice(&[self.edges.len() as u32, slots as u32, off_slots as u32, off_lists as u32]);
+        w
     }
 
     /// Mark edges that bound an opening an overlay box currently fills,

@@ -28,10 +28,8 @@
 // `resolve` entry turns the accumulators back into f32 true units.
 //
 // Mirror discipline: every constant and branch below matches v3.rs.
-// Known, documented deviations: the nearest-edge query tests every usable
-// edge instead of walking the CPU's 4 m grid (identical except for the
-// rare edge the grid's 2 m sampling skips — see v3_probe.rs), and the
-// echogram's direction sums start at EARLY_S (the only part read).
+// Known, documented deviation: the echogram's direction sums start at
+// EARLY_S (the only part read).
 //
 // WALK_LAYOUT_VERSION 7 — must match omg_core::v3::fold and layout.rs:
 //   Job {rot0@0, n_early@12, rot1@16, n_late@28, rot2@32, bounces@44,
@@ -186,6 +184,7 @@ struct Mat {
 @group(0) @binding(5) var<storage, read_write> acc: array<atomic<u32>>;
 @group(0) @binding(6) var<storage, read_write> out: array<f32>;
 @group(0) @binding(7) var<storage, read_write> dbg: array<u32>;
+@group(0) @binding(8) var<storage, read> edgebuf: array<u32>;
 
 // ---------------------------------------------------------------- scene
 
@@ -601,24 +600,32 @@ struct EdgeHit {
 // EdgeSet::nearest: the usable edge the segment o + d·t passes closest
 // to (within EDGE_REACH, alongside the edge's span, clear of both ends of
 // the segment), searched no further than EDGE_SEARCH and only inside the
-// edges' padded bounds.
-// The first EDGE_CACHE edges live in workgroup memory (loaded once per
-// workgroup at walk start): every segment of every ray scans them, and
-// from storage that scan was ~40 % of the early family's time.
-const EDGE_CACHE: u32 = 512u;
-var<workgroup> wg_ea: array<vec4<f32>, EDGE_CACHE>; // a.xyz, e.x
-var<workgroup> wg_eb: array<vec2<f32>, EDGE_CACHE>; // e.y, e.z
-var<private> edges_cached: bool;
+// edges' padded bounds — through the same 4 m grid, sampled every 2 m
+// along the segment (`edgebuf`, EdgeSet::flat), skipping the edges this
+// tick's mask fills.
+const EDGE_CELL: f32 = 4.0;
+const EDGE_FLAT_HEADER: u32 = 16u;
+const NO_SLOT: u32 = 0xFFFFFFFFu;
 
-fn load_edge_cache(lid: u32) {
-    let n = min(job.n_edges, EDGE_CACHE);
-    for (var i = lid; i < n; i += 64u) {
-        let eo = job.off_edges + i * 8u;
-        let a = sv3(eo);
-        let e = sv3(eo + 4u) - a;
-        wg_ea[i] = vec4<f32>(a, e.x);
-        wg_eb[i] = vec2<f32>(e.y, e.z);
+// the table slot of grid cell k (EdgeSet::flat: 5 words — kx, ky, kz,
+// list start, count; count 0 = empty), or NO_SLOT
+fn cell_slot(k: vec3<i32>) -> u32 {
+    let mask = edgebuf[1] - 1u;
+    let off = edgebuf[2];
+    let u = bitcast<vec3<u32>>(k);
+    var h = ((u.x * 73856093u) ^ (u.y * 19349663u) ^ (u.z * 83492791u)) & mask;
+    // (the table is never full: an empty slot ends every probe)
+    for (var n = 0u; n <= mask; n++) {
+        let o = off + h * 5u;
+        if (edgebuf[o + 4u] == 0u) { return NO_SLOT; }
+        if (edgebuf[o] == u.x && edgebuf[o + 1u] == u.y && edgebuf[o + 2u] == u.z) { return o; }
+        h = (h + 1u) & mask;
     }
+    return NO_SLOT;
+}
+
+fn edge_filled(i: u32) -> bool {
+    return ((scene[job.off_edges + (i >> 5u)] >> (i & 31u)) & 1u) != 0u;
 }
 
 fn nearest_edge(o: vec3<f32>, d: vec3<f32>, reach: f32, skip: u32) -> EdgeHit {
@@ -627,40 +634,52 @@ fn nearest_edge(o: vec3<f32>, d: vec3<f32>, reach: f32, skip: u32) -> EdgeHit {
     let seg = min(reach, EDGE_SEARCH);
     let iv = clip_box(o, o + d * seg, job.edge_lo, job.edge_hi);
     if (iv.x > iv.y) { return h; }
+    let t_start = iv.x * seg;
     let t_end = iv.y * seg;
+    let lists = edgebuf[3];
     var best = EDGE_REACH;
-    for (var i = 0u; i < job.n_edges; i++) {
-        if (i == skip) { continue; }
-        var a: vec3<f32>;
-        var e: vec3<f32>;
-        if (edges_cached && i < EDGE_CACHE) {
-            let q = wg_ea[i];
-            a = q.xyz;
-            e = vec3<f32>(q.w, wg_eb[i]);
-        } else {
-            let eo = job.off_edges + i * 8u;
-            a = sv3(eo);
-            e = sv3(eo + 4u) - a;
+    var last = vec3<i32>(0);
+    var have_last = false;
+    var t = t_start;
+    loop {
+        let k = vec3<i32>(floor((o + d * min(t, t_end)) / EDGE_CELL));
+        if (!have_last || any(k != last)) {
+            have_last = true;
+            last = k;
+            let so = cell_slot(k);
+            if (so != NO_SLOT) {
+                let start = lists + edgebuf[so + 3u];
+                let count = edgebuf[so + 4u];
+                for (var j = 0u; j < count; j++) {
+                    let i = edgebuf[start + j];
+                    if (i == skip || edge_filled(i)) { continue; }
+                    let eo = EDGE_FLAT_HEADER + i * 8u;
+                    let a = vec3<f32>(bitcast<f32>(edgebuf[eo]), bitcast<f32>(edgebuf[eo + 1u]), bitcast<f32>(edgebuf[eo + 2u]));
+                    let e = vec3<f32>(bitcast<f32>(edgebuf[eo + 4u]), bitcast<f32>(edgebuf[eo + 5u]), bitcast<f32>(edgebuf[eo + 6u])) - a;
+                    let w0 = o - a;
+                    let bb = dot(d, e);
+                    let cc = dot(e, e);
+                    let dd = dot(d, w0);
+                    let ee = dot(e, w0);
+                    let den = cc - bb * bb;
+                    if (den < 1e-9) { continue; } // parallel to the edge
+                    let tt = (bb * ee - cc * dd) / den;
+                    let ss = (ee - bb * dd) / den;
+                    if (ss < 0.02 || ss > 0.98 || tt < 0.05 || tt > t_end - 0.05) { continue; }
+                    let dist = length(o + d * tt - (a + e * ss));
+                    if (dist < best) {
+                        best = dist;
+                        h.found = true;
+                        h.t = tt;
+                        h.dist = dist;
+                        h.u = e / sqrt(cc);
+                        h.idx = i;
+                    }
+                }
+            }
         }
-        let w0 = o - a;
-        let bb = dot(d, e);
-        let cc = dot(e, e);
-        let dd = dot(d, w0);
-        let ee = dot(e, w0);
-        let den = cc - bb * bb;
-        if (den < 1e-9) { continue; } // parallel to the edge
-        let tt = (bb * ee - cc * dd) / den;
-        let ss = (ee - bb * dd) / den;
-        if (ss < 0.02 || ss > 0.98 || tt < 0.05 || tt > t_end - 0.05) { continue; }
-        let dist = length(o + d * tt - (a + e * ss));
-        if (dist < best) {
-            best = dist;
-            h.found = true;
-            h.t = tt;
-            h.dist = dist;
-            h.u = e / sqrt(cc);
-            h.idx = i;
-        }
+        if (t >= t_end) { break; }
+        t = min(t + EDGE_CELL * 0.5, t_end);
     }
     return h;
 }
@@ -849,12 +868,7 @@ fn cell_of(d: vec3<f32>) -> u32 {
 // ---------------------------------------------------------------- walk
 
 @compute @workgroup_size(64)
-fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
-    // every invocation helps fill the edge cache before anyone returns
-    // (the barrier needs uniform control flow)
-    load_edge_cache(lid);
-    workgroupBarrier();
-    edges_cached = true;
+fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ray = gid.x;
     let n_early = job.n_early;
     let n_late = job.n_late;

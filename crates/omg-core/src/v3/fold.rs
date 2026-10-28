@@ -36,9 +36,10 @@
 //!        panels (PANEL_WORDS = 16):  min xyz, scattering, max xyz, 0,
 //!          absorption xyz, 0, transmission xyz, 0
 //!        pockets (POCKET_WORDS = 8): min xyz, 0, max xyz, 0
-//!        edges (EDGE_WORDS = 8): a xyz, 0, b xyz, 0 — the diffracting
-//!          edges the CPU walk could bend at this tick (gridded, not
-//!          filled by a panel, not on the ground); none = no diffraction
+//!        edges: n_edges bits (32 a word) over the walker's own copy of
+//!          the edge set (`EdgeSet::flat`, uploaded with the mesh): set =
+//!          filled by a panel or on the ground this tick (no bend there);
+//!          n_edges 0 = no diffraction
 //! ```
 //! OUTPUT — f32 words, true energy units (the fold applies the v2
 //! echogram scale): SKY_WORDS of sky cells, then one SOURCE_WORDS block
@@ -56,7 +57,7 @@
 use super::*;
 
 /// Bump on ANY change to the flat formats above or in v3_walk.wgsl.
-pub const WALK_LAYOUT_VERSION: u32 = 7;
+pub const WALK_LAYOUT_VERSION: u32 = 8;
 /// Direction cells for early binning (and the sky).
 pub const CELLS: usize = N_CELLS;
 /// Early delay bins: the early window over the delay bin width.
@@ -81,7 +82,6 @@ pub const HEADER_WORDS: usize = 40;
 pub const SRC_WORDS: usize = 12;
 pub const PANEL_WORDS: usize = 16;
 pub const POCKET_WORDS: usize = 8;
-pub const EDGE_WORDS: usize = 8;
 /// Per-dispatch caps. A world beyond them traces on the CPU instead — a
 /// silently clamped input would change the physics.
 pub const MAX_SOURCES: usize = 64;
@@ -89,7 +89,7 @@ pub const MAX_SOURCES: usize = 64;
 /// demo town carries ~90).
 pub const MAX_PANELS: usize = 256;
 pub const MAX_POCKETS: usize = 8;
-pub const MAX_EDGES: usize = 16384;
+pub const MAX_EDGES: usize = 65536;
 pub const DEBUG_VERTS: usize = 8;
 pub const DEBUG_WORDS: usize = 4 + DEBUG_VERTS * 3;
 /// Words per sliced ray's state in the kernel's `dbg` buffer: the ray's
@@ -105,18 +105,7 @@ pub fn output_words(n_sources: usize) -> usize {
 
 /// Scene words a job can carry at most (host buffer sizing).
 pub const MAX_SCENE_WORDS: usize =
-    MAX_SOURCES * SRC_WORDS + MAX_PANELS * PANEL_WORDS + MAX_POCKETS * POCKET_WORDS + MAX_EDGES * EDGE_WORDS;
-
-/// Was this edge put into the CPU's search grid? (`EdgeSet::build`
-/// skips edges whose padded box spans more than 4096 cells.)
-fn gridded(a: Vec3, b: Vec3) -> bool {
-    let r = Vec3::new(EDGE_REACH, EDGE_REACH, EDGE_REACH);
-    let lo = Vec3::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z)) - r;
-    let hi = Vec3::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z)) + r;
-    let (k0, k1) = (cell_key(lo), cell_key(hi));
-    let cells = ((k1.0 - k0.0 + 1) as i64) * ((k1.1 - k0.1 + 1) as i64) * ((k1.2 - k0.2 + 1) as i64);
-    cells <= 4096
-}
+    MAX_SOURCES * SRC_WORDS + MAX_PANELS * PANEL_WORDS + MAX_POCKETS * POCKET_WORDS + MAX_EDGES / 32;
 
 /// One tick's walk, flattened for an external walker.
 #[derive(Clone, Debug)]
@@ -197,14 +186,13 @@ impl WalkJob {
         }
         w[31] = (w.len() - HEADER_WORDS) as u32;
         let mut n_edges = 0u32;
-        if let Some(es) = edges {
-            for (ei, (a, b)) in es.edges.iter().enumerate() {
-                if es.filled[ei] || !gridded(*a, *b) || n_edges as usize >= MAX_EDGES {
-                    continue;
-                }
-                w.extend_from_slice(&[f(a.x), f(a.y), f(a.z), 0, f(b.x), f(b.y), f(b.z), 0]);
-                n_edges += 1;
+        if let Some(es) = edges.filter(|es| !es.edges.is_empty()) {
+            n_edges = es.edges.len() as u32;
+            let mut mask = vec![0u32; es.edges.len().div_ceil(32)];
+            for (ei, _) in es.filled.iter().enumerate().filter(|(_, f)| **f) {
+                mask[ei / 32] |= 1 << (ei % 32);
             }
+            w.extend_from_slice(&mask);
             for (k, x) in [es.lo.x, es.lo.y, es.lo.z].iter().enumerate() {
                 w[28 + k] = f(*x);
             }

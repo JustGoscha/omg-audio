@@ -64,6 +64,11 @@ pub struct GpuV3Tracer {
     nodes: wgpu::Buffer,
     prims: wgpu::Buffer,
     mats: wgpu::Buffer,
+    /// The mesh's diffraction edges and their search grid
+    /// (`EdgeSet::flat`, binding 8), and how many edges: a job's filled
+    /// mask must cover exactly these.
+    edges: wgpu::Buffer,
+    pub n_edges: u32,
     job: wgpu::Buffer,
     scene: wgpu::Buffer,
     acc: wgpu::Buffer,
@@ -162,6 +167,9 @@ impl GpuV3Tracer {
                 usage: wgpu::BufferUsages::STORAGE,
             })
         };
+        let edge_set = omg_core::v3::EdgeSet::build(mesh);
+        let n_edges = edge_set.edges.len() as u32;
+        let edges = static_buf("v3-edges", bytemuck::cast_slice(&edge_set.flat()));
         let nodes = static_buf("v3-nodes", bytemuck::cast_slice(&nodes));
         let prims = static_buf("v3-prims", bytemuck::cast_slice(&prims));
         let mats = static_buf("v3-mats", bytemuck::cast_slice(&mats));
@@ -186,7 +194,7 @@ impl GpuV3Tracer {
         let walk_bind = Self::bind(
             &device,
             &walk_pipe,
-            &[(0, &job), (1, &nodes), (2, &prims), (3, &mats), (4, &scene), (5, &acc), (7, &dbg)],
+            &[(0, &job), (1, &nodes), (2, &prims), (3, &mats), (4, &scene), (5, &acc), (7, &dbg), (8, &edges)],
         );
         let resolve_bind = Self::bind(&device, &resolve_pipe, &[(0, &job), (4, &scene), (5, &acc), (6, &out)]);
         let timing = stamps.then(|| Timing {
@@ -211,6 +219,8 @@ impl GpuV3Tracer {
             nodes,
             prims,
             mats,
+            edges,
+            n_edges,
             job,
             scene,
             acc,
@@ -243,8 +253,9 @@ impl GpuV3Tracer {
         })
     }
 
-    fn fits(job: &WalkJob) -> bool {
-        job.n_sources() <= MAX_SOURCES
+    fn fits(job: &WalkJob, n_edges: u32) -> bool {
+        (job.n_edges() == 0 || job.n_edges() == n_edges as usize)
+            && job.n_sources() <= MAX_SOURCES
             && job.n_panels() <= MAX_PANELS
             && job.n_pockets() <= MAX_POCKETS
             && job.n_edges() <= MAX_EDGES
@@ -257,7 +268,7 @@ impl GpuV3Tracer {
     /// submissions (the GPU can run other work between them). False when
     /// the job exceeds the buffers or one is still in flight.
     pub fn submit(&mut self, job: &WalkJob) -> bool {
-        if self.flight.is_some() || !Self::fits(job) {
+        if self.flight.is_some() || !Self::fits(job, self.n_edges) {
             return false;
         }
         let ns = job.n_sources();
@@ -293,6 +304,7 @@ impl GpuV3Tracer {
                     (4, &self.scene),
                     (5, &self.acc),
                     (7, &self.dbg),
+                    (8, &self.edges),
                 ],
             );
         }
@@ -525,7 +537,7 @@ impl GpuV3Tracer {
         let bind = Self::bind(
             &self.device,
             &self.probe_pipe,
-            &[(0, &self.job), (1, &self.nodes), (2, &self.prims), (3, &self.mats), (4, &self.scene), (7, &io)],
+            &[(0, &self.job), (1, &self.nodes), (2, &self.prims), (3, &self.mats), (4, &self.scene), (7, &io), (8, &self.edges)],
         );
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("probe") });
         {
@@ -573,6 +585,8 @@ pub struct GpuV3Walker {
     pub sync: bool,
     driver: Option<Driver>,
     stats: Arc<std::sync::Mutex<(f32, f32)>>,
+    /// The tracer's edge count (`GpuV3Tracer::n_edges`).
+    n_edges: u32,
 }
 
 struct Driver {
@@ -584,12 +598,15 @@ struct Driver {
 impl GpuV3Walker {
     /// A synchronous walker.
     pub fn new(mesh: &Mesh) -> Option<Self> {
-        Some(Self { tracer: Some(GpuV3Tracer::new(mesh)?), sync: true, driver: None, stats: Default::default() })
+        let tracer = GpuV3Tracer::new(mesh)?;
+        let n_edges = tracer.n_edges;
+        Some(Self { tracer: Some(tracer), sync: true, driver: None, stats: Default::default(), n_edges })
     }
 
     /// A live walker taking at most `budget` (0..1) of the GPU's time.
     pub fn live(mesh: &Mesh, budget: f32) -> Option<Self> {
         let mut tracer = GpuV3Tracer::new(mesh)?;
+        let n_edges = tracer.n_edges;
         tracer.sliced = true;
         tracer.pace = budget.clamp(0.01, 1.0);
         let (jobs, job_rx) = std::sync::mpsc::sync_channel::<WalkJob>(1);
@@ -612,13 +629,13 @@ impl GpuV3Walker {
                 }
             })
             .ok()?;
-        Some(Self { tracer: None, sync: false, driver: Some(Driver { jobs, done, busy }), stats })
+        Some(Self { tracer: None, sync: false, driver: Some(Driver { jobs, done, busy }), stats, n_edges })
     }
 }
 
 impl omg_core::v3::walker::V3Walker for GpuV3Walker {
     fn walk(&mut self, job: &WalkJob) -> Walk {
-        if !GpuV3Tracer::fits(job) {
+        if !GpuV3Tracer::fits(job, self.n_edges) {
             return Walk::Refused;
         }
         if let Some(d) = &self.driver {

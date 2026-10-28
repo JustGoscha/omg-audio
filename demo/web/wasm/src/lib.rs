@@ -408,6 +408,9 @@ struct JsWalker;
 
 impl omg_audio::V3Walker for JsWalker {
     fn walk(&mut self, job: &WalkJob) -> Walk {
+        if job.n_edges() != 0 && job.n_edges() != edges_flat()[0] as usize {
+            return Walk::Refused; // another edge set than the kernel holds
+        }
         let b = bridge();
         b.job = Some(job.clone());
         match b.result.take() {
@@ -479,6 +482,24 @@ pub extern "C" fn sim_mesh_mats_ptr() -> *const u32 {
 #[no_mangle]
 pub extern "C" fn sim_mesh_mats_len() -> u32 {
     mesh_flat().2.len() as u32
+}
+
+/// The mesh's diffraction edges and their search grid for the walk
+/// kernel (`EdgeSet::flat`, binding 8): built like the tracer's own, so a
+/// job's filled mask indexes them. Word 0 is the edge count.
+static mut EDGES_FLAT: Option<Vec<u32>> = None;
+
+fn edges_flat() -> &'static Vec<u32> {
+    unsafe { (*(&raw mut EDGES_FLAT)).get_or_insert_with(|| omg_core::v3::EdgeSet::build(sim().sim.mesh()).flat()) }
+}
+
+#[no_mangle]
+pub extern "C" fn sim_mesh_edges_ptr() -> *const u32 {
+    edges_flat().as_ptr()
+}
+#[no_mangle]
+pub extern "C" fn sim_mesh_edges_len() -> u32 {
+    edges_flat().len() as u32
 }
 
 /// The walk kernel's layout version (gpu.js refuses another).

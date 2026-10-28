@@ -103,6 +103,7 @@ pub fn pool_compare() {
         if let Ok(v) = std::env::var("EARLY") { q.rays = v.parse().unwrap(); }
         if let Ok(v) = std::env::var("LATE") { q.late_rays = v.parse().unwrap(); }
         if std::env::var("NODIFF").is_ok() { q.diffraction = false; }
+        if let Ok(v) = std::env::var("NEE") { q.nee = v.parse().unwrap(); }
         let gpu_budget = std::env::var("SHARE").ok().map_or(0.2, |v| v.parse().unwrap());
         let mut sim = Simulation::new(Config { compute, quality: Quality::Custom(q), gpu_budget, ..Config::default() });
         sim.set_geometry(town());
