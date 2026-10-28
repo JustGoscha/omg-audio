@@ -6,10 +6,11 @@
 //! limiter is a safety, not a coloration.
 //!
 //! Isolation: cardioid `OutputStage` (no HRIR), input injected on the
-//! point-stereo inputs with an empty bus. The AGC sits upstream of the
-//! tanh; the bound must hold before it has reacted (first samples) and
-//! after. Not duplicated: AGC/fatigue/tinnitus have their own unit tests
-//! in src/output.rs.
+//! point-stereo inputs with an empty bus. The ear's adaptation sits
+//! upstream; a safety limiter (instant on a peak over 0.9) holds the line
+//! before it has reacted (first samples) and after, the tanh is the last
+//! guard. Not duplicated: adaptation/reflex/fatigue/tinnitus have their
+//! own unit tests in src/output.rs.
 //! Combined in the demo: every build's master output.
 
 mod common;
@@ -32,8 +33,9 @@ fn huge_input_is_bounded() {
             peak_early = peak_early.max(l.abs());
         }
     }
-    // before the AGC has reacted, it IS the tanh that holds the line
-    assert!(peak_early > 0.95, "limiter should be the one saturating early: {peak_early}");
+    // before the adaptation has reacted, the limiter holds the line at
+    // once: the output plays at its ceiling (tanh 0.9 ≈ 0.72), no wrap
+    assert!(peak_early > 0.6, "the limiter plays at its ceiling early: {peak_early}");
 }
 
 #[test]

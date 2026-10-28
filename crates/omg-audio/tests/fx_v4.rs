@@ -143,11 +143,13 @@ fn a_source_outside_the_convolution_budget_keeps_its_reverb() {
             (std::f32::consts::TAU * 1000.0 * i as f32 / SR).sin() * (std::f32::consts::PI * t).sin().powi(2)
         })
         .collect();
+    // 20 dB under the ear's reflex (~90 dB SPL): the reverbs compared,
+    // not how the ear takes them
     let tail = |budget: usize, sig: &[f32]| -> f32 {
         let mut m = Mixer::new(SR, Hrir::none());
         m.set_convolution_budget(budget);
         m.apply(&frame);
-        m.play(id, &clip(sig), Play::ONCE);
+        m.play(id, &clip(sig), Play::ONCE.gain(0.1));
         let p = render(&mut m, 2.0);
         power(&p, 0.05, 1.0)
     };

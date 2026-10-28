@@ -1140,6 +1140,12 @@ impl Mixer {
 
     /// The loudness stage's gain now (the ear's adaptation: 1 in a
     /// normal scene, down to ~0.06 when it is very loud).
+    /// The level the ear is adapted to (dB SPL) and its acoustic reflex
+    /// now (dB of low-band attenuation).
+    pub fn ear(&self) -> (f32, f32) {
+        self.out.adaptation()
+    }
+
     pub fn agc_gain(&self) -> f32 {
         self.out.agc_gain()
     }

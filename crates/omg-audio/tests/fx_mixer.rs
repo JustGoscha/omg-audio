@@ -178,9 +178,10 @@ fn the_ambience_rides_the_loudness_stage() {
         m.set_ambience(noise, false);
         let frame = Frame { env: environment(sky, &EnvContext::default()), ..Default::default() };
         m.apply(&frame);
-        let (l, r) = render(&mut m, 3.0);
+        // the ear settled (it adapts over seconds): the last second
+        let (l, r) = render(&mut m, 8.0);
         let n = l.len();
-        (rms(&l[n / 2..]).max(rms(&r[n / 2..])), m.agc_gain())
+        (rms(&l[n * 7 / 8..]).max(rms(&r[n * 7 / 8..])), m.agc_gain())
     };
     let (quiet, g_quiet) = level(0.01, &open);
     let (loud, g_loud) = level(2.0, &open);

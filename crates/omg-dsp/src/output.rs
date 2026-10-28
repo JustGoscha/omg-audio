@@ -19,58 +19,128 @@ pub struct OutputStage {
     /// Smoothed head orientation [yaw, pitch, roll] (see `HeadRotation`
     /// for the conventions).
     head: [Smoothed; 3],
-    // "HDR audio": slow automatic gain riding, like the ear adapting —
-    // loud scenes get pulled down quickly (acoustic reflex), quiet scenes
-    // get eased up slowly, tanh stays as the final safety.
-    env: f32,
-    agc_gain: f32,
-    env_att: f32,
-    env_rel: f32,
-    gain_down: f32,
-    gain_up_fast: f32,
-    gain_up_slow: f32,
-    // Temporary threshold shift ("club ears"): sustained demand far above
-    // the AGC target accumulates fatigue; fatigue muffles the output —
-    // a lowpass that deepens with exposure and fully lets go within
-    // ~20 s, the way hearing stays dulled after stepping away from a PA.
+    // The ear (`process`): levels in dB SPL from the engine's calibration
+    // (`SPL_REF_RMS`); updated every `CONTROL` samples.
+    /// Short-term level (dB SPL): the mean square over ~`SHORT_S`.
+    short_ms: f32,
+    short_coef: f32,
+    /// The masker's mean square (`LOUDNESS_S`).
+    loud_ms: f32,
+    loud_coef: f32,
+    /// The ear's adaptation level (dB SPL): follows the short-term level
+    /// up within `ADAPT_UP_S`, back down within `ADAPT_DOWN_S`.
+    adapt_db: f32,
+    adapt_up: f32,
+    adapt_slew: f32,
+    adapt_down: f32,
+    /// The acoustic reflex (dB of attenuation below `REFLEX_HZ`).
+    reflex_db: f32,
+    reflex_on: f32,
+    reflex_off: f32,
+    /// The share of the reflex lost to its decay (0 … `REFLEX_DECAY`).
+    reflex_tired: f32,
+    reflex_tire: f32,
+    reflex_rest: f32,
+    reflex_lp: (f32, f32),
+    reflex_coef: f32,
+    /// Linear gains now (per sample, gliding to the control's targets):
+    /// the adaptation and the reflex's low-band share.
+    gain: Smoothed,
+    reflex: Smoothed,
+    /// The safety limiter's peak envelope (output, after the adaptation).
+    peak: f32,
+    peak_rel: f32,
+    countdown: u32,
+    // Temporary threshold shift ("club ears"): sustained levels far above
+    // a safe exposure accumulate fatigue; fatigue muffles the output — a
+    // lowpass that deepens with exposure and fully lets go within ~20 s,
+    // the way hearing stays dulled after stepping away from a PA.
     // Protection-shaped only: exactly zero effect at normal levels.
     tts: f32,
     tts_up: f32,
     tts_down: f32,
     tts_lp: (f32, f32),
     tts_coef: f32,
-    tts_refresh: u32,
-    // Tinnitus: a faint ring after blasts. Fed by demand spikes far above
-    // even the fatigue threshold, decays over ~6 s. Diotic (identical in
-    // both ears — it reads as inside the head), and NOT scaled by the AGC:
-    // the acoustic reflex cannot quiet a phantom sound.
+    // Tinnitus: a faint ring after blasts. Fed by peaks far above even the
+    // fatigue threshold, decays over ~6 s. Diotic (identical in both ears
+    // — it reads as inside the head), and NOT scaled by the adaptation:
+    // the ear cannot quiet a phantom sound.
     tin: f32,
     tin_phase: f32,
     tin_step: f32,
     tin_decay: f32,
-    // The mix's loudness before the adaptation: its mean square over
-    // `LOUDNESS_S` (the ear's loudness integration) — what the audible
-    // window sits under (a transient's peak drives the adaptation, not
-    // how loud the scene is).
-    loud_ms: f32,
-    loud_coef: f32,
     sample_rate: f32,
 }
 
-const AGC_TARGET: f32 = 0.35;
+/// The engine's calibration: a clip at the reference loudness
+/// (`level::REF_CLIP_RMS`) from a gain-1 source 1 m away is 90 dB SPL.
+const SPL_REF_RMS: f32 = crate::level::REF_CLIP_RMS;
+const SPL_REF_DB: f32 = 90.0;
+/// Control updates every this many samples (~1.3 kHz).
+const CONTROL: u32 = 36;
+/// The short-term level's integration (loudness: ~50 ms, Glasberg &
+/// Moore 2002's short-term loudness release).
+const SHORT_S: f32 = 0.05;
+/// Adaptation: the level the ear is set to follows the scene up within
+/// ~0.6 s (a loud room is a blast at first, then settles) and back down
+/// within ~8 s (stepping out of it, the quiet world returns over
+/// seconds) — the range of measured loudness adaptation and recovery.
+const ADAPT_UP_S: f32 = 0.6;
+const ADAPT_DOWN_S: f32 = 8.0;
+/// …and up by at most this many dB a second: the ear adapts to a loud
+/// place, not to a shot (a 150 ms blast moves it ~3 dB — the reflex and
+/// the limiter take the blast; a club's +30 dB settles over ~3 s).
+const ADAPT_SLEW_DB_S: f32 = 10.0;
+/// The masker's level for the audible window: the mix's mean square over
+/// the ear's loudness integration (simultaneous masking acts now, not
+/// after the adaptation).
 const LOUDNESS_S: f32 = 0.4;
-const AGC_MAX_BOOST: f32 = 1.15;
-const AGC_MAX_CUT: f32 = 0.06;
-/// Demand (pre-AGC envelope) where fatigue starts: ≈ +10 dB over target.
-const TTS_LOUD: f32 = AGC_TARGET * 3.2;
+/// The adaptation plays a scene's level change at this fraction (in dB):
+/// a quiet street 40 dB under a club plays ~20 dB under it — quiet things
+/// in quiet places audible, loud places loud, neither off the scale. How
+/// much of the ear's range a playback system shows is a display choice,
+/// like HDR tone mapping (no physics decides it).
+const ADAPT_SHARE: f32 = 0.5;
+/// The adapted level that plays as it is (dB SPL): the engine's anchor
+/// (a gain-1 source at 1 m plays as recorded) — louder places play
+/// lower, quieter ones higher.
+const ADAPT_REF_DB: f32 = SPL_REF_DB;
+/// The adaptation's reach (dB): at most this far down / up.
+const ADAPT_MAX_CUT_DB: f32 = 30.0;
+const ADAPT_MAX_BOOST_DB: f32 = 24.0;
+/// The acoustic (stapedius) reflex: from ~90 dB SPL it stiffens the
+/// middle ear — up to 15 dB less below ~1.5 kHz, within ~0.1 s, letting go
+/// within ~1 s.
+const REFLEX_ONSET_DB: f32 = 90.0;
+const REFLEX_SLOPE: f32 = 0.75;
+const REFLEX_MAX_DB: f32 = 15.0;
+const REFLEX_HZ: f32 = 1_500.0;
+const REFLEX_ON_S: f32 = 0.1;
+const REFLEX_OFF_S: f32 = 1.0;
+/// …and held, it decays ("reflex decay", the audiology test: a normal
+/// ear keeps over half of it through 10 s of sustained sound): down to
+/// half within ~10 s while engaged, back within ~2 s of rest — a club is
+/// a blast at first, its bass loud again once you are in it.
+const REFLEX_DECAY: f32 = 0.5;
+const REFLEX_DECAY_S: f32 = 10.0;
+const REFLEX_REST_S: f32 = 2.0;
+/// The safety limiter: output peaks kept under this (before the tanh).
+const LIMIT: f32 = 0.9;
+/// Fatigue builds above this short-term level (dB SPL), fully at +10 dB.
+const TTS_DB: f32 = 100.0;
 /// Muffle cutoff range: log-swept 18 kHz (none) → 1.4 kHz (full fatigue).
 const TTS_FC_HI: f32 = 18_000.0;
 const TTS_FC_LO: f32 = 1_400.0;
-/// Tinnitus: demand above this (per sample, pre-AGC) feeds the ring.
+/// Tinnitus: peaks above this (per sample, before the adaptation: the
+/// mix in the engine's units, ≈ 112 dB SPL peak) feed the ring.
 const TIN_THRESH: f32 = 2.2;
 /// Ring pitch and ceiling level (≈ −44 dBFS — audible only in quiet).
 const TIN_HZ: f32 = 5_400.0;
 const TIN_LEVEL: f32 = 0.006;
+
+fn spl_db(ms: f32) -> f32 {
+    SPL_REF_DB + 10.0 * (ms.max(1e-20) / (SPL_REF_RMS * SPL_REF_RMS)).log10()
+}
 
 impl OutputStage {
     pub fn from_speaker_bytes(bytes: Option<&[u8]>, sample_rate: f32) -> Self {
@@ -79,30 +149,36 @@ impl OutputStage {
             None => Decode::Cardioid(StereoDecoder::new()),
         };
         let tc = |tau: f32| 1.0 - (-1.0 / (tau * sample_rate)).exp();
+        let tc_ctl = |tau: f32| 1.0 - (-(CONTROL as f32) / (tau * sample_rate)).exp();
         Self {
             decode,
             head: core::array::from_fn(|_| Smoothed::new(0.0, 0.03, sample_rate)),
-            env: AGC_TARGET,
-            agc_gain: 1.0,
-            env_att: tc(0.008),
-            // Release near the real stapedius reflex (~0.3 s): after a
-            // blast the world must come back within a couple of seconds —
-            // a field report of "sounds stop completely" was this stage
-            // sitting at −8 dB for ~7 s after one explosion. The lingering
-            // dullness after sustained exposure is the fatigue stage's
-            // job, not the reflex's.
-            env_rel: tc(0.35),
+            short_ms: 0.0,
+            short_coef: tc(SHORT_S),
             loud_ms: 0.0,
             loud_coef: tc(LOUDNESS_S),
-            gain_down: tc(0.05),
-            gain_up_fast: tc(1.2),
-            gain_up_slow: tc(45.0),
+            adapt_db: ADAPT_REF_DB,
+            adapt_up: tc_ctl(ADAPT_UP_S),
+            adapt_slew: ADAPT_SLEW_DB_S * CONTROL as f32 / sample_rate,
+            adapt_down: tc_ctl(ADAPT_DOWN_S),
+            reflex_db: 0.0,
+            reflex_on: tc_ctl(REFLEX_ON_S),
+            reflex_off: tc_ctl(REFLEX_OFF_S),
+            reflex_tired: 0.0,
+            reflex_tire: tc_ctl(REFLEX_DECAY_S),
+            reflex_rest: tc_ctl(REFLEX_REST_S),
+            reflex_lp: (0.0, 0.0),
+            reflex_coef: 1.0 - (-core::f32::consts::TAU * REFLEX_HZ / sample_rate).exp(),
+            gain: Smoothed::new(1.0, 0.01, sample_rate),
+            reflex: Smoothed::new(1.0, 0.01, sample_rate),
+            peak: 0.0,
+            peak_rel: (-1.0 / (0.2 * sample_rate)).exp(),
+            countdown: 0,
             tts: 0.0,
-            tts_up: tc(4.0),
-            tts_down: tc(6.0),
+            tts_up: tc_ctl(4.0),
+            tts_down: tc_ctl(6.0),
             tts_lp: (0.0, 0.0),
             tts_coef: 1.0,
-            tts_refresh: 0,
             tin: 0.0,
             tin_phase: 0.0,
             tin_step: core::f32::consts::TAU * TIN_HZ / sample_rate,
@@ -128,13 +204,22 @@ impl OutputStage {
         self.head[2].set(roll);
     }
 
-    /// The mix's loudness before the adaptation (RMS over ~0.4 s).
+    /// What the audible window sits under, as the mix's RMS in the
+    /// engine's units: the level the ear is adapted to, or the mix as it
+    /// is now when louder (it masks at once).
     pub fn loudness(&self) -> f32 {
-        self.loud_ms.sqrt()
+        (SPL_REF_RMS * 10f32.powf((self.adapt_db - SPL_REF_DB) / 20.0)).max(self.loud_ms.sqrt())
     }
 
+    /// The ear's gain now (the adaptation; linear).
     pub fn agc_gain(&self) -> f32 {
-        self.agc_gain
+        self.gain.current()
+    }
+
+    /// The level the ear is adapted to (dB SPL) and the reflex's
+    /// low-band attenuation now (dB).
+    pub fn adaptation(&self) -> (f32, f32) {
+        (self.adapt_db, self.reflex_db)
     }
 
     /// Current hearing-fatigue amount, 0 (fresh) … 1 (fully dulled).
@@ -147,8 +232,38 @@ impl OutputStage {
         self.tin
     }
 
-    /// Rotate + decode the diffuse bus, mix in point-rendered stereo,
-    /// soft-limit.
+    /// The ear's state, every `CONTROL` samples: the short-term level
+    /// moves the adaptation, the reflex and the fatigue; their gains
+    /// glide there sample by sample.
+    fn control(&mut self) {
+        let short = spl_db(self.short_ms);
+        self.adapt_db += if short > self.adapt_db {
+            (self.adapt_up * (short - self.adapt_db)).min(self.adapt_slew)
+        } else {
+            self.adapt_down * (short - self.adapt_db)
+        };
+        let g_db = (-ADAPT_SHARE * (self.adapt_db - ADAPT_REF_DB)).clamp(-ADAPT_MAX_CUT_DB, ADAPT_MAX_BOOST_DB);
+        self.gain.set(10f32.powf(g_db / 20.0));
+        let want = ((short - REFLEX_ONSET_DB) * REFLEX_SLOPE).clamp(0.0, REFLEX_MAX_DB);
+        // engaged, it tires; at rest it recovers
+        let (k, tired) = if want > 0.0 { (self.reflex_tire, REFLEX_DECAY) } else { (self.reflex_rest, 0.0) };
+        self.reflex_tired += k * (tired - self.reflex_tired);
+        let want = want * (1.0 - self.reflex_tired);
+        let k = if want > self.reflex_db { self.reflex_on } else { self.reflex_off };
+        self.reflex_db += k * (want - self.reflex_db);
+        self.reflex.set(10f32.powf(-self.reflex_db / 20.0));
+        // hearing fatigue: builds over seconds above `TTS_DB`, clears
+        // within ~20 s of relief
+        let excess = ((short - TTS_DB) / 10.0).clamp(0.0, 1.0);
+        let k = if excess > self.tts { self.tts_up } else { self.tts_down };
+        self.tts += k * (excess - self.tts);
+        let fc = TTS_FC_HI * (TTS_FC_LO / TTS_FC_HI).powf(self.tts);
+        self.tts_coef = 1.0 - (-core::f32::consts::TAU * fc / self.sample_rate).exp();
+    }
+
+    /// Rotate + decode the diffuse bus, mix in point-rendered stereo, and
+    /// play it through the ear: adaptation, reflex, fatigue, a safety
+    /// limiter, tanh.
     #[inline]
     pub fn process(&mut self, sh: &[f32; NCH], pl: f32, pr: f32) -> (f32, f32) {
         let mut rotated = *sh;
@@ -159,42 +274,20 @@ impl OutputStage {
             Decode::Cardioid(d) => d.decode(&rotated),
         };
         let (l, r) = (l + pl, r + pr);
-        self.loud_ms += self.loud_coef * (0.5 * (l * l + r * r) - self.loud_ms);
-
-        // ear adaptation
-        let m = l.abs().max(r.abs());
-        let coef = if m > self.env { self.env_att } else { self.env_rel };
-        self.env += coef * (m - self.env);
-        let desired = (AGC_TARGET / self.env.max(1e-4)).clamp(AGC_MAX_CUT, AGC_MAX_BOOST);
-        // Recovery is exponential in perception: coming back from deep
-        // protection is quick at first, but the last ~6 dB of sensitivity
-        // returns much later (fast tc while far below the target gain,
-        // sliding toward the slow tc as it closes in).
-        let gcoef = if desired < self.agc_gain {
-            self.gain_down
-        } else {
-            let r = (self.agc_gain / desired.max(1e-6)).clamp(0.0, 1.0);
-            self.gain_up_fast + (self.gain_up_slow - self.gain_up_fast) * r * r
-        };
-        self.agc_gain += gcoef * (desired - self.agc_gain);
-
-        // hearing fatigue: builds over seconds of ultra-loud demand,
-        // clears within ~20 s of relief
-        let excess = (self.env / TTS_LOUD - 1.0).clamp(0.0, 1.0);
-        let tcoef = if excess > self.tts { self.tts_up } else { self.tts_down };
-        self.tts += tcoef * (excess - self.tts);
-        if self.tts_refresh == 0 {
-            self.tts_refresh = 64;
-            let fc = TTS_FC_HI * (TTS_FC_LO / TTS_FC_HI).powf(self.tts);
-            self.tts_coef =
-                1.0 - (-core::f32::consts::TAU * fc / self.sample_rate).exp();
+        let ms = 0.5 * (l * l + r * r);
+        self.short_ms += self.short_coef * (ms - self.short_ms);
+        self.loud_ms += self.loud_coef * (ms - self.loud_ms);
+        if self.countdown == 0 {
+            self.countdown = CONTROL;
+            self.control();
         }
-        self.tts_refresh -= 1;
+        self.countdown -= 1;
 
         // tinnitus excitation: blasts far beyond the fatigue threshold.
         // The ring sits slightly sharp while strong and settles in pitch
         // as it fades (~8 s to silence) — a static tone reads as a bug,
         // a drifting one reads as your ears.
+        let m = l.abs().max(r.abs());
         self.tin = (self.tin + (m - TIN_THRESH).max(0.0) * 2e-4).min(1.0) * self.tin_decay;
         let ring = if self.tin > 1e-4 {
             let step = self.tin_step * (1.0 + 0.08 * self.tin);
@@ -204,14 +297,24 @@ impl OutputStage {
             0.0
         };
 
-        let gl = l * self.agc_gain;
-        let gr = r * self.agc_gain;
+        // the adaptation, and the reflex taking the low band down
+        let g = self.gain.tick();
+        let rx = self.reflex.tick();
+        self.reflex_lp.0 += self.reflex_coef * (l - self.reflex_lp.0);
+        self.reflex_lp.1 += self.reflex_coef * (r - self.reflex_lp.1);
+        let gl = g * (l - (1.0 - rx) * self.reflex_lp.0);
+        let gr = g * (r - (1.0 - rx) * self.reflex_lp.1);
         // dry/lowpassed blend by fatigue — bit-transparent at tts = 0
         self.tts_lp.0 += self.tts_coef * (gl - self.tts_lp.0);
         self.tts_lp.1 += self.tts_coef * (gr - self.tts_lp.1);
-        let ol = gl + self.tts * (self.tts_lp.0 - gl) + ring;
-        let or_ = gr + self.tts * (self.tts_lp.1 - gr) + ring;
-        (ol.tanh(), or_.tanh())
+        let ol = gl + self.tts * (self.tts_lp.0 - gl);
+        let or_ = gr + self.tts * (self.tts_lp.1 - gr);
+        // the safety limiter: instant on a peak over `LIMIT`, letting go
+        // over ~0.2 s (what the adaptation has not caught yet: a shot)
+        let p = ol.abs().max(or_.abs());
+        self.peak = if p > self.peak { p } else { self.peak * self.peak_rel + p * (1.0 - self.peak_rel) };
+        let lim = if self.peak > LIMIT { LIMIT / self.peak } else { 1.0 };
+        ((ol * lim + ring).tanh(), (or_ * lim + ring).tanh())
     }
 }
 
@@ -219,8 +322,9 @@ impl OutputStage {
 mod tests {
     use super::*;
 
-    /// Ratio of a 6 kHz probe to a 200 Hz probe through the stage — the
-    /// AGC scales both equally, so this isolates the muffle filter.
+    /// Ratio of an 8 kHz probe to a 1.5 kHz probe through the stage — the
+    /// adaptation scales both equally and the reflex acts below ~1 kHz, so
+    /// this isolates the muffle filter.
     fn hf_lf_ratio(out: &mut OutputStage) -> f32 {
         let mut peak = |freq: f32| -> f32 {
             let mut p = 0.0f32;
@@ -233,7 +337,7 @@ mod tests {
             }
             p
         };
-        peak(6000.0) / peak(200.0).max(1e-9)
+        peak(8000.0) / peak(1500.0).max(1e-9)
     }
 
     #[test]
@@ -297,12 +401,13 @@ mod tests {
         let tone = |k: usize, a: f32, f: f32| {
             a * (core::f32::consts::TAU * f * k as f32 / 48_000.0).sin()
         };
-        // settle on moderate content and take the reference level
+        // settle on moderate content (the ear adapts over seconds) and
+        // take the reference level
         let mut before = 0.0f32;
-        for k in 0..48_000 * 2 {
+        for k in 0..48_000 * 6 {
             let x = tone(k, 0.25, 400.0);
             let (l, _) = out.process(&[0.0; NCH], x, x);
-            if k > 48_000 {
+            if k > 48_000 * 5 {
                 before = before.max(l.abs());
             }
         }
@@ -312,11 +417,14 @@ mod tests {
             out.process(&[0.0; NCH], x, x);
         }
         // protection is real: right after, the same content is well down
+        // (after 10 ms: the cut from blast to tone is a step of its own)
         let mut ducked = 0.0f32;
         for k in 0..9600 {
             let x = tone(k, 0.25, 400.0);
             let (l, _) = out.process(&[0.0; NCH], x, x);
-            ducked = ducked.max(l.abs());
+            if k >= 480 {
+                ducked = ducked.max(l.abs());
+            }
         }
         assert!(ducked < 0.6 * before, "blast should duck: {ducked} vs {before}");
         // ...and the reflex lets go: within 2.5 s the world is back
