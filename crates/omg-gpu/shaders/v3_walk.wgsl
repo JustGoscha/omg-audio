@@ -881,9 +881,12 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     let n_src = min(job.n_sources, MAX_SOURCES);
     let diffraction = job.n_edges > 0u;
 
-    rng_state = pcg_hash(job.seed ^ pcg_hash(ray * 0x9E3779B9u + 0x7F4A7C15u));
+    // a pooled lane can start several rays in one walk (one per
+    // dispatch): each from its own seed and direction, never a replay
+    let born_in = select(0u, pass_idx, pooled);
+    rng_state = pcg_hash(job.seed ^ pcg_hash(ray * 0x9E3779B9u + 0x7F4A7C15u) ^ pcg_hash(born_in + 0x51ED27u));
 
-    let d0 = fib(idx, n);
+    let d0 = fib((idx + born_in * 0x9E37u) % n, n);
     let first = vec3<f32>(dot(job.rot0, d0), dot(job.rot1, d0), dot(job.rot2, d0));
     ray_first = first;
     ray_cell = cell_of(first);

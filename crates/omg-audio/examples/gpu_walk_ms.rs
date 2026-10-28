@@ -92,12 +92,16 @@ fn main() {
 
 /// POOL=1: the live (async, pooled) walk against the synchronous whole
 /// walk — walk time per tick and the settled dense response of a source
-/// indoors (total energy, RT60).
+/// indoors (total energy, RT60). WARM=ticks before measuring (40; the live
+/// pool fills over seconds), EARLY= / LATE= ray counts over Medium's.
 #[allow(dead_code)]
 pub fn pool_compare() {
     use omg_audio::Compute;
     let run = |compute: Compute| -> Option<(f32, f32, [f32; 3])> {
-        let mut sim = Simulation::new(Config { compute, quality: Quality::Medium, ..Config::default() });
+        let mut q = Quality::Medium.budget(true);
+        if let Ok(v) = std::env::var("EARLY") { q.rays = v.parse().unwrap(); }
+        if let Ok(v) = std::env::var("LATE") { q.late_rays = v.parse().unwrap(); }
+        let mut sim = Simulation::new(Config { compute, quality: Quality::Custom(q), ..Config::default() });
         sim.set_geometry(town());
         if compute != Compute::Cpu && !sim.gpu_active() {
             return None;
@@ -107,10 +111,11 @@ pub fn pool_compare() {
         sim.set_listener([-1.0, -2.0, 1.7], 0.0, 0.0, 0.0);
         let (mut ms, mut n) = (0.0f32, 0);
         let mut tail = Vec::new();
-        for k in 0..120 {
+        let warm = std::env::var("WARM").ok().and_then(|v| v.parse().ok()).unwrap_or(40usize);
+        for k in 0..warm + 80 {
             let t0 = Instant::now();
             sim.tick();
-            if k >= 40 {
+            if k >= warm {
                 ms += sim.gpu_walk_ms();
                 n += 1;
                 if let Some(d) = sim.dense_response(id) {

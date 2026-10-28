@@ -1977,8 +1977,9 @@ impl Tracer {
         }
         self.last_listener = Some(listener);
         // the world changed (an object moved, a door closed): every cached
-        // solve is redone now, a walk launched before is dropped, and v4's
-        // responses restart from this tick's trace
+        // solve is redone now and v4's responses restart from the next
+        // trace (a GPU pool's rays walk on, through the new world: a reset
+        // pool takes seconds to fill)
         let sig = panels_sig(world.panels);
         if sig != self.world_sig {
             self.world_sig = sig;
@@ -1988,7 +1989,6 @@ impl Tracer {
             self.rejected.clear();
             self.edge_cache.clear();
             self.ear_vis = None;
-            self.epoch = self.epoch.wrapping_add(1);
             self.sky_primed = false;
             for st in self.state.values_mut() {
                 st.restart = true;
