@@ -205,6 +205,21 @@ pub fn impulse_response_max(resp: &DenseResponse, sample_rate: f32, gain: f32, s
 /// last 10 %.
 fn prepare(resp: &DenseResponse, max_s: f32) -> DenseResponse {
     let mut resp = continue_tail(resp, max_s).unwrap_or_else(|| resp.clone());
+    // the coherent arrivals play as impulses (`synth`): the noise carries
+    // what is left of each bin
+    let impulses = core::mem::take(&mut resp.impulses);
+    for imp in &impulses {
+        let i = (imp[0] / resp.bin_s) as usize;
+        if let Some(b) = resp.bins.get_mut(i) {
+            for band in 0..3 {
+                b[band] = (b[band] - imp[1 + band]).max(0.0);
+            }
+            for c in 0..3 {
+                b[3 + c] -= imp[4 + c] * imp[2];
+            }
+        }
+    }
+    resp.impulses = impulses;
     let cap = (max_s / resp.bin_s.max(1e-6)) as usize;
     if resp.bins.len() > cap {
         resp.bins.truncate(cap);
@@ -264,7 +279,35 @@ fn synth(resp: &DenseResponse, sample_rate: f32, gain: f32, seed: u32, from: usi
             }
         }
     }
+    // the coherent arrivals: each a delta split by the tracer's crossovers
+    // and played at its band amplitudes (the renderer's tap EQ:
+    // a_lo·lp_lo + a_mid·(lp_hi − lp_lo) + a_hi·(δ − lp_hi)), from its
+    // direction
+    let coef = |fc: f32| 1.0 - (-core::f32::consts::TAU * fc / sample_rate).exp();
+    let (c_lo, c_hi) = (coef(XOVER_LO_HZ), coef(XOVER_HI_HZ));
+    for imp in &resp.impulses {
+        let at = (imp[0] * sample_rate).round() as isize - HEAD_B as isize;
+        let a: [f32; 3] = core::array::from_fn(|b| imp[1 + b].max(0.0).sqrt() * gain);
+        let enc = [1.0, imp[5], imp[6], imp[4]];
+        let (mut lo, mut hi) = (c_lo, c_hi);
+        for n in 0..IMPULSE_LEN {
+            let s = at + n as isize;
+            let h = a[0] * lo + a[1] * (hi - lo) + if n == 0 { a[2] * (1.0 - hi) } else { -a[2] * hi };
+            lo *= 1.0 - c_lo;
+            hi *= 1.0 - c_hi;
+            if s < from as isize || s >= to as isize {
+                continue;
+            }
+            for c in 0..FOA {
+                out[c][s as usize - from] += h * enc[c];
+            }
+        }
+    }
 }
+
+/// An impulse's band split rings this long (samples: the low band's
+/// one-pole at 314 Hz falls 80 dB in ~450).
+const IMPULSE_LEN: usize = 512;
 
 /// Longest kernel (s): a continued tail stops here even if it is still
 /// above -60 dB (memory and cost: ~30 MB per source per 20 s).

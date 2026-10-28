@@ -469,6 +469,13 @@ pub struct DenseResponse {
     /// free-field arrival, then each twice as long), the estimate's
     /// relative standard error (0: exact, or not known).
     pub noise: [f32; HISTORY_WINDOWS],
+    /// Coherent arrivals past the renderer's taps (solved mirror chains
+    /// beyond `MAX_COHERENT_TAPS`: a flutter train's later echoes):
+    /// [delay after the free field (s), energy low / mid / high, unit
+    /// direction x, y, z]. Their energy is in `bins` too (every statistic
+    /// counts them); the kernel plays them as the impulses they are, the
+    /// noise from the rest — not folded into it.
+    pub impulses: Vec<[f32; 7]>,
 }
 
 impl DenseResponse {
@@ -929,6 +936,7 @@ impl SourceState {
             })
             .collect();
         chains.sort_by(|x, y| y.2.total_cmp(&x.2));
+        let mut impulses = Vec::new();
         for (n, (k, b, _)) in chains.into_iter().enumerate() {
             let i = (b.last.max(0.0) / DENSE_BIN_S) as usize;
             let dl = b.dir.length();
@@ -950,6 +958,7 @@ impl SourceState {
                 dense[i][3] += dir.x * b.e[1];
                 dense[i][4] += dir.y * b.e[1];
                 dense[i][5] += dir.z * b.e[1];
+                impulses.push([b.last.max(0.0), b.e[0].max(0.0), b.e[1].max(0.0), b.e[2].max(0.0), dir.x, dir.y, dir.z]);
             }
         }
         let peak = dense.iter().map(|d| d[1]).fold(0.0f32, f32::max);
@@ -982,7 +991,9 @@ impl SourceState {
             let per_tick = (q / (e * e)).max(self.dense_var[w] as f64);
             (per_tick / self.dense_ticks[w].max(1.0) as f64).sqrt() as f32
         });
-        SourceField { taps, dense: Some(DenseResponse { bin_s: DENSE_BIN_S, bins: dense, noise }), reverb, late_dir, aniso, reflected }
+        let end = dense.len() as f32 * DENSE_BIN_S;
+        impulses.retain(|i| i[0] < end);
+        SourceField { taps, dense: Some(DenseResponse { bin_s: DENSE_BIN_S, bins: dense, noise, impulses }), reverb, late_dir, aniso, reflected }
     }
 
     /// Step 5b: this source's field from the smoothed state.
@@ -2066,10 +2077,26 @@ impl Tracer {
         }
         self.rejected.retain(|_, t| tick < *t + CHAIN_REJECT_TICKS);
         // over the cap (newly named ones get one solve to prove
-        // themselves): keep each source's strongest MAX_CHAINS
+        // themselves): keep each source's MAX_CHAINS that count — v3 the
+        // strongest; v4 those standing out most of the scattered field
+        // arriving with them (`DISTINCT_SPAN_S`, its averaged dense
+        // response): a flutter's late echoes over the early chains via
+        // absorbing surfaces, louder but buried in their field — the
+        // same measure the field picks its taps by
+        let span = (DISTINCT_SPAN_S / DENSE_BIN_S).ceil() as usize;
+        let rank = |k: &(u32, u64), c: &MirrorChain| -> f32 {
+            let (true, Some((_, _, _, (e, delay, _)))) = (self.v4, c.solved) else { return c.energy };
+            let Some(s) = sources.iter().find(|s| s.id == k.0) else { return 0.0 };
+            let rel = delay - (s.pos - listener).length() / SPEED_OF_SOUND;
+            let i = (rel.max(0.0) / DENSE_BIN_S) as usize;
+            let around: f32 = self.state.get(&k.0).map_or(0.0, |st| {
+                st.dense.iter().skip(i.saturating_sub(span)).take(2 * span + 1).map(|b| b[1]).sum()
+            });
+            e[1] / around.max(1e-30)
+        };
         let mut by_source: HashMap<u32, Vec<((u32, u64), f32)>> = HashMap::new();
         for (k, c) in &self.chains {
-            by_source.entry(k.0).or_default().push((*k, c.energy));
+            by_source.entry(k.0).or_default().push((*k, rank(k, c)));
         }
         for (_, mut v) in by_source {
             if v.len() > MAX_CHAINS {

@@ -165,3 +165,57 @@ fn a_source_outside_the_convolution_budget_keeps_its_reverb() {
     assert!(param > 0.0 && param_w > 0.0, "not dry");
     assert!((db(conv) - db(param)).abs() < 4.0, "the same reverb energy in the mid band within 4 dB");
 }
+
+/// A flutter between bare parallel walls: the echoes come as a train,
+/// on and on past the early window — the solver keeps the chains that
+/// stand out of the field (not the loudest: early chains via absorbing
+/// surfaces are louder, buried in it), they play as taps and, past the
+/// tap budget, as impulses in the kernel. Rendered, the clap's output
+/// over 120–300 ms has an echo in every few cells, not a noise envelope.
+#[test]
+fn a_flutter_train_runs_on() {
+    let mut g = Geometry::new();
+    let hard = g.material(Material::CONCRETE);
+    let tile = g.material(Material::ACOUSTIC_TILE);
+    let carpet = g.material(Material::CARPET);
+    let (lx, ly, lz, t) = (4.0, 6.0, 2.7, 0.2);
+    g.add_box([-t, 0.0, 0.0], [0.0, ly, lz], hard);
+    g.add_box([lx, 0.0, 0.0], [lx + t, ly, lz], hard);
+    g.add_box([0.0, -t, 0.0], [lx, 0.0, lz], tile);
+    g.add_box([0.0, ly, 0.0], [lx, ly + t, lz], tile);
+    g.add_box([-t, -t, -t], [lx + t, ly + t, 0.0], carpet);
+    g.add_box([-t, -t, lz], [lx + t, ly + t, lz + t], tile);
+    let mut sim = Simulation::new(Config::default());
+    sim.set_geometry(g);
+    let id = sim.add_source(SourceDesc::at([1.5, 3.15, 1.3]));
+    sim.set_listener([1.3, 3.0, 1.6], 0.0, 0.0, 0.0);
+    for _ in 0..80 {
+        sim.tick();
+    }
+    sim.flush_kernels();
+    let frame = sim.tick();
+    let mut m = Mixer::new(SR, Hrir::none());
+    m.apply(&frame);
+    render(&mut m, 0.5);
+    m.play(id, &clip(&clap()), Play::ONCE);
+    let p = render(&mut m, 0.4);
+    // power in 0.5 ms cells over 120–300 ms, each against the median of
+    // the 20 ms around it (the tail decays through the window): echoes
+    // stand 5 dB out of their surroundings; a diffuse tail's cells do so
+    // in ~2 % (noise: one cell's power is exponentially distributed)
+    let cell = 24usize;
+    let env: Vec<f32> = p[(0.12 * SR) as usize..(0.30 * SR) as usize].chunks(cell).map(|c| c.iter().sum::<f32>()).collect();
+    let at: Vec<f32> = (20..env.len() - 20)
+        .filter(|&i| {
+            let mut w = env[i - 20..i + 20].to_vec();
+            w.sort_by(|x, y| x.total_cmp(y));
+            env[i] > 3.16 * w[w.len() / 2]
+        })
+        .map(|i| 120.0 + i as f32 * 0.5)
+        .collect();
+    eprintln!("120–300 ms: echoes 5 dB over their surroundings at {at:?} ms");
+    // (before, folded into the noise past the taps' few: none) — a train
+    // through the window, not a few stragglers at its start
+    assert!(at.len() >= 6, "the flutter runs on as a train: {at:?}");
+    assert!(at.last().unwrap() - at[0] > 100.0, "through the window: {at:?}");
+}
