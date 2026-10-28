@@ -52,9 +52,10 @@ pub fn normalize(samples: &mut [f32]) {
     omg_dsp::level::normalize_rms(samples, omg_dsp::level::REF_CLIP_RMS);
 }
 
-/// The engine's HRIR data (`hrir/`): a 20-speaker virtual array for the
-/// ambisonic decode, and the dense direction grid.
-pub const HRIR_SPEAKERS: &[u8] = include_bytes!("../hrir/hrir_dodeca20.bin");
+/// The engine's HRIR data (`hrir/`, SADIE II's KEMAR — see NOTICE.md):
+/// the ambisonic bus decoder (`hrir_sh2.bin`: per SH channel a filter per
+/// ear, a plane wave decoding to its HRTF), and the dense direction grid.
+pub const HRIR_SPEAKERS: &[u8] = include_bytes!("../hrir/hrir_sh2.bin");
 pub const HRIR_GRID: &[u8] = include_bytes!("../hrir/hrir_grid.bin");
 
 /// Head-related impulse responses for the binaural decode.
@@ -71,8 +72,8 @@ impl Hrir {
         Self::default()
     }
 
-    /// The engine's own HRIRs, built in (`hrir/`): the 20-speaker set for
-    /// the ambisonic decode and the dense grid for the strongest paths.
+    /// The engine's own HRIRs, built in (`hrir/`): the bus decoder and
+    /// the dense grid for the strongest paths.
     pub fn builtin() -> Self {
         Self::from_bytes(Some(HRIR_SPEAKERS), Some(HRIR_GRID))
     }
@@ -85,12 +86,15 @@ impl Hrir {
         Self { speakers: speakers.map(Arc::from), grid: grid.map(|g| Arc::new(HrirGrid::from_bytes(g))) }
     }
 
-    /// Load `hrir_dodeca20.bin` (else `hrir_ico12.bin`) and
-    /// `hrir_grid.bin` from a directory; missing files are skipped.
+    /// Load `hrir_sh2.bin` (else `hrir_dodeca20.bin`, `hrir_ico12.bin`)
+    /// and `hrir_grid.bin` from a directory; missing files are skipped.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_dir(dir: impl AsRef<std::path::Path>) -> Self {
         let d = dir.as_ref();
-        let spk = std::fs::read(d.join("hrir_dodeca20.bin")).or_else(|_| std::fs::read(d.join("hrir_ico12.bin"))).ok();
+        let spk = std::fs::read(d.join("hrir_sh2.bin"))
+            .or_else(|_| std::fs::read(d.join("hrir_dodeca20.bin")))
+            .or_else(|_| std::fs::read(d.join("hrir_ico12.bin")))
+            .ok();
         let grid = std::fs::read(d.join("hrir_grid.bin")).ok();
         Self::from_bytes(spk.as_deref(), grid.as_deref())
     }

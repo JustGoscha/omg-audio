@@ -62,7 +62,9 @@ fn run(r: &mut Renderer, n: usize) -> Vec<(f32, f32)> {
 /// Grid with unit-gain-sum kernels × 1.25, so a point tap's DC output
 /// (× POINT_GAIN 0.8) equals its bus contribution exactly.
 fn grid() -> Arc<HrirGrid> {
-    let rec = |dir| HrirRec { dir, l: impulse(8, 0, 1.25), r: impulse(8, 0, 1.25) };
+    // unit impulses: a point-rendered path plays its HRIR as is (the bus
+    // decoder plays a plane wave as its HRTF: no gain between the two)
+    let rec = |dir| HrirRec { dir, l: impulse(8, 0, 1.0), r: impulse(8, 0, 1.0) };
     Arc::new(HrirGrid::from_bytes(&hrir_bytes(8, &[rec([0.0, 1.0, 0.0]), rec([0.0, -1.0, 0.0])])))
 }
 

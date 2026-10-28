@@ -26,6 +26,16 @@ left, taps×f32 right.
                        measured ring (every ring kept)
   hrir_dodeca20.bin,   the virtual speakers of the ambisonic decode:
   hrir_ico12.bin       the measured direction nearest each vertex
+  hrir_sh2.bin         the order-2 ambisonic bus straight to the ears:
+                       per SH channel (ACN, SN3D — the engine's
+                       `ambi::encode_gains`) a filter per ear, so that a
+                       plane wave decodes to its HRTF — exactly (weighted
+                       least squares over every measured direction) below
+                       MAGLS_HZ, in magnitude above (MagLS: Schörkhuber,
+                       Zaunschirm, Höldrich, DAGA 2018 — order 2 cannot
+                       hold the high band's phase; the ear hears its
+                       magnitude). Format: u32 magic "SH2 ", u32 channels,
+                       u32 taps, then per channel taps×f32 left, right.
 With `old_grid.bin`, the set is scaled to its diffuse-field energy (the
 mean of L² + R² over directions), so the engine's loudness calibration
 holds.
@@ -41,6 +51,8 @@ import numpy as np
 TAPS = 128
 NFFT = 1024
 ARC_DEG = 3.0
+MAGLS_HZ = 1000.0
+SH_NFFT = 512
 PHI = (1 + 5**0.5) / 2
 
 
@@ -142,6 +154,36 @@ def read_bin(path):
     return recs
 
 
+def encode(d):
+    """ambi::encode_gains: SN3D / ACN real harmonics to degree 2."""
+    x, y, z = d
+    s3 = math.sqrt(3.0)
+    return [1.0, y, z, x, s3 * x * y, s3 * y * z, 0.5 * (3 * z * z - 1), s3 * x * z, 0.5 * s3 * (x * x - y * y)]
+
+
+def sh_decoder(dirs, weights, hl, hr, fs):
+    """Per ear, 9 filters H with Σ encode(d)·H(f) ≈ HRTF(d, f): weighted
+    least squares below MAGLS_HZ, magnitude least squares above (each
+    bin's phase from the bin below's solution)."""
+    Y = np.array([encode(d) for d in dirs])
+    W = weights / weights.sum()
+    A = np.linalg.solve(Y.T @ (Y * W[:, None]), (Y * W[:, None]).T)
+    freqs = np.fft.rfftfreq(SH_NFFT, 1 / fs)
+    out = []
+    for h in (hl, hr):
+        H = np.fft.rfft(h, SH_NFFT, axis=1)
+        X = np.zeros((9, len(freqs)), complex)
+        for k, f in enumerate(freqs):
+            if f < MAGLS_HZ or k == 0:
+                X[:, k] = A @ H[:, k]
+            else:
+                phase = np.angle(Y @ X[:, k - 1])
+                X[:, k] = A @ (np.abs(H[:, k]) * np.exp(1j * phase))
+        x = np.fft.irfft(X, SH_NFFT, axis=1)
+        out.append(np.array([fade_to(c, TAPS) for c in x]))
+    return out
+
+
 def ico_vertices():
     raw = []
     for a in (-1, 1):
@@ -198,6 +240,35 @@ def main():
         print(f"diffuse-field energy: old {e_old:.4f}, new {e_new:.4f} → ×{scale:.3f}")
     grid = [(d, l * scale, r * scale) for d, l, r in grid]
     write_bin(out / "hrir_grid.bin", grid)
+
+    # the bus decoder: every measured direction, each weighted by the
+    # solid angle it stands for (its ring's band over its count)
+    els = np.unique(np.round(pos[:, 1], 2))
+    edges = np.concatenate([[-90.0], 0.5 * (els[1:] + els[:-1]), [90.0]])
+    band = {e: math.sin(math.radians(edges[i + 1])) - math.sin(math.radians(edges[i])) for i, e in enumerate(els)}
+    count = {e: int(np.sum(np.abs(pos[:, 1] - e) < 0.01)) for e in els}
+    weights = np.array([band[np.round(el, 2)] / count[np.round(el, 2)] for el in pos[:, 1]])
+    hl, hr = np.zeros((len(pos), TAPS)), np.zeros((len(pos), TAPS))
+    for i in range(len(pos)):
+        hl[i], hr[i] = sym_pair(i)
+    fl, fr = sh_decoder(dirs, weights, hl * scale, hr * scale, fs)
+    with open(out / "hrir_sh2.bin", "wb") as f:
+        f.write(b"SH2 ")
+        f.write(struct.pack("<II", 9, TAPS))
+        for n in range(9):
+            f.write(fl[n].astype("<f4").tobytes())
+            f.write(fr[n].astype("<f4").tobytes())
+    print(f"wrote {out / 'hrir_sh2.bin'} (9 channels × 2 ears × {TAPS} taps)")
+    # how well a plane wave decodes: the energy error over directions
+    Y = np.array([encode(d) for d in dirs])
+    for ear, h, fx in (("left", hl * scale, fl), ("right", hr * scale, fr)):
+        dec = np.einsum("dn,nt->dt", Y, fx)
+        Hm, Dm = np.abs(np.fft.rfft(h, SH_NFFT)), np.abs(np.fft.rfft(dec, SH_NFFT))
+        err = 20 * np.log10(np.maximum(Dm, 1e-9) / np.maximum(Hm, 1e-9))
+        fq = np.fft.rfftfreq(SH_NFFT, 1 / fs)
+        for lo, hi in ((100, 1500), (1500, 6000), (6000, 16000)):
+            m = (fq >= lo) & (fq < hi)
+            print(f"  {ear} {lo}-{hi} Hz: magnitude error {np.sqrt(np.average(err[:, m] ** 2, weights=np.repeat(weights[:, None], m.sum(), 1))):.1f} dB rms")
 
     for name, verts in (("hrir_ico12.bin", ico_vertices()), ("hrir_dodeca20.bin", dodeca_vertices())):
         recs = []

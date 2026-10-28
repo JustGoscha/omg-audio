@@ -1,8 +1,12 @@
 //! Binaural rendering, two tiers:
 //!
-//! 1. `BinauralDecoder` — the ambisonic bus decode: order-2 SH → virtual
-//!    speakers (icosahedron/dodecahedron) → measured HRIR per speaker.
-//!    Fixed cost, order-limited sharpness: right for reflections + reverb.
+//! 1. `BinauralDecoder` — the ambisonic bus decode, either straight from
+//!    the SH channels (a decoder file, "SH2 ": per channel a filter per
+//!    ear, fitted so a plane wave decodes to its HRTF — least squares low,
+//!    magnitude least squares high; `tools/make_hrir_sofa.py`) or via
+//!    virtual speakers (icosahedron/dodecahedron) and a measured HRIR per
+//!    speaker. Fixed cost, order-limited sharpness: right for reflections
+//!    + reverb.
 //! 2. `HrirGrid` + `PointConv` — nearest-HRIR point rendering from the
 //!    dense measurement grid (~710 directions): full sharpness, used for
 //!    direct paths where localization actually happens. Index changes
@@ -66,6 +70,9 @@ impl BinauralDecoder {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Self {
+        if bytes.starts_with(b"SH2 ") {
+            return Self::from_sh(bytes);
+        }
         let (taps, records) = parse_bin(bytes);
         let k = records.len() as f32;
         let speakers = records
@@ -80,6 +87,31 @@ impl BinauralDecoder {
                 // stored reversed: see convolve_ring
                 hrir_l.reverse();
                 hrir_r.reverse();
+                Speaker { matrix, hrir_l, hrir_r, hist: vec![0.0; taps] }
+            })
+            .collect();
+        Self { speakers, taps, pos: 0 }
+    }
+
+    /// An SH decoder file: each channel a "speaker" taking just that
+    /// channel, its filters the two "HRIRs" — the convolution as for
+    /// speakers. Its gain is the HRTFs' own (a plane wave decodes to its
+    /// HRTF): no loudness match to tune.
+    fn from_sh(bytes: &[u8]) -> Self {
+        let u32_at = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) as usize;
+        let (channels, taps) = (u32_at(4), u32_at(8));
+        let f32s = |o: usize| -> Vec<f32> {
+            bytes[o..o + 4 * taps].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
+        };
+        let speakers = (0..channels.min(NCH))
+            .map(|n| {
+                let o = 12 + n * 8 * taps;
+                let (mut hrir_l, mut hrir_r) = (f32s(o), f32s(o + 4 * taps));
+                // stored reversed: see convolve_ring
+                hrir_l.reverse();
+                hrir_r.reverse();
+                let mut matrix = [0.0f32; NCH];
+                matrix[n] = 1.0;
                 Speaker { matrix, hrir_l, hrir_r, hist: vec![0.0; taps] }
             })
             .collect();
@@ -273,6 +305,12 @@ impl HrirGrid {
 
     pub fn is_empty(&self) -> bool {
         self.dirs.is_empty()
+    }
+
+    /// The HRIR pair at `index` (left, right; stored time-reversed — the
+    /// order the convolution reads them in).
+    pub fn hrir(&self, index: usize) -> (&[f32], &[f32]) {
+        (&self.hrir_l[index], &self.hrir_r[index])
     }
 
     pub fn nearest(&self, dir: [f32; 3]) -> usize {

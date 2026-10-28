@@ -50,8 +50,10 @@ const CLOCK_PULL: f64 = 1.0 / 16.0;
 /// longer than this clamp to its end; recorded sources use a `PlayLog`
 /// and have no such limit.
 pub const LIVE_LINE_S: f32 = 2.0;
-/// Loudness match of point-rendered direct paths vs. the bus decode.
-const POINT_GAIN: f32 = 0.8;
+/// Point-rendered direct paths against the bus decode: the same (the bus
+/// decoder plays a plane wave as its HRTF — `hrtf::BinauralDecoder`'s SH
+/// file — so a path moving between the two keeps its level).
+const POINT_GAIN: f32 = 1.0;
 /// Default per-source point-render budget: how many of the strongest taps
 /// get their own nearest-HRIR convolution (full-sharpness localization)
 /// instead of the order-2 bus. A measured CPU budget, not a quality
