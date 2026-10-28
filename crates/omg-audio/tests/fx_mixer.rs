@@ -239,6 +239,39 @@ fn a_loud_scene_drops_the_sounds_it_masks() {
     assert!(after > 0.0, "the loud one gone, the quiet one is back");
 }
 
+/// The window weighs each band: a club's bass behind a wall (its low band
+/// passing, its mids 50 dB down) arrives as the bass it is — it stays in
+/// the window next to a loud flute, where judging by the mid band alone
+/// would put it 50 dB too low and drop it.
+#[test]
+fn bass_through_a_wall_stays_in_the_window() {
+    use omg_audio::{Frame, ParamBlock, SourceId, Tap};
+    let block = |g: [f32; 3]| {
+        let mut pb = ParamBlock { version: 1, ..Default::default() };
+        pb.taps.push(Tap { key: 0, delay_s: 0.003, dir: [1.0, 0.0, 0.0], gains: g });
+        pb
+    };
+    let (flute, club) = (SourceId(0), SourceId(1));
+    // the club arrives at −30 dB in its low band, −80 dB in its mids
+    let frame = Frame { version: 1, blocks: vec![(flute, block([1.0; 3])), (club, block([0.03, 1e-4, 3e-5]))], ..Default::default() };
+    let tone = |f: f32, a: f32| -> Vec<f32> { (0..48_000).map(|i| a * (core::f32::consts::TAU * f * i as f32 / SR).sin()).collect() };
+    let mut m = Mixer::new(SR, Hrir::none());
+    m.apply(&frame);
+    m.play(flute, &clip(&tone(1000.0, 1.0)), Play::LOOP);
+    m.play(club, &clip(&tone(60.0, 1.0)), Play::LOOP);
+    let mut heard = 0.0f32;
+    for k in 0..60 {
+        m.apply(&frame);
+        render(&mut m, 0.05);
+        let r = m.take_meter(club).rms;
+        if k >= 40 {
+            heard += r * r / 20.0;
+        }
+    }
+    eprintln!("club bass behind the wall, next to the flute: {:.5}", heard.sqrt());
+    assert!(heard.sqrt() > 0.005, "the bass that arrives is dropped from the window");
+}
+
 /// The window judges what ARRIVES: a clap's dry sound is over in 10 ms,
 /// but its reverb (1.5 s) still carries it — it renders on, ringing out,
 /// until the tail itself sinks under the window.

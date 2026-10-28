@@ -678,6 +678,7 @@ pub extern "C" fn eng_source(i: u32) {
     }
     normalize(&mut e.stage);
     let c = clip(&e.stage);
+    e.mixer.prime_clip(&c);
     for &id in &e.map[i] {
         let v = e.mixer.play(id, &c, Play::LOOP);
         e.loops[i].push(v);
@@ -689,7 +690,9 @@ pub extern "C" fn eng_source(i: u32) {
 #[no_mangle]
 pub extern "C" fn eng_fx() -> u32 {
     let e = eng();
-    e.fx.push(clip(&e.stage));
+    let c = clip(&e.stage);
+    e.mixer.prime_clip(&c);
+    e.fx.push(c);
     (e.fx.len() - 1) as u32
 }
 

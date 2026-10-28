@@ -219,8 +219,8 @@ struct Slot {
     /// The audible window (`AUDIBLE_RANGE_DB`): the late fields' power
     /// arriving (its own room's, the remote room's), when it was last
     /// looked at, and whether it is out of the window now (not rendered).
-    late_p: f32,
-    remote_p: f32,
+    late_p: [f32; 3],
+    remote_p: [f32; 3],
     late_e: f64,
     arrival_t: f64,
     /// Since when its arrival has been under the window's floor (∞: not).
@@ -236,22 +236,20 @@ struct Slot {
 /// it × its gain²: a loop at its mean power, a one-shot through its power
 /// table, `POWER_BLOCK`s of the clip, over exactly the time it overlaps):
 /// (its mean, its loudest moment).
-fn emitted_over(log: &PlayLog, t0: f64, t1: f64, cache: &mut HashMap<usize, (f32, Vec<f32>)>) -> (f32, f32) {
+fn emitted_over(log: &PlayLog, t0: f64, t1: f64, sample_rate: f32, cache: &mut HashMap<usize, ClipPower>) -> ([f32; 3], [f32; 3]) {
     if t1 <= t0 {
-        return (0.0, 0.0);
+        return ([0.0; 3], [0.0; 3]);
     }
-    let (mut energy, mut max) = (0.0f64, 0.0f32);
+    let (mut energy, mut max) = ([0.0f64; 3], [0.0f32; 3]);
     log.sounding(t0, t1, |s| {
-        let (mean, blocks) = cache.entry(s.clip.as_ptr() as usize).or_insert_with(|| {
-            let blocks: Vec<f32> = s.clip.chunks(POWER_BLOCK).map(|b| b.iter().map(|x| x * x).sum::<f32>() / b.len() as f32).collect();
-            let mean = s.clip.iter().map(|x| x * x).sum::<f32>() / s.clip.len().max(1) as f32;
-            (mean, blocks)
-        });
+        let ClipPower { mean, blocks } = cache.entry(s.clip.as_ptr() as usize).or_insert_with(|| ClipPower::of(s.clip, sample_rate));
         let g2 = s.gain * s.gain;
         let (a, b) = (t0.max(s.start), t1.min(s.end));
         if s.looped {
-            energy += (g2 * *mean) as f64 * (b - a);
-            max = max.max(g2 * *mean);
+            for k in 0..3 {
+                energy[k] += (g2 * mean[k]) as f64 * (b - a);
+                max[k] = max[k].max(g2 * mean[k]);
+            }
             return;
         }
         // the clip's blocks as emission times: block k spans
@@ -259,64 +257,105 @@ fn emitted_over(log: &PlayLog, t0: f64, t1: f64, cache: &mut HashMap<usize, (f32
         let span = POWER_BLOCK as f64 / s.rate as f64;
         let k0 = ((a - s.start) / span).floor().max(0.0) as usize;
         let k1 = (((b - s.start) / span).ceil().max(0.0) as usize).min(blocks.len());
-        for (k, &p) in blocks.iter().enumerate().take(k1).skip(k0) {
+        for (k, p) in blocks.iter().enumerate().take(k1).skip(k0) {
             let lo = a.max(s.start + k as f64 * span);
             let hi = b.min(s.start + (k + 1) as f64 * span);
             if hi > lo {
-                energy += (g2 * p) as f64 * (hi - lo);
-                max = max.max(g2 * p);
+                for j in 0..3 {
+                    energy[j] += (g2 * p[j]) as f64 * (hi - lo);
+                    max[j] = max[j].max(g2 * p[j]);
+                }
             }
         }
     });
-    ((energy / (t1 - t0)) as f32, max)
+    (energy.map(|e| (e / (t1 - t0)) as f32), max)
+}
+
+/// A clip's power in the tracer's three bands (low, mid, high), overall
+/// and per `POWER_BLOCK`: what each path's band gains weigh, so a bass
+/// loop heard through a wall — its low band passing, its mids 30 dB down
+/// — counts as the bass that arrives.
+pub struct ClipPower {
+    mean: [f32; 3],
+    blocks: Vec<[f32; 3]>,
+}
+
+impl ClipPower {
+    pub fn of(clip: &[f32], sample_rate: f32) -> Self {
+        let mut split = omg_dsp::bands::BandSplit::new(sample_rate);
+        let mut total = [0.0f64; 3];
+        let blocks = clip
+            .chunks(POWER_BLOCK)
+            .map(|b| {
+                let mut p = [0.0f32; 3];
+                for &x in b {
+                    let s = split.split(x);
+                    for k in 0..3 {
+                        p[k] += s[k] * s[k];
+                    }
+                }
+                for k in 0..3 {
+                    total[k] += p[k] as f64;
+                    p[k] /= b.len() as f32;
+                }
+                p
+            })
+            .collect();
+        Self { mean: total.map(|t| (t / clip.len().max(1) as f64) as f32), blocks }
+    }
 }
 
 impl Slot {
     /// What reaches the ears from `now` to `t`, read along the timeline
     /// from what the source emitted (only what is on record: nothing after
-    /// `now`), mid band, before the fader: each tap's gain² × the loudest
-    /// it emitted over its delay span, and the late fields — energy
+    /// `now`), before the fader, band by band (the clip's own power in
+    /// each band × the paths' gains in it — the bass behind a wall is what
+    /// arrives, however dull its mids): each tap's gain² × the loudest it
+    /// emitted over its delay span, and the late fields — energy
     /// integrators fed with the mean power emitted (from the first arrival
     /// on), decaying at their RT60, as they arrive at `t`. The power of the
-    /// loudest arrival.
-    fn arriving(&mut self, now: f64, t: f64, sample_rate: f32, cache: &mut HashMap<usize, (f32, Vec<f32>)>) -> f32 {
+    /// loudest arrival, all bands.
+    fn arriving(&mut self, now: f64, t: f64, sample_rate: f32, cache: &mut HashMap<usize, ClipPower>) -> f32 {
         let sr = sample_rate as f64;
         let pb = &self.latest;
         let (mut a, mut first) = (0.0f32, f64::INFINITY);
         for tap in &pb.taps {
             let d = tap.delay_s as f64 * sr;
             first = first.min(d);
-            a += tap.gains[1] * tap.gains[1] * emitted_over(&self.log, now - d, t - d, cache).1;
+            let max = emitted_over(&self.log, now - d, t - d, sample_rate, cache).1;
+            a += (0..3).map(|b| tap.gains[b] * tap.gains[b] * max[b]).sum::<f32>();
         }
         self.arrival_t = t;
         if !first.is_finite() {
-            self.late_p = 0.0;
-            self.remote_p = 0.0;
+            self.late_p = [0.0; 3];
+            self.remote_p = [0.0; 3];
             return a;
         }
         // the late fields take in what was emitted up to now
         let from = self.late_e.max(now - sr);
         if now > from {
-            let input = emitted_over(&self.log, from, now, cache).0;
+            let input = emitted_over(&self.log, from, now, sample_rate, cache).0;
             let dt = ((now - from) / sr) as f32;
             // steady at level² × the input's power, following it with the
             // room's energy decay
-            let take = |p: &mut f32, level: f32, rt60: f32| {
-                let k = if rt60 > 0.0 { (-13.8 * dt / rt60).exp() } else { 0.0 };
-                *p = *p * k + level * level * input * (1.0 - k);
+            let take = |p: &mut [f32; 3], level: &[f32; 3], rt60: &[f32; 3]| {
+                for b in 0..3 {
+                    let k = if rt60[b] > 0.0 { (-13.8 * dt / rt60[b]).exp() } else { 0.0 };
+                    p[b] = p[b] * k + level[b] * level[b] * input[b] * (1.0 - k);
+                }
             };
-            take(&mut self.late_p, pb.reverb.level[1], pb.reverb.rt60[1]);
+            take(&mut self.late_p, &pb.reverb.level, &pb.reverb.rt60);
             match &pb.remote {
-                Some(r) => take(&mut self.remote_p, r.send[1], r.rt60[1]),
-                None => self.remote_p = 0.0,
+                Some(r) => take(&mut self.remote_p, &r.send, &r.rt60),
+                None => self.remote_p = [0.0; 3],
             }
             self.late_e = now;
         }
         // ... and arrive one first-arrival delay later, decaying on to `t`
         let ahead = ((t - (now + first)) / sr).max(0.0) as f32;
         let decayed = |p: f32, rt60: f32| if rt60 > 0.0 { p * (-13.8 * ahead / rt60).exp() } else { 0.0 };
-        let remote_rt = pb.remote.as_ref().map_or(0.0, |r| r.rt60[1]);
-        a + decayed(self.late_p, pb.reverb.rt60[1]) + decayed(self.remote_p, remote_rt)
+        let remote_rt = pb.remote.as_ref().map_or([0.0; 3], |r| r.rt60);
+        a + (0..3).map(|b| decayed(self.late_p[b], pb.reverb.rt60[b]) + decayed(self.remote_p[b], remote_rt[b])).sum::<f32>()
     }
 
     /// Emission-clock time after which nothing it plays can still be
@@ -454,7 +493,7 @@ pub struct Mixer {
     max_convolved: usize,
     /// Power tables of the clips played (by their data's address), for
     /// the audible window: (mean, per `POWER_BLOCK`).
-    clip_power: HashMap<usize, (f32, Vec<f32>)>,
+    clip_power: HashMap<usize, ClipPower>,
     head: [f32; 3],
     head_from_frames: bool,
     // scratch, preallocated
@@ -540,8 +579,8 @@ impl Mixer {
             quiet_at: f64::NEG_INFINITY,
             sounded_until: f64::NEG_INFINITY,
             audible_next: false,
-            late_p: 0.0,
-            remote_p: 0.0,
+            late_p: [0.0; 3],
+            remote_p: [0.0; 3],
             late_e: f64::NEG_INFINITY,
             arrival_t: 0.0,
             under_since: f64::INFINITY,
@@ -925,6 +964,20 @@ impl Mixer {
     /// Play `clip` on a source (its channel is created if the source has
     /// not been in a frame yet). The clip starts sounding at the source
     /// now and reaches the listener one path delay later.
+    /// Measure a clip's band powers (the audible window weighs paths by
+    /// them) now, off the audio thread's hot path: call it where clips
+    /// are loaded. Otherwise the first sound of a clip measures it.
+    pub fn prime_clip(&mut self, clip: &Clip) {
+        let sr = self.sample_rate;
+        self.clip_power.entry(clip.as_ptr() as usize).or_insert_with(|| ClipPower::of(clip, sr));
+    }
+
+    /// A clip's band powers measured elsewhere (`ClipPower::of`, on the
+    /// game thread): the threaded engine hands them over with its first play.
+    pub fn add_clip_power(&mut self, clip: &Clip, power: ClipPower) {
+        self.clip_power.entry(clip.as_ptr() as usize).or_insert(power);
+    }
+
     pub fn play(&mut self, source: SourceId, clip: &Clip, play: Play) -> VoiceId {
         let v = self.alloc_voice();
         self.play_as(v, source, clip, play)

@@ -22,6 +22,14 @@ impl BandSplit {
         Self { c_lo: coef(XOVER_LO_HZ), c_hi: coef(XOVER_HI_HZ), lp_lo: 0.0, lp_hi: 0.0 }
     }
 
+    /// One sample in → its three bands (low, mid, high; they sum to it).
+    #[inline]
+    pub fn split(&mut self, x: f32) -> [f32; 3] {
+        self.lp_lo += self.c_lo * (x - self.lp_lo);
+        self.lp_hi += self.c_hi * (x - self.lp_hi);
+        [self.lp_lo, self.lp_hi - self.lp_lo, x - self.lp_hi]
+    }
+
     /// One sample in → shaped sample out, with per-band amplitude gains.
     #[inline]
     pub fn process(&mut self, x: f32, gains: &[f32; 3]) -> f32 {

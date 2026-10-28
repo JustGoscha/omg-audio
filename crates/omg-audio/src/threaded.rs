@@ -109,6 +109,8 @@ impl<T> Drop for Ring<T> {
 /// Mixer commands (game thread → audio thread).
 enum MixCmd {
     Play(VoiceId, SourceId, Clip, Play),
+    /// A clip's band powers, measured on the game thread before its first play.
+    Power(Clip, Box<crate::mixer::ClipPower>),
     Near(VoiceId, Clip, bool, f32, f32),
     Stop(VoiceId),
     Gain(SourceId, f32),
@@ -195,6 +197,10 @@ pub struct Engine {
     /// it was first sent (see `set_listener`).
     clock: Instant,
     pose: Option<([f32; 3], f64)>,
+    /// Clips whose band powers went to the mixer (by address; the weak
+    /// reference tells a freed clip from a new one at the same address).
+    powered: std::collections::HashMap<usize, std::sync::Weak<[f32]>>,
+    sample_rate: f32,
 }
 
 /// The audio-thread half: call `render` from your audio callback.
@@ -244,6 +250,8 @@ impl Engine {
             next_voice: 1 << 31, // disjoint from ids the Mixer hands out itself
             clock: Instant::now(),
             pose: None,
+            powered: std::collections::HashMap::new(),
+            sample_rate,
         };
         (engine, out)
     }
@@ -353,6 +361,14 @@ impl Engine {
 
     /// Play a clip on a source (see `Mixer::play`).
     pub fn play(&mut self, source: SourceId, clip: &Clip, play: Play) -> VoiceId {
+        let key = clip.as_ptr() as usize;
+        let known = self.powered.get(&key).and_then(|w| w.upgrade()).is_some_and(|c| Arc::ptr_eq(&c, clip));
+        if !known {
+            let power = crate::mixer::ClipPower::of(clip, self.sample_rate);
+            if self.mix(MixCmd::Power(clip.clone(), Box::new(power))) {
+                self.powered.insert(key, Arc::downgrade(clip));
+            }
+        }
         let v = self.voice();
         if self.mix(MixCmd::Play(v, source, clip.clone(), play)) { v } else { VoiceId::NONE }
     }
@@ -511,6 +527,7 @@ impl AudioOut {
                 MixCmd::Play(v, s, clip, p) => {
                     self.mixer.play_as(v, s, &clip, p);
                 }
+                MixCmd::Power(clip, power) => self.mixer.add_clip_power(&clip, *power),
                 MixCmd::Near(v, clip, right, d, g) => {
                     self.mixer.play_near_as(v, &clip, right, d, g);
                 }
