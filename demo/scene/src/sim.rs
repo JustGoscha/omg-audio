@@ -323,6 +323,7 @@ impl Sim {
             reverb: omg_core::params::ReverbParams { rt60: [0.25; NBANDS], level: [0.0; NBANDS] },
             remote: None,
             version: self.version,
+            onset_s: 0.0,
         }
     }
 
@@ -334,7 +335,7 @@ impl Sim {
         let reverb = estimate_reverb(&self.echo_avg);
 
         self.version += 1;
-        ParamBlock { taps: self.taps_buf.clone(), reverb, remote: None, version: self.version }
+        ParamBlock { taps: self.taps_buf.clone(), reverb, remote: None, version: self.version, onset_s: 0.0 }
     }
 
     /// C6d: the late field measured on the WORLD geometry — actual source

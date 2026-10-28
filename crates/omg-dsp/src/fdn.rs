@@ -139,13 +139,19 @@ impl Fdn {
     /// loop shelf included) of it, and the outputs sum to that ·
     /// ḡ² / (1 − ḡ²). A level `L` times it plays energy L² — at any RT60,
     /// like a path of gain L.
+    ///
+    /// From the decay the lines have NOW (their smoothed gains): a new
+    /// RT60 glides in, and so does the normalization with it. Applied to
+    /// the input, it scales what goes in; what already rings keeps its
+    /// energy and decays at the new rate — a decay that changes never
+    /// rescales the tail in place (a step at every new RT60).
     pub fn energy_norm(&self) -> f32 {
         let g2 = self
             .gains
             .iter()
             .zip(&self.damp_coef)
             .map(|(g, s)| {
-                let g = g.target_val() * shelf_gain(s.target_val(), self.xover, MID_HZ, self.sample_rate);
+                let g = g.current() * shelf_gain(s.current(), self.xover, MID_HZ, self.sample_rate);
                 g * g
             })
             .sum::<f32>()

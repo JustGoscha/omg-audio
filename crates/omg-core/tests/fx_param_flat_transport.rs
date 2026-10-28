@@ -37,7 +37,7 @@ fn block(n_taps: usize, remote: bool, version: u64, seed: u64) -> ParamBlock {
         send: [0.12, 0.06, 0.01],
         sh: core::array::from_fn(|i| (i as f32 - 4.0) * 0.123),
     });
-    ParamBlock { taps, reverb, remote, version }
+    ParamBlock { taps, reverb, remote, version, onset_s: 0.0137 * seed as f32 }
 }
 
 fn bits3(a: [f32; NBANDS]) -> [u32; NBANDS] {
@@ -46,6 +46,7 @@ fn bits3(a: [f32; NBANDS]) -> [u32; NBANDS] {
 
 fn assert_same(a: &ParamBlock, b: &ParamBlock) {
     assert_eq!(a.version, b.version, "version");
+    assert_eq!(a.onset_s.to_bits(), b.onset_s.to_bits(), "onset");
     assert_eq!(a.taps.len(), b.taps.len(), "tap count");
     for (i, (x, y)) in a.taps.iter().zip(&b.taps).enumerate() {
         assert_eq!(x.key, y.key, "tap {i} key");
@@ -113,7 +114,7 @@ fn reused_buffer_does_not_leak_stale_data() {
     let small = block(3, false, 2, 5);
     small.write_flat(&mut flat);
     assert_eq!(flat.len(), small.flat_len());
-    assert!(flat[9..FLAT_HEADER].iter().all(|&x| x == 0.0), "stale remote payload in header");
+    assert!(flat[9..24].iter().all(|&x| x == 0.0), "stale remote payload in header");
     let back = ParamBlock::read_flat(&flat);
     assert_same(&small, &back);
 }
@@ -142,7 +143,6 @@ fn realistic_engine_keys_survive() {
 /// only 8 used) — carry key bits 16..31 in `o + 8` and bits 0..15 in `o`
 /// (both exact small integers in f32, NaN-free unlike a raw bit-cast).
 #[test]
-#[ignore = "BUG: write_flat stores Tap.key as f32 — keys ≥ 2^24 (omg-scene bent-path & mesh-PT keys) round and collide"]
 fn large_keys_stay_distinct_and_exact() {
     let mut rng = Rng::new(7);
     let base = 100_000u32 + 0x0800_0000;

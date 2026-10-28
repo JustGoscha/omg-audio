@@ -66,6 +66,12 @@ pub struct ParamBlock {
     /// arriving through the portal.
     pub remote: Option<RemoteReverb>,
     pub version: u64,
+    /// When the source's sound arrives over the free field (its distance
+    /// over the speed of sound, s): the reverb's reference — the traced
+    /// responses are timed from it, and it moves only as the source and
+    /// the listener do, whichever paths are present (0: unknown — the
+    /// earliest tap).
+    pub onset_s: f32,
 }
 
 /// Flat f32 layout so a ParamBlock can cross thread/worker boundaries
@@ -74,8 +80,10 @@ pub struct ParamBlock {
 ///   [2..8]   reverb rt60[3], level[3]
 ///   [8]      remote flag (0/1)
 ///   [9..24]  remote rt60[3], send[3], sh[9]
-///   then per tap 9 floats: key, delay_s, dir[3], gains[3]
-pub const FLAT_HEADER: usize = 24;
+///   [24]     onset_s
+///   then per tap 9 floats: key bits 0..16, delay_s, dir[3], gains[3],
+///   key bits 16..32 (each half an exact small integer in f32)
+pub const FLAT_HEADER: usize = 25;
 pub const FLAT_PER_TAP: usize = 9;
 
 impl ParamBlock {
@@ -100,12 +108,14 @@ impl ParamBlock {
             }
             out[15..24].copy_from_slice(&r.sh);
         }
+        out[24] = self.onset_s;
         for (i, t) in self.taps.iter().enumerate() {
             let o = FLAT_HEADER + i * FLAT_PER_TAP;
-            out[o] = t.key as f32;
+            out[o] = (t.key & 0xFFFF) as f32;
             out[o + 1] = t.delay_s;
             out[o + 2..o + 5].copy_from_slice(&t.dir);
             out[o + 5..o + 8].copy_from_slice(&t.gains);
+            out[o + 8] = (t.key >> 16) as f32;
         }
     }
 
@@ -114,6 +124,7 @@ impl ParamBlock {
         let mut pb = ParamBlock {
             taps: Vec::with_capacity(n_taps),
             version: data[0] as u64,
+            onset_s: data[24],
             ..Default::default()
         };
         for b in 0..NBANDS {
@@ -132,7 +143,7 @@ impl ParamBlock {
         for i in 0..n_taps {
             let o = FLAT_HEADER + i * FLAT_PER_TAP;
             pb.taps.push(Tap {
-                key: data[o] as u32,
+                key: data[o] as u32 | (data[o + 8] as u32) << 16,
                 delay_s: data[o + 1],
                 dir: [data[o + 2], data[o + 3], data[o + 4]],
                 gains: [data[o + 5], data[o + 6], data[o + 7]],

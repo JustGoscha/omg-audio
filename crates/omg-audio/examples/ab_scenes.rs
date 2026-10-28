@@ -573,6 +573,36 @@ fn crackle(v4: bool) {
         }
         show(name, &c);
     }
+    // a crowd: 24 bass sources over both rooms and the field, the mixer
+    // at its lightest budget (48 paths, 4 HRTF, 12 voices, 2 convolved),
+    // the listener walking through: paths and kernels change hands
+    {
+        let mut rig = Rig::new(v4);
+        let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        rig.mix.set_budget(env("TAPS", 48), env("POINTS", 4), env("VOICES", 12));
+        rig.mix.set_convolution_budget(env("CONV", 2));
+        for k in 0..24 {
+            let (x, y) = (1.0 + (k % 6) as f32 * 3.6, 0.8 + (k / 6) as f32 * 1.4);
+            let src = rig.sim.add_source(SourceDesc { position: [x, y, 1.0 + 0.1 * (k % 3) as f32], gain: 0.4, active: true });
+            let part = organ(48_000);
+            let shift = (k * 1931) % 48_000;
+            let rotated: Vec<f32> = part[shift..].iter().chain(&part[..shift]).copied().collect();
+            rig.mix.play(src, &clip(&rotated), Play::LOOP);
+        }
+        rig.sim.set_listener([2.0, 3.0, 1.7], 0.0, 0.0, 0.0);
+        rig.run(3.0);
+        let mut c = Crackle::new();
+        let mut x = 2.0f32;
+        for dir in [1.0f32, -1.0] {
+            for _ in 0..(16.0 / 1.4 * 100.0) as usize {
+                x += dir * 1.4 * BLOCK as f32 / SR;
+                rig.sim.set_listener([x, 3.0 + 0.8 * (x * 0.7).sin(), 1.7], 0.0, 0.0, 0.0);
+                let (l, _) = rig.block();
+                c.feed(&l);
+            }
+        }
+        show("crowd, lightest budget", &c);
+    }
     // the walk out of A through B into the field, and back
     {
         let mut rig = Rig::new(v4);

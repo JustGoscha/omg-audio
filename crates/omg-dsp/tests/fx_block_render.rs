@@ -89,6 +89,7 @@ fn scene(v: u64, k: usize) -> ParamBlock {
         reverb: ReverbParams { rt60: [1.2, 1.0, 0.7], level: if late { [0.05, 0.04, 0.02] } else { [0.0; 3] } },
         remote,
         version: v,
+        onset_s: 0.0,
     }
 }
 

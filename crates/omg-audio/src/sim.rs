@@ -870,7 +870,8 @@ impl Simulation {
                 first_traced.push(s.id);
             }
             let g = s.gain;
-            let mut pb = ParamBlock { version, ..Default::default() };
+            let onset_s = (s.pos - ear).length() / omg_core::SPEED_OF_SOUND;
+            let mut pb = ParamBlock { version, onset_s, ..Default::default() };
             pb.taps.reserve(f.taps.len());
             for t in f.taps {
                 pb.taps.push(Tap { gains: core::array::from_fn(|b| t.gains[b] * g), ..t });
@@ -973,7 +974,9 @@ impl Simulation {
         for (k, &i) in idx.iter().enumerate() {
             let s = &mut self.sources[i];
             let g = s.gain;
-            let mut changed = false;
+            let onset_s = (s.pos - ear).length() / omg_core::SPEED_OF_SOUND;
+            let mut changed = s.block.onset_s != onset_s;
+            s.block.onset_s = onset_s;
             for t in s.block.taps.iter_mut() {
                 if let Some(n) = taps[k].iter().find(|n| n.key == t.key) {
                     *t = Tap { gains: core::array::from_fn(|b| n.gains[b] * g), ..*n };

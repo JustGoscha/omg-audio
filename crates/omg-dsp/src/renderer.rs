@@ -536,6 +536,11 @@ pub struct Renderer {
     dense: crate::dense::DenseConv,
     /// The engine time the convolver's input continues at.
     dense_at: f64,
+    /// The FDNs' input normalization (`Fdn::energy_norm`, own and remote),
+    /// taken at each re-selection: [own from, own to, remote from, remote
+    /// to] — each period glides from the last value to the new one, the
+    /// same on the per-sample and the block path.
+    norms: Option<[f32; 4]>,
     /// Turn the dense output about z by this (a host whose bus is in the
     /// listener's yaw frame while its kernels are in the world's: the
     /// web), smoothed. 0: the bus and the kernels share a frame.
@@ -652,6 +657,7 @@ impl Renderer {
             onset: PathDelay::new(1.0),
             dense: crate::dense::DenseConv::new(),
             dense_at: f64::NAN,
+            norms: None,
             dense_yaw: Smoothed::new(0.0, 0.03, sample_rate),
             since_params: 0,
             update_interval: 0.05 * sample_rate as f64,
@@ -1016,7 +1022,17 @@ impl Renderer {
             // up within ~1 smoothing constant.
         }
 
-        if let Some(first) = pb.taps.iter().map(|t| t.delay_s as f64 * self.sample_rate as f64).reduce(f64::min) {
+        // the reverb's input: the source as of its free-field arrival (the
+        // traced responses' reference) — it moves only as the source and
+        // the listener do. Not the earliest tap: a blocked direct path or
+        // a budget cut would make that jump by tens of ms, and the jump
+        // would play through the reverb as a burst.
+        let onset = if pb.onset_s > 0.0 {
+            Some(pb.onset_s as f64 * self.sample_rate as f64)
+        } else {
+            pb.taps.iter().map(|t| t.delay_s as f64 * self.sample_rate as f64).reduce(f64::min)
+        };
+        if let Some(first) = onset {
             if self.first_params || (self.onset.target_val() - first).abs() >= thresh {
                 self.onset.snap(first);
             } else {
@@ -1172,6 +1188,11 @@ impl Renderer {
     /// crossfades index changes) and refresh the remote-reverb aperture
     /// spread from the smoothed door direction.
     fn reselect(&mut self, yaw: f32, pitch: f32, roll: f32) {
+        let (own, rem) = (self.fdn.energy_norm(), self.remote_fdn.energy_norm());
+        self.norms = Some(match self.norms {
+            Some([_, o, _, r]) => [o, own, r, rem],
+            None => [own, own, rem, rem],
+        });
         if let Some(grid) = &self.grid {
             let rot = HeadRotation::new(yaw, pitch, roll);
             for tap in &mut self.taps {
@@ -1404,9 +1425,10 @@ impl Renderer {
             self.c_low,
             self.c_high,
         );
-        let own_in = if self.mute_own_fdn { 0.0 } else { wet_in };
-        let own_norm = self.fdn.energy_norm();
-        fdn_step(&mut self.fdn, &mut self.fdn_idle, own_in, 1.0, own_level * own_norm, own_gate, &self.fdn_dirs, foa);
+        // energy-calibrated on the way in (`Fdn::energy_norm`)
+        let [own_norm, rem_norm] = self.norm_at(RESELECT_EVERY - 1 - self.reselect_countdown);
+        let own_in = if self.mute_own_fdn { 0.0 } else { wet_in * own_norm };
+        fdn_step(&mut self.fdn, &mut self.fdn_idle, own_in, 1.0, own_level, own_gate, &self.fdn_dirs, foa);
 
         // Coupled-room wet: source room's reverb as a directional emitter
         // at the doorway (mono sum — a distant aperture, not a diffuse field
@@ -1427,9 +1449,17 @@ impl Renderer {
         for k in 0..NCH {
             self.remote_sh[k].tick();
         }
-        let rem_in = if self.mute_remote { 0.0 } else { rin };
-        let rem_norm = self.remote_fdn.energy_norm();
-        fdn_step(&mut self.remote_fdn, &mut self.remote_idle, rem_in, 1.0, rem_level * rem_norm, rem_gate, &self.remote_spread, foa);
+        let rem_in = if self.mute_remote { 0.0 } else { rin * rem_norm };
+        fdn_step(&mut self.remote_fdn, &mut self.remote_idle, rem_in, 1.0, rem_level, rem_gate, &self.remote_spread, foa);
+    }
+
+    /// The FDNs' input normalization `k` samples into a re-selection
+    /// period (own, remote).
+    #[inline]
+    fn norm_at(&self, k: u32) -> [f32; 2] {
+        let [a, b, c, d] = self.norms.unwrap_or([1.0; 4]);
+        let t = (k + 1) as f32 / RESELECT_EVERY as f32;
+        [a + (b - a) * t, c + (d - c) * t]
     }
 
     /// `late` for block samples `off..off + x.len()` (`x[j]` = the source
@@ -1446,21 +1476,23 @@ impl Renderer {
         let mut rem_in = [0.0f32; BLOCK];
         let mut rem_lvl = [0.0f32; BLOCK];
         let mut rem_gate = [0.0f32; BLOCK];
-        // energy-calibrated: a level L plays L² (see `Fdn::energy_norm`)
-        let (own_norm, rem_norm) = (self.fdn.energy_norm(), self.remote_fdn.energy_norm());
+        // energy-calibrated on the way in (a level L plays L²: see
+        // `Fdn::energy_norm`), gliding over each re-selection period
+        let k0 = RESELECT_EVERY - self.reselect_countdown - m as u32;
         for (j, &x) in x.iter().enumerate() {
+            let [own_norm, rem_norm] = self.norm_at(k0 + j as u32);
             let own_level = self.fdn_level.tick();
             let gate = if own_level > 1e-6 || self.fdn_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
             let wet_in = self.send_eq.tick(x * gate, self.send_low.tick(), self.send_high.tick(), c_low, c_high);
-            own_in[j] = if self.mute_own_fdn { 0.0 } else { wet_in };
-            own_lvl[j] = own_level * own_norm;
+            own_in[j] = if self.mute_own_fdn { 0.0 } else { wet_in * own_norm };
+            own_lvl[j] = own_level;
             own_gate[j] = gate;
             let rem_level = self.remote_level.tick();
             let gate = if rem_level > 1e-6 || self.remote_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
             let rpre = self.remote_lp.tick(x * gate, self.remote_lp_coef.tick());
             let rin = self.remote_eq.tick(rpre, self.remote_low.tick(), self.remote_high.tick(), c_low, c_high);
-            rem_in[j] = if self.mute_remote { 0.0 } else { rin };
-            rem_lvl[j] = rem_level * rem_norm;
+            rem_in[j] = if self.mute_remote { 0.0 } else { rin * rem_norm };
+            rem_lvl[j] = rem_level;
             rem_gate[j] = gate;
         }
         let own = FdnFeed { input: &own_in[..m], pre: 1.0, lvl: &own_lvl[..m], gate: &own_gate[..m] };

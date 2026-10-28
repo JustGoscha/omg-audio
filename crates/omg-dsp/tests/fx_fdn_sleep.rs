@@ -28,6 +28,7 @@ fn own(level: f32, version: u64) -> ParamBlock {
         reverb: ReverbParams { rt60: [0.5; 3], level: [level; 3] },
         remote: None,
         version,
+        onset_s: 0.0,
     }
 }
 

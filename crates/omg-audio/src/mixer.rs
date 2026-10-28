@@ -381,6 +381,7 @@ impl Slot {
             self.filtered.remote = None;
         }
         self.filtered.version = pb.version;
+        self.filtered.onset_s = pb.onset_s;
     }
 }
 
@@ -1241,4 +1242,5 @@ fn copy_block(dst: &mut ParamBlock, src: &ParamBlock) {
     dst.reverb = src.reverb;
     dst.remote = src.remote;
     dst.version = src.version;
+    dst.onset_s = src.onset_s;
 }

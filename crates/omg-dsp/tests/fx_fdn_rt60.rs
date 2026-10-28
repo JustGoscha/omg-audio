@@ -130,6 +130,7 @@ fn own_field_lean(rt60: f32) -> (f64, f64, f64) {
         reverb: ReverbParams { rt60: [rt60; 3], level: [0.3; 3] },
         remote: None,
         version: 1,
+        onset_s: 0.0,
     });
     let mut src = Noise::new(42);
     let dec = StereoDecoder::new();
