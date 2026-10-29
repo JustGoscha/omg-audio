@@ -154,7 +154,11 @@ start_recording`, `demo/godot/demo/record.gd`, `tools/record_runs.sh`):
 
 ## Still open (OPEN.md)
 
-A distinct echo found by chance
-(the chain finders' rays); the estimate's ±2–4 dB wobble moving at the
-lowest rungs; a cheaper transmission query (half the walk); wasm walks
-on one thread.
+A loud room heard through its walls or a shut door is a heavy-tailed
+estimate: young (right after a restart) it reads low and steps up as
+rare strong paths come — paths from the sources too (bidirectional) or
+learnt splitting at partitions would fix it. Also: the estimate's ±2–4
+dB wobble moving at the lowest rungs; a cheaper transmission query (half
+the walk); wasm walks on one thread; the web page's real-time stamps not
+yet measured in a browser; whether the town has facade echoes the chain
+finder misses (a deterministic image-source reference).
