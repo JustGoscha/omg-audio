@@ -43,6 +43,12 @@ connected through walls from the listener's vertices, weighted against
 the walk's own paths by multiple importance sampling (bidirectional) —
 or split at partitions by a learnt value of what lies beyond (path
 guiding). Large.
+The same shows right after a door shuts: the field through the shut
+door restarts as a young estimate — 50–100 ms after the shut its first
+part reads 2–4 dB low in the bass and mids, 7–8 dB in the treble, its
+tail 5–10 dB low; at 0.8 s a strong sample overshoots the mids +4 dB
+(`assess door`, real time, Linkwitz–Riley bands). One-pole bands and
+the stand-ins' coherent sum (+6 dB, fixed) had hidden it.
 
 ### Moving sources on the GPU walk
 The GPU walk connects to where a source emitted its direct sound; its

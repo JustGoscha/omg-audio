@@ -287,3 +287,48 @@ fn a_door_shut_between_sounds_is_shut_for_the_next_one() {
     assert!(db(open) - db(settled) > 15.0, "setup: the door shuts the club off ({:.1} dB)", db(open) - db(settled));
     assert!((db(just) - db(settled)).abs() < 4.0, "50 ms after the shut {:.1} dB, settled {:.1} dB", db(just), db(settled));
 }
+
+/// The bell clicks every 3 s, the listener in the open field, nothing
+/// moving: every click is the same click. Between clicks the bell drops
+/// out of the audible window (its tail under the scene by 60 dB); a drop
+/// that falls just before the next arrival brought it back mid-fade —
+/// one click in ten 5 dB down — until a source back in the window
+/// started at full level (nothing of it was heard to fade from).
+#[test]
+fn a_click_repeated_is_the_same_click() {
+    let mut sim = sim();
+    let mut town = Town::new(&mut sim);
+    only(&mut town, &mut sim, BELLS);
+    let mut mix = Mixer::with_capacity(SR, Hrir::builtin(), 32);
+    mix.set_ear(false);
+    let ids = town.sources[BELLS].clone();
+    let lis = [20.0f32, 60.0, 1.6];
+    let click = clip(&[1.0]);
+    let block = 400usize;
+    let l_end = 22.0f32;
+    let clicks: Vec<f32> = (0..6).map(|k| 3.0 + 3.0 * k as f32).collect();
+    let (mut l, mut r) = (Vec::new(), Vec::new());
+    let mut next = 0;
+    for b in 0..(l_end * SR) as usize / block {
+        let t = (b * block) as f32 / SR;
+        sim.set_listener(lis, 0.0, 0.0, 0.0);
+        if b % 6 == 0 {
+            mix.apply(&sim.tick());
+        } else if let Some(f) = sim.tick_exact() {
+            mix.apply(&f);
+        }
+        while next < clicks.len() && clicks[next] <= t {
+            for &id in &ids {
+                mix.play(id, &click, Play::ONCE);
+            }
+            next += 1;
+        }
+        let (mut a, mut c) = (vec![0.0f32; block], vec![0.0f32; block]);
+        mix.render(&mut a, &mut c);
+        l.extend_from_slice(&a);
+        r.extend_from_slice(&c);
+    }
+    let e: Vec<f32> = clicks.iter().map(|&t| db(energy(&l, t, t + 2.9) + energy(&r, t, t + 2.9))).collect();
+    let (lo, hi) = e.iter().fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
+    assert!(hi - lo < 0.5, "the clicks span {:.1} dB: {e:?}", hi - lo);
+}

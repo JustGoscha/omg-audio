@@ -220,6 +220,9 @@ struct Slot {
     /// forgets it.
     sounded_until: f64,
     audible_next: bool,
+    /// Back in the audible window this look (its fader snaps up once the
+    /// voice budget has had its say).
+    back: bool,
     /// The audible window (`AUDIBLE_RANGE_DB`): the late fields' power
     /// arriving (its own room's, the remote room's), when it was last
     /// looked at, and whether it is out of the window now (not rendered).
@@ -601,6 +604,7 @@ impl Mixer {
             quiet_at: f64::NEG_INFINITY,
             sounded_until: f64::NEG_INFINITY,
             audible_next: false,
+            back: false,
             late_p: [0.0; 3],
             remote_p: [0.0; 3],
             late_e: f64::NEG_INFINITY,
@@ -890,8 +894,15 @@ impl Mixer {
                 if masked {
                     s.audible.set(0.0);
                 } else {
-                    // nothing it rendered before is still above the floor
+                    // nothing it rendered before is still above the floor:
+                    // what it renders now starts as it is — its paths, and
+                    // (below) its fader: a fade-in from what wasn't heard
+                    // only dips what comes (masked 48 ms before a click's
+                    // arrival, back 15 ms before it, the bell's click
+                    // landed mid-fade, 5 dB down)
                     s.renderer.settle();
+                    s.renderer.snap_next();
+                    s.back = true;
                 }
                 s.dirty = true;
                 moved = true;
@@ -900,6 +911,12 @@ impl Mixer {
         if moved {
             self.rebudget();
             self.reselect();
+            for s in self.slots.iter_mut().filter(|s| s.back) {
+                s.back = false;
+                if s.audible.target_val() > 0.0 {
+                    s.audible.snap(1.0);
+                }
+            }
         }
     }
 

@@ -223,6 +223,15 @@ impl TapState {
             g.set(0.0);
         }
     }
+
+    /// Gone at once (nothing of it is being heard: see `snap_next`).
+    fn drop_now(&mut self) {
+        self.key = None;
+        self.tail = 0;
+        for g in &mut self.g_sh {
+            g.snap(0.0);
+        }
+    }
 }
 
 struct TapTargets {
@@ -1013,7 +1022,11 @@ impl Renderer {
         for slot in &mut self.taps {
             if let Some(k) = slot.key {
                 if !incoming.iter().any(|t| t.key == k) {
-                    slot.release(APPEAR, &self.coefs);
+                    if self.snap_born {
+                        slot.drop_now();
+                    } else {
+                        slot.release(APPEAR, &self.coefs);
+                    }
                 }
             }
         }
@@ -1068,7 +1081,11 @@ impl Renderer {
                 other => {
                     // Path identity changed (or new): crossfade, never glide.
                     if let Some(i) = other {
-                        self.taps[i].release(RETARGET, &self.coefs);
+                        if self.snap_born {
+                            self.taps[i].drop_now();
+                        } else {
+                            self.taps[i].release(RETARGET, &self.coefs);
+                        }
                     }
                     born.push((t, other.is_some()));
                 }
@@ -1184,9 +1201,12 @@ impl Renderer {
         self.snap_born = false;
     }
 
-    /// Let the next update's new paths start at full level: a source
-    /// heard for the first time whose sounds all begin now (nothing
-    /// sounding to crossfade from — a fade-in would swallow a click).
+    /// Let the next update's new paths start at full level and its
+    /// vanished or re-born ones go at once: for a renderer nobody has
+    /// heard since its last paths — a source heard for the first time
+    /// whose sounds all begin now, or one back in the audible window — a
+    /// fade-in would swallow a click, and a crossfade from what wasn't
+    /// heard would only dip what comes.
     pub fn snap_next(&mut self) {
         self.snap_born = true;
     }
