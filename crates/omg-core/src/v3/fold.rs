@@ -494,7 +494,7 @@ impl Tracer {
                 if self.v4 {
                     st.fold_v4(acc, budget, listener, s.pos);
                 } else {
-                    st.fold(acc.early, acc.echo, budget);
+                    st.fold(acc.early, acc.echo, budget, self.v6);
                 }
             }
             out.push(if self.v4 {

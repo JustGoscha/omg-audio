@@ -47,6 +47,10 @@ pub struct TickCosts {
     pub chains: f32,
     /// The tick's estimates folded into each source's field.
     pub fold: f32,
+    /// The world had just changed: this tick traced extra rays for the
+    /// averages restarting (`Tracer::burst`) — its cost is the change's,
+    /// not the quality's (a governor leaves it out).
+    pub burst: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -868,7 +872,11 @@ struct SourceState {
     at: Option<(Vec3, Vec3)>,
     /// v4: the world changed since the last tick (a door moved): the
     /// response follows as when moving — the tests say what changed.
+    /// v6: its averages start over (`fold`).
     restart: bool,
+    /// v6: ticks averaged since the world last changed (`fold`: a
+    /// running mean from the change on, until it is as steady as the EMA).
+    since: u32,
 }
 
 /// The diffuse field's mid-band energy in one echo slot at `rel`: the
@@ -892,9 +900,21 @@ impl SourceState {
         early: HashMap<u32, Bin>,
         echo: Echogram,
         budget: Budget,
+        v6: bool,
     ) {
         let first = self.echo.is_none();
-        let alpha_early = if first { 1.0 } else { budget.ema.clamp(0.0, 1.0) };
+        // v6: the world changed (a door moved) — nothing averaged before
+        // it describes this world: the averages start over from this
+        // tick, a running mean (the n-th tick weighs 1/n) until it is as
+        // steady as the EMA, which takes over. The sound follows a door at
+        // once, as steady as n ticks allow (and the world change's burst
+        // traces more rays for the first of them)
+        if v6 && std::mem::take(&mut self.restart) {
+            self.since = 0;
+        }
+        self.since = self.since.saturating_add(1);
+        let fresh = if v6 { 1.0 / self.since as f32 } else { 0.0 };
+        let alpha_early = if first { 1.0 } else { budget.ema.clamp(0.0, 1.0).max(fresh) };
         // solved chains are exact, not noisy: averaged like the early bins
         // only so a chain that just validated fades in rather than pops
         let alpha_echo = alpha_early;
@@ -920,7 +940,7 @@ impl SourceState {
         self.early.retain(|_, b| b.e.iter().any(|&e| e > 1e-12));
         // late echogram: a slower statistic, a slower average
         match &mut self.echo {
-            Some(e) => e.ema(&echo, budget.late_ema.clamp(0.0, 1.0)),
+            Some(e) => e.ema(&echo, budget.late_ema.clamp(0.0, 1.0).max(fresh)),
             None => self.echo = Some(echo),
         }
         // discrete echoes: the salient solved chains (with hysteresis),
@@ -1518,6 +1538,10 @@ pub struct Tracer {
 /// rays (`Tracer::burst`).
 const BURST_TICKS: u32 = 3;
 const BURST_RAYS: u32 = 2;
+/// v6: after the world changes, this many ticks trace this many times
+/// the late rays (and the first `BURST_TICKS` twice the early ones).
+const V6_BURST_TICKS: u32 = 5;
+const V6_BURST_LATE: u32 = 4;
 
 /// An exactly solved path, for a debug view: unlike the sampled ones it
 /// is the same path from tick to tick (the same `key` while it exists)
@@ -1915,9 +1939,23 @@ impl Tracer {
         let (direct, vis, mut edge_taps) = self.prepare(world, listener, sources, budget);
         self.costs.direct = clock.ms() - self.costs.edges;
         // the world just changed: more rays for the responses restarting
+        self.costs.burst = self.burst > 0;
         let budget = if self.burst > 0 {
             self.burst -= 1;
-            Budget { rays: budget.rays * BURST_RAYS, late_rays: budget.late_rays * BURST_RAYS, ..budget }
+            if self.v6 {
+                // v6's averages start over (`SourceState::fold`): the late
+                // family's mean gets as many samples within
+                // `V6_BURST_TICKS` as its EMA holds — (2 − α)/α ≈ 19 ticks'
+                // at α 0.1 — the early one's (≈ 5 at α 0.35) in the first
+                // `BURST_TICKS`. Fewer, and a mean of a few ticks of a
+                // heavy-tailed estimate sits under the truth and steps up
+                // as the rare large samples come (the club through its
+                // shut door: −17 dB, then +3, +5 dB over two seconds)
+                let early = if self.burst + BURST_TICKS >= V6_BURST_TICKS { BURST_RAYS } else { 1 };
+                Budget { rays: budget.rays * early, late_rays: budget.late_rays * V6_BURST_LATE, ..budget }
+            } else {
+                Budget { rays: budget.rays * BURST_RAYS, late_rays: budget.late_rays * BURST_RAYS, ..budget }
+            }
         } else {
             budget
         };
@@ -1956,7 +1994,7 @@ impl Tracer {
                 st.fold_v4(acc, budget, listener, s.pos);
                 out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared));
             } else {
-                st.fold(acc.early, acc.echo, budget);
+                st.fold(acc.early, acc.echo, budget, self.v6);
                 out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
             }
         }
@@ -2480,7 +2518,7 @@ impl Tracer {
             for st in self.state.values_mut() {
                 st.restart = true;
             }
-            self.burst = BURST_TICKS;
+            self.burst = if self.v6 { V6_BURST_TICKS } else { BURST_TICKS };
         }
         self.exact.clear();
         let debug = self.debug;
@@ -3642,9 +3680,14 @@ fn panels_sig(panels: &[(Vec3, Vec3, Material)]) -> u64 {
         h = h.wrapping_mul(0x100_0000_01b3);
     };
     for (a, b, m) in panels {
-        for v in [a.x, a.y, a.z, b.x, b.y, b.z, m.transmission[1], m.absorption[1]] {
-            eat(v);
+        // to the millimetre: a leaf easing into its frame by less (a host
+        // animating it asymptotically) changes nothing a sound can tell,
+        // and would start every average over each tick
+        for v in [a.x, a.y, a.z, b.x, b.y, b.z] {
+            eat((v * 1000.0).round());
         }
+        eat(m.transmission[1]);
+        eat(m.absorption[1]);
     }
     h
 }

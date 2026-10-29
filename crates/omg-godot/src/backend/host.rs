@@ -221,6 +221,8 @@ pub struct Stats {
     /// The last tick by part (ms): direct, one-edge, two-edge, early,
     /// late, chains, fold.
     pub tick_parts: [f32; 7],
+    /// The last tick traced a world change's extra rays (a door moved).
+    pub tick_burst: bool,
     /// The last GPU walk, submit to read-back (ms; 0 on the CPU).
     pub gpu_ms: f32,
     pub ticks: u32,
@@ -376,6 +378,7 @@ impl Host {
         Stats {
             tick_ms,
             tick_parts: self.engine.tick_parts(),
+            tick_burst: self.engine.tick_burst(),
             gpu_ms: self.engine.gpu_walk_ms(),
             ticks,
             load: f(&self.sh.load),

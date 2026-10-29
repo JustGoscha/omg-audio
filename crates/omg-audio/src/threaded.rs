@@ -183,6 +183,8 @@ struct Stats {
     /// The last tick by part (µs): direct, one-edge, two-edge, early,
     /// late, chains, fold (`TickCosts`).
     parts_us: [AtomicU32; 7],
+    /// The last tick traced a world change's extra rays (`TickCosts::burst`).
+    burst: AtomicBool,
 }
 
 /// The game-thread handle: geometry, sources, objects, listener, and
@@ -413,6 +415,12 @@ impl Engine {
         (self.stats.tick_us.load(Ordering::Relaxed) as f32 / 1000.0, self.stats.ticks.load(Ordering::Relaxed))
     }
 
+    /// Did the last tick trace a world change's extra rays (a door
+    /// moved)? Its cost is the change's, not the quality's.
+    pub fn tick_burst(&self) -> bool {
+        self.stats.burst.load(Ordering::Relaxed)
+    }
+
     /// The last tick by part (ms): direct, one-edge, two-edge, early,
     /// late, chains, fold.
     pub fn tick_parts(&self) -> [f32; 7] {
@@ -479,6 +487,7 @@ fn sim_loop(
         stats.ticks.fetch_add(1, Ordering::Relaxed);
         stats.walk_us.store((sim.gpu_walk_ms() * 1000.0) as u32, Ordering::Relaxed);
         let c = sim.tick_costs();
+        stats.burst.store(c.burst, Ordering::Relaxed);
         for (a, ms) in stats.parts_us.iter().zip([c.direct, c.edges - c.edges2, c.edges2, c.early, c.late, c.chains, c.fold]) {
             a.store((ms.max(0.0) * 1000.0) as u32, Ordering::Relaxed);
         }

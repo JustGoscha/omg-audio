@@ -1303,6 +1303,10 @@ func _doors() -> void:
 func update_doors(dt: float) -> void:
 	for dn in door_nodes:
 		dn["open"] += (dn["target"] - dn["open"]) * minf(1.0, dt * 7.0)
+		# there: stop (easing in for ever, the leaf would keep moving the
+		# acoustic world by fractions of a millimetre)
+		if absf(dn["target"] - dn["open"]) < 0.001:
+			dn["open"] = dn["target"]
 		_pose_door(dn)
 
 func _pose_door(dn: Dictionary) -> void:

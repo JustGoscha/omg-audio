@@ -200,7 +200,8 @@ pub extern "C" fn sim_govern(tick_ms: f32, load: f32) -> i32 {
     if !h.auto {
         return -1;
     }
-    if h.gov.report(tick_ms, TICK_TARGET_MS, load).is_some() {
+    // a door moved: the extra rays are the change's cost, not the level's
+    if !h.sim.tick_costs().burst && h.gov.report(tick_ms, TICK_TARGET_MS, load).is_some() {
         h.reconfigure();
     }
     h.gov.level() as i32

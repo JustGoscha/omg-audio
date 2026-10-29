@@ -683,7 +683,10 @@ impl OmgWorld {
             return;
         }
         self.auto_ticks = s.ticks;
-        self.auto_tier.report(s.tick_ms, self.tick_target_ms, s.load);
+        // a door moved: the extra rays are the change's cost, not the level's
+        if !s.tick_burst {
+            self.auto_tier.report(s.tick_ms, self.tick_target_ms, s.load);
+        }
     }
 
     /// The quality ladder's level in effect (0 … `LEVELS` − 1): the

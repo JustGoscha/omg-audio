@@ -97,6 +97,9 @@ func _alone(keep: String) -> int:
 			src.stop()
 	world.ambience_db = -200.0
 	world.rain_db = -200.0
+	# the ear off: its tinnitus (5.4 kHz) after loud sound is the ear
+	# model's, not the engine's — the tone runs measure the engine
+	world.set_ear(false)
 	return id
 
 func _place(x: float, y: float, z: float) -> void:
