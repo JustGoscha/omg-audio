@@ -191,3 +191,38 @@ fn standing_still_the_estimate_settles_and_stays() {
     let span = seen.iter().cloned().fold(f32::MIN, f32::max) - seen.iter().cloned().fold(f32::MAX, f32::min);
     assert!(span < 1.0, "the settled estimate moves by {span:.2} dB over 10 s of standing still");
 }
+
+/// The live engine's port of the legacy `bells_open_vs_indoor`: the bell is
+/// loudest in the open field with the tower in view, and every room —
+/// the bunker under the field included — hears it well under that.
+#[test]
+fn the_bell_is_loudest_in_the_open() {
+    let level = |at: [f32; 3]| -> f32 {
+        let mut sim = sim();
+        let mut town = Town::new(&mut sim);
+        only(&mut town, &mut sim, BELLS);
+        let id = town.sources[BELLS][0];
+        sim.set_listener(at, 0.0, 0.0, 0.0);
+        let mut e = 0.0;
+        for _ in 0..30 {
+            let f = sim.tick();
+            let pb = f.block(id).expect("traced");
+            let taps: f32 = pb.taps.iter().map(|t| t.gains[1] * t.gains[1]).sum();
+            e = taps + pb.reverb.level[1] * pb.reverb.level[1];
+        }
+        db(e)
+    };
+    let open = level([20.0, 60.0, 1.6]);
+    let g = 30.0f32; // the town's bell gain; free field at ~261 m
+    assert!(open > db(g * g / (261.0 * 261.0)) - 6.0, "the open field hears the tower: {open:.1} dB");
+    for (name, at) in [
+        ("living room", [4.0, 3.0, 1.6]),
+        ("great hall", [7.0, 19.0, 1.6]),
+        ("old house", [27.5, 19.5, 1.6]),
+        ("cathedral", [8.0, 63.0, 1.6]),
+        ("bunker", [37.0, 10.0, -1.4]),
+    ] {
+        let inside = level(at);
+        assert!(inside < open - 10.0, "{name}: {inside:.1} dB must be well under the open field's {open:.1} dB");
+    }
+}

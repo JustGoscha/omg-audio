@@ -16,6 +16,31 @@ live in each crate's `tests/common/mod.rs`. A test that exposes a real
 bug stays in the suite asserting the CORRECT behaviour, marked
 `#[ignore = "BUG: …"]`, until the bug is fixed.
 
+## Which engine a test exercises
+
+The hosts (Godot, the web demo, native) run **omg-audio**: its
+`Simulation` (the v3/v4/v5.5 tracer in `omg-core::v3`) and `Mixer`
+(omg-dsp's renderer, convolver, output stage). Much of the older suite
+exercises the **legacy engine** instead — `omg_scene::world::WorldSim`,
+`omg_core::paths::AutoPaths`, the PT tracer (`omg_core::pt`), the old
+`tracer` — which only the offline renderer `demo/app` still uses. Those
+tests stayed green while the live engine lost what they guard (the bell
+over the cathedral: the live tracer had no multi-edge path). A test
+counts for the hosts only if it drives the live engine.
+
+| Live engine (what the hosts run) | Legacy engine only |
+|---|---|
+| `crates/omg-audio/tests/*` | `demo/scene/tests/*` (WorldSim) |
+| `crates/omg-dsp/tests/*` | `crates/omg-core/tests/fx_{air_absorption, distance_spreading, door_leaf_late, early_wall_transmission, furniture_seep, late_furniture, late_rt60, over_silhouette, wall_transmission}.rs`, `pt_*`, `trace_golden.rs` |
+| `crates/omg-core/tests/fx_v3_*`, `dense_rt60.rs` | `crates/omg-gpu/tests/{pt_parity, solve_parity}.rs` |
+| `crates/omg-gpu/tests/v3_*`, `mesh_parity.rs` | |
+| `demo/web/wasm/tests/*` — the town through the live engine, measured with impulses and exact paths (`town_system.rs`: the bell around the cathedral and loudest in the open, a moving source's emission point, a jumped or switched-off source's click in flight, standing still settles) | |
+
+The headless measurement tools behind those numbers (impulses only — no
+music): `demo/web/wasm/examples/assess.rs` (door, still, walkout,
+moving, teleport, ringout) and `probe.rs` (a source's traced response per
+tick). Measure before and after a change with them.
+
 ## Running
 
 ```sh
