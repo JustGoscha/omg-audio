@@ -185,6 +185,10 @@ pub const MAX_COHERENT_TAPS: usize = 48;
 /// still — nothing moved, the world as it was — it is a plain running
 /// mean, the same truth sampled again.
 const STILL_ALPHA_FLOOR: f32 = 0.005;
+/// v6: moved less than this (m) since a still spell began, a listener
+/// or a source stands still — paths change by less, nothing an energy
+/// estimate in `DELAY_BIN_S` bins (69 cm of path) can tell.
+const STILL_M: f32 = 0.01;
 /// v4's history test: a window of the dense response restarts from the
 /// fresh trace when one tick lands this many standard errors from its
 /// mean (a door shut, a step into another space). Wide: the trace's
@@ -868,8 +872,12 @@ struct SourceState {
     /// v4: the measured scatter of the whole response's energy (the
     /// first test: `fold_v4`).
     dense_var_all: f32,
-    /// v4: where listener and source were last tick.
+    /// v4: where listener and source were last tick; v6: where they
+    /// stood when the current still spell began.
     at: Option<(Vec3, Vec3)>,
+    /// v6: ticks neither has moved (`fold`: standing still, the averages
+    /// become a running mean).
+    still: u32,
     /// v4: the world changed since the last tick (a door moved): the
     /// response follows as when moving — the tests say what changed.
     /// v6: its averages start over (`fold`).
@@ -895,14 +903,40 @@ fn diffuse_slot(echo: &Echogram, rel: f32, coherent: f32) -> f32 {
 impl SourceState {
     /// Step 5a, shared by `trace` and the externally walked fold: smooth
     /// one tick's binned contributions into the running state.
+    #[allow(clippy::too_many_arguments)]
     fn fold(
         &mut self,
         early: HashMap<u32, Bin>,
         echo: Echogram,
         budget: Budget,
         v6: bool,
+        listener: Vec3,
+        source: Vec3,
     ) {
         let first = self.echo.is_none();
+        // v6: standing still — neither end moved more than `STILL_M` from
+        // where the spell began (a slow drift adds up and ends it) —
+        // nothing the trace estimates is changing: each still tick joins
+        // a running mean (the n-th weighs 1/(n₀ + n), n₀ the EMA's own
+        // count), so the estimate keeps converging instead of holding the
+        // EMA's noise (down to `STILL_ALPHA_FLOOR`: ~10 s of memory, should
+        // something change that no test sees). Moving, the EMA as before
+        if v6 {
+            let moved = self.at.is_none_or(|(l, s)| (l - listener).length() > STILL_M || (s - source).length() > STILL_M);
+            if moved {
+                self.at = Some((listener, source));
+                self.still = 0;
+            } else {
+                self.still = self.still.saturating_add(1);
+            }
+        }
+        let still = |ema: f32| -> f32 {
+            if !v6 || self.still == 0 || ema <= 0.0 {
+                return ema;
+            }
+            let n0 = (2.0 - ema) / ema;
+            (1.0 / (n0 + self.still as f32)).clamp(STILL_ALPHA_FLOOR.min(ema), ema)
+        };
         // v6: the world changed (a door moved) — nothing averaged before
         // it describes this world: the averages start over from this
         // tick, a running mean (the n-th tick weighs 1/n) until it is as
@@ -914,7 +948,7 @@ impl SourceState {
         }
         self.since = self.since.saturating_add(1);
         let fresh = if v6 { 1.0 / self.since as f32 } else { 0.0 };
-        let alpha_early = if first { 1.0 } else { budget.ema.clamp(0.0, 1.0).max(fresh) };
+        let alpha_early = if first { 1.0 } else { still(budget.ema.clamp(0.0, 1.0)).max(fresh) };
         // solved chains are exact, not noisy: averaged like the early bins
         // only so a chain that just validated fades in rather than pops
         let alpha_echo = alpha_early;
@@ -940,7 +974,7 @@ impl SourceState {
         self.early.retain(|_, b| b.e.iter().any(|&e| e > 1e-12));
         // late echogram: a slower statistic, a slower average
         match &mut self.echo {
-            Some(e) => e.ema(&echo, budget.late_ema.clamp(0.0, 1.0).max(fresh)),
+            Some(e) => e.ema(&echo, still(budget.late_ema.clamp(0.0, 1.0)).max(fresh)),
             None => self.echo = Some(echo),
         }
         // discrete echoes: the salient solved chains (with hysteresis),
@@ -1994,7 +2028,7 @@ impl Tracer {
                 st.fold_v4(acc, budget, listener, s.pos);
                 out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared));
             } else {
-                st.fold(acc.early, acc.echo, budget, self.v6);
+                st.fold(acc.early, acc.echo, budget, self.v6, listener, s.pos);
                 out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
             }
         }

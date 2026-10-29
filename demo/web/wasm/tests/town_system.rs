@@ -347,3 +347,57 @@ fn a_click_repeated_is_the_same_click() {
     let (lo, hi) = e.iter().fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
     assert!(hi - lo < 0.5, "the clicks span {:.1} dB: {e:?}", hi - lo);
 }
+
+/// Standing still in the square, the club (behind its walls) clicks every
+/// 3 s: each click's reverb is the same reverb. v3's averages kept a
+/// fixed share of every tick's noise (the club through its walls is a
+/// few rare paths a tick): its late part scattered 9.8 dB click to click;
+/// v6 averages a still spell as one running mean: 1.6 dB (some of it the
+/// reverb's own, not the estimate's: a clap in the cathedral scatters
+/// ~1.9 dB at any rung).
+#[test]
+fn standing_still_the_reverb_settles_v6() {
+    let spread = |v6: bool| {
+        let mut sim = Simulation::new(Config { quality: Quality::Level(3), compute: Compute::Cpu, v4: false, v5: false, v6, ..Config::default() });
+        let mut town = Town::new(&mut sim);
+        let club = 2;
+        only(&mut town, &mut sim, club);
+        let mut mix = Mixer::with_capacity(SR, Hrir::builtin(), 32);
+        mix.set_ear(false);
+        let ids = town.sources[club].clone();
+        let lis = [15.0f32, 32.0, 1.6];
+        let click = clip(&[1.0]);
+        let block = 400usize;
+        let clicks: Vec<f32> = (0..9).map(|k| 3.0 + 3.0 * k as f32).collect();
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        let mut next = 0;
+        for b in 0..(30.0 * SR) as usize / block {
+            let t = (b * block) as f32 / SR;
+            sim.set_listener(lis, 0.0, 0.0, 0.0);
+            if b % 6 == 0 {
+                mix.apply(&sim.tick());
+            } else if let Some(f) = sim.tick_exact() {
+                mix.apply(&f);
+            }
+            while next < clicks.len() && clicks[next] <= t {
+                for &id in &ids {
+                    mix.play(id, &click, Play::ONCE);
+                }
+                next += 1;
+            }
+            let (mut a, mut c) = (vec![0.0f32; block], vec![0.0f32; block]);
+            mix.render(&mut a, &mut c);
+            l.extend_from_slice(&a);
+            r.extend_from_slice(&c);
+        }
+        // the reverb: 0.15–1.5 s after each click (the club is ~15 m off),
+        // the clicks after the first two (the field settling at the start)
+        let late: Vec<f32> = clicks[2..].iter().map(|&t| db(energy(&l, t + 0.15, t + 1.5) + energy(&r, t + 0.15, t + 1.5))).collect();
+        let m = late.iter().sum::<f32>() / late.len() as f32;
+        (late.iter().map(|x| (x - m) * (x - m)).sum::<f32>() / (late.len() - 1) as f32).sqrt()
+    };
+    let (v3, v6) = (spread(false), spread(true));
+    eprintln!("the club's reverb in the square, click to click: v3 sd {v3:.2} dB, v6 sd {v6:.2} dB");
+    assert!(v6 < 3.0, "v6: the reverb scatters {v6:.2} dB click to click standing still");
+    assert!(v6 < 0.5 * v3, "v6 {v6:.2} dB against v3 {v3:.2} dB");
+}
