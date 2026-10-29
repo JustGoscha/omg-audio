@@ -151,6 +151,16 @@ track stood still a frame and jumped at twice the speed the next, and
 at the closest pass the delay moves fastest. A place sent again now
 keeps the time it was first sent there: the pass −53 / −54 dB.
 
+### v6.1: a closing door seems to cut the sound later
+Reported while playing (Oct 29, night): with v6.1 a door shutting
+muffles what comes through it later than with v6 — the sound stays a
+moment longer. Likely the louder, longer reverb: the parametric
+reverb's energy already ringing decays at the source room's (now
+uncapped) time and from a level 12 dB higher, so it stays audible
+longer after the door's level drops. To measure (`assess doorswing`,
+v6 against v6.1) and to fix where the physics says: what a shut door
+lets through of a ringing room is its transmission, at once.
+
 ### A facade's echo found by chance — first order solved Oct 29
 A car passing the field (`assess cartone`) played the town's facade
 echoes at some rungs and runs and not others. The reference

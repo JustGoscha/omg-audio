@@ -163,6 +163,20 @@ impl Material {
         scattering: 0.50,
         transmission: [0.70, 0.50, 0.30],
     };
+    /// A heavy drape hanging free (a panel of its own, ~10 cm in front of
+    /// a wall): the cloth itself, per pass. It reflects nothing — sound
+    /// goes through it or is absorbed in it — and what passes, the wall
+    /// behind sends back through it again: through, off the wall (98 %)
+    /// and back gives a heavy velour drape's installed absorption, 0.14 /
+    /// ~0.58 / ~0.65 at 125 Hz / 0.8 kHz / 5.6 kHz (as `CURTAIN`, which
+    /// is that drape painted onto its wall). Per pass the energy through
+    /// is 0.937 / 0.654 / 0.598 (amplitude 0.968 / 0.809 / 0.773), the
+    /// rest absorbed: the lows pass, the mids and highs are muffled.
+    pub const DRAPE: Material = Material {
+        absorption: [1.0 - 0.968 * 0.968, 1.0 - 0.809 * 0.809, 1.0 - 0.773 * 0.773],
+        scattering: 0.0,
+        transmission: [0.968, 0.809, 0.773],
+    };
 
     /// A material from its parts: per-band energy absorption (0..1),
     /// scattering fraction (0..1) and per-band amplitude transmission

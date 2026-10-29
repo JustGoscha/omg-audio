@@ -1272,7 +1272,10 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             p_last_edge = last_edge;
             p_seg = seg + 1u;
         }
-        let pt = select(select(0.0, min(max(p_t, 0.02), 0.5), p_t > 1e-5), 0.0, split_here);
+        // a surface that reflects nothing (a hanging drape) — every ray
+        // goes through it (v3.rs)
+        let pure = p_t > 1e-5 && all(keep < vec3<f32>(1e-6));
+        let pt = select(select(select(0.0, min(max(p_t, 0.02), 0.5), p_t > 1e-5), 1.0, pure), 0.0, split_here);
         if (pt > 0.0 && rand_f32() < pt) {
             let tw = through(p, dir, hit);
             thr = thr * tw / pt;

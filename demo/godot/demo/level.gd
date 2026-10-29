@@ -72,6 +72,7 @@ var geo: DemoGeo
 var root: Node3D
 # filled while building, used by the demo
 var door_nodes := []        # [{hinge, shape, omg, pos, hw, open, target, axis}]
+var curtain_sets := []      # [{string, curtains: [{omg, cloth, roll, top, h}], open, target}]
 var markers := {}           # decorative objects the demo animates
 var labels := false         # name furniture kinds in the scene (shots)
 var lights := []
@@ -93,6 +94,7 @@ func build() -> void:
 	_props()
 	_windows()
 	_doors()
+	_curtains()
 	_street()
 	_canyon()
 	_lamps()
@@ -1317,6 +1319,184 @@ func _pose_door(dn: Dictionary) -> void:
 	(dn["omg"] as OmgDoor).openness = o
 	# passable once it has swung well out of the frame
 	(dn["shape"] as CollisionShape3D).disabled = o > 0.45
+
+# ---------------------------------------------------------------- curtains
+
+# Drapes that a pull cord (E) lowers or rolls up: in the seminar room
+# along its south, west and north walls (the doors and the front wall
+# left free), in the cathedral between the lancets of both flanks. Each
+# hangs 10 cm in front of its wall. To the engine a curtain is an OmgDoor
+# turned on its side (its covered share grows from the top down) of
+# "drape": cloth that reflects nothing — sound passes through it, off the
+# wall behind and back, losing most of its mids and highs on the way.
+const CURTAIN_GAP := 0.10   # off the wall's inner face
+const CURTAIN_SPEED := 0.3  # of its drop per second (a 10 m drape: ~3 s)
+
+func _curtains() -> void:
+	# seminar room (walls 0.3 m: inner faces at x 0.15, y 14.15 / 23.85)
+	var hall := []
+	var hz := [0.25, 6.6]   # bottom, top (the roll)
+	for seg in [[1, 14.15 + CURTAIN_GAP, 0.4, 3.3], [1, 14.15 + CURTAIN_GAP, 4.7, 13.6],
+			[1, 23.85 - CURTAIN_GAP, 0.4, 6.3], [1, 23.85 - CURTAIN_GAP, 7.7, 13.6],
+			[0, 0.15 + CURTAIN_GAP, 14.4, 23.6]]:
+		hall.append(seg + hz)
+	_curtain_set(Vector2(2.6, 14.45), hall)
+	# cathedral (walls 0.5 m: inner faces at x 0.25 / 15.75): the wall
+	# between the lancets (1.1 m wide, centred every 3.2 m from y 56.6)
+	var nave := []
+	var cz := [0.3, 11.0]
+	var edges := [52.4]
+	var y := 56.6
+	while y < 70.5:
+		edges.append(y - 0.65)
+		edges.append(y + 0.65)
+		y += 3.2
+	edges.append(73.6)
+	for x in [0.25 + CURTAIN_GAP, 15.75 - CURTAIN_GAP]:
+		for k in range(0, edges.size(), 2):
+			nave.append([0, x, edges[k], edges[k + 1]] + cz)
+	_curtain_set(Vector2(5.6, 52.5), nave)
+
+# One pull cord and its drapes: [axis (0: a wall x = c), c, from, to,
+# bottom z, top z] each.
+func _curtain_set(cord: Vector2, spans: Array) -> void:
+	var holder := Node3D.new()
+	holder.set_meta("omg_material", "none") # the look only: the sound is the OmgDoors
+	root.add_child(holder)
+	var cloth_m := StandardMaterial3D.new()
+	cloth_m.albedo_color = Color(0.42, 0.07, 0.09)
+	cloth_m.roughness = 1.0
+	cloth_m.cull_mode = BaseMaterial3D.CULL_DISABLED # pleats seen from both sides
+	var roll_m := StandardMaterial3D.new()
+	roll_m.albedo_color = Color(0.36, 0.06, 0.08)
+	roll_m.roughness = 1.0
+	var curtains := []
+	for sp in spans:
+		var axis: int = sp[0]
+		var c: float = sp[1]
+		var a0: float = sp[2]
+		var a1: float = sp[3]
+		var z0: float = sp[4]
+		var z1: float = sp[5]
+		var w := a1 - a0
+		var h := z1 - z0
+		var mid := 0.5 * (a0 + a1)
+		var at := Vector2(c, mid) if axis == 0 else Vector2(mid, c)
+		# the sound: a box of drape, covering from the top down
+		var omg := OmgDoor.new()
+		omg.material = "drape"
+		omg.size = Vector3(h, w, 0.02)
+		var along := Vector3(0, 0, -1) if axis == 0 else Vector3(1, 0, 0) # plan y / plan x
+		var down := Vector3(0, -1, 0)
+		omg.transform = Transform3D(Basis(down, along, down.cross(along)), v(at.x, at.y, 0.5 * (z0 + z1)))
+		omg.openness = 1.0
+		root.add_child(omg)
+		# the look: pleated cloth (scaled from the top) and its roll
+		var cloth := MeshInstance3D.new()
+		cloth.mesh = _pleats(w, h, randf() * TAU)
+		cloth.material_override = cloth_m
+		# the mesh's width runs along local x, its folds along local z:
+		# turned for a wall x = c (width along plan y)
+		if axis == 0:
+			cloth.rotation_degrees = Vector3(0, 90, 0)
+		holder.add_child(cloth)
+		var roll := MeshInstance3D.new()
+		var cm := CylinderMesh.new()
+		cm.top_radius = 0.09
+		cm.bottom_radius = 0.09
+		cm.height = w
+		roll.mesh = cm
+		roll.material_override = roll_m
+		roll.position = v(at.x, at.y, z1)
+		roll.rotation_degrees = Vector3(90, 0, 0) if axis == 0 else Vector3(0, 0, 90)
+		holder.add_child(roll)
+		curtains.append({"omg": omg, "cloth": cloth, "roll": roll, "at": at, "top": z1, "h": h})
+	# the cord: gold, a red tassel at hand height
+	var cord_m := DemoMats.plain(Color(0.85, 0.68, 0.25), 0.4, 0.6)
+	var line := MeshInstance3D.new()
+	var lm := CylinderMesh.new()
+	lm.top_radius = 0.008
+	lm.bottom_radius = 0.008
+	lm.height = 1.3
+	line.mesh = lm
+	line.material_override = cord_m
+	line.position = v(cord.x, cord.y, 1.15 + 0.65)
+	holder.add_child(line)
+	var tassel := MeshInstance3D.new()
+	var tm := CylinderMesh.new()
+	tm.top_radius = 0.02
+	tm.bottom_radius = 0.045
+	tm.height = 0.14
+	tassel.mesh = tm
+	tassel.material_override = DemoMats.plain(Color(0.6, 0.08, 0.1), 0.9)
+	tassel.position = v(cord.x, cord.y, 1.08)
+	holder.add_child(tassel)
+	curtain_sets.append({"cord": cord, "curtains": curtains, "open": 1.0, "target": 1.0})
+	_pose_curtains(curtain_sets[-1])
+
+# A drape's cloth: `w` wide (local x), `h` tall (local y, centred), its
+# pleats a wave across it (local z) — 4.5 cm deep every 28 cm, inside the
+# 10 cm the drape hangs off its wall.
+func _pleats(w: float, h: float, phase: float) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var amp := 0.045
+	var lam := 0.28
+	var n := maxi(2, int(ceil(w / 0.035)))
+	var k := TAU / lam
+	for i in n:
+		var u0 := -0.5 * w + w * i / n
+		var u1 := -0.5 * w + w * (i + 1) / n
+		var z0 := amp * sin(k * u0 + phase)
+		var z1 := amp * sin(k * u1 + phase)
+		var n0 := Vector3(-amp * k * cos(k * u0 + phase), 0, 1).normalized()
+		var n1 := Vector3(-amp * k * cos(k * u1 + phase), 0, 1).normalized()
+		var a := Vector3(u0, -0.5 * h, z0)
+		var b := Vector3(u1, -0.5 * h, z1)
+		var c := Vector3(u1, 0.5 * h, z1)
+		var d := Vector3(u0, 0.5 * h, z0)
+		for vtx in [[a, n0], [b, n1], [c, n1], [a, n0], [c, n1], [d, n0]]:
+			st.set_normal(vtx[1])
+			st.add_vertex(vtx[0])
+	return st.commit()
+
+func update_curtains(dt: float) -> void:
+	for cs in curtain_sets:
+		if cs["open"] == cs["target"]:
+			continue
+		cs["open"] = move_toward(cs["open"], cs["target"], dt * CURTAIN_SPEED)
+		_pose_curtains(cs)
+
+# The drop shown and priced: `open` 1 rolled up, 0 down to the floor.
+func _pose_curtains(cs: Dictionary) -> void:
+	var o: float = cs["open"]
+	for c in cs["curtains"]:
+		(c["omg"] as OmgDoor).openness = o
+		var down := (1.0 - o) * float(c["h"])
+		var cloth: MeshInstance3D = c["cloth"]
+		cloth.visible = down > 0.01
+		cloth.scale = Vector3(1, maxf(1.0 - o, 0.001), 1)
+		var at: Vector2 = c["at"]
+		cloth.position = v(at.x, at.y, float(c["top"]) - 0.5 * down)
+
+# The cord you look at (or stand at), within `reach`: pulled, its drapes
+# go down — or back up. True when there was one.
+func pull_cord_ahead(at: Vector2, dir: Vector2, reach := 2.0) -> bool:
+	var best := -1
+	var best_d := INF
+	for i in curtain_sets.size():
+		var to: Vector2 = curtain_sets[i]["cord"] - at
+		var d := to.length()
+		if d > reach or (d > 0.6 and dir.dot(to / d) < 0.8):
+			continue
+		if d < best_d:
+			best_d = d
+			best = i
+	if best < 0:
+		return false
+	var cs: Dictionary = curtain_sets[best]
+	cs["target"] = 0.0 if cs["target"] > 0.5 else 1.0
+	return true
 
 # The door you look at: the doorway (its opening in the wall plane) your
 # horizontal view ray `dir` from `at` (plan coordinates) passes through

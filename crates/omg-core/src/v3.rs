@@ -3514,8 +3514,14 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 split: true,
             });
         }
+        // a surface that reflects nothing (a hanging drape: it passes or
+        // absorbs) — every ray goes through it: none is spent reflecting
+        // nothing
+        let pure = p_t > 1e-5 && keep.iter().all(|&k| k < 1e-6);
         let pt = if split_here {
             0.0
+        } else if pure {
+            1.0
         } else if p_t > 1e-5 {
             p_t.max(0.02).min(0.5)
         } else {

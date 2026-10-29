@@ -694,7 +694,9 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_E:
 				var p := player.plan()
 				var ld := player.look_dir()
-				level.toggle_door_ahead(Vector2(p.x, p.y), Vector2(ld.x, -ld.z).normalized())
+				# a curtain cord you look at, else the door
+				if not level.pull_cord_ahead(Vector2(p.x, p.y), Vector2(ld.x, -ld.z).normalized()):
+					level.toggle_door_ahead(Vector2(p.x, p.y), Vector2(ld.x, -ld.z).normalized())
 			KEY_B:
 				sounds.ring_bells()
 			KEY_V:
@@ -732,6 +734,7 @@ func _process(dt: float) -> void:
 		view_cam.near = player.cam.near
 		view_cam.far = player.cam.far
 	level.update_doors(dt)
+	level.update_curtains(dt)
 	_update_halos()
 	# candle flicker in the apse, club wash breathing to the beat
 	t_flicker += dt

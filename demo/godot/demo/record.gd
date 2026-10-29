@@ -4,7 +4,7 @@
 # recorded in real time (OmgWorld.start_recording: exactly the frames
 # Godot plays, and every audio callback's timing).
 #
-#   Godot --path godot -- --record=<dir> --scenario=fly|car|door|carfar|walk --engine=v6 [--tone] [--quality=0..3|-1] [--gpu]
+#   Godot --path godot -- --record=<dir> --scenario=fly|car|door|carfar|walk|bunker --engine=v3|v4|v5|v6|v6.1 [--tone] [--quality=0..3|-1] [--gpu]
 #
 # Writes <dir>/<scenario>_<engine>[_tone].wav (+ .wav.csv: the audio
 # callbacks) and <dir>/<scenario>_<engine>[_tone].frames.csv (per game
@@ -22,6 +22,12 @@
 #         y = -50, the ears at (-100, 100))
 #   walk  the car stands at (-130, 100) and the ears walk past it 30 m
 #         off at 6 m/s (from (-100, 65) north: assess cartone WALK=6)
+#   curtains  standing in the seminar room (--at=x,y,z: elsewhere, e.g.
+#         the cathedral 8,63,0.4), the curtains rolled up for 6 s, then
+#         pulled down (~3 s); the RT60 the engine fits, every second
+#   bunker  down in the bunker (floor 3 m below grade), walking back and
+#         forth along it at 1.5 m/s for 8 s (--view=1|2: the paths view,
+#         exact or all, a screenshot a second)
 #   --paths the scenario's source's exactly solved paths (direct, edge
 #           bends, mirror chains) per frame to <name>.paths.csv
 #   --tone  the scenario's source plays a steady 500 Hz instead of its
@@ -39,6 +45,8 @@ var engine := "v6"
 var tone := false
 var quality := -2 # unset: the demo's (auto)
 var log_paths := false # --paths: the scenario source's exact paths per frame
+var shots := -1 # --view=0|1|2: the paths view off/exact/all, a screenshot a second
+var at := Vector3(35.0, 10.0, -2.6) # --at=x,y,z: where the bunker scenario walks (feet)
 var paths_file: FileAccess
 var frames: FileAccess
 var t0 := 0
@@ -61,11 +69,17 @@ func _init(d: Node, w: OmgWorld, p: DemoPlayer) -> void:
 			quality = int(a.trim_prefix("--quality="))
 		elif a == "--paths":
 			log_paths = true
+		elif a.begins_with("--view="):
+			shots = int(a.trim_prefix("--view="))
+		elif a.begins_with("--at="):
+			var v := a.trim_prefix("--at=").split(",")
+			at = Vector3(float(v[0]), float(v[1]), float(v[2]))
 
 func run() -> void:
 	if demo.loading:
 		await demo.loaded
-	world.engine_v6 = engine == "v6"
+	world.engine_v6 = engine == "v6" or engine == "v6.1"
+	world.engine_v61 = engine == "v6.1"
 	world.engine_v4 = engine == "v4" or engine == "v5"
 	world.engine_v5 = engine == "v5"
 	if quality >= -1:
@@ -86,6 +100,10 @@ func run() -> void:
 			await _doppler(base, false)
 		"walk":
 			await _doppler(base, true)
+		"bunker":
+			await _bunker(base)
+		"curtains":
+			await _curtains(base)
 		_:
 			push_error("unknown scenario " + scenario)
 	get_tree().quit()
@@ -285,4 +303,60 @@ func _doppler(base: String, walk: bool) -> void:
 		phase = "walk" if walk else "pass"
 		_frame_log(t * 1000.0, lis.x, y)
 		_paths_log(t * 1000.0, snd.cars_src[c["slot"]])
+	_stop(base)
+
+# Down in the bunker: walking back and forth along it (x 35..39, y 10).
+func _bunker(base: String) -> void:
+	_place(at.x, at.y, at.z)
+	player.set_heading(0.0)
+	await get_tree().create_timer(3.0).timeout
+	if not _start(base):
+		return
+	if shots >= 0:
+		demo.paths_view.set_mode(shots)
+	var t := 0.0
+	var shot := 0
+	while t < 8.0:
+		await get_tree().physics_frame
+		t = _now()
+		if shots >= 0 and t >= shot:
+			demo.get_viewport().get_texture().get_image().save_png("%s_%d.png" % [base, shot])
+			print("t %.0f s: %.0f fps, %d draw calls" % [t, Engine.get_frames_per_second(), Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)])
+			shot += 1
+		var d := fmod(t * 1.5, 8.0)
+		var x := at.x + (d if d < 4.0 else 8.0 - d)
+		_place(x, at.y, at.z)
+		phase = "bunker"
+		_frame_log(t * 1000.0, x, at.y)
+	_stop(base)
+
+# The curtains of the room the ears stand in: up 6 s, then pulled down.
+func _curtains(base: String) -> void:
+	var spot := at if at != Vector3(35.0, 10.0, -2.6) else Vector3(7.0, 19.0, 0.4)
+	_place(spot.x, spot.y, spot.z)
+	player.set_heading(PI) # facing west: the back wall and both flanks
+	await get_tree().create_timer(3.0).timeout
+	if not _start(base):
+		return
+	var t := 0.0
+	var sec := 0
+	var pulled := false
+	while t < 16.0:
+		await get_tree().physics_frame
+		t = _now()
+		if not pulled and t >= 6.0:
+			pulled = true
+			var best := 0
+			for i in demo.level.curtain_sets.size():
+				if (demo.level.curtain_sets[i]["cord"] - Vector2(spot.x, spot.y)).length() < (demo.level.curtain_sets[best]["cord"] - Vector2(spot.x, spot.y)).length():
+					best = i
+			demo.level.curtain_sets[best]["target"] = 0.0
+		if t >= sec:
+			var st: Dictionary = world.stats()
+			print("curtains t %d s: %s rt60 %.2f s, rung %d" % [sec, "down" if pulled else "up", st.get("rt60", 0.0), world.effective_quality()])
+			if shots >= 0 and (sec == 5 or sec == 12):
+				demo.get_viewport().get_texture().get_image().save_png("%s_%d.png" % [base, sec])
+			sec += 1
+		phase = "down" if pulled else "up"
+		_frame_log(t * 1000.0, spot.x, spot.y)
 	_stop(base)

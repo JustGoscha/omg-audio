@@ -21,6 +21,7 @@ pub const PRESETS: &[(&str, Material)] = &[
     ("heavy_door", Material::HEAVY_DOOR),
     ("carpet", Material::CARPET),
     ("curtain", Material::CURTAIN),
+    ("drape", Material::DRAPE),
     ("drywall", Material::DRYWALL),
     ("metal", Material::METAL),
     ("grass", Material::GRASS),

@@ -204,6 +204,44 @@ ground (the ground first or last), as the direct sound has its own. A
 tick over the Godot level's 3109 faces costs no more than before
 (`tick_move GEOMETRY=`).
 
+## v6.1: the reverb as long and as loud as traced
+
+v6 is v3's reverb, and v3's reverb carried two shortcuts. The decay time
+fitted to the late echogram was clamped at 5 s — the cathedral read
+exactly 5.00 — and the fit ran on an echogram cut off at 3 s, which pulls
+long decays short. And the late level was taken in the echogram's legacy
+units (energy / 16): the reverberant field played 12 dB under what the
+same rays trace (ENGINE_V4.md, "Level"); it was also held under 0.7.
+v6.1 (`Config::v61`, the demos' default; v6 stays selectable) fits the
+decay as a least-squares line over the Schroeder curve from −5 dB down
+to −25 dB (or as deep as it goes, 5 dB at least), with what would still
+arrive after the echogram's end — the decay carried on from its last
+0.2 s — added and the line fitted again until it holds (Lundeby), no
+clamp; and plays the late level in the taps' units, uncapped
+(`tracer::fit_reverb`, `v3::reverb_v61`). Exponential tails of 0.3 … 15
+s read back within 0.1 % (`tracer::tests::a_long_decay_reads_its_own_
+reverberation_time`; v6 read 8 and 15 s as 5.00). A closed 30×20×15 m
+hall, walls absorbing 6 % (`fx_simulation::a_hall_rings_and_sounds_as_
+long_and_loud_as_theory_says`): Sabine with the air's absorption 7.25 s,
+diffuse theory's reflected-over-direct +16.9 dB — v6 5.00 s, +6.5 dB;
+v6.1 6.50 s, +14.7 dB; v5's traced response 6.32 s, +15.1 dB. In the
+cathedral by the flute (`examples/probe`): v6 5.00 s, reverb −21.0 dB;
+v6.1 5.61 s, −8.9 dB, the late part of v5's response −8.9 dB.
+
+## A curtain is cloth that reflects nothing
+
+`Material::DRAPE`: a heavy drape hanging free, the cloth itself per pass
+— it reflects nothing; sound passes through it or is absorbed in it, and
+what passes, the wall behind sends back through it again (through, off
+the wall, back: a velour drape's installed absorption, 0.14 / ~0.58 /
+~0.65). A surface that reflects nothing only passes rays on (the walk
+spends none reflecting nothing: `pure` in `walk_ray` and the GPU
+kernel). The Godot demo hangs them 10 cm off the seminar room's walls
+and between the cathedral's lancets, rolled up until a cord (E) lowers
+them — an OmgDoor on its side, its covered share growing from the top,
+priced continuously as it comes down. The seminar room's RT60 4.8 → 1.0
+s, the cathedral's ~7 → 3.2 s (`record.gd` curtains, quality pinned).
+
 ## Still open (OPEN.md)
 
 A loud room heard through its walls or a shut door is a heavy-tailed
