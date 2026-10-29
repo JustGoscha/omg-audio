@@ -147,7 +147,8 @@ impl Rig {
         }
         let mut sim = Simulation::new(cfg);
         let town = Town::new(&mut sim);
-        let mut mix = Mixer::with_capacity(SR, Hrir::builtin(), 64);
+        let hrir = if env("HRIR").as_deref() == Some("0") { Hrir::none() } else { Hrir::builtin() };
+        let mut mix = Mixer::with_capacity(SR, hrir, 64);
         if env("EAR").as_deref() == Some("0") {
             mix.set_ear(false);
         }
@@ -266,24 +267,35 @@ impl Rig {
                 self.town.set_dynamic(&mut self.sim, h - base, Some((p, 1.0)));
             }
             self.sim.set_listener_at(self.pos, self.yaw, 0.0, 0.0, t as f64);
-            if self.blocks % TICK_EVERY == 0 {
-                let f = self.sim.tick();
-                if env("DEBUG_GHOST").is_some() {
-                    for (id, pb) in &f.blocks {
-                        if id.0 >= 0x4000_0000 || !f.ghosts.is_empty() {
-                            let taps: Vec<String> = pb.taps.iter().take(4).map(|t| format!("{}:{:.4}s {:.1}dB", t.key, t.delay_s, 20.0 * t.gains[1].max(1e-9).log10())).collect();
-                            eprintln!("t {:.3} id {:x} ghosts {:?} onset {:.4} rev {:.2e} taps {}", t, id.0, f.ghosts, pb.onset_s, pb.reverb.level[1], taps.join(" "));
+            let dbg_win = env("DEBUG_TAPS").and_then(|v| v.parse::<f32>().ok());
+            {
+                let full = self.blocks % TICK_EVERY == 0;
+                let f = if full { Some(self.sim.tick()) } else { self.sim.tick_exact() };
+                if let (Some(w), Some(f)) = (dbg_win, &f) {
+                    if (t - w).abs() < 0.12 {
+                        for (id, pb) in &f.blocks {
+                            let loud: Vec<String> = pb.taps.iter().filter(|x| x.gains[1] > 0.003).map(|x| format!("{}:{:.1}ms {:.1}dB", x.key, x.delay_s * 1e3, 20.0 * x.gains[1].log10())).collect();
+                            if !loud.is_empty() {
+                                eprintln!("t {t:.3} {} id {} v{} {}", if full { "tick " } else { "exact" }, id.0, pb.version, loud.join(" "));
+                            }
                         }
                     }
                 }
-                self.mix.apply(&f);
-            } else if let Some(f) = self.sim.tick_exact() {
-                self.mix.apply(&f);
+                if let Some(f) = f {
+                    self.mix.apply(&f);
+                }
             }
             let (mut l, mut r) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
             let t0 = Instant::now();
             self.mix.render(&mut l, &mut r);
             self.gov.report(&mut self.mix, t0.elapsed().as_secs_f64(), BLOCK);
+            if let Some(w) = env("DEBUG_TAPS").and_then(|v| v.parse::<f32>().ok()) {
+                if (t - w).abs() < 0.12 {
+                    let (n, live, pts) = self.mix.occupancy();
+                    let e: f32 = l.iter().chain(r.iter()).map(|v| v * v).sum();
+                    eprintln!("t {t:.4} render: {n} sources, {live} live paths, {pts} hrtf; block energy {:.1} dB", 10.0 * e.max(1e-30).log10());
+                }
+            }
             self.l.extend_from_slice(&l);
             self.r.extend_from_slice(&r);
             self.track.push(self.pos);

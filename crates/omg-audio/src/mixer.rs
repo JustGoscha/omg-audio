@@ -1257,11 +1257,15 @@ impl Mixer {
             if on {
                 self.active.push(i as u16);
             } else {
-                // silent anyway: its ramps jump to where they are headed
-                // (and its paths' glides: the next sound starts on them)
+                // not rendering — silent, masked, virtualized or faded out:
+                // its ramps jump to where they are headed, and so do its
+                // paths' glides and fades (a path released while it did
+                // not render must not fade out from where it was when it
+                // resumes: a door shut while a channel was masked played
+                // the open door's paths into its next sound)
                 s.fader.snap(s.fader.target_val());
                 s.audible.snap(s.audible.target_val());
-                if s.used && s.quiet_at < self.clock {
+                if s.used {
                     s.renderer.settle();
                 }
             }

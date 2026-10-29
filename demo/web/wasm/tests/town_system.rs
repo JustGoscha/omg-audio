@@ -226,3 +226,56 @@ fn the_bell_is_loudest_in_the_open() {
         assert!(inside < open - 10.0, "{name}: {inside:.1} dB must be well under the open field's {open:.1} dB");
     }
 }
+
+/// The club door shuts while the club is between sounds (its channel
+/// masked, not rendering); 50 ms later it clicks: the click is heard
+/// through the shut door as it will be once everything settled, not
+/// through the open door's paths (released while the channel did not
+/// render, they kept their full gain and faded out over the click:
+/// +17 dB in the treble).
+#[test]
+fn a_door_shut_between_sounds_is_shut_for_the_next_one() {
+    let mut sim = sim();
+    let mut town = Town::new(&mut sim);
+    let club = 2;
+    only(&mut town, &mut sim, club);
+    town.set_door(&mut sim, 3, 1.0);
+    town.set_door(&mut sim, 4, 1.0);
+    let mut mix = Mixer::with_capacity(SR, Hrir::builtin(), 32);
+    mix.set_ear(false);
+    let ids = town.sources[club].clone();
+    let lis = [21.0f32, 30.2, 1.6];
+    let click = clip(&[1.0]);
+    let block = 400usize;
+    let (mut l, mut r) = (Vec::new(), Vec::new());
+    let clicks = [2.0f32, 6.05, 12.0];
+    let mut next = 0;
+    for b in 0..(14.0 * SR) as usize / block {
+        let t = (b * block) as f32 / SR;
+        if (t - 6.0).abs() < 1e-4 {
+            town.set_door(&mut sim, 4, 0.0);
+        }
+        sim.set_listener(lis, 0.0, 0.0, 0.0);
+        if b % 6 == 0 {
+            mix.apply(&sim.tick());
+        } else if let Some(f) = sim.tick_exact() {
+            mix.apply(&f);
+        }
+        while next < clicks.len() && clicks[next] <= t {
+            for &id in &ids {
+                mix.play(id, &click, Play::ONCE);
+            }
+            next += 1;
+        }
+        let (mut a, mut c) = (vec![0.0f32; block], vec![0.0f32; block]);
+        mix.render(&mut a, &mut c);
+        l.extend_from_slice(&a);
+        r.extend_from_slice(&c);
+    }
+    // the first 100 ms of each click's response (the nearest speaker is
+    // ~4 m away)
+    let early = |t: f32| energy(&l, t, t + 0.1) + energy(&r, t, t + 0.1);
+    let (open, just, settled) = (early(2.0), early(6.05), early(12.0));
+    assert!(db(open) - db(settled) > 15.0, "setup: the door shuts the club off ({:.1} dB)", db(open) - db(settled));
+    assert!((db(just) - db(settled)).abs() < 3.0, "50 ms after the shut {:.1} dB, settled {:.1} dB", db(just), db(settled));
+}
