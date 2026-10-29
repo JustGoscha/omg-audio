@@ -157,6 +157,15 @@ first-order facade echo should be there needs a deterministic
 reference: every plane's image source of the car, validated (the
 solver can do it per plane). Open.
 
+### The web page's times, not yet measured in a browser
+Since Oct 29 the page posts the time its pose (and the moving sources in
+it) was current, and the worker's simulation stamps them with it and
+keeps its clock at now — as the threaded engine does (before, it counted
+50 ms a tick however late the worker's timer fired). Checked that the
+page runs; the Doppler's steadiness in a browser (timer jitter, long
+ticks) is not measured yet: record the worklet's output with a passing
+car's tone and demodulate it as `assess cartone` does.
+
 ### Interpolation on moving paths
 Paths read with a cubic (Hermite): a 10 kHz tone on a sliding delay
 swings 0.96 dB at a walk, 0.47 dB at 30 m/s (was 2.2 dB with lines). A
