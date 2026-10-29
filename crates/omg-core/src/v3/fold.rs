@@ -475,6 +475,7 @@ impl Tracer {
         // didn't carry keeps its state)
         let mut out = Vec::with_capacity(sources.len());
         let shared = self.shared_ticks();
+        let fit: fn(&Echogram) -> ReverbParams = if self.v61 { reverb_v61 } else { estimate_reverb };
         for (si, s) in sources.iter().enumerate() {
             let t_free = (self.direct_from(si, s, listener).unwrap_or(s.pos) - listener).length() / SPEED_OF_SOUND;
             let block = walked.as_ref().filter(|_| fresh).and_then(|w| {
@@ -498,9 +499,9 @@ impl Tracer {
                 }
             }
             out.push(if self.v4 {
-                st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared)
+                st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared, fit)
             } else {
-                st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], total)
+                st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], total, fit)
             });
         }
         self.note_heard(sources, &out);

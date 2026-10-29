@@ -12,7 +12,9 @@
 //! - under open sky the outdoor field is large, sealed in a box ~zero;
 //! - beyond `max_traced_sources`, sources take turns and all get traced;
 //! - a facade's echo of a passing car plays while the facade mirrors it,
-//!   at every rung, at its image source's delay and level.
+//!   at every rung, at its image source's delay and level;
+//! - a large hall rings as long as Sabine and sounds as loud as diffuse-
+//!   field theory says (v6.1, v5).
 
 use omg_audio::{Config, Frame, Geometry, Material, ParamBlock, PathKind, Quality, Simulation, SourceDesc, SPEED_OF_SOUND};
 use omg_core::material::air_attenuation;
@@ -463,5 +465,76 @@ fn a_facades_echo_of_a_passing_car_plays_at_every_rung() {
         assert!(worst_db < 1.0, "level {level}: the echo's level off by {worst_db:.2} dB");
         assert!(twins as f32 >= 0.95 * want as f32, "level {level}: its ground twin in {twins} of {want} frames");
         assert!(twin_db < 1.0, "level {level}: the twin off the ground's share by {twin_db:.2} dB");
+    }
+}
+
+/// A large closed hall (30×20×15 m, walls absorbing 6 %): the
+/// reverberation time and the reverberant level each engine plays,
+/// against Sabine's time and diffuse-field theory's level — both with
+/// the air's absorption over the long paths (ISO 9613-1 at the mid band:
+/// 4mV in the absorption area).
+fn hall_against_theory(mode: &str) -> (f32, f32, f32, f32) {
+    let (lx, ly, lz) = (30.0f32, 20.0, 15.0);
+    let alpha = 0.06f32;
+    let mut g = Geometry::new();
+    let m = g.material(Material::new([alpha; 3], 0.3, [0.0; 3]));
+    let t = 0.3;
+    g.add_box([-t, -t, -t], [lx + t, ly + t, 0.0], m);
+    g.add_box([-t, -t, lz], [lx + t, ly + t, lz + t], m);
+    g.add_box([-t, -t, 0.0], [0.0, ly + t, lz], m);
+    g.add_box([lx, -t, 0.0], [lx + t, ly + t, lz], m);
+    g.add_box([0.0, -t, 0.0], [lx, 0.0, lz], m);
+    g.add_box([0.0, ly, 0.0], [lx, ly + t, lz], m);
+    let cfg = Config {
+        quality: Quality::High,
+        v4: mode == "v5",
+        v5: mode == "v5",
+        v6: mode.starts_with("v6"),
+        v61: mode == "v6.1",
+        ..Config::default()
+    };
+    let mut sim = Simulation::new(cfg);
+    sim.set_geometry(g);
+    let (sp, lp) = ([8.0f32, 7.0, 1.5], [21.0f32, 12.0, 1.6]);
+    let src = sim.add_source(SourceDesc::at(sp));
+    sim.set_listener(lp, 0.0, 0.0, 0.0);
+    let f = settle(&mut sim, 60);
+    let pb = f.block(src).unwrap();
+    let r = ((sp[0] - lp[0]).powi(2) + (sp[1] - lp[1]).powi(2) + (sp[2] - lp[2]).powi(2)).sqrt();
+    let (v, s) = (lx * ly * lz, 2.0 * (lx * ly + lx * lz + ly * lz));
+    // the air's energy attenuation per metre at the mid band
+    let m_air = -(air_attenuation(1.0)[1].powi(2)).ln();
+    let a = s * alpha + 4.0 * m_air * v;
+    let sabine = 0.161 * v / a;
+    let direct = pb.taps.iter().find(|tp| tp.key == omg_core::v3::KEY_DIRECT).map_or(0.0, |tp| tp.gains[1] * tp.gains[1]);
+    // everything reflected: the early arrivals and the late field
+    let reflected: f32 = pb.taps.iter().filter(|tp| tp.key != omg_core::v3::KEY_DIRECT).map(|tp| tp.gains[1] * tp.gains[1]).sum::<f32>()
+        + match sim.dense_response(src) {
+            Some(d) => d.bins.iter().map(|x| x[1]).sum::<f32>(),
+            None => pb.reverb.level[1].powi(2) + pb.remote.as_ref().map_or(0.0, |rr| rr.send[1].powi(2)),
+        };
+    let rt = match sim.dense_response(src) {
+        Some(d) => dense_rt60(d),
+        None => pb.reverb.rt60[1],
+    };
+    let ratio_db = 10.0 * (reflected / direct).log10();
+    let theory_db = 10.0 * (16.0 * std::f32::consts::PI * r * r / a).log10();
+    eprintln!("{mode}: rt60 {rt:.2} s (Sabine {sabine:.2} s); reflected over direct {ratio_db:+.1} dB (diffuse theory {theory_db:+.1} dB)");
+    (rt, sabine, ratio_db, theory_db)
+}
+
+/// v6.1 and v5 play a hall as long and as loud as theory says: within
+/// 15 % of Sabine's time and 3 dB of diffuse-field theory's reflected
+/// level (measured: 6.50 / 6.32 s against 7.25; +14.7 / +15.1 dB against
+/// +16.9 — the trace's field a little less diffuse than theory's). v6
+/// played it 5.00 s (clamped) and +6.5 dB: its late level in the
+/// echogram's legacy units, 12 dB under (ENGINE_V4.md, "Level").
+#[test]
+fn a_hall_rings_and_sounds_as_long_and_loud_as_theory_says() {
+    hall_against_theory("v6");
+    for mode in ["v6.1", "v5"] {
+        let (rt, sabine, ratio, theory) = hall_against_theory(mode);
+        assert!((rt / sabine - 1.0).abs() < 0.15, "{mode}: rt60 {rt:.2} s against Sabine's {sabine:.2} s");
+        assert!((ratio - theory).abs() < 3.0, "{mode}: reflected {ratio:+.1} dB over direct, theory {theory:+.1} dB");
     }
 }

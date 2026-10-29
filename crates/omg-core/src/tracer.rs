@@ -257,11 +257,118 @@ pub fn estimate_reverb(echo: &Echogram) -> ReverbParams {
     ReverbParams { rt60, level }
 }
 
+/// The reverberation time per band: the slope of the decay curve
+/// (Schroeder's backward integration of the echogram), a least-squares line
+/// from −5 dB down to −25 dB — or as deep as it goes, 5 dB at least, when
+/// a long tail reaches less within the echogram (a 15 s hall falls 12 dB
+/// in the echogram's 3 s). The echogram ends at
+/// MAX_TIME, the decay doesn't: what would still arrive after it — the
+/// decay carried on from the last 0.2 s's level at the slope found — is
+/// added to every point of the curve and the line fitted again, until it
+/// holds (Lundeby). Nothing clamps the result: a room rings as long as its
+/// decay says (`estimate_reverb`, v3 to v6, clamps it at 5 s — a cathedral
+/// read 5.00 — and its cut-off curve pulled long tails short). Engine
+/// v6.1; the late level as `estimate_reverb`'s, uncapped (it was held
+/// under 0.7).
+pub fn fit_reverb(echo: &Echogram) -> ReverbParams {
+    let mut rt60 = [0.5f32; NBANDS];
+    let dt = BIN_DT as f64;
+    for (b, rt) in rt60.iter_mut().enumerate() {
+        let e: Vec<f64> = echo.bins.iter().map(|x| x[b] as f64).collect();
+        if e.iter().sum::<f64>() <= 0.0 {
+            continue;
+        }
+        let mut tail = 0.0f64;
+        let mut fit: Option<f64> = None;
+        for _ in 0..64 {
+            let mut edc = vec![0.0f64; NBINS];
+            let mut acc = tail;
+            for i in (0..NBINS).rev() {
+                acc += e[i];
+                edc[i] = acc;
+            }
+            let top = edc[0];
+            let db = |i: usize| 10.0 * (edc[i] / top).max(1e-30).log10();
+            let Some(i5) = (0..NBINS).find(|&i| db(i) <= -5.0) else { break };
+            let i25 = (i5..NBINS).find(|&i| db(i) <= -25.0).unwrap_or(NBINS - 1);
+            if i25 < i5 + 2 || db(i5) - db(i25) < 5.0 {
+                break;
+            }
+            let n = (i25 - i5 + 1) as f64;
+            let (mut sx, mut sy, mut sxx, mut sxy) = (0.0, 0.0, 0.0, 0.0);
+            for i in i5..=i25 {
+                let (x, y) = (i as f64 * dt, db(i));
+                sx += x;
+                sy += y;
+                sxx += x * x;
+                sxy += x * y;
+            }
+            let slope = (n * sxy - sx * sy) / (n * sxx - sx * sx); // dB/s
+            if !(slope < 0.0) {
+                break;
+            }
+            let r = -60.0 / slope;
+            let settled = fit.is_some_and(|f| (r / f - 1.0).abs() < 1e-4);
+            fit = Some(r);
+            if settled {
+                break;
+            }
+            // the energy past the end: the last 0.2 s's mean bin, brought to
+            // the end along the decay (energy time constant τ), then summed
+            // on to infinity
+            let tau = r / (6.0 * std::f64::consts::LN_10);
+            let w = (0.2 / dt).round().min(NBINS as f64) as usize;
+            let wt = w as f64 * dt;
+            let mean = e[NBINS - w..].iter().sum::<f64>() / w as f64;
+            let at_end = mean * wt / (tau * ((wt / tau).exp() - 1.0));
+            tail = at_end * tau / dt;
+        }
+        if let Some(r) = fit.filter(|r| r.is_finite()) {
+            *rt = r as f32;
+        }
+    }
+
+    // Late level per band: energy arriving after 80 ms. This is an absolute
+    // measurement at the listener for a unit source — deliberately NOT
+    // scaled by direct-path distance (the diffuse field doesn't get louder
+    // when you walk up to the source; the direct sound does).
+    let late_start = (0.080 / BIN_DT) as usize;
+    let mut level = [0.0f32; NBANDS];
+    for (b, lv) in level.iter_mut().enumerate() {
+        let mut late_e = 0.0f32;
+        for i in late_start..NBINS {
+            late_e += echo.bins[i][b];
+        }
+        *lv = late_e.sqrt();
+    }
+
+    ReverbParams { rt60, level }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::material::Material;
     use crate::mesh::MeshBuilder;
+
+    /// The reverberation time a decay says, however long (`fit_reverb`,
+    /// v6.1): exponential tails of 0.3 … 15 s, the echogram ending at
+    /// MAX_TIME as it does, come back within 3 %. (`estimate_reverb`, v3
+    /// to v6, read 8 and 15 s as 5.00: clamped — a cathedral read 5.00.)
+    #[test]
+    fn a_long_decay_reads_its_own_reverberation_time() {
+        for want in [0.3f32, 1.0, 3.0, 8.0, 15.0] {
+            let mut e = Echogram::new();
+            for (i, bin) in e.bins.iter_mut().enumerate() {
+                *bin = [10f32.powf(-6.0 * i as f32 * BIN_DT / want); NBANDS];
+            }
+            let got = fit_reverb(&e).rt60;
+            eprintln!("rt60 {want} s: read {:.3} s", got[1]);
+            for g in got {
+                assert!((g / want - 1.0).abs() < 0.03, "rt60 {want} s: read {g:.3} s");
+            }
+        }
+    }
 
     /// The emergent-portal proof: a mesh room with a doorway hole in one
     /// wall, listener OUTSIDE, zero portal/door/room authoring. Rays can

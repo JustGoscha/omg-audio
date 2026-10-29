@@ -24,7 +24,7 @@ use crate::params::{ReverbParams, Tap};
 use crate::paths::segment_transmission_after;
 use crate::rng::Rng;
 use crate::scene::{AcousticGeometry, GeomHit, WithPanels};
-use crate::tracer::{estimate_reverb, Echogram, BIN_DT, MAX_TIME};
+use crate::tracer::{estimate_reverb, fit_reverb, Echogram, BIN_DT, MAX_TIME};
 use crate::vec3::Vec3;
 use crate::{NBANDS, SPEED_OF_SOUND};
 
@@ -1197,6 +1197,7 @@ impl SourceState {
         edge_taps: &mut Vec<Tap>,
         reflected: [f32; NBANDS],
         shared: f32,
+        fit: fn(&Echogram) -> ReverbParams,
     ) -> SourceField {
         let mut taps: Vec<Tap> = Vec::new();
         if let Some(t) = direct {
@@ -1249,7 +1250,7 @@ impl SourceState {
             dense.pop();
         }
         // the old renderer's and the HUD's readouts, from the response
-        let reverb = estimate_reverb(self.echo.as_ref().unwrap_or(&Echogram::new()));
+        let reverb = fit(self.echo.as_ref().unwrap_or(&Echogram::new()));
         let (mut v, mut e) = (Vec3::new(0.0, 0.0, 0.0), 0.0f32);
         for d in &dense {
             v = v + Vec3::new(d[3], d[4], d[5]);
@@ -1292,6 +1293,7 @@ impl SourceState {
         direct: Option<Tap>,
         edge_taps: &mut Vec<Tap>,
         reflected: [f32; NBANDS],
+        fit: fn(&Echogram) -> ReverbParams,
     ) -> SourceField {
         let mut taps: Vec<Tap> = Vec::new();
         if let Some(t) = direct {
@@ -1368,10 +1370,24 @@ impl SourceState {
             owned = rest;
             echo = &owned;
         }
-        let reverb = estimate_reverb(echo);
+        let reverb = fit(echo);
         let (late_dir, aniso) = echo.late_direction(EARLY_S);
         SourceField { taps, dense: None, reverb, late_dir, aniso, reflected }
     }
+}
+
+/// v6.1's reverb from the late echogram: `fit_reverb`, the level brought
+/// from the echogram's legacy units (1/16: `LEGACY_UNITS`) to the taps' —
+/// the reverberant field as loud as the trace says. v3 to v6 played it in
+/// the legacy scale, 12 dB under the field v4/v5 trace from the same rays
+/// (ENGINE_V4.md, "Level"): in the cathedral −21.0 dB against −8.9.
+fn reverb_v61(echo: &Echogram) -> ReverbParams {
+    let mut r = fit_reverb(echo);
+    let k = (1.0 / LEGACY_UNITS).sqrt();
+    for l in &mut r.level {
+        *l *= k;
+    }
+    r
 }
 
 /// Fresh per-tick accumulators for one source.
@@ -1564,6 +1580,9 @@ pub struct Tracer {
     /// Engine v6 (on v3: `v4` off): v3's estimate and reverb — steady in
     /// motion — with v6's refinements (ENGINE_V6.md).
     pub v6: bool,
+    /// Engine v6.1 (on v6): the reverberation time as the traced decay
+    /// says, however long, and the late level uncapped (`fit_reverb`).
+    pub v61: bool,
     /// The last tick's cost by part.
     pub costs: TickCosts,
     /// Threads the ray walk is spread over (1: the tick's own; wasm walks
@@ -1866,6 +1885,7 @@ impl Tracer {
             v4: false,
             v5: false,
             v6: false,
+            v61: false,
             costs: TickCosts::default(),
             late_pool: std::collections::VecDeque::new(),
             late_pool_sig: 0,
@@ -2117,6 +2137,9 @@ impl Tracer {
         let clock = Stopwatch::start();
         let mut out = Vec::with_capacity(sources.len());
         let shared = self.shared_ticks();
+        // the reverberation time and level from the late echogram: v6.1's
+        // fit (as long as the decay says), or v3 to v6's (clamped at 5 s)
+        let fit: fn(&Echogram) -> ReverbParams = if self.v61 { reverb_v61 } else { estimate_reverb };
         for (si, s) in sources.iter().enumerate() {
             let t_free = accs[si].t_free;
             let acc = core::mem::replace(
@@ -2127,10 +2150,10 @@ impl Tracer {
             if self.v4 {
                 let total = acc.total;
                 st.fold_v4(acc, budget, listener, s.pos);
-                out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared));
+                out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared, fit));
             } else {
                 st.fold(acc.early, acc.echo, budget, self.v6, listener, s.pos);
-                out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
+                out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total, fit));
             }
         }
         self.costs.fold = clock.ms();

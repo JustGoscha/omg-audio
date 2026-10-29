@@ -465,9 +465,13 @@ function buildQuality() {
         set: () => state.setEarly?.(4),
         active: () => state.earlyMode === 4 },
       { name: 'v6',
-        tip: 'Engine v6 (the default): v3\u2019s discrete early echoes and parametric reverb gliding with the trace \u2014 steady while you move \u2014 with v6\u2019s refinements (ENGINE_V6.md).',
+        tip: 'Engine v6: v3\u2019s discrete early echoes and parametric reverb gliding with the trace \u2014 steady while you move \u2014 with v6\u2019s refinements (ENGINE_V6.md). Its reverb time is clamped at 5 s and its reverb plays 12 dB under the traced field.',
         set: () => state.setEarly?.(6),
         active: () => state.earlyMode === 6 },
+      { name: 'v6.1',
+        tip: 'Engine v6.1 (the default): v6, its reverb as long and as loud as the trace says \u2014 the decay time fitted without a cap (a cathedral rings past 5 s), the late field at the traced level (a hall: within 15 % of Sabine, 3 dB of diffuse theory).',
+        set: () => state.setEarly?.(61),
+        active: () => state.earlyMode === 61 },
       { name: 'v5',
         tip: 'Engine v5: v4, with the reverb\u2019s late paths reused across ticks — each reconnected exactly to where you are now (the solid angle its first bounce subtends, what lies between, its new delay), so every tick averages the last eight ticks\u2019 paths: half the late tail\u2019s noise, for ~2 % of the tick. A door or a moved source drops what it touched.',
         set: () => state.setEarly?.(5),
@@ -2479,7 +2483,7 @@ async function startAudio() {
     state.setDebugRays = (on) => worker.postMessage({ type: 'debug', on });
     state.setEarly = (mode) => {
       state.earlyMode = mode;
-      try { localStorage.setItem('omg-early-v6', ['ism', 'traced', 'traced', 'v3', 'v4', 'v5', 'v6'][mode] || 'v6'); } catch (_) {}
+      try { localStorage.setItem('omg-early-v61', mode === 61 ? 'v6.1' : ['ism', 'traced', 'traced', 'v3', 'v4', 'v5', 'v6'][mode] || 'v6.1'); } catch (_) {}
       worker.postMessage({ type: 'early', mode });
     };
     state.setMute = (srcs, on) => worker.postMessage({ type: 'mute', srcs, on });
@@ -2488,22 +2492,24 @@ async function startAudio() {
       try { localStorage.setItem('omg-mod' + id, on ? '1' : '0'); } catch (_) {}
       worker.postMessage({ type: 'module', id, on });
     };
-    // a real setting: ?early=v6|v5|v4|v3|traced|ism wins, else the
-    // remembered choice, else v6 (v3's estimate and reverb, steady in
-    // motion, with v6's refinements; the others stay selectable). The
+    // a real setting: ?early=v6.1|v6|v5|v4|v3|traced|ism wins, else the
+    // remembered choice, else v6.1 (v3's estimate and reverb, steady in
+    // motion, with v6's refinements, the reverb as long and loud as
+    // traced; the others stay selectable). The
     // storage key is versioned: choices remembered under an older default
     // reset once.
     {
       const p = (new URLSearchParams(location.search).get('early') || '').toLowerCase();
       let stored = null;
-      try { stored = localStorage.getItem('omg-early-v6'); } catch (_) {}
+      try { stored = localStorage.getItem('omg-early-v61'); } catch (_) {}
       const pick = p === 'traced' || p === 'pt' ? 1
         : p === 'ism' ? 0
           : p === 'v3' ? 3
             : p === 'v4' ? 4
               : p === 'v5' ? 5
                 : p === 'v6' ? 6
-                  : stored === 'ism' ? 0 : stored === 'traced' ? 1 : stored === 'v3' ? 3 : stored === 'v4' ? 4 : stored === 'v5' ? 5 : 6;
+                  : p === 'v6.1' ? 61
+                    : stored === 'ism' ? 0 : stored === 'traced' ? 1 : stored === 'v3' ? 3 : stored === 'v4' ? 4 : stored === 'v5' ? 5 : stored === 'v6' ? 6 : 61;
       state.earlyMode = pick;
       if (pick) worker.postMessage({ type: 'early', mode: pick });
       // remembered module switches (default on)

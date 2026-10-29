@@ -519,6 +519,12 @@ pub struct OmgWorld {
     #[export]
     #[init(val = true)]
     engine_v6: bool,
+    /// Engine v6.1 (on v6): its reverb as long and as loud as the trace
+    /// says — the decay time fitted without a cap, the late field at the
+    /// traced level (v6: clamped at 5 s, 12 dB under). The default.
+    #[export]
+    #[init(val = true)]
+    engine_v61: bool,
     /// Record each tick's strongest traced paths for `paths()` (a debug
     /// view). Off: the tracer records nothing.
     #[export]
@@ -528,7 +534,7 @@ pub struct OmgWorld {
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 15],
+    sent: [f32; 16],
     #[init(val = LevelGovernor::new(LEVELS - 1))]
     auto_tier: LevelGovernor,
     auto_ticks: u32,
@@ -954,6 +960,7 @@ impl OmgWorld {
             v4: self.engine_v4,
             v5: self.engine_v4 && self.engine_v5,
             v6: self.engine_v6,
+            v61: self.engine_v6 && self.engine_v61,
             sample_rate: engine_rate(),
             gpu_budget: self.gpu_budget.clamp(0.02, 1.0),
             ..Config::default()
@@ -978,7 +985,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 15];
+        self.sent = [f32::NAN; 16];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -1171,6 +1178,7 @@ impl OmgWorld {
             self.gpu_budget,
             self.engine_v5 as i32 as f32,
             self.engine_v6 as i32 as f32,
+            self.engine_v61 as i32 as f32,
         ];
         let cfg = self.sim_config();
         let mut g = host();

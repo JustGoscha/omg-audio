@@ -37,7 +37,7 @@
 //!            closing door — dips under the shut level, rises against
 //!            the closing, how near the shut level it lands
 //!
-//!     MODE=v3|v4|v5|v6  RUNG=0..4 (unset: governed)  QUALITY=0..3 | LEVEL=0..10  EAR=0
+//!     MODE=v3|v4|v5|v6|v6.1  RUNG=0..4 (unset: governed)  QUALITY=0..3 | LEVEL=0..10  EAR=0
 //!     PACE=0  WAV=dir (write the output)  SEED=n  NEE=n (next-event
 //!     connections a bounce; 0: every source)  PHYS=hz (movers move at a
 //!     game's physics rate, sent every frame)
@@ -221,7 +221,8 @@ impl Rig {
             compute: if env("COMPUTE").as_deref() == Some("gpu") { Compute::Gpu } else { Compute::Cpu },
             v4: mode == "v4" || mode == "v5",
             v5: mode == "v5",
-            v6: mode == "v6",
+            v6: mode == "v6" || mode == "v6.1",
+            v61: mode == "v6.1",
             sample_rate: SR,
             ..Config::default()
         };

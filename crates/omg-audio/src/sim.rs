@@ -160,6 +160,11 @@ pub struct Config {
     /// arrivals and a parametric reverb gliding with the trace, steady in
     /// motion — with v6's refinements. On, `v4` and `v5` are off.
     pub v6: bool,
+    /// Engine v6.1 (on v6): the reverberation time as the traced decay
+    /// says, however long — the echogram's cut-off tail carried on — and
+    /// the late level uncapped (`omg_core::tracer::fit_reverb`; v6 clamps
+    /// the time at 5 s and the level under 0.7).
+    pub v61: bool,
     /// The mixer's sample rate (v4 builds its convolution kernels for it).
     pub sample_rate: f32,
     /// v4: build convolution kernels on a thread of their own (off the
@@ -213,12 +218,13 @@ pub fn default_walk_threads() -> usize {
 
 impl Config {
     /// The engine switches made consistent: v6 runs v3's estimate (v4
-    /// and v5 off); v5 needs v4.
+    /// and v5 off); v5 needs v4, v6.1 needs v6.
     pub fn engine(mut self) -> Self {
         if self.v6 {
             self.v4 = false;
         }
         self.v5 &= self.v4;
+        self.v61 &= self.v6;
         self
     }
 }
@@ -233,6 +239,7 @@ impl Default for Config {
             v4: true,
             v5: true,
             v6: false,
+            v61: false,
             sample_rate: 48_000.0,
             kernel_thread: true,
             max_kernels: 64,
@@ -522,6 +529,7 @@ impl Simulation {
                 t.v4 = cfg.v4;
                 t.v5 = cfg.v5;
                 t.v6 = cfg.v6;
+                t.v61 = cfg.v61;
                 t.threads = cfg.walk_threads;
                 t
             },
@@ -570,6 +578,7 @@ impl Simulation {
         self.tracer.v4 = cfg.v4;
         self.tracer.v5 = cfg.v5;
         self.tracer.v6 = cfg.v6;
+        self.tracer.v61 = cfg.v61;
         self.tracer.threads = cfg.walk_threads;
         if rebuild {
             self.make_walker();
@@ -587,6 +596,7 @@ impl Simulation {
         self.tracer.v4 = self.cfg.v4;
         self.tracer.v5 = self.cfg.v5;
         self.tracer.v6 = self.cfg.v6;
+        self.tracer.v61 = self.cfg.v61;
         self.tracer.threads = self.cfg.walk_threads;
         self.tracer.debug = self.debug_paths;
         for s in &mut self.sources {

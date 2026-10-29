@@ -5,7 +5,7 @@
 //! wall-clock. A tick over the 50 ms period leaves the simulation thread
 //! no time for the exact frames between ticks: paths then move in steps.
 //!
-//!   MODE=v3|v5|v6  SPEED=8  QUALITY=0..3 | LEVEL=0..10  SECS=10  THREADS=n
+//!   MODE=v3|v5|v6|v6.1  SPEED=8  QUALITY=0..3 | LEVEL=0..10  SECS=10  THREADS=n
 //!   GEOMETRY=<file> (a dumped level, e.g. the Godot demo's)
 //!   cargo run --release -p omg-web --example tick_move
 use omg_audio::{Compute, Config, Quality, Simulation};
@@ -47,7 +47,7 @@ fn main() {
         }
         Quality::Custom(b)
     };
-    let mut cfg = Config { quality, compute: Compute::Cpu, v4: mode == "v4" || mode == "v5", v5: mode == "v5", v6: mode == "v6", ..Config::default() };
+    let mut cfg = Config { quality, compute: Compute::Cpu, v4: mode == "v4" || mode == "v5", v5: mode == "v5", v6: mode == "v6" || mode == "v6.1", v61: mode == "v6.1", ..Config::default() };
     // THREADS=n: the walk's threads (default: the machine's default)
     if let Some(n) = env("THREADS").and_then(|v| v.parse().ok()) {
         cfg.walk_threads = n;
@@ -67,7 +67,14 @@ fn main() {
     // (y 52) to the flute and on (Godot's recorded scenario), every tick
     // over 1.5× the median printed by part
     let fly = env("ROUTE").as_deref() == Some("fly");
+    // ROUTE=bunker: back and forth in the bunker below grade (floor −3 m)
+    let bunker = env("ROUTE").as_deref() == Some("bunker");
+    let fly = fly || bunker;
     let pos = move |t: f32| -> [f32; 3] {
+        if bunker {
+            let d = (t * speed.min(1.5)) % 8.0;
+            return [if d < 4.0 { 35.0 + d } else { 43.0 - d }, 10.0, -1.4];
+        }
         if fly {
             return [4.0, (40.0 + t * speed).min(62.0), 2.0];
         }
@@ -82,7 +89,7 @@ fn main() {
         let n = (secs / 0.05) as usize;
         for k in 0..n {
             let t = k as f32 * 0.05;
-            let p = if moving { pos(t) } else { [8.0, y, 2.0] };
+            let p = if moving { pos(t) } else if bunker { [37.0, 10.0, -1.4] } else { [8.0, y, 2.0] };
             sim.set_listener_at(p, 0.0, 0.0, 0.0, t as f64 + if moving { 0.0 } else { 1000.0 });
             let t0 = Instant::now();
             sim.tick();
