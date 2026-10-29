@@ -331,12 +331,19 @@ impl HrirGrid {
 /// linear buffer (128-tap HRIRs, 128-sample blocks).
 const CONV_SPAN: usize = 512;
 
-/// Per-emitter nearest-HRIR convolver with ~10 ms crossfade on index change.
+/// Per-emitter nearest-HRIR convolver with ~10 ms crossfade on index
+/// change. A change asked for during a fade waits for it to finish (the
+/// latest one wins): starting over mid-fade dropped the half-faded filter
+/// at once — a click every time a fast turn (a flick of the view, a source
+/// swept past close by) changed the HRIR within 10 ms.
 pub struct PointConv {
     ring: Vec<f32>,
     pos: usize,
     cur: usize,
     prev: usize,
+    /// The direction's HRIR asked for last: faded to when the fade under
+    /// way has finished.
+    next: usize,
     xfade: f32, // 1 → 0, blend from prev to cur
     xstep: f32,
 }
@@ -348,6 +355,7 @@ impl PointConv {
             pos: 0,
             cur: 0,
             prev: 0,
+            next: 0,
             xfade: 0.0,
             xstep: 1.0 / (0.010 * sample_rate),
         }
@@ -357,14 +365,21 @@ impl PointConv {
         self.ring.iter_mut().for_each(|s| *s = 0.0);
         self.cur = idx;
         self.prev = idx;
+        self.next = idx;
         self.xfade = 0.0;
     }
 
     pub fn set_dir(&mut self, grid: &HrirGrid, dir: [f32; 3]) {
-        let idx = grid.nearest(dir);
-        if idx != self.cur {
+        self.next = grid.nearest(dir);
+        self.advance();
+    }
+
+    /// No fade under way and another HRIR asked for: fade to it.
+    #[inline]
+    fn advance(&mut self) {
+        if self.xfade <= 0.0 && self.next != self.cur {
             self.prev = self.cur;
-            self.cur = idx;
+            self.cur = self.next;
             self.xfade = 1.0;
         }
     }
@@ -390,11 +405,13 @@ impl PointConv {
         buf[..n - old].copy_from_slice(&self.ring[old..]);
         buf[n - old..n].copy_from_slice(&self.ring[..old]);
         buf[n..n + m].copy_from_slice(&x[..m]);
-        let (cl, cr) = (&grid.hrir_l[self.cur], &grid.hrir_r[self.cur]);
         for j in 0..m {
+            // a change asked for during a fade starts where it ends (as
+            // `process` does, sample for sample)
+            self.advance();
             // window ending at sample j (newest last), kernels pre-reversed
             let w = &buf[j + 1..j + 1 + n];
-            let (mut a, mut b) = dot2(w, cl, cr);
+            let (mut a, mut b) = dot2(w, &grid.hrir_l[self.cur], &grid.hrir_r[self.cur]);
             if self.xfade > 0.0 {
                 let (pa, pb) = dot2(w, &grid.hrir_l[self.prev], &grid.hrir_r[self.prev]);
                 let f = self.xfade;
@@ -412,6 +429,7 @@ impl PointConv {
 
     #[inline]
     pub fn process(&mut self, grid: &HrirGrid, s: f32) -> (f32, f32) {
+        self.advance();
         let taps = self.ring.len();
         self.pos = (self.pos + 1) % taps;
         self.ring[self.pos] = s;
@@ -462,5 +480,41 @@ mod tests {
             assert!((sl - nl).abs() < 1e-4 && (sr - nr).abs() < 1e-4,
                 "pos {pos}: ({sl}, {sr}) vs naive ({nl}, {nr})");
         }
+    }
+
+    /// A path turning fast round the head (a flick of the view, a source
+    /// swept past close by) changes its nearest HRIR more often than the
+    /// 10 ms crossfade lasts: every change must still fade — a pure tone
+    /// through it stays free of clicks (through any one filter it is a
+    /// pure tone; only a step between filters makes treble).
+    #[test]
+    fn a_fast_turn_crossfades_every_hrir_change() {
+        let grid = HrirGrid::from_bytes(include_bytes!("../../omg-audio/hrir/hrir_grid.bin"));
+        let sr = 48_000.0f32;
+        let mut conv = PointConv::new(grid.taps, sr);
+        let n = (0.5 * sr) as usize;
+        let block = 128usize;
+        let deg_s = 1500.0f32;
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        let x: Vec<f32> = (0..n).map(|k| (std::f32::consts::TAU * 500.0 * k as f32 / sr).sin()).collect();
+        for b in (0..n).step_by(block) {
+            let a = (deg_s * b as f32 / sr).to_radians();
+            conv.set_dir(&grid, [a.cos(), a.sin(), 0.0]);
+            let e = (b + block).min(n);
+            conv.process_block(&grid, &x[b..e], &mut l[b..e], &mut r[b..e]);
+        }
+        // the treble (a triple difference: 500 Hz −54 dB under what it
+        // passes at 4 kHz) under the whole, per 5 ms
+        let w = (0.005 * sr) as usize;
+        let mut worst = f32::MIN;
+        for ch in [&l, &r] {
+            for k in (w..n - w).step_by(w) {
+                let hf: f32 = (k..k + w).map(|i| (ch[i] - 3.0 * ch[i - 1] + 3.0 * ch[i - 2] - ch[i - 3]).powi(2)).sum();
+                let all: f32 = (k..k + w).map(|i| ch[i] * ch[i]).sum();
+                worst = worst.max(10.0 * (hf / all.max(1e-30)).max(1e-30).log10());
+            }
+        }
+        eprintln!("turning {deg_s}°/s: treble at worst {worst:.1} dB under the tone");
+        assert!(worst < -50.0, "a step between HRIRs: treble {worst:.1} dB under the tone");
     }
 }

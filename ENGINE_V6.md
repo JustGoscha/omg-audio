@@ -152,6 +152,17 @@ start_recording`, `demo/godot/demo/record.gd`, `tools/record_runs.sh`):
   (4.3 moving smoothly); in Godot its treble artifacts −50.3 / −47.2 /
   −50.6 → −53.5 / −54.5 / −57.4 dB (approach / pass / away).
 
+## A fast turn fades every HRIR change
+
+The strongest paths play through their nearest measured HRIR, re-chosen
+every 128 samples and crossfaded over 10 ms. A change asked for during
+a fade started over at once, dropping the half-faded filter: a click
+whenever a turn changed the HRIR within 10 ms — a flick of the view in a
+first-person game, a source swept past close by. Now a change waits for
+the fade under way (the latest wins): a 500 Hz tone through a path
+turning 1500°/s, its treble −27.2 → −67.6 dB under the tone
+(`hrtf::tests::a_fast_turn_crossfades_every_hrir_change`).
+
 ## Still open (OPEN.md)
 
 A loud room heard through its walls or a shut door is a heavy-tailed
