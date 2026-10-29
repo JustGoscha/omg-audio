@@ -293,3 +293,22 @@ stand-ins play meanwhile; `standin/door_*`):
 
 Render cost unchanged (web 18.5 % of real time; Godot stress 2.93×).
 
+## Claps: the tail's grain
+
+"Claps have a crackling late reverb": crackle is a tail made of a few
+isolated clicks over a quieter field. Measured as the kurtosis of the
+output (E[x⁴]/E[x²]², 20 ms windows, energy-weighted) over the 0.5 s
+after each click's early part — a dense reverberant tail is noise-like
+(≈ 3), sparse clicks read far higher (`assess still`, the tail kurtosis
+line; `crackle/`):
+
+| tail kurtosis, low / mid / high | v5.5 | v3 mode, same engine |
+|---|---|---|
+| a clap in the hall | 2.9 / 3.1 / 3.1 | 3.6 / 9.9 / 64.7 |
+| the club from the entrance | 2.6 / 3.1 / 3.2 | 2.9 / 7.1 / 44.1 |
+| a clap on the open square | 5.3 / 17.6 / 38.2 | 28.5 / 172.8 / 388.8 |
+
+v5.5's tails indoors are noise-like. On the open square a clap's tail
+is a sparse train of facade echoes — physically so; v3 makes it ten
+times spikier.
+

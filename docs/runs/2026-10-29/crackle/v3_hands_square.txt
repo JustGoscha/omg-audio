@@ -1,0 +1,9 @@
+still (v3): hands at square, 5 clicks every 3 s; dB low/mid/high
+   click  0  early  -10.3   -5.5    0.5  late  -48.5  -43.6  -37.4
+   click  1  early  -10.3   -5.5    0.6  late  -48.5  -43.6  -37.4
+   click  2  early  -10.4   -5.6    0.3  late  -48.0  -43.3  -37.3
+   click  3  early  -10.2   -5.5    0.4  late  -46.4  -41.6  -35.7
+   click  4  early  -10.3   -5.5    0.4  late  -46.2  -41.5  -35.7
+   tail kurtosis (noise ≈ 3)  low  28.5  mid 172.8  high 388.8
+   early spread  low sd 0.06 span  0.2  mid sd 0.04 span  0.1  high sd 0.08 span  0.2
+   late  spread  low sd 1.01 span  2.4  mid sd 0.96 span  2.1  high sd 0.81 span  1.7

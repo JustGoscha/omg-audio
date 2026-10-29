@@ -1,0 +1,9 @@
+still (v5): hands at hall, 5 clicks every 3 s; dB low/mid/high
+   click  0  early   -9.7   -5.1    1.0  late  -16.5  -14.2  -10.1
+   click  1  early   -9.7   -5.1    1.0  late  -16.6  -14.2  -10.1
+   click  2  early   -9.7   -5.1    1.0  late  -16.6  -14.2  -10.2
+   click  3  early   -9.7   -5.1    1.0  late  -16.6  -14.3  -10.2
+   click  4  early   -9.7   -5.0    1.0  late  -16.6  -14.3  -10.2
+   tail kurtosis (noise ≈ 3)  low   2.9  mid   3.1  high   3.1
+   early spread  low sd 0.01 span  0.0  mid sd 0.01 span  0.0  high sd 0.01 span  0.0
+   late  spread  low sd 0.02 span  0.1  mid sd 0.01 span  0.0  high sd 0.04 span  0.1

@@ -386,6 +386,40 @@ impl Rig {
         t + ((p[0] - l[0]).powi(2) + (p[1] - l[1]).powi(2) + (p[2] - l[2]).powi(2)).sqrt() / C
     }
 
+    /// How impulsive the output is over `t0..t1` (s), per band: the
+    /// kurtosis E[x⁴]/E[x²]² in 20 ms windows (both ears), weighted by
+    /// each window's energy. A dense reverberant tail is noise-like (≈ 3);
+    /// isolated clicks over a quieter field read far higher — heard as
+    /// crackle.
+    fn kurtosis(&mut self, t0: f32, t1: f32) -> [f64; 3] {
+        let w = (0.02 * SR) as usize;
+        let a = (t0.max(0.0) * SR) as usize;
+        let s = self.split();
+        let b = ((t1 * SR) as usize).min(s[0].len());
+        let (mut num, mut den) = ([0.0f64; 3], [0.0f64; 3]);
+        let mut i = a;
+        while i + w <= b {
+            for k in 0..3 {
+                let (mut m2, mut m4) = (0.0f64, 0.0f64);
+                for ear in 0..2 {
+                    for x in &s[ear][i..i + w] {
+                        let v = (x[k] as f64).powi(2);
+                        m2 += v;
+                        m4 += v * v;
+                    }
+                }
+                let n = (2 * w) as f64;
+                if m2 > 0.0 {
+                    let kurt = (m4 / n) / (m2 / n).powi(2);
+                    num[k] += kurt * m2;
+                    den[k] += m2;
+                }
+            }
+            i += w;
+        }
+        core::array::from_fn(|k| if den[k] > 0.0 { num[k] / den[k] } else { 0.0 })
+    }
+
     /// Click `k`'s response: (early, late) energy per band, the late part
     /// up to `len` s after its arrival.
     fn response(&mut self, k: usize, len: f32) -> ([f64; 3], [f64; 3]) {
@@ -492,12 +526,21 @@ fn still() {
     println!("still ({}): {src} at {spot}, {n} clicks every {period} s; dB low/mid/high", mode());
     let mut early = Vec::new();
     let mut late = Vec::new();
+    let mut kurt = [0.0f64; 3];
     for k in 0..n {
         let (e, l) = rig.response(k, period - 0.1);
         println!("   click {k:2}  early {}  late {}", bands_db(e), bands_db(l));
         early.push(e);
         late.push(l);
+        // the tail's grain: from the end of the early part over the next
+        // 0.5 s (the reverb, before it sinks under the floor)
+        let a = rig.arrival(k);
+        let ku = rig.kurtosis(a + EARLY, a + EARLY + 0.5);
+        for b in 0..3 {
+            kurt[b] += ku[b] / n as f64;
+        }
     }
+    println!("   tail kurtosis (noise ≈ 3)  low {:5.1}  mid {:5.1}  high {:5.1}", kurt[0], kurt[1], kurt[2]);
     let spread = |v: &[[f64; 3]], b: usize| -> (f32, f32) {
         let d: Vec<f32> = v.iter().map(|e| db(e[b])).collect();
         let m = d.iter().sum::<f32>() / d.len() as f32;
