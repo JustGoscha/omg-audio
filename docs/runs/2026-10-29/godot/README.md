@@ -34,16 +34,30 @@ frames rendered late / slowest take).
 
 | scenario | engine | worst artifact by phase | tick ms | quality auto | audio thread |
 |---|---|---|---|---|---|
-| fly | v3 | outside -58.2; crossing -40.7; inside -38.0 | 1.2–17.4 | rung 2 at the start; 0.4s → 3, 2.4s → 4, 2.9s → 3 | 0 / 5 µs |
-| fly | v6 | outside -58.0; crossing -45.5; inside -39.2 | 1.2–18.4 | rung 2 at the start; 0.5s → 3, 2.5s → 4, 3.0s → 3 | 0 / 3 µs |
-| car | v3 | approach -50.9; pass -51.6; away -21.1 | 1.0–6.6 | rung 2 at the start; 0.3s → 3, 2.3s → 4, 4.4s → 5, 6.4s → 6, 8.4s → 7, 10.4s → 8 | 0 / 13 µs |
-| car | v6 | approach -52.5; pass -47.5; away -19.9 | 1.0–6.6 | rung 2 at the start; 0.3s → 3, 2.3s → 4, 4.3s → 5, 6.3s → 6, 8.4s → 7, 10.4s → 8 | 0 / 11 µs |
-| door | v3 | closed -45.7; opening -47.7; open -47.4; shutting -39.1; shut -13.5 | 4.0–17.5 | rung 2 at the start; 0.5s → 3, 2.3s → 2, 5.2s → 3, 6.1s → 2 | 0 / 5 µs |
-| door | v6 | closed -41.4; opening -46.9; open -46.0; shutting -54.8; shut -34.3 | 3.8–17.2 | rung 2 at the start; 0.5s → 3, 2.2s → 2 | 0 / 3 µs |
+| fly | v3 | outside -48.0; crossing -44.0; inside -39.9 | 1.0–14.3 | rung 1 at the start; 0.1s → 2, 2.1s → 3 | 0 / 8 µs |
+| fly | v6 | outside -55.6; crossing -41.0; inside -41.7 | 1.2–16.1 | rung 2 at the start; 0.5s → 3, 6.3s → 4 | 0 / 3 µs |
+| car | v3 | approach -50.3; pass -41.4; away -30.3 | 1.0–7.0 | rung 2 at the start; 0.4s → 3, 2.4s → 4, 4.5s → 5, 6.5s → 6, 8.5s → 7, 10.5s → 8 | 0 / 10 µs |
+| car | v6 | approach -39.3; pass -51.1; away -28.0 | 1.0–5.8 | rung 2 at the start; 0.5s → 3, 2.5s → 4, 4.5s → 5, 6.5s → 6, 8.6s → 7, 10.6s → 8 | 0 / 6 µs |
+| door | v3 | closed -38.5; opening -47.4; open -48.5; shutting -48.6; shut -38.4 | 4.3–25.0 | rung 2 at the start; 0.6s → 3, 6.0s → 4 | 0 / 15 µs |
+| door | v6 | closed -61.6; opening -47.7; open -48.3; shutting -42.6; shut -32.2 | 4.2–23.7 | rung 2 at the start; 0.5s → 3, 8.9s → 4 | 0 / 3 µs |
 
-v6 runs v3's estimate today (its refinements come next): v3 and v6
-differ by run-to-run variance only — the real-time host isn't
-deterministic.
+v6 here has its refinements on v3 (ENGINE_V6.md): a door restarts the
+averages, standing still they converge; both engines play the reverb
+through the diffused network and walk on 4 threads. The tone runs turn
+the ear off (its tinnitus is the ear model's) and silence the demo's own
+one-shots (owls and bells on timers: in the first recordings they played
+over the tone in some runs and read as artifacts).
+
+**The door, as played** — the tone's level after the shut command (6 s),
+re the closed level before it opened (dB):
+
+| | 6.5 s | 6.75 s | 7.0 s | 7.5 s | 8.0 s | 8.5 s |
+|---|---|---|---|---|---|---|
+| v3 | +36.2 | +33.2 | +29.3 | +24.0 | +20.0 | +16.6 |
+| v6 | +30.8 | +16.3 | −2.8 | −0.9 | +5.5 | +4.2 |
+
+(the leaf swings ~0.5 s; v6's ±5 dB after is the low rungs' estimate
+noise — the closed level itself wanders as much.)
 
 **What changed today, as the game plays it** (fly, before → after):
 the tick 4.5–83.5 ms → 1.2–18 ms (auto now holds rung 3–4 in the furnished

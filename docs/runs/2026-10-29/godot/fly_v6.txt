@@ -1,13 +1,13 @@
-/private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/runs_v6/fly_v6: 6.8 s at 44100 Hz
+/private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/runs_v6c/fly_v6: 6.8 s at 44100 Hz
   artifacts (above 3 kHz, under the whole; a pure tone's output has none):
-    outside   466 windows: median  -63.2 dB, worst  -35.5 dB, over −40 dB   3, over −30 dB   0
-    crossing   61 windows: median  -58.7 dB, worst  -21.5 dB, over −40 dB  20, over −30 dB  19
-    inside    817 windows: median  -35.2 dB, worst  -23.3 dB, over −40 dB 679, over −30 dB 112
-    loudest: 2.644s -22dB (crossing), 2.619s -22dB (crossing), 2.649s -23dB (crossing), 2.624s -23dB (crossing), 2.654s -23dB (crossing), 5.747s -23dB (inside), 6.366s -24dB (inside), 2.614s -24dB (crossing)
+    outside   464 windows: median  -60.0 dB, worst  -26.4 dB, over −40 dB  19, over −30 dB   1
+    crossing   63 windows: median  -33.0 dB, worst  -17.6 dB, over −40 dB  50, over −30 dB  15
+    inside    817 windows: median  -36.6 dB, worst  -22.5 dB, over −40 dB 670, over −30 dB  52
+    loudest: 2.499s -18dB (crossing), 2.504s -19dB (crossing), 2.494s -20dB (crossing), 2.484s -20dB (crossing), 2.489s -20dB (crossing), 2.774s -22dB (inside), 2.749s -23dB (inside), 2.624s -24dB (crossing)
   level jumps (10 ms off its 90 ms course):
-    outside   234 windows: >2 dB  50, >4 dB  26
-    crossing   31 windows: >2 dB   8, >4 dB   4
-    inside    403 windows: >2 dB  68, >4 dB  12
-  audio thread: 582 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 11 µs; spacing median 11.6 ms, max 11.7 ms
-  quality: rung 2 at the start; 0.4s → 3, 2.4s → 4, 3.1s → 3
-  engine: tick 1.2–18.4 ms, load up to 0.21, budget changes 0 (taps 480 → 480), late frames 0
+    outside   233 windows: >2 dB  56, >4 dB  28
+    crossing   32 windows: >2 dB  10, >4 dB   4
+    inside    403 windows: >2 dB  51, >4 dB  14
+  audio thread: 582 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 3 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 2 at the start; 0.6s → 3
+  engine: tick 1.2–15.3 ms, load up to 0.21, budget changes 0 (taps 480 → 480), late frames 0

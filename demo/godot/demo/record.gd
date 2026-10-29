@@ -95,6 +95,11 @@ func _alone(keep: String) -> int:
 			src.set_loop_clip(id)
 		else:
 			src.stop()
+	# the demo's own one-shots too: owls and bells on their timers, cars
+	# (the car scenario sends its own)
+	var snd = demo.sounds
+	snd.wild = {"owl1": 1e9, "owl2": 1e9, "bells": 1e9}
+	snd.next_car = 1e9
 	world.ambience_db = -200.0
 	world.rain_db = -200.0
 	# the ear off: its tinnitus (5.4 kHz) after loud sound is the ear
