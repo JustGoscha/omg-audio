@@ -1,17 +1,17 @@
 docs/runs/2026-10-29/godot/door_v6: 9.0 s at 44100 Hz
   artifacts (above 3 kHz, under the whole; a pure tone's output has none):
-    closed    390 windows: median  -55.6 dB, worst  -35.4 dB, over −40 dB  14, over −30 dB   0
-    opening   201 windows: median  -31.7 dB, worst   -2.7 dB, over −40 dB 154, over −30 dB  83
-    open      601 windows: median  -23.9 dB, worst   -3.5 dB, over −40 dB 591, over −30 dB 465
-    shutting  201 windows: median  -25.0 dB, worst   -5.8 dB, over −40 dB 196, over −30 dB 152
-    shut      402 windows: median  -45.9 dB, worst  -13.1 dB, over −40 dB 116, over −30 dB  28
-    loudest: 2.968s -3dB (opening), 3.218s -4dB (open), 5.867s -5dB (open), 5.143s -5dB (open), 3.243s -5dB (open), 2.978s -5dB (opening), 4.919s -5dB (open), 2.744s -5dB (opening)
+    closed    390 windows: median  -55.6 dB, worst  -35.3 dB, over −40 dB  10, over −30 dB   0
+    opening   201 windows: median  -31.8 dB, worst   -3.4 dB, over −40 dB 156, over −30 dB  86
+    open      601 windows: median  -22.5 dB, worst   -5.1 dB, over −40 dB 596, over −30 dB 484
+    shutting  201 windows: median  -25.8 dB, worst   -4.1 dB, over −40 dB 189, over −30 dB 151
+    shut      402 windows: median  -52.1 dB, worst   -7.7 dB, over −40 dB  48, over −30 dB  25
+    loudest: 2.933s -3dB (opening), 2.963s -4dB (opening), 6.790s -4dB (shutting), 2.938s -4dB (opening), 2.948s -5dB (opening), 3.163s -5dB (open), 5.832s -5dB (open), 2.943s -5dB (opening)
   level jumps (10 ms off its 90 ms course):
-    closed    196 windows: >2 dB  72, >4 dB  21
-    opening   100 windows: >2 dB  30, >4 dB   5
-    open      300 windows: >2 dB  94, >4 dB  33
-    shutting  100 windows: >2 dB  41, >4 dB  10
-    shut      197 windows: >2 dB  63, >4 dB  20
-  audio thread: 776 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 8 µs; spacing median 11.6 ms, max 11.7 ms
+    closed    196 windows: >2 dB  63, >4 dB  25
+    opening   100 windows: >2 dB  35, >4 dB  11
+    open      300 windows: >2 dB  91, >4 dB  24
+    shutting  100 windows: >2 dB  26, >4 dB   6
+    shut      197 windows: >2 dB  62, >4 dB  15
+  audio thread: 776 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 6 µs; spacing median 11.6 ms, max 11.7 ms
   quality: rung 2 at the start; 0.6s → 3
-  engine: tick 4.2–22.5 ms, load up to 0.25, budget changes 0 (taps 480 → 480), late frames 0
+  engine: tick 4.4–22.8 ms, load up to 0.26, budget changes 0 (taps 480 → 480), late frames 0

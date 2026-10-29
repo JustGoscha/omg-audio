@@ -1,13 +1,13 @@
 docs/runs/2026-10-29/godot/fly_v3: 6.8 s at 44100 Hz
   artifacts (above 3 kHz, under the whole; a pure tone's output has none):
-    outside   464 windows: median  -62.3 dB, worst  -23.4 dB, over −40 dB  17, over −30 dB   3
-    crossing   63 windows: median  -43.4 dB, worst  -23.6 dB, over −40 dB  28, over −30 dB  11
-    inside    817 windows: median  -35.9 dB, worst  -21.3 dB, over −40 dB 660, over −30 dB  88
-    loudest: 2.868s -21dB (inside), 2.863s -22dB (inside), 2.858s -23dB (inside), 0.599s -23dB (outside), 2.564s -24dB (crossing), 2.873s -24dB (inside), 2.878s -24dB (inside), 2.774s -24dB (inside)
+    outside   466 windows: median  -61.9 dB, worst  -23.4 dB, over −40 dB  11, over −30 dB   2
+    crossing   60 windows: median  -49.8 dB, worst  -22.9 dB, over −40 dB  25, over −30 dB  20
+    inside    818 windows: median  -35.4 dB, worst  -20.9 dB, over −40 dB 687, over −30 dB 117
+    loudest: 2.774s -21dB (inside), 2.873s -21dB (inside), 2.779s -21dB (inside), 2.759s -23dB (inside), 2.639s -23dB (crossing), 4.659s -23dB (inside), 2.784s -23dB (inside), 0.594s -23dB (outside)
   level jumps (10 ms off its 90 ms course):
-    outside   233 windows: >2 dB  48, >4 dB  22
-    crossing   32 windows: >2 dB   3, >4 dB   3
-    inside    403 windows: >2 dB  50, >4 dB  16
-  audio thread: 582 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 3 µs; spacing median 11.6 ms, max 11.7 ms
-  quality: rung 2 at the start; 0.6s → 3
-  engine: tick 1.2–14.6 ms, load up to 0.24, budget changes 0 (taps 480 → 480), late frames 0
+    outside   234 windows: >2 dB  49, >4 dB  26
+    crossing   30 windows: >2 dB   7, >4 dB   3
+    inside    404 windows: >2 dB  62, >4 dB  17
+  audio thread: 582 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 6 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 2 at the start; 0.8s → 3, 6.3s → 4
+  engine: tick 1.2–14.4 ms, load up to 0.19, budget changes 0 (taps 480 → 480), late frames 0
