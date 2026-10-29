@@ -752,7 +752,7 @@ fn fly() {
         // above 3 kHz, the engine made
         let f0 = 500.0f32;
         let cycle = (SR / f0).round() as usize;
-        let tone: Vec<f32> = (0..cycle * 10).map(|k| 0.5 * (std::f32::consts::TAU * f0 * k as f32 / SR).sin()).collect();
+        let tone: Vec<f32> = (0..cycle * 10).map(|k| 0.5 * (std::f32::consts::TAU * (k % cycle) as f32 / cycle as f32).sin()).collect();
         let tone = clip(&tone);
         for &id in &rig.ids[flute].clone() {
             rig.mix.play(id, &tone, Play::LOOP);
@@ -898,7 +898,7 @@ fn cartone() {
     rig.movers.push((CAR, Box::new(at)));
     let f0 = 500.0f32;
     let cycle = (SR / f0).round() as usize;
-    let tone: Vec<f32> = (0..cycle * 10).map(|k| 0.5 * (std::f32::consts::TAU * f0 * k as f32 / SR).sin()).collect();
+    let tone: Vec<f32> = (0..cycle * 10).map(|k| 0.5 * (std::f32::consts::TAU * (k % cycle) as f32 / cycle as f32).sin()).collect();
     let tone = clip(&tone);
     for &id in &rig.ids[CAR].clone() {
         rig.mix.play(id, &tone, Play::LOOP);
@@ -972,6 +972,13 @@ fn cartone() {
         n as usize
     );
     println!("   artifacts (output above 3 kHz, under the tone): {}", artifact_line("pass", &artifacts(&rig, 1.0, total - 0.2)));
+    if env("TRACE").is_some() {
+        for (k, v) in artifacts(&rig, 1.0, total - 0.2).iter().enumerate() {
+            if *v > -40.0 {
+                println!("   art t {:6.3}  {:6.1} dB", 1.0 + k as f32 * 0.005, v);
+            }
+        }
+    }
 }
 
 /// A clap (click) in the hall, then the listener walks out of the hall's
