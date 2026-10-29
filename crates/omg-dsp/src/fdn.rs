@@ -103,6 +103,8 @@ const INJECT_SIGN: [f32; NLINES] = [1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0];
 const INJECT_SIGN_B: [f32; NLINES] = [1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0];
 
 pub struct Fdn {
+    /// The input's diffusion (`Diffuser`) before the lines.
+    diffuser: Diffuser,
     lines: Vec<DelayLine>,
     lens: [f32; NLINES],
     damps: [OnePoleLp; NLINES],
@@ -159,6 +161,7 @@ impl Fdn {
         // interpolation lowpasses every pass of the loop
         let lens: [f32; NLINES] = core::array::from_fn(|i| (len_ms[i] * 1e-3 * sample_rate).round());
         Self {
+            diffuser: Diffuser::new(sample_rate),
             lines: (0..NLINES)
                 .map(|i| DelayLine::new(lens[i] as usize + 4))
                 .collect(),
@@ -180,6 +183,7 @@ impl Fdn {
             l.clear();
         }
         self.damps = [OnePoleLp::default(); NLINES];
+        self.diffuser.clear();
     }
 
     /// Jump the decay gains and loop filters to their targets — for a
@@ -192,6 +196,9 @@ impl Fdn {
                 g.snap(g.target_val());
             }
         }
+        // asleep, nothing rings in the diffuser either (what is left is
+        // under the idle floor)
+        self.diffuser.clear();
     }
 
     /// Configure decay from traced per-band RT60 (bands: low/mid/high).
@@ -218,7 +225,7 @@ impl Fdn {
     /// short sound (a clap) can still be in the lines with nothing come
     /// out yet — sleeping then would drop its reverb.
     pub fn idle_after(&self) -> u32 {
-        self.lens.iter().fold(0.0f32, |a, &b| a.max(b)).ceil() as u32 + 1
+        self.lens.iter().fold(0.0f32, |a, &b| a.max(b)).ceil() as u32 + 1 + self.diffuser.longest()
     }
 
     /// The factor that makes the lines' output energy for a unit impulse
@@ -367,8 +374,12 @@ impl Fdn {
             }
         }
         let norm = 1.0 / (NLINES as f32).sqrt();
+        let mut dx = [0.0f32; N];
+        for (d, &x) in dx[..m].iter_mut().zip(&input[..m]) {
+            *d = self.diffuser.tick(x);
+        }
         for (i, v) in v.iter_mut().enumerate() {
-            for (v, x) in v[..m].iter_mut().zip(&input[..m]) {
+            for (v, x) in v[..m].iter_mut().zip(&dx[..m]) {
                 *v = x * INJECT * self.sign[i] + *v * norm;
             }
             self.lines[i].write_block(&v[..m]);
@@ -395,9 +406,71 @@ impl Fdn {
             v = w;
         }
         let norm = 1.0 / (NLINES as f32).sqrt();
+        let input = self.diffuser.tick(input);
         for i in 0..NLINES {
             self.lines[i].write(input * INJECT * self.sign[i] + v[i] * norm);
         }
+    }
+}
+
+/// The network's input diffused before the lines: four Schroeder
+/// allpasses in series (Dattorro's input diffusion — 4.8, 3.6, 12.7 and
+/// 9.3 ms at gains 0.75, 0.75, 0.625, 0.625). Lossless and flat in
+/// spectrum, they only spread each arrival in time: injected bare, an
+/// impulse came out of the eight lines as eight impulses over the first
+/// 80 ms, 64 over the next pass — a late field far sparser than a room's
+/// diffuse one at that time, heard in the treble as a crackling, spiky
+/// tail (kurtosis ~77 at a clap in the cathedral, where the traced
+/// response convolved has ~10; noise is 3).
+struct Diffuser {
+    stages: [Allpass; 4],
+}
+
+const DIFFUSER_MS: [f32; 4] = [4.77, 3.60, 12.73, 9.30];
+const DIFFUSER_G: [f32; 4] = [0.75, 0.75, 0.625, 0.625];
+
+impl Diffuser {
+    fn new(sample_rate: f32) -> Self {
+        Self { stages: core::array::from_fn(|i| Allpass::new((DIFFUSER_MS[i] * 1e-3 * sample_rate).round() as usize, DIFFUSER_G[i])) }
+    }
+
+    #[inline]
+    fn tick(&mut self, x: f32) -> f32 {
+        self.stages.iter_mut().fold(x, |x, a| a.tick(x))
+    }
+
+    fn clear(&mut self) {
+        for a in &mut self.stages {
+            a.buf.iter_mut().for_each(|v| *v = 0.0);
+        }
+    }
+
+    /// Samples an arrival takes through it once (what rings on in it
+    /// feeds the lines, whose output keeps the network awake).
+    fn longest(&self) -> u32 {
+        self.stages.iter().map(|a| a.buf.len() as u32).sum()
+    }
+}
+
+/// v[n] = x[n] + g·v[n−D]; y[n] = v[n−D] − g·v[n].
+struct Allpass {
+    buf: Vec<f32>,
+    at: usize,
+    g: f32,
+}
+
+impl Allpass {
+    fn new(delay: usize, g: f32) -> Self {
+        Self { buf: vec![0.0; delay.max(1)], at: 0, g }
+    }
+
+    #[inline]
+    fn tick(&mut self, x: f32) -> f32 {
+        let old = self.buf[self.at];
+        let v = x + self.g * old;
+        self.buf[self.at] = v;
+        self.at = if self.at + 1 == self.buf.len() { 0 } else { self.at + 1 };
+        old - self.g * v
     }
 }
 
