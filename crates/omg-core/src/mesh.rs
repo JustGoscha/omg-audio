@@ -588,6 +588,14 @@ impl Mesh {
     /// sorted by t — the transmission query (each hit is a surface the
     /// sound must pass through). `out` is reused by callers.
     pub fn segment_hits(&self, a: Vec3, b: Vec3, out: &mut Vec<SegHit>) {
+        self.segment_hits_after(a, b, 1e-4, out);
+    }
+
+    /// `segment_hits` counting crossings from `t_lo` (a share of the
+    /// segment) on: endpoints on a surface (a bend point, a mirror) need
+    /// the default margin; a start in free space (`World::transmission_free`)
+    /// none worth the name.
+    pub fn segment_hits_after(&self, a: Vec3, b: Vec3, t_lo: f32, out: &mut Vec<SegHit>) {
         out.clear();
         if self.nodes.is_empty() {
             return;
@@ -612,7 +620,7 @@ impl Mesh {
                 for pt in &self.packed[start..start + node.b as usize] {
                     if let Some(t) = Self::ray_tri_packed(pt.a, pt.e1, pt.e2, a, dn) {
                         let tt = t / len;
-                        if tt > 1e-4 && tt < 1.0 - 1e-4 {
+                        if tt > t_lo && tt < 1.0 - 1e-4 {
                             out.push(SegHit { t: tt, tri: pt.tri, material: pt.material });
                         }
                     }

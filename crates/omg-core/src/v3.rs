@@ -21,7 +21,7 @@ type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefau
 use crate::material::{air_attenuation, Material};
 use crate::mesh::{Mesh, SegHit};
 use crate::params::{ReverbParams, Tap};
-use crate::paths::segment_transmission;
+use crate::paths::segment_transmission_after;
 use crate::rng::Rng;
 use crate::scene::{AcousticGeometry, GeomHit, WithPanels};
 use crate::tracer::{estimate_reverb, Echogram, BIN_DT, MAX_TIME};
@@ -152,6 +152,10 @@ const ECHO_MERGE_COS: f32 = 0.9;
 /// Distances below this are clamped (a source on a wall is not infinite).
 const MIN_DIST: f32 = 0.3;
 const EPS: f32 = 1e-3;
+/// A segment from free space (`World::transmission_free`) counts every
+/// crossing past this (m): a hundredth of the lift `EPS` off the surface
+/// it left, above f32's rounding at the town's coordinates.
+const FREE_START_M: f32 = 1e-5;
 /// The thickest solid a ray goes through as one wall (`World::through`).
 const MAX_WALL_M: f32 = 3.0;
 /// v2 echogram units: energy per 0.5 m receiver sphere = true / 16.
@@ -335,12 +339,28 @@ impl<'a> World<'a> {
     /// Per-band amplitude of the segment a→b: mesh walls by their real
     /// thickness, overlay boxes once each.
     pub fn transmission(&self, a: Vec3, b: Vec3, hits: &mut Vec<SegHit>) -> [f32; NBANDS] {
+        self.transmission_after(a, b, 1e-4, hits)
+    }
+
+    /// `transmission` from a point in free space — the listener, or a
+    /// walked bounce lifted `EPS` off its surface, the segment leaving
+    /// it: every surface it crosses counts, however near the start. (The
+    /// default margin, a share of the segment, left a bounce in a corner
+    /// — on the floor or a door's edge, a fraction of a millimetre from
+    /// the wall beside it — seeing through that wall: the club through
+    /// its shut door was mostly such leaks.)
+    pub fn transmission_free(&self, a: Vec3, b: Vec3, hits: &mut Vec<SegHit>) -> [f32; NBANDS] {
+        let len = (b - a).length().max(1e-9);
+        self.transmission_after(a, b, (FREE_START_M / len).min(1e-4), hits)
+    }
+
+    fn transmission_after(&self, a: Vec3, b: Vec3, t_lo: f32, hits: &mut Vec<SegHit>) -> [f32; NBANDS] {
         if self.crosses_earth(a, b) {
             return [EARTH; NBANDS];
         }
-        let mut g = segment_transmission(self.mesh, a, b, hits);
+        let mut g = segment_transmission_after(self.mesh, a, b, t_lo, hits);
         for (mn, mx, m) in self.panels {
-            if segment_crosses_box(a, b, *mn, *mx) {
+            if segment_crosses_box(a, b, *mn, *mx, t_lo) {
                 for band in 0..NBANDS {
                     g[band] *= m.transmission[band];
                 }
@@ -375,7 +395,7 @@ fn clip_box(a: Vec3, b: Vec3, mn: Vec3, mx: Vec3) -> Option<(f32, f32)> {
     Some((t0, t1))
 }
 
-fn segment_crosses_box(a: Vec3, b: Vec3, mn: Vec3, mx: Vec3) -> bool {
+fn segment_crosses_box(a: Vec3, b: Vec3, mn: Vec3, mx: Vec3, t_lo: f32) -> bool {
     let d = b - a;
     let (mut t0, mut t1) = (0.0f32, 1.0f32);
     for axis in 0..3 {
@@ -397,7 +417,7 @@ fn segment_crosses_box(a: Vec3, b: Vec3, mn: Vec3, mx: Vec3) -> bool {
         }
     }
     // strictly inside the segment: an endpoint ON a box face is not a crossing
-    t1 > 1e-4 && t0 < 1.0 - 1e-4
+    t1 > t_lo && t0 < 1.0 - 1e-4
 }
 
 /// One source for a trace. `id` keys its persistent state across ticks.
@@ -3103,7 +3123,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 if solver_owns(refl, coherent && !bent, loud, l_s / SPEED_OF_SOUND - cx.t_free[si]) {
                     continue; // the exact solver counts this one
                 }
-                let t = world.transmission(origin, sp, &mut *hits);
+                let t = world.transmission_free(origin, sp, &mut *hits);
                 let air = air_attenuation(l_s);
                 let w = 4.0 * inv_n / (budget.k * budget.k * l_s * l_s);
                 // a bent path with no reflection is the DIRECT
@@ -3234,7 +3254,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 let to = sp - off;
                 let r = to.length();
                 let cos_in = to.dot(normal) / r;
-                let t = world.transmission(off, sp, &mut *hits);
+                let t = world.transmission_free(off, sp, &mut *hits);
                 let rr = r.max(MIN_DIST);
                 let air = air_attenuation(length + r);
                 let w = pw * mat.scattering * cos_in * 4.0 * inv_n / (rr * rr);
@@ -3262,7 +3282,10 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         // on with its exact weight, this one reflects with its own
         // — once per ray; elsewhere the unbiased draw. (v3 keeps
         // the draw: its echo selection, a salience test against
-        // the diffuse estimate, was calibrated on it.)
+        // the diffuse estimate, was calibrated on it. v6 too: from
+        // the square its one split mostly went into some other
+        // building — the club's late spread 5.1/4.2/3.5 → 6.7/6.1/
+        // 7.3 dB, `assess still`.)
         let split_here = v4 && !split && p_t >= SPLIT_T2;
         if split_here && seg == 0 {
             reusable = false;
@@ -3821,7 +3844,7 @@ fn solve_chain(
         }
         first.get_or_insert(dir);
         for (mn, mx, pm) in world.panels {
-            if segment_crosses_box(p, q, *mn, *mx) {
+            if segment_crosses_box(p, q, *mn, *mx, 1e-4) {
                 for b in 0..NBANDS {
                     keep[b] *= pm.transmission[b] * pm.transmission[b];
                 }
@@ -4329,6 +4352,39 @@ fn rot_apply(m: &[[f32; 3]; 3], v: Vec3) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bounce in a corner — on the floor a fraction of a millimetre
+    /// from a wall — connects to a source behind that wall through the
+    /// wall, not past it. The default margin (a share of the segment)
+    /// let it through: the club heard through its shut door was mostly
+    /// such leaks among its loudest samples.
+    #[test]
+    fn a_bounce_in_a_corner_does_not_see_through_the_wall_beside_it() {
+        use crate::mesh::MeshBuilder;
+        let mut mb = MeshBuilder::new();
+        let floor = mb.material(Material::CONCRETE);
+        let door = mb.material(Material::DOOR);
+        let v = Vec3::new;
+        // the floor of both rooms, and the wall between them at x = 2
+        mb.tri(v(0.0, 0.0, 0.0), v(4.0, 0.0, 0.0), v(4.0, 4.0, 0.0), floor);
+        mb.tri(v(0.0, 0.0, 0.0), v(4.0, 4.0, 0.0), v(0.0, 4.0, 0.0), floor);
+        mb.tri(v(2.0, 0.0, 0.0), v(2.0, 4.0, 0.0), v(2.0, 4.0, 3.0), door);
+        mb.tri(v(2.0, 0.0, 0.0), v(2.0, 4.0, 3.0), v(2.0, 0.0, 3.0), door);
+        let mesh = mb.build();
+        let world = World { mesh: &mesh, panels: &[], grade: None, pockets: &[] };
+        let mut hits = Vec::new();
+        let src = v(3.5, 1.0, 1.5);
+        let wall = world.transmission(v(1.0, 2.0, 1.0), src, &mut hits)[1];
+        assert!(wall < 0.5, "the wall stops most of it: {wall}");
+        for gap in [1e-4f32, 5e-5, 2e-5] {
+            // the bounce on the floor, lifted EPS off it
+            let off = v(2.0 - gap, 2.0, 0.0) + v(0.0, 0.0, 1.0) * EPS;
+            let t = world.transmission_free(off, src, &mut hits)[1];
+            assert!((t / wall - 1.0).abs() < 1e-3, "{gap} m from the wall: {t} through it, the wall passes {wall}");
+        }
+        let leak = world.transmission(v(2.0 - 1e-4, 2.0, EPS), src, &mut hits)[1];
+        assert_eq!(leak, 1.0, "the default margin's blind start (what the walk used)");
+    }
 
     /// The next-event draw: each source kept with probability π, the near
     /// loud one always, `m` kept every time, the estimate unbiased for any

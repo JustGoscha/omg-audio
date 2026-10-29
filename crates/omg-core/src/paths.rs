@@ -487,7 +487,13 @@ impl AutoPaths {
 /// with it the mass law — comes from the actual geometry. `hits` is
 /// scratch space.
 pub fn segment_transmission(mesh: &Mesh, a: Vec3, b: Vec3, hits: &mut Vec<crate::mesh::SegHit>) -> [f32; NBANDS] {
-    mesh.segment_hits(a, b, hits);
+    segment_transmission_after(mesh, a, b, 1e-4, hits)
+}
+
+/// `segment_transmission` counting crossings from `t_lo` (a share of the
+/// segment) on (`Mesh::segment_hits_after`).
+pub fn segment_transmission_after(mesh: &Mesh, a: Vec3, b: Vec3, t_lo: f32, hits: &mut Vec<crate::mesh::SegHit>) -> [f32; NBANDS] {
+    mesh.segment_hits_after(a, b, t_lo, hits);
     let len = (b - a).length();
     let mut g = [1.0f32; NBANDS];
     let mut i = 0;

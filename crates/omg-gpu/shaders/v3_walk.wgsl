@@ -89,6 +89,8 @@ const AIR_HIGH_A = vec4<f32>(2.9243e-03, 4.3570e-03, 6.7144e-03, 1.0581e-02);
 const AIR_HIGH_B = vec4<f32>(1.6881e-02, 2.7020e-02, 4.3026e-02, 6.7554e-02);
 const MIN_DIST: f32 = 0.3;
 const EPS: f32 = 1e-3;
+// World::transmission_free: from free space every crossing past this (m)
+const FREE_START_M: f32 = 1e-5;
 // v3.rs MAX_WALL_M: the thickest solid a ray goes through as one wall
 const MAX_WALL_M: f32 = 3.0;
 const LATE_FLOOR: f32 = 1e-8;
@@ -415,7 +417,7 @@ var<private> seg_surf: array<u32, SEG_CAP>;
 // of the open segment, sorted, same-t clusters deduplicated (LOWEST
 // surface id wins, anchor t kept), consecutive same-material crossings
 // paired into one wall of real thickness (mass law).
-fn mesh_transmission(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+fn mesh_transmission(a: vec3<f32>, b: vec3<f32>, t_lo: f32) -> vec3<f32> {
     let dvec = b - a;
     let len = length(dvec);
     if (len < 1e-6) { return vec3<f32>(1.0); }
@@ -436,7 +438,7 @@ fn mesh_transmission(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
                 let t = ray_tri(p.a, p.e1, p.e2, a, dn);
                 if (t < 0.0) { continue; }
                 let tt = t / len;
-                if (tt <= 1e-4 || tt >= 1.0 - 1e-4) { continue; }
+                if (tt <= t_lo || tt >= 1.0 - 1e-4) { continue; }
                 // sorted insert; past the cap the farthest crossing drops
                 if (n == SEG_CAP && tt >= seg_t[SEG_CAP - 1u]) { continue; }
                 var j = min(n, SEG_CAP - 1u);
@@ -514,10 +516,10 @@ fn clip_box(a: vec3<f32>, b: vec3<f32>, mn: vec3<f32>, mx: vec3<f32>) -> vec2<f3
     return vec2<f32>(t0, t1);
 }
 
-fn segment_crosses_box(a: vec3<f32>, b: vec3<f32>, mn: vec3<f32>, mx: vec3<f32>) -> bool {
+fn segment_crosses_box(a: vec3<f32>, b: vec3<f32>, mn: vec3<f32>, mx: vec3<f32>, t_lo: f32) -> bool {
     let iv = clip_box(a, b, mn, mx);
     if (iv.x > iv.y) { return false; }
-    return iv.y > 1e-4 && iv.x < 1.0 - 1e-4;
+    return iv.y > t_lo && iv.x < 1.0 - 1e-4;
 }
 
 fn in_earth(p: vec3<f32>) -> bool {
@@ -600,11 +602,21 @@ fn through(p: vec3<f32>, dir: vec3<f32>, hit: Hit) -> vec3<f32> {
 
 // World::transmission: per-band amplitude of the segment a→b.
 fn seg_transmission(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+    return seg_transmission_after(a, b, 1e-4);
+}
+
+// World::transmission_free: from the listener or a bounce lifted EPS off
+// its surface — every surface crossed counts, however near the start
+fn seg_transmission_free(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+    return seg_transmission_after(a, b, min(FREE_START_M / max(length(b - a), 1e-9), 1e-4));
+}
+
+fn seg_transmission_after(a: vec3<f32>, b: vec3<f32>, t_lo: f32) -> vec3<f32> {
     if (crosses_earth(a, b)) { return vec3<f32>(EARTH); }
-    var g = mesh_transmission(a, b);
+    var g = mesh_transmission(a, b, t_lo);
     for (var i = 0u; i < job.n_panels; i++) {
         let pl = panel(i);
-        if (segment_crosses_box(a, b, pl.pmin, pl.pmax)) {
+        if (segment_crosses_box(a, b, pl.pmin, pl.pmax, t_lo)) {
             g = g * pl.transmission;
         }
     }
@@ -1106,7 +1118,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if (mirror_only && loud && refl >= 1u && refl <= MAX_COHERENT_REFL && (job.v4 != 0u || refl > job.bounces || rel >= EARLY_S)) {
                     continue;
                 }
-                let t = seg_transmission(origin, sp);
+                let t = seg_transmission_free(origin, sp);
                 let a = air(l_s);
                 let w = 4.0 * inv_n / (job.k * job.k * l_s * l_s);
                 // a bent path only carries what the straight line from
@@ -1226,7 +1238,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let to = sp - off;
                 let r = length(to);
                 let cos_in = dot(to, normal) / r;
-                let t = seg_transmission(off, sp);
+                let t = seg_transmission_free(off, sp);
                 let rr = max(r, MIN_DIST);
                 let a = air(length_m + r);
                 let w = pw * hit.scattering * cos_in * 4.0 * inv_n / (rr * rr);

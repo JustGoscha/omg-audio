@@ -121,6 +121,16 @@ After the Godot demo's club door closes (`record.gd --scenario=door
 --tone`), the tone sits ~20 dB under where it settles for ~0.5 s, then
 steps up within 30 ms as a rare strong path through the door arrives —
 the heavy tail of "a loud room's field through its walls" above, heard.
+Looked into (Oct 29): among the loudest samples were leaks — bounces in
+a corner (on the floor or a door's edge, a fraction of a millimetre
+from the wall beside them) whose connection to a speaker started inside
+the transmission query's blind margin and passed the wall unpriced:
+fixed (`World::transmission_free`), but the level converges as slowly
+without them. What remains is physical sampling: few rays get into the
+club (the 2 % draw), and bounces 0.3–0.5 m under a speaker (on its
+cabinet) bring 1/r². Splitting v6's rays at their first partition (as
+v4 does) did not help: from the square the split mostly goes into some
+other building, the club's late spread 5.1/4.2/3.5 → 6.7/6.1/7.3 dB.
 Headless, `assess door` (instant shut, PACE=0): the late treble +13.9 dB
 50 ms after the shut (ENGINE_V6.md measured ±3 dB earlier; the click's
 treble tail — not yet looked into).
