@@ -65,11 +65,21 @@ pub struct OutputStage {
     // Tinnitus: a faint ring after blasts. Fed by peaks far above even the
     // fatigue threshold, decays over ~6 s. Diotic (identical in both ears
     // — it reads as inside the head), and NOT scaled by the adaptation:
-    // the ear cannot quiet a phantom sound.
+    // the ear cannot quiet a phantom sound. But sound masks it: heard by
+    // how far it stands over what the scene carries in its critical band
+    // — under the noise that caused it, nothing; in the quiet after, the
+    // ring (`TIN_PHANTOM_DB`).
     tin: f32,
     tin_phase: f32,
     tin_step: f32,
     tin_decay: f32,
+    /// The scene in the ring's critical band (before the adaptation: the
+    /// sound itself), per ear — band-pass state and its mean square.
+    tin_band: [[f32; 2]; 2],
+    tin_bp: ([f32; 3], [f32; 2]),
+    tin_band_ms: f32,
+    /// How much of the ring is heard over that (0 … 1), per control.
+    tin_heard: Smoothed,
     /// The ear on (adaptation, reflex, fatigue, tinnitus) — off, the
     /// stage only decodes and limits (the levels still measured).
     ear: bool,
@@ -153,6 +163,23 @@ const TIN_THRESH: f32 = 2.2;
 /// Ring pitch and ceiling level (≈ −44 dBFS — audible only in quiet).
 const TIN_HZ: f32 = 5_400.0;
 const TIN_LEVEL: f32 = 0.006;
+/// The ring at full excitation as a sound in its critical band would be
+/// (dB SPL): over what a quiet street carries there, lost under anything
+/// much louder — the club that rang the ears hides the ring while it
+/// plays; stepping out, it is heard. (An ear-model choice, like
+/// `TIN_LEVEL`.)
+const TIN_PHANTOM_DB: f32 = 45.0;
+
+/// A band-pass one critical band wide around `f` (its ERB, Glasberg &
+/// Moore 1990: 24.7 · (4.37 f/kHz + 1) Hz), peak gain 1 (RBJ):
+/// normalized (b0, b1, b2), (a1, a2).
+fn critical_band(f: f32, sample_rate: f32) -> ([f32; 3], [f32; 2]) {
+    let erb = 24.7 * (4.37 * f / 1000.0 + 1.0);
+    let w = core::f32::consts::TAU * f / sample_rate;
+    let alpha = w.sin() / (2.0 * f / erb);
+    let a0 = 1.0 + alpha;
+    ([alpha / a0, 0.0, -alpha / a0], [-2.0 * w.cos() / a0, (1.0 - alpha) / a0])
+}
 
 fn spl_db(ms: f32) -> f32 {
     SPL_REF_DB + 10.0 * (ms.max(1e-20) / (SPL_REF_RMS * SPL_REF_RMS)).log10()
@@ -200,6 +227,10 @@ impl OutputStage {
             tin_phase: 0.0,
             tin_step: core::f32::consts::TAU * TIN_HZ / sample_rate,
             tin_decay: (-1.0 / (2.5 * sample_rate)).exp(),
+            tin_band: [[0.0; 2]; 2],
+            tin_bp: critical_band(TIN_HZ, sample_rate),
+            tin_band_ms: 0.0,
+            tin_heard: Smoothed::new(0.0, 0.05, sample_rate),
             ear: true,
             sample_rate,
         }
@@ -256,11 +287,21 @@ impl OutputStage {
         self.tin
     }
 
+    /// How much of the ring is heard now (0 … 1): its excitation, and the
+    /// share of it standing over the scene in its critical band.
+    pub fn tinnitus_heard(&self) -> f32 {
+        self.tin * self.tin_heard.current()
+    }
+
     /// The ear's state, every `CONTROL` samples: the short-term level
     /// moves the adaptation, the reflex and the fatigue; their gains
     /// glide there sample by sample.
     fn control(&mut self) {
         let short = spl_db(self.short_ms);
+        // the ring over the scene in its band: an even match is half heard
+        let phantom = TIN_PHANTOM_DB + 20.0 * self.tin.max(1e-6).log10();
+        let masker = spl_db(self.tin_band_ms);
+        self.tin_heard.set(1.0 / (1.0 + 10f32.powf((masker - phantom) / 10.0)));
         if !self.ear {
             self.adapt_db = short.max(self.adapt_db - 0.1);
             self.gain.set(1.0);
@@ -317,6 +358,15 @@ impl OutputStage {
         let (l, r) = (l + pl, r + pr);
         let ms = 0.5 * (l * l + r * r);
         self.short_ms += self.short_coef * (ms - self.short_ms);
+        let (b, a) = self.tin_bp;
+        let mut band = 0.0f32;
+        for (z, x) in self.tin_band.iter_mut().zip([l, r]) {
+            let y = b[0] * x + z[0];
+            z[0] = b[1] * x - a[0] * y + z[1];
+            z[1] = b[2] * x - a[1] * y;
+            band += 0.5 * y * y;
+        }
+        self.tin_band_ms += self.short_coef * (band - self.tin_band_ms);
         self.loud_ms += self.loud_coef * (ms - self.loud_ms);
         if self.countdown == 0 {
             self.countdown = CONTROL;
@@ -331,10 +381,11 @@ impl OutputStage {
         let m = l.abs().max(r.abs());
         let excite = if self.ear { (m - TIN_THRESH).max(0.0) * 2e-4 } else { 0.0 };
         self.tin = (self.tin + excite).min(1.0) * self.tin_decay;
+        let heard = self.tin_heard.tick();
         let ring = if self.tin > 1e-4 {
             let step = self.tin_step * (1.0 + 0.08 * self.tin);
             self.tin_phase = (self.tin_phase + step) % core::f32::consts::TAU;
-            self.tin_phase.sin() * self.tin * TIN_LEVEL
+            self.tin_phase.sin() * self.tin * heard * TIN_LEVEL
         } else {
             0.0
         };
@@ -432,6 +483,44 @@ mod tests {
             out.process(&[0.0; NCH], 0.0, 0.0);
         }
         assert!(out.tinnitus() < 0.01, "ring should fade: {}", out.tinnitus());
+    }
+
+    /// Tinnitus is heard after the noise, not under it: a club-loud noise
+    /// that rings the ears hides the ring while it plays (it masks the
+    /// ring's band); in the quiet after, the ring is heard and fades.
+    /// (Before: it rang under the noise that caused it — inside the club.)
+    #[test]
+    fn the_ring_is_heard_after_the_noise_not_under_it() {
+        let mut out = OutputStage::from_speaker_bytes(None, 48_000.0);
+        let mut state = 0x1234_5678u32;
+        let mut noise = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as f32 / u32::MAX as f32 * 2.0 - 1.0
+        };
+        // 5 s of broadband noise peaking past the blast threshold
+        let mut under = 0.0f32;
+        for k in 0..48_000 * 5 {
+            let x = 3.0 * noise();
+            out.process(&[0.0; NCH], x, x);
+            if k > 48_000 * 2 {
+                under = under.max(out.tinnitus_heard());
+            }
+        }
+        assert!(out.tinnitus() > 0.5, "the noise rings the ears: {}", out.tinnitus());
+        assert!(under < 0.01, "under the noise the ring is masked: heard {under}");
+        // the noise stops: within a second the ring is heard (what the
+        // noise left in its band dies away at the short-term level's pace)
+        for _ in 0..48_000 {
+            out.process(&[0.0; NCH], 0.0, 0.0);
+        }
+        assert!(out.tinnitus_heard() > 0.3, "in the quiet after it rings: {}", out.tinnitus_heard());
+        // and it lets go
+        for _ in 0..48_000 * 20 {
+            out.process(&[0.0; NCH], 0.0, 0.0);
+        }
+        assert!(out.tinnitus_heard() < 0.01, "it fades: {}", out.tinnitus_heard());
     }
 
     /// The reflex must protect during a blast but RELEASE like a reflex:
