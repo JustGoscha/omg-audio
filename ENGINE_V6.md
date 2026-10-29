@@ -163,6 +163,27 @@ the fade under way (the latest wins): a 500 Hz tone through a path
 turning 1500°/s, its treble −27.2 → −67.6 dB under the tone
 (`hrtf::tests::a_fast_turn_crossfades_every_hrir_change`).
 
+## One instant per frame (every host)
+
+A frame is the world at one instant, and the mixer moves every path's
+delay over the time between two frames' instants. Measured in each host
+with a 500 Hz tone (`docs/runs/2026-10-29/doppler/`), a car passing 30 m
+off warbled 6.8 Hz rms in the browser and 9.0 in Godot (headless 0.26),
+and the ears walking at 6 m/s fluttered 4.8 / 0.7 Hz (headless 0.03):
+frames carried the listener's stamp rather than the clock their paths
+were traced at (a still listener in Godot kept its first send's), the
+page posted its pose at 20 Hz stamped when posted, Godot sent the ears
+every 120 Hz frame while they move on 60 Hz physics steps, and the
+mixer's update windows began the new motion after the previous one
+began instead of where it ended — torn at unequal steps. Now
+`Frame::time` is the simulation's clock at the trace; an exact frame of
+an instant already traced is not made, and a tick of that instant is
+that moment traced again (its paths glide on); the page posts every
+rendered frame with its time and the worker makes one frame of each;
+Godot stamps a frame's poses and places with the last physics step's
+game time (`Engine::set_listener_at`, `set_source_at`). Browser 0.58 /
+0.04 Hz, Godot 0.27 / 0.04 Hz — as headless.
+
 ## Still open (OPEN.md)
 
 A loud room heard through its walls or a shut door is a heavy-tailed
@@ -170,6 +191,6 @@ estimate: young (right after a restart) it reads low and steps up as
 rare strong paths come — paths from the sources too (bidirectional) or
 learnt splitting at partitions would fix it. Also: the estimate's ±2–4
 dB wobble moving at the lowest rungs; a cheaper transmission query (half
-the walk); wasm walks on one thread; the web page's real-time stamps not
-yet measured in a browser; whether the town has facade echoes the chain
-finder misses (a deterministic image-source reference).
+the walk); wasm walks on one thread; whether the town has facade echoes
+the chain finder misses or finds only by chance (a deterministic
+image-source reference).

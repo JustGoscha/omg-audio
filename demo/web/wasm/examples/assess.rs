@@ -29,7 +29,8 @@
 //!
 //!   fly      the listener flies (8 m/s) through the cathedral's wall to
 //!            the flute, clicking every 50 ms: pops (periods off course)
-//!   cartone  a car passes 30 m off at 100 km/h playing a steady tone:
+//!   cartone  a car passes 30 m off at 100 km/h playing a steady tone
+//!            (WALK=v: the car stands, the listener walks past at v m/s):
 //!            its pitch and level, demodulated, and how they jitter
 //!   doorswing the club plays a steady tone; its door swings shut at 4 s
 //!            as the Godot demo eases it (~1 s): the level through the
@@ -915,8 +916,15 @@ fn cartone() {
         })
         .unwrap_or([-100.0, 100.0, 1.6]);
     let y0: f32 = env("Y0").and_then(|v| v.parse().ok()).unwrap_or(-50.0);
-    let at = move |t: f32| -> Option<[f32; 3]> { Some([road, y0 + v * t, 0.7]) };
+    // WALK=v: the car stands at (ROAD, Y0) playing, and the listener walks
+    // along +y at v m/s from LIS instead (the listener's own Doppler)
+    let walk: Option<f32> = env("WALK").and_then(|v| v.parse().ok());
+    let at = move |t: f32| -> Option<[f32; 3]> { Some([road, y0 + if walk.is_some() { 0.0 } else { v * t }, 0.7]) };
     rig.movers.push((CAR, Box::new(at)));
+    if let Some(w) = walk {
+        let p0 = rig.pos;
+        rig.walk = Some(Box::new(move |t: f32| [p0[0], p0[1] + w * t, p0[2]]));
+    }
     let f0 = 500.0f32;
     let cycle = (SR / f0).round() as usize;
     let tone: Vec<f32> = (0..cycle * 10).map(|k| 0.5 * (std::f32::consts::TAU * (k % cycle) as f32 / cycle as f32).sin()).collect();

@@ -155,16 +155,28 @@ exact path solved for the moving car, or short and early: the sampled
 estimate's) and a rejection holds for 40 ticks. Whether a strong
 first-order facade echo should be there needs a deterministic
 reference: every plane's image source of the car, validated (the
-solver can do it per plane). Open.
+solver can do it per plane). Open. (Oct 29 evening, Godot: some runs of
+the car 30 m off find the town's west facade, x ≈ 0 — 13 dB under the
+car, ~0.47 s late, beating with it at ~30 Hz for half a second; others
+don't.)
 
-### The web page's times, not yet measured in a browser
-Since Oct 29 the page posts the time its pose (and the moving sources in
-it) was current, and the worker's simulation stamps them with it and
-keeps its clock at now — as the threaded engine does (before, it counted
-50 ms a tick however late the worker's timer fired). Checked that the
-page runs; the Doppler's steadiness in a browser (timer jitter, long
-ticks) is not measured yet: record the worklet's output with a passing
-car's tone and demodulate it as `assess cartone` does.
+### Doppler in the hosts: one instant per frame — solved Oct 29
+Measured in the browser (headless Chrome, `tools/web_doppler.mjs`) and
+in Godot (`record.gd` carfar, walk) with a 500 Hz tone: a car passing
+30 m off warbled 6.8 Hz rms in the web and 9.0 in Godot, the ears
+walking at 6 m/s 4.8 and 0.7 — headless 0.26 and 0.03. Frames carried
+the listener's stamp, not the instant their paths were traced at (in
+Godot a still listener kept the stamp of its first send); the page
+posted at 20 Hz stamped when posted; Godot sent the ears every 120 Hz
+frame while they move on 60 Hz physics steps; and the mixer's update
+windows tore at unequal steps. Now a frame is the world at the clock it
+was traced at, the hosts stamp with when their state was current (the
+page every rendered frame, Godot the last physics step) and each window
+begins where the previous one ends: web 0.58 / 0.04 Hz, Godot 0.27 /
+0.04 (`docs/runs/2026-10-29/doppler/`, `fx_doppler_host::doppler_stays_
+steady_under_the_threaded_engines_timing`). In some Godot runs the car
+beats with the west facade's echo (1.2–1.8 Hz): the chain finder found
+it — the item above.
 
 ### Interpolation on moving paths
 Paths read with a cubic (Hermite): a 10 kHz tone on a sliding delay

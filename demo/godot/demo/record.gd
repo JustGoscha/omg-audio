@@ -4,7 +4,7 @@
 # recorded in real time (OmgWorld.start_recording: exactly the frames
 # Godot plays, and every audio callback's timing).
 #
-#   Godot --path godot -- --record=<dir> --scenario=fly|car|door --engine=v6 [--tone] [--quality=0..3|-1] [--gpu]
+#   Godot --path godot -- --record=<dir> --scenario=fly|car|door|carfar|walk --engine=v6 [--tone] [--quality=0..3|-1] [--gpu]
 #
 # Writes <dir>/<scenario>_<engine>[_tone].wav (+ .wav.csv: the audio
 # callbacks) and <dir>/<scenario>_<engine>[_tone].frames.csv (per game
@@ -17,6 +17,11 @@
 #         (from 150 m south to 150 m north)
 #   door  in the club's vestibule, 1 m outside its closed inner door: it
 #         opens at 2 s and shuts again at 6 s while the club plays
+#   carfar  standing in the field west of the town while a car passes
+#         30 m off at 100 km/h (assess cartone's pass: x = -130 from
+#         y = -50, the ears at (-100, 100))
+#   walk  the car stands at (-130, 100) and the ears walk past it 30 m
+#         off at 6 m/s (from (-100, 65) north: assess cartone WALK=6)
 #   --paths the scenario's source's exactly solved paths (direct, edge
 #           bends, mirror chains) per frame to <name>.paths.csv
 #   --tone  the scenario's source plays a steady 500 Hz instead of its
@@ -77,6 +82,10 @@ func run() -> void:
 			await _car(base)
 		"door":
 			await _door(base)
+		"carfar":
+			await _doppler(base, false)
+		"walk":
+			await _doppler(base, true)
 		_:
 			push_error("unknown scenario " + scenario)
 	get_tree().quit()
@@ -180,7 +189,8 @@ func _fly(base: String) -> void:
 	# 1 s still, the flight, 3 s hovering by the flute
 	var fly_s := (y1 - y0) / speed
 	while t < 1.0 + fly_s + 3.0:
-		await get_tree().process_frame
+		# the ears move on physics steps, as the player does
+		await get_tree().physics_frame
 		t = _now()
 		var y := clampf(y0 + (t - 1.0) * speed, y0, y1)
 		_place(x, y, 0.4)
@@ -240,4 +250,39 @@ func _door(base: String) -> void:
 			door["target"] = 0.0
 		phase = "closed" if t < 2.0 else ("opening" if t < 3.0 else ("open" if t < 6.0 else ("shutting" if t < 7.0 else "shut")))
 		_frame_log(t * 1000.0, 21.0, 31.0)
+	_stop(base)
+
+# Doppler in the field (see carfar, walk): a car 30 m off at 100 km/h past
+# the still ears, or standing while the ears walk past at 6 m/s.
+func _doppler(base: String, walk: bool) -> void:
+	var lis := Vector2(-100.0, 65.0 if walk else 100.0)
+	_place(lis.x, lis.y, 0.4)
+	player.set_heading(PI) # facing the road (west)
+	var snd = demo.sounds
+	snd.next_car = 1e9 # no cars at random
+	var tone_id := _alone("") if tone else -1
+	await get_tree().create_timer(3.0).timeout
+	snd._spawn_car()
+	var c: Dictionary = snd.cars.back()
+	var v := 27.78
+	var walk_v := 6.0
+	c["x"] = -130.0
+	c["y"] = 100.0 if walk else -50.0
+	c["vy"] = 0.0 if walk else v
+	if tone:
+		c["motor"] = tone_id
+	# its first paths and the motor's start
+	await get_tree().create_timer(1.0).timeout
+	if not _start(base):
+		return
+	var t := 0.0
+	while t < 300.0 / v + 1.0:
+		# the ears move on physics steps, as the player does (the car too)
+		await get_tree().physics_frame
+		t = _now()
+		var y := lis.y + (walk_v * t if walk else 0.0)
+		_place(lis.x, y, 0.4)
+		phase = "walk" if walk else "pass"
+		_frame_log(t * 1000.0, lis.x, y)
+		_paths_log(t * 1000.0, snd.cars_src[c["slot"]])
 	_stop(base)

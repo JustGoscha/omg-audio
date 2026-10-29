@@ -1,0 +1,3 @@
+web_walk_after: walk_final.wav
+  whole pass:          pitch 0.04 Hz rms, level 0.01 dB rms, level off by >2 dB in 0 of 10595 ms (course 493.4..506.4 Hz)
+  within 20 dB of peak: pitch 0.04 Hz rms, level 0.01 dB rms, level off by >2 dB in 0 of 10595 ms (course 493.4..506.4 Hz)

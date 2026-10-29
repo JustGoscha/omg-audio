@@ -1,0 +1,3 @@
+godot_car_after_echo: carfar_v6_tone.wav
+  whole pass:          pitch 1.75 Hz rms, level 0.32 dB rms, level off by >2 dB in 57 of 10595 ms (course 463.8..547.4 Hz)
+  within 20 dB of peak: pitch 0.91 Hz rms, level 0.22 dB rms, level off by >2 dB in 20 of 5998 ms (course 465.3..544.1 Hz)

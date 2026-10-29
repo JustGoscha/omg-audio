@@ -1,0 +1,3 @@
+godot_walk_after: walk_v6_tone.wav
+  whole pass:          pitch 0.04 Hz rms, level 0.02 dB rms, level off by >2 dB in 0 of 10607 ms (course 494.5..507.3 Hz)
+  within 20 dB of peak: pitch 0.04 Hz rms, level 0.02 dB rms, level off by >2 dB in 0 of 10607 ms (course 494.5..507.3 Hz)
