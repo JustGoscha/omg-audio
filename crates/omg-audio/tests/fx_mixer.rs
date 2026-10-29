@@ -10,7 +10,10 @@
 //!   transient is not swallowed by a voice fade-in;
 //! - the outdoor ambience plays on the SH bus before the loudness stage:
 //!   outdoors it is heard, sealed in only its seep, and a loud bed is
-//!   ridden down by the ear adaptation like any source.
+//!   ridden down by the ear adaptation like any source;
+//! - a bed (or the rain) turned down before it arrives starts down: its
+//!   fader has nothing to fade from (in the Godot demo a bed decoded ~13 s
+//!   after load, muted, burst in at full level and faded out over 100 ms).
 
 use omg_audio::{clip, Config, Hrir, Mixer, Play, Simulation, SourceDesc, VoiceId};
 
@@ -194,6 +197,52 @@ fn the_ambience_rides_the_loudness_stage() {
     assert!(g_loud < 0.6 * g_quiet, "a loud bed pulls the gain down");
     let ridden = 200.0 * g_loud / g_quiet;
     assert!((loud / quiet / ridden - 1.0).abs() < 0.2, "ridden: {quiet} → {loud} (×{ridden:.0} expected)");
+}
+
+/// A fader set while its channel is not playing takes effect at once:
+/// the bed decoded late, muted, arrives silent — and the rain, muted
+/// before it starts, starts silent.
+#[test]
+fn a_bed_muted_before_it_arrives_stays_muted() {
+    use omg_audio::env::{environment, EnvContext};
+    use omg_audio::{Frame, SkyCell};
+    let open: Vec<SkyCell> = (0..32)
+        .map(|i| {
+            let a = i as f32 * std::f32::consts::TAU / 32.0;
+            SkyCell { dir: [a.cos() * 0.95, a.sin() * 0.95, 0.3], energy: [0.6 / 32.0; 3] }
+        })
+        .collect();
+    let noise: Vec<f32> = (0..2 * 48_000u32).map(|i| 0.5 * (((i.wrapping_mul(2654435761) >> 8) as f32 / 8388608.0) - 1.0)).collect();
+    let frame = Frame { env: environment(&open, &EnvContext::default()), ..Default::default() };
+    let peak = |x: &[f32]| x.iter().fold(0.0f32, |a, v| a.max(v.abs()));
+
+    // the bed: muted, a second passes, then it arrives
+    let mut m = Mixer::new(SR, Hrir::none());
+    m.apply(&frame);
+    m.set_ambience_gain(0.0);
+    render(&mut m, 1.0);
+    m.set_ambience(noise.clone(), false);
+    let (l, r) = render(&mut m, 0.3);
+    let bed = peak(&l).max(peak(&r));
+    // the same bed unmuted, for scale
+    let mut m = Mixer::new(SR, Hrir::none());
+    m.apply(&frame);
+    render(&mut m, 1.0);
+    m.set_ambience(noise.clone(), false);
+    let (l, r) = render(&mut m, 0.3);
+    let heard = peak(&l).max(peak(&r));
+    // the rain: muted, then it starts
+    let mut m = Mixer::new(SR, Hrir::none());
+    m.apply(&frame);
+    m.set_rain_gain(0.0);
+    render(&mut m, 1.0);
+    m.set_rain(1.0);
+    let (l, r) = render(&mut m, 1.0);
+    let rain = peak(&l).max(peak(&r));
+    eprintln!("bed muted before it arrived: peak {bed:.2e} (unmuted {heard:.2e}); rain muted before it started: {rain:.2e}");
+    assert!(heard > 1e-3, "the unmuted bed is heard");
+    assert!(bed < 1e-6, "the muted bed burst in at {bed:.2e}");
+    assert!(rain < 1e-6, "the muted rain burst in at {rain:.2e}");
 }
 
 /// The audible window: a quiet source renders alone; a loud one pulls the

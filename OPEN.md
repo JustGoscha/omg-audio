@@ -103,27 +103,18 @@ the next lever; the late family's rays could take Russian roulette past
 what the reverb is fitted from, but measured no cheaper in either world
 (Oct 29: the rays end at 3 s or escape before they fade 35 dB).
 
-### A car receding on the west road: bursts at ~120 m
-The Godot demo's car scenario (`record.gd --scenario=car --tone`): once
-the car is ~120 m north (every run at 8.7–8.8 s), the tone's level steps
-up ~10 dB within 5–10 ms and decays over 60–120 ms, a few times — bursts
-above 3 kHz to −15…−30 dB under the tone. The morning's engine (93405ea)
-does the same. Ruled out: the roadside trees (visual meshes, not
-acoustic), the audible window (the car renders throughout), quality
-changes (pinned, the same). Along the road there is only the street and
-its kerbs (layout.json `ground`): the likely cause is the ground
-reflection's specular point sliding across the asphalt / kerb / grass
-boundaries as the car recedes — a point switching material at once,
-where its Fresnel zone (metres wide at grazing) blends it. The car's
-exactly solved paths there are only its direct one, smooth through the
-burst (`record.gd --paths`: −40.5 → −41.6 dB): the burst is in the walk's
-sampled reflections (early bins, the reverb). Re-timing the early taps
-with the direct arrival at every exact frame changed nothing measurable.
-Replayed headless in the demo's own level (`OMG_DUMP_GEOMETRY`, then
-`GEOMETRY=… ROAD=-17.1 LIS=-13.1,0,2 Y0=-150 assess cartone`) there is
-no burst (worst −47 dB): it comes from the real-time host, not the
-geometry. (The tone there is heavily beaten all along, 4 dB rms — the
-facades by the road, each reflection with its own Doppler.)
+### A car receding on the west road: bursts at ~120 m — solved Oct 29
+Not the car, not the engine's paths: the ambience bed. The Godot demo
+decodes its bed ~13 s after load — 8.7 s into the car scenario, every
+run — and the tone runs mute it (−200 dB) before it arrives. The bed's
+fader ticked only while a bed played: it still stood at 1 and glided
+down from there, so the bed burst in at full level and faded over
+~100 ms (above 3 kHz, both ears alike). The rain's fader the same. A
+fader whose channel is silent now takes its value at once
+(`fx_mixer::a_bed_muted_before_it_arrives_stays_muted`). The car's away
+phase above 3 kHz: worst −28.0 → −46.2 dB, windows over −40 dB 8 → 0
+(approach −39.3 → −49.9 dB). Headless `assess` loads no bed: why the
+replay in the demo's own level never burst.
 
 ### A distinct echo found by chance
 A car passing the field (`assess cartone`): with seeds 1 and 3 a facade

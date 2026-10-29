@@ -70,9 +70,17 @@ impl Ambience {
         self.pos = 0;
     }
 
-    /// Mixer fader for the ambience channel.
+    /// Mixer fader for the ambience channel. Without a bed it takes the
+    /// value at once: nothing plays to fade from, and a fader left
+    /// gliding (it ticks only while a bed plays) would start a bed that
+    /// arrives later at its old level.
     pub fn set_user(&mut self, g: f32) {
-        self.user.set(g.clamp(0.0, 8.0));
+        let g = g.clamp(0.0, 8.0);
+        if self.data.is_empty() {
+            self.user.snap(g);
+        } else {
+            self.user.set(g);
+        }
     }
 
     /// The bed's own inlets (`amb_routes` / `amb_seep`): the field of its

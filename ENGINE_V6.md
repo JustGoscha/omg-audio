@@ -111,11 +111,14 @@ start_recording`, `demo/godot/demo/record.gd`, `tools/record_runs.sh`):
   µs.
 - edge searches from inside the furnished cathedral cost 5–11 ms each
   (looking down the whole edge list for edges the ear sees): capped.
+- the receding car's bursts at 8.7 s: the ambience bed decoded ~13 s
+  after load, muted before it arrived, burst in at full level — its
+  fader ticked only while a bed played, so it glided down from 1. A
+  fader whose channel is silent now takes its value at once.
 
 ## Still open (OPEN.md)
 
-The car's bursts once it is ~120 m north on the west road (an occlusion
-switching at once; as before today); a distinct echo found by chance
+A distinct echo found by chance
 (the chain finders' rays); the estimate's ±2–4 dB wobble moving at the
 lowest rungs; a cheaper transmission query (half the walk); wasm walks
 on one thread.

@@ -187,9 +187,22 @@ impl Rain {
         self.intensity.current()
     }
 
-    /// Mixer fader for the rain channel (1 = calibrated default).
+    /// Mixer fader for the rain channel (1 = calibrated default). While
+    /// the rain is silent it takes the value at once: nothing plays to
+    /// fade from, and the mixer ticks the rain only while it (or the
+    /// bed) plays — a gliding fader would start the rain at its old level.
     pub fn set_gain(&mut self, g: f32) {
-        self.gain.set(g.clamp(0.0, 8.0));
+        let g = g.clamp(0.0, 8.0);
+        if self.silent() {
+            self.gain.snap(g);
+        } else {
+            self.gain.set(g);
+        }
+    }
+
+    /// Dry and settled: nothing falls, nothing rings.
+    fn silent(&self) -> bool {
+        self.intensity.current() < 1e-4 && self.hiss_lo.abs() < 1e-9 && self.drops.iter().all(|d| d.env < 1e-6)
     }
 
     /// Load the recorded-splat bank (uniform 150 ms slices). Without
@@ -409,7 +422,7 @@ impl Rain {
     pub fn process(&mut self, bus: &mut [f32; NCH]) {
         let inten = self.intensity.tick();
         let user = self.gain.tick();
-        if inten < 1e-4 && self.hiss_lo.abs() < 1e-9 && self.drops.iter().all(|d| d.env < 1e-6) {
+        if self.silent() {
             return; // fully dry and settled — costs nothing
         }
 
