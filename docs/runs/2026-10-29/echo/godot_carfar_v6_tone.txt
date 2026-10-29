@@ -1,0 +1,3 @@
+godot carfar_v6_tone (1f824db)
+  whole pass:          pitch 8.41 Hz rms, level 1.34 dB rms, level off by >2 dB in 819 of 10607 ms (course 463.9..554.6 Hz)
+  within 20 dB of peak: pitch 4.21 Hz rms, level 0.98 dB rms, level off by >2 dB in 427 of 6078 ms (course 465.2..554.6 Hz)

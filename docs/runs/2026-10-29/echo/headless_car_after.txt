@@ -1,0 +1,2 @@
+cartone (v6): a car 30 m off at 100 km/h playing 500 Hz; jitter against the 25 ms course: pitch 9.11 Hz rms, level 1.44 dB rms, level off by >2 dB in 900 of 10599 ms
+1 s: 512 ms; 1.5 s: 87 ms; 2 s: 287 ms; 2.5 s: 585 ms; 3 s: 638 ms; 3.5 s: 664 ms; 4 s: 212 ms; 
