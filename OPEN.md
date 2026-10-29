@@ -151,21 +151,28 @@ track stood still a frame and jumped at twice the speed the next, and
 at the closest pass the delay moves fastest. A place sent again now
 keeps the time it was first sent there: the pass −53 / −54 dB.
 
-### A distinct echo found by chance
-A car passing the field (`assess cartone`): on Oct 29 morning seeds 1
-and 3 played a facade echo 726 ms late, 12 dB under the direct sound,
-as its own tap, and seed 2 did not. Not reproduced in the evening
-(seeds 1–3, paced or not): the finder names one chain on the pass, ~660
-ms, 38–44 dB under the direct sound, in every seed. With 100× the finder
-rays no chain plays at all — the many chains named are rejected (no
-exact path solved for the moving car, or short and early: the sampled
-estimate's) and a rejection holds for 40 ticks. Whether a strong
-first-order facade echo should be there needs a deterministic
-reference: every plane's image source of the car, validated (the
-solver can do it per plane). Open. (Oct 29 evening, Godot: some runs of
-the car 30 m off find the town's west facade, x ≈ 0 — 13 dB under the
-car, ~0.47 s late, beating with it at ~30 Hz for half a second; others
-don't.)
+### A facade's echo found by chance — first order solved Oct 29
+A car passing the field (`assess cartone`) played the town's facade
+echoes at some rungs and runs and not others. The reference
+(`examples/echo_ref`: every triangle a mirror, the mirror point inside
+it, both legs clear) says they are there: the west facade (x = 0)
+mirrors the car for ~1.8 s, 10–13 dB under it, ~0.45 s late, and two
+eastern faces (x = 14.5, 22) earlier, ~7 dB under. Unnamed, an echo is
+not heard at all (the walk leaves the solver's paths to it). Three
+causes: a chain rejected for want of a path was held out for 2 s however
+the ends moved (named as the car came up, it was held through the
+echo's life); the finders' rays come across a facade 100 m off rarely
+(~0.1 % of their sphere); and a moving source's chain was solved from
+where the source is now at every step of its light cone (the echo went
+8 m before the facade's end). Now a rejection holds only while neither
+end moves, first-order chains are named from the world's flat faces
+every tick, and only the emission point is solved — the echo in 281 of
+281 frames at every rung, at the image source's delay and level
+(`fx_simulation::a_facades_echo_of_a_passing_car_plays_at_every_rung`;
+before, 18 at rung 0). Open: second order — an echo's ground
+reflection, a street's two facades — is still left to the finders (the
+ground with every face would be linear in the faces; any two faces,
+quadratic).
 
 ### Doppler in the hosts: one instant per frame — solved Oct 29
 Measured in the browser (headless Chrome, `tools/web_doppler.mjs`) and

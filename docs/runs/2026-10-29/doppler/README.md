@@ -66,6 +66,16 @@ the mirror chain finder found the town's west facade (x ≈ 0) — an echo
 echo, found in some runs and not in others: OPEN.md, "A distinct echo
 found by chance".
 
+## After aec9e83: the facades' echoes
+
+From aec9e83 on, the town's facade echoes of the car play at every rung
+(they were missing at most: ENGINE_V6.md, "Echoes found, not chanced
+upon"), and the car beats with them: `assess cartone` reads 9–10 Hz rms
+headless at every rung. That is the physics, not the timing — a timing
+measurement from then on needs a pass the facades don't mirror, or a
+reference with the same echoes (the walk, past a standing car the
+facades don't mirror to the ears, still reads 0.03 Hz).
+
 ## Files
 
 `<host>_<case>_<before|after>.m4a` (listen) and `.txt` (the

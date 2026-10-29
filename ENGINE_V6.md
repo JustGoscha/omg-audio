@@ -184,6 +184,24 @@ Godot stamps a frame's poses and places with the last physics step's
 game time (`Engine::set_listener_at`, `set_source_at`). Browser 0.58 /
 0.04 Hz, Godot 0.27 / 0.04 Hz — as headless.
 
+## Echoes found, not chanced upon (every engine)
+
+A mirror chain (an echo off one or more flat surfaces) is the exact
+solver's: the walk leaves it out, so a chain nobody names is not heard
+at all. The town's west facade mirrors a car passing 30 m off for ~1.8 s,
+10–13 dB under it (`examples/echo_ref`, every triangle as a mirror); the
+engine played it at two rungs of eleven. The finders' rays come across a
+facade 100 m off rarely, a chain rejected while the car came up was held
+out for 2 s whatever moved, and a moving source's chain was solved from
+where the source is now (near the facade's end its place mirrored past
+it). Now first-order chains are named from the world's flat faces every
+tick (the mesh's coplanar triangles and the panels' sides: the mirror
+point of where the source emitted inside the face), a rejection holds
+only while nothing moved, and the light cone runs on the chain's image
+with only the emission point solved: the echo in every frame at every
+rung, at the image source's delay and level. A tick over the Godot
+level's 3109 faces costs no more than before (`tick_move GEOMETRY=`).
+
 ## Still open (OPEN.md)
 
 A loud room heard through its walls or a shut door is a heavy-tailed
@@ -191,6 +209,6 @@ estimate: young (right after a restart) it reads low and steps up as
 rare strong paths come — paths from the sources too (bidirectional) or
 learnt splitting at partitions would fix it. Also: the estimate's ±2–4
 dB wobble moving at the lowest rungs; a cheaper transmission query (half
-the walk); wasm walks on one thread; whether the town has facade echoes
-the chain finder misses or finds only by chance (a deterministic
-image-source reference).
+the walk); wasm walks on one thread; second-order echoes (an echo's
+ground reflection, a street's two facades) are still left to the
+finders' rays — first order is named from the faces.
