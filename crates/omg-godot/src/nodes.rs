@@ -1066,9 +1066,15 @@ impl OmgWorld {
                 rec.level_db = level_db;
                 h.engine.set_source_loudness(rec.id, db(level_db - 90.0));
             }
-            if volume_db != rec.volume_db {
-                rec.volume_db = volume_db;
-                h.engine.set_volume(rec.id, db(volume_db));
+            // muted: the mixer's fader goes to 0 too — the channel goes
+            // quiet at once (switched off alone, what the source already
+            // sent on its way played out: the physics of a source that
+            // stops, not of a mixer's off)
+            let muted = src.bind().muted;
+            let vol = if muted { f32::NEG_INFINITY } else { volume_db };
+            if vol != rec.volume_db {
+                rec.volume_db = vol;
+                h.engine.set_volume(rec.id, if muted { 0.0 } else { db(volume_db) });
             }
             if file != rec.file {
                 rec.file = file.clone();
