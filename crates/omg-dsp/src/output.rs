@@ -109,6 +109,15 @@ const ADAPT_SHARE: f32 = 0.5;
 /// (a gain-1 source at 1 m plays as recorded) — louder places play
 /// lower, quieter ones higher.
 const ADAPT_REF_DB: f32 = SPL_REF_DB;
+/// The comfortable band (dB SPL the ear is adapted to): inside it nothing
+/// adapts — a door shut between two ordinary places plays its full
+/// difference, at once and for good (a share of every change made a shut
+/// door half as quiet as it is, then lifted it back over seconds); above
+/// it loud places duck, below it quiet ones come up (at `ADAPT_SHARE`).
+/// The band plays at the gain the share gives at its top, so loud places
+/// play as they did.
+const ADAPT_BAND_LOW_DB: f32 = 50.0;
+const ADAPT_BAND_HIGH_DB: f32 = 80.0;
 /// The adaptation's reach (dB): at most this far down / up.
 const ADAPT_MAX_CUT_DB: f32 = 30.0;
 const ADAPT_MAX_BOOST_DB: f32 = 24.0;
@@ -266,7 +275,15 @@ impl OutputStage {
         } else {
             self.adapt_down * (short - self.adapt_db)
         };
-        let g_db = (-ADAPT_SHARE * (self.adapt_db - ADAPT_REF_DB)).clamp(-ADAPT_MAX_CUT_DB, ADAPT_MAX_BOOST_DB);
+        let band = -ADAPT_SHARE * (ADAPT_BAND_HIGH_DB - ADAPT_REF_DB);
+        let g_db = if self.adapt_db > ADAPT_BAND_HIGH_DB {
+            -ADAPT_SHARE * (self.adapt_db - ADAPT_REF_DB)
+        } else if self.adapt_db < ADAPT_BAND_LOW_DB {
+            band + ADAPT_SHARE * (ADAPT_BAND_LOW_DB - self.adapt_db)
+        } else {
+            band
+        }
+        .clamp(-ADAPT_MAX_CUT_DB, ADAPT_MAX_BOOST_DB);
         self.gain.set(10f32.powf(g_db / 20.0));
         let want = ((short - REFLEX_ONSET_DB) * REFLEX_SLOPE).clamp(0.0, REFLEX_MAX_DB);
         // engaged, it tires; at rest it recovers
