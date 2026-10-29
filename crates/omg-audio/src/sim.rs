@@ -836,15 +836,26 @@ impl Simulation {
     /// `max_kernels` loudest) whose dense response changed audibly since
     /// theirs was built — the most changed (× loudness) first: queued on
     /// the kernel thread, or one at a time in the tick.
-    fn build_kernels(&mut self, tick: u64) {
-        // finished builds land first
+    /// Kernels the thread finished since the last look, onto their
+    /// sources. True when one landed.
+    fn collect_kernels(&mut self) -> bool {
+        let mut landed = false;
         if let Some(w) = &mut self.kernels {
             while let Ok((id, k, resp, gain, at)) = w.done.try_recv() {
                 w.busy.retain(|b| *b != id);
                 if let Some(s) = self.sources.iter_mut().find(|s| s.id == id && s.dense.is_some()) {
                     s.kernel = Some((k, resp, gain, at));
+                    landed = true;
                 }
             }
+        }
+        landed
+    }
+
+    fn build_kernels(&mut self, tick: u64) {
+        // finished builds land first
+        if self.kernels.is_some() {
+            self.collect_kernels();
         } else if self.cfg.kernel_thread {
             self.kernels = KernelWorker::start();
         }
@@ -1116,6 +1127,10 @@ impl Simulation {
         let ear = v3(self.listener.position);
         let sig = self.objects_sig();
         let now = self.clock;
+        // kernels finished since the last frame go out with this one (a
+        // response that changed is heard as soon as its kernel exists,
+        // not at the next tick)
+        let landed = self.collect_kernels();
         // something moved: the listener, a source, or an object (a door
         // shutting is heard at the next exact frame, not the next tick) —
         // or a source moved lately: what arrives now left it along its
@@ -1132,7 +1147,7 @@ impl Simulation {
         };
         // (a source jumped: the next full tick traces its ghost and hands
         // both over together)
-        if !moved || self.frame_no == 0 || !self.new_ghosts.is_empty() {
+        if (!moved && !landed) || self.frame_no == 0 || !self.new_ghosts.is_empty() {
             return None;
         }
         self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect(), sig));

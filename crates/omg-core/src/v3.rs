@@ -125,10 +125,10 @@ pub const DENSE_BIN_S: f32 = DELAY_BIN_S;
 const DISTINCT_SPAN_S: f32 = 0.004;
 /// Coherent taps per source at most (the renderer's cost).
 pub const MAX_COHERENT_TAPS: usize = 48;
-/// Standing still, each tick's response is averaged in with weight
-/// 1/(ticks still + 1), down to this (~10 s of ticks): the estimate
-/// converges instead of flickering — its history tests, not a short
-/// memory, follow what changes; any move restores the budget's EMA.
+/// Moving, a tick's response is averaged in with at least this weight
+/// (as much as the step leaves the arrivals in place: `fold_v4`); standing
+/// still — nothing moved, the world as it was — it is a plain running
+/// mean, the same truth sampled again.
 const STILL_ALPHA_FLOOR: f32 = 0.005;
 /// v4's history test: a window of the dense response restarts from the
 /// fresh trace when one tick lands this many standard errors from its
@@ -463,12 +463,14 @@ impl Default for Budget {
 }
 
 /// A ray splits at the first surface passing at least this share of the
-/// energy (its loudest band): a door leaf passes ~0.08 at low frequencies,
-/// drywall 0.04, glass more; concrete (0.01) is sampled by the unbiased
-/// draw. Splitting follows both branches with their exact weights — what
-/// leaks through a partition is then estimated from every ray that meets
-/// it, not from the few a draw lets through.
-const SPLIT_T2: f32 = 0.02;
+/// energy (its loudest band) — any partition: both branches go on with
+/// their exact weights, so what leaks through a wall, a door or a pane is
+/// estimated from every ray that meets it. (A random 2 % pass through
+/// anything quieter than a light door left a closed room's field to a
+/// handful of rays per tick: the club heard through its windows wandered
+/// by ±2 dB and took ~15 s to settle.) Measured: +1 ms on a 48 ms town
+/// tick — the branches through thick walls die young.
+const SPLIT_T2: f32 = 1e-6;
 
 /// One branch of a walked ray (`SPLIT_T2`): where it is, what it
 /// carries, its path's state so far, and the segment it resumes at.
@@ -911,6 +913,12 @@ impl SourceState {
         for w in 0..HISTORY_WINDOWS {
             let floor = if world_changed {
                 moving
+            } else if step == 0.0 {
+                // nothing moved: every tick is the same truth sampled
+                // again — a plain running mean, converging for as long as
+                // it holds (a floor kept ~400 ticks and let rare strong
+                // paths wander it by ±2 dB)
+                0.0
             } else {
                 (step / (SPEED_OF_SOUND * history_width(w))).clamp(STILL_ALPHA_FLOOR, moving)
             };
@@ -944,7 +952,13 @@ impl SourceState {
                 *drift += z as f32;
             }
             let drifted = run.abs() >= 2 && drift.abs() / (run.abs() as f32).sqrt() > HISTORY_DRIFT_Z;
-            let changed = changed || drifted;
+            // nothing moved and the world is as it was: the same truth,
+            // sampled again — an outlier is the estimate's own noise
+            let still = step == 0.0 && !world_changed;
+            // the world changed (a door): what it averaged belongs to the
+            // world before — every window starts over (the next ticks
+            // trace with more rays, `Tracer::burst`)
+            let changed = first || world_changed || (!still && (changed || drifted));
             if changed {
                 *run = 0;
                 *drift = 0.0;
@@ -1362,7 +1376,16 @@ pub struct Tracer {
     exact_mirrors: Vec<ExactPath>,
     /// The sources' motion for the next trace (`set_motion`).
     motion: Motion,
+    /// Ticks left that trace `BURST_RAYS`× the rays: after the world
+    /// changed (a door), every response restarts from fresh traces, and a
+    /// single tick's estimate misses its rare strong paths (it lands low).
+    burst: u32,
 }
+
+/// After the world changes, this many ticks trace this many times the
+/// rays (`Tracer::burst`).
+const BURST_TICKS: u32 = 3;
+const BURST_RAYS: u32 = 2;
 
 /// An exactly solved path, for a debug view: unlike the sampled ones it
 /// is the same path from tick to tick (the same `key` while it exists)
@@ -1567,6 +1590,7 @@ impl Tracer {
             exact: Vec::new(),
             exact_mirrors: Vec::new(),
             motion: Motion::default(),
+            burst: 0,
         }
     }
 
@@ -1663,8 +1687,10 @@ impl Tracer {
         let h_tot: f32 = self.sky.iter().map(|c| c.0[1]).sum();
         let moved = self.sky_at != Some(listener) || std::mem::take(&mut self.sky_world);
         self.sky_at = Some(listener);
+        // (nothing moved, the world as it was: the same truth sampled
+        // again — no outlier restarts it)
         let changed = !self.sky_primed
-            || match (f_tot > 0.0, h_tot > 0.0) {
+            || moved && match (f_tot > 0.0, h_tot > 0.0) {
                 (true, true) => {
                     let d = (f_tot / h_tot).ln();
                     // (a 1 % floor: a sky just primed has no scatter yet)
@@ -1689,7 +1715,7 @@ impl Tracer {
             self.sky_run = 0;
             self.sky_drift = 0.0;
         }
-        let floor = if moved { budget.ema.clamp(STILL_ALPHA_FLOOR, 1.0) } else { STILL_ALPHA_FLOOR };
+        let floor = if moved { budget.ema.clamp(STILL_ALPHA_FLOOR, 1.0) } else { 0.0 };
         let a = (1.0 / (self.sky_age + 1) as f32).max(floor);
         self.sky_age = self.sky_age.saturating_add(1);
         self.sky_primed = true;
@@ -1722,6 +1748,13 @@ impl Tracer {
         // 1. direct, visibility, edge next-event paths (shared with the
         // externally walked tick, fold.rs)
         let (direct, vis, mut edge_taps) = self.prepare(world, listener, sources, budget);
+        // the world just changed: more rays for the responses restarting
+        let budget = if self.burst > 0 {
+            self.burst -= 1;
+            Budget { rays: budget.rays * BURST_RAYS, late_rays: budget.late_rays * BURST_RAYS, ..budget }
+        } else {
+            budget
+        };
 
         // 2. the ray walk, both families
         let sky_acc = self.walk_rays(world, listener, sources, budget, &vis, true, &mut accs, &mut dbg);
@@ -2404,7 +2437,13 @@ impl Tracer {
                 // decides whether it plays as its own tap or joins the
                 // dense response (`SourceState::field_v4`)
                 Some((e, delay, dir)) if self.v4 => {
-                    self.chains.get_mut(&key).expect("listed above").energy = e[1];
+                    // a chain that solves exists: it stays while it does
+                    // (forgetting it because the finders happened not to
+                    // pass by again took a real echo away, and the next
+                    // find brought it back)
+                    let c = self.chains.get_mut(&key).expect("listed above");
+                    c.energy = e[1];
+                    c.ttl = CHAIN_TTL;
                     let rel = delay - accs[si].t_free;
                     if rel < RESPONSE_MAX_S {
                         let k = KEY_CHAIN_BASE + (key.1 % KEY_CHAIN_SPAN as u64) as u32;
@@ -2576,6 +2615,7 @@ impl Tracer {
             for st in self.state.values_mut() {
                 st.restart = true;
             }
+            self.burst = BURST_TICKS;
         }
         self.exact.clear();
         let debug = self.debug;

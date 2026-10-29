@@ -165,3 +165,29 @@ fn a_source_switched_off_still_delivers_what_it_emitted() {
     let off = energy(&off_l, t1 - 0.004, t1 + 0.006) + energy(&off_r, t1 - 0.004, t1 + 0.006);
     assert!((db(off) - db(on)).abs() < 3.0, "switched off in flight: {:.1} dB against {:.1} dB left on", db(off), db(on));
 }
+
+/// Standing still with nothing changing, the club heard from the street
+/// north of it (through its walls and windows) is the same truth sampled
+/// tick after tick: the estimate settles and stays (it wandered ±2.5 dB
+/// for as long as one stood there, rare strong paths restarting or
+/// pulling a short average).
+#[test]
+fn standing_still_the_estimate_settles_and_stays() {
+    let mut sim = sim();
+    let mut town = Town::new(&mut sim);
+    let club = 2;
+    only(&mut town, &mut sim, club);
+    let ids = town.sources[club].clone();
+    sim.set_listener([27.0, 48.0, 1.6], 0.0, 0.0, 0.0);
+    let total = |sim: &Simulation| -> f32 { ids.iter().filter_map(|id| sim.dense_response(*id)).map(|d| d.bins.iter().map(|b| b[1]).sum::<f32>()).sum() };
+    for _ in 0..300 {
+        sim.tick();
+    }
+    let mut seen = Vec::new();
+    for _ in 0..200 {
+        sim.tick();
+        seen.push(db(total(&sim)));
+    }
+    let span = seen.iter().cloned().fold(f32::MIN, f32::max) - seen.iter().cloned().fold(f32::MAX, f32::min);
+    assert!(span < 1.0, "the settled estimate moves by {span:.2} dB over 10 s of standing still");
+}

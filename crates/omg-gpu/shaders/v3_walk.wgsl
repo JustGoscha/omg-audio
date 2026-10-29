@@ -119,7 +119,7 @@ const NO_EDGE: u32 = 0xFFFFFFFFu;
 const STATE_WORDS: u32 = 56u;
 // v4: a ray splits at the first surface passing this share of the energy
 // (v3.rs SPLIT_T2)
-const SPLIT_T2: f32 = 0.02;
+const SPLIT_T2: f32 = 1e-6;
 
 struct Job {
     rot0: vec3<f32>,
