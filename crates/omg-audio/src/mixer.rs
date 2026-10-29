@@ -676,6 +676,41 @@ impl Mixer {
         }
         let sr = self.sample_rate as f64;
         let now = self.clock;
+        // sources that jumped: the place each left goes on as a ghost — its
+        // renderer (its paths and reverb as they were, gliding on) and what
+        // the source emitted until now; the source starts over here with
+        // what it emits from now on, its new paths fading in
+        for &(ghost, src) in &frame.ghosts {
+            let Some(&pi) = self.index.get(&src.0) else { continue };
+            let gi = self.slot_of(ghost);
+            let (p, g) = if pi < gi {
+                let (a, b) = self.slots.split_at_mut(gi);
+                (&mut a[pi], &mut b[0])
+            } else {
+                let (a, b) = self.slots.split_at_mut(pi);
+                (&mut b[0], &mut a[gi])
+            };
+            g.log = p.log.ghost(now);
+            p.log.emitted_from(now);
+            core::mem::swap(&mut g.renderer, &mut p.renderer);
+            core::mem::swap(&mut g.kernel, &mut p.kernel);
+            core::mem::swap(&mut g.convolving, &mut p.convolving);
+            p.renderer = Renderer::with_grid(self.sample_rate, self.grid.clone()).without_line();
+            p.renderer.set_point_budget(SOURCE_POINTS);
+            p.renderer.set_tap_ceiling(omg_dsp::renderer::MAX_TAPS);
+            p.renderer.set_head(self.head[0], self.head[1], self.head[2]);
+            p.renderer.fade_in_first();
+            p.kernel = None;
+            p.convolving = false;
+            g.fader.snap(p.fader.target_val());
+            g.sounded_until = p.sounded_until;
+            g.has_block = p.has_block;
+            copy_block(&mut g.latest, &p.latest);
+            g.share = (usize::MAX, usize::MAX);
+            g.dirty = true;
+            p.dirty = true;
+            p.share = (usize::MAX, usize::MAX);
+        }
         for (id, pb) in &frame.blocks {
             let i = self.slot_of(*id);
             let s = &mut self.slots[i];

@@ -377,7 +377,11 @@ impl Tracer {
         let seed = (self.rng.next_u64() >> 32) as u32;
         let edges = if budget.diffraction { self.edges.as_ref() } else { None };
         let job_budget = if cpu_late.is_some() { Budget { late_rays: 0, ..budget } } else { budget };
-        let mut job = WalkJob::build(world, listener, sources, job_budget, rot, seed, self.debug, &vis, edges).v4(self.v4);
+        // the GPU walk connects to where each source emitted its direct
+        // sound (a moving source's echoes on the CPU reach further back)
+        let at_emission: Vec<Source> =
+            sources.iter().enumerate().map(|(si, s)| Source { pos: self.direct_from(si, s, listener).unwrap_or(s.pos), ..*s }).collect();
+        let mut job = WalkJob::build(world, listener, &at_emission, job_budget, rot, seed, self.debug, &vis, edges).v4(self.v4);
         job.epoch = self.epoch;
         let walked = match walk(&job) {
             Walk::Refused => return None,
@@ -391,7 +395,7 @@ impl Tracer {
         // and the late family, when the walker leaves it to the CPU
         let late = match cpu_late {
             Some(n) if n > 0 && fresh => {
-                let mut accs: Vec<Acc> = sources
+                let mut accs: Vec<Acc> = at_emission
                     .iter()
                     .map(|s| Acc::new((s.pos - listener).length() / SPEED_OF_SOUND, self.v4))
                     .collect();
@@ -472,7 +476,7 @@ impl Tracer {
         let mut out = Vec::with_capacity(sources.len());
         let shared = self.shared_ticks();
         for (si, s) in sources.iter().enumerate() {
-            let t_free = (s.pos - listener).length() / SPEED_OF_SOUND;
+            let t_free = (self.direct_from(si, s, listener).unwrap_or(s.pos) - listener).length() / SPEED_OF_SOUND;
             let block = walked.as_ref().filter(|_| fresh).and_then(|w| {
                 w.ids.iter().position(|&id| id == s.id).map(|k| {
                     let o = SKY_WORDS + k * SOURCE_WORDS;

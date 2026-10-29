@@ -351,6 +351,82 @@ pub struct Source {
     pub weight: f32,
 }
 
+/// Where a moving source was: its positions over the simulation's clock
+/// (seconds), oldest first, joined by straight lines. Sound reaching the
+/// listener now along a path of length L left the source when it stood
+/// exactly L/c away along that path — far sources and long echoes come
+/// from where it was then (`Track::emit`).
+#[derive(Clone, Debug)]
+pub struct Track {
+    pub knots: Vec<(f64, Vec3)>,
+    /// What it emitted before `from` or after `until` is not this track's
+    /// (a teleport ended one track and began the next): ±∞ otherwise.
+    pub from: f64,
+    pub until: f64,
+}
+
+impl Track {
+    /// Where it was at `t` (held at its ends).
+    pub fn at(&self, t: f64) -> Vec3 {
+        let k = &self.knots;
+        if k.is_empty() {
+            return Vec3::new(0.0, 0.0, 0.0);
+        }
+        let i = k.partition_point(|(tk, _)| *tk <= t);
+        if i == 0 {
+            return k[0].1;
+        }
+        if i == k.len() {
+            return k[i - 1].1;
+        }
+        let ((t0, a), (t1, b)) = (k[i - 1], k[i]);
+        let f = if t1 > t0 { ((t - t0) / (t1 - t0)) as f32 } else { 1.0 };
+        a + (b - a) * f
+    }
+
+    /// Where it emitted what reaches the end of a path now (`now`): the
+    /// path has `before` m behind it from the listener to `p`, its last
+    /// leg runs from `p` straight to the source. The light-cone condition
+    /// c·(now − t) = before + |x(t) − p| has one solution while the source
+    /// is slower than sound; fixed-point steps contract by v/c each.
+    /// None: emitted outside the track's span.
+    pub fn emit(&self, now: f64, p: Vec3, before: f32) -> Option<Vec3> {
+        let c = SPEED_OF_SOUND as f64;
+        let mut x = self.at(now);
+        let mut t = now;
+        for _ in 0..4 {
+            t = now - (before + (x - p).length()) as f64 / c;
+            x = self.at(t);
+        }
+        (t >= self.from && t <= self.until).then_some(x)
+    }
+}
+
+/// The sources' motion for a trace (`Tracer::set_motion`): the time the
+/// trace is for, and per source (in the trace's order) its track — None
+/// for one standing still (it is where it is).
+#[derive(Clone, Debug, Default)]
+pub struct Motion {
+    pub now: f64,
+    pub tracks: Vec<Option<Track>>,
+}
+
+impl Motion {
+    /// Where source `si` (now at `cur`) emitted what reaches `p`'s path,
+    /// `before` m from the listener (see `Track::emit`).
+    #[inline]
+    pub fn emit(&self, si: usize, cur: Vec3, p: Vec3, before: f32) -> Option<Vec3> {
+        match self.tracks.get(si) {
+            Some(Some(tr)) => tr.emit(self.now, p, before),
+            _ => Some(cur),
+        }
+    }
+
+    fn moving(&self, si: usize) -> bool {
+        matches!(self.tracks.get(si), Some(Some(_)))
+    }
+}
+
 /// Compute budget: `rays` from the listener, each up to `bounces`
 /// reflections. `k`: source sphere radius per meter of path.
 #[derive(Clone, Copy, Debug)]
@@ -1281,6 +1357,8 @@ pub struct Tracer {
     /// the last tick, mirror chains of the last solve. See `exact_paths`.
     exact: Vec<ExactPath>,
     exact_mirrors: Vec<ExactPath>,
+    /// The sources' motion for the next trace (`set_motion`).
+    motion: Motion,
 }
 
 /// An exactly solved path, for a debug view: unlike the sampled ones it
@@ -1399,29 +1477,35 @@ impl Tracer {
     /// it changes slowly and follows at the next full tick.
     pub fn exact_taps(&mut self, world: &World, listener: Vec3, sources: &[Source]) -> Vec<Vec<Tap>> {
         let mut out: Vec<Vec<Tap>> = Vec::with_capacity(sources.len());
-        for s in sources {
+        for (si, s) in sources.iter().enumerate() {
             let mut taps = Vec::new();
-            // the direct path
-            let to = s.pos - listener;
-            let d = to.length().max(MIN_DIST);
-            let t = world.transmission(listener, s.pos, &mut self.hits);
-            let air = air_attenuation(d);
-            let gains: [f32; NBANDS] = core::array::from_fn(|b| t[b] * air[b] / d);
-            if gains.iter().any(|&g| g > 1e-7) {
-                let dir = to * (1.0 / to.length().max(1e-6));
-                taps.push(Tap { key: KEY_DIRECT, delay_s: d / SPEED_OF_SOUND, dir: [dir.x, dir.y, dir.z], gains });
+            // the direct path, from where the source emitted what arrives
+            if let Some(sp) = self.direct_from(si, s, listener) {
+                let to = sp - listener;
+                let d = to.length().max(MIN_DIST);
+                let t = world.transmission(listener, sp, &mut self.hits);
+                let air = air_attenuation(d);
+                let gains: [f32; NBANDS] = core::array::from_fn(|b| t[b] * air[b] / d);
+                if gains.iter().any(|&g| g > 1e-7) {
+                    let dir = to * (1.0 / to.length().max(1e-6));
+                    taps.push(Tap { key: KEY_DIRECT, delay_s: d / SPEED_OF_SOUND, dir: [dir.x, dir.y, dir.z], gains });
+                }
             }
             // the bends, through the points the last search found
             if let Some((_, _, _, cached, points)) = self.edge_cache.get(&s.id) {
                 for (tap, p) in cached.iter().zip(points) {
-                    taps.push(retimed(tap, *p, listener, s.pos));
+                    if let Some(bp) = self.motion.emit(si, s.pos, *p, (*p - listener).length()) {
+                        taps.push(retimed(tap, *p, listener, bp));
+                    }
                 }
             }
             // the mirror chains, re-solved
-            for (key, c) in self.chains.iter().filter(|(k, _)| k.0 == s.id) {
-                if let Some((e, delay, dir)) = solve_chain(world, &c.planes, listener, s.pos, &mut self.hits) {
+            let chains: Vec<(u64, Vec<(Vec3, f32)>)> =
+                self.chains.iter().filter(|(k, _)| k.0 == s.id).map(|(k, c)| (k.1, c.planes.clone())).collect();
+            for (key, planes) in chains {
+                if let Some((e, delay, dir)) = self.solve_chain_at(world, &planes, listener, si, s.pos) {
                     taps.push(Tap {
-                        key: KEY_CHAIN_BASE + (key.1 % KEY_CHAIN_SPAN as u64) as u32,
+                        key: KEY_CHAIN_BASE + (key % KEY_CHAIN_SPAN as u64) as u32,
                         delay_s: delay,
                         dir: [dir.x, dir.y, dir.z],
                         gains: core::array::from_fn(|b| e[b].max(0.0).sqrt()),
@@ -1477,7 +1561,39 @@ impl Tracer {
             debug_paths: Vec::new(),
             exact: Vec::new(),
             exact_mirrors: Vec::new(),
+            motion: Motion::default(),
         }
+    }
+
+    /// The sources' motion for the next `trace` / `exact_taps` (tracks in
+    /// the order of the `sources` they get): every connection then reaches
+    /// each source where it was when it emitted what arrives now.
+    pub fn set_motion(&mut self, motion: Motion) {
+        self.motion = motion;
+    }
+
+    /// A source's free-field arrival distance now (to where it emitted
+    /// what arrives straight), None outside its track's span.
+    fn direct_from(&self, si: usize, s: &Source, listener: Vec3) -> Option<Vec3> {
+        self.motion.emit(si, s.pos, listener, 0.0)
+    }
+
+    /// A mirror chain solved for a moving source: the image of where the
+    /// source was when it emitted what arrives along the chain now.
+    fn solve_chain_at(&mut self, world: &World, planes: &[(Vec3, f32)], listener: Vec3, si: usize, cur: Vec3) -> Option<([f32; NBANDS], f32, Vec3)> {
+        let Some(Some(tr)) = self.motion.tracks.get(si) else {
+            return solve_chain(world, planes, listener, cur, &mut self.hits);
+        };
+        let tr = tr.clone();
+        let now = self.motion.now;
+        let mut x = tr.at(now);
+        for _ in 0..2 {
+            let (_, delay, _) = solve_chain(world, planes, listener, x, &mut self.hits)?;
+            x = tr.at(now - delay as f64);
+        }
+        let r = solve_chain(world, planes, listener, x, &mut self.hits)?;
+        let t = now - r.1 as f64;
+        (t >= tr.from && t <= tr.until).then_some(r)
     }
 
     /// The traced outdoor field: (unit direction, per-band energy) per
@@ -1591,7 +1707,8 @@ impl Tracer {
     ) -> Vec<SourceField> {
         let mut accs: Vec<Acc> = sources
             .iter()
-            .map(|s| Acc::new((s.pos - listener).length() / SPEED_OF_SOUND, self.v4))
+            .enumerate()
+            .map(|(si, s)| Acc::new((self.direct_from(si, s, listener).unwrap_or(s.pos) - listener).length() / SPEED_OF_SOUND, self.v4))
             .collect();
 
         let debug = self.debug;
@@ -1765,7 +1882,9 @@ impl Tracer {
                 // source's REAL position — except the exact solver's own
                 if (specular || bent) && counts(refl) {
                     for (si, s) in sources.iter().enumerate() {
-                        let to = s.pos - origin;
+                        // where it emitted what this path brings now
+                        let Some(sp) = self.motion.emit(si, s.pos, origin, length) else { continue };
+                        let to = sp - origin;
                         let along = to.dot(dir);
                         if along <= 0.0 || along >= t_seg {
                             continue;
@@ -1773,14 +1892,14 @@ impl Tracer {
                         let seg = to.length();
                         let l_s = (length + seg).max(MIN_DIST);
                         let r = budget.k * l_s;
-                        let closest = (origin + dir * along - s.pos).length();
+                        let closest = (origin + dir * along - sp).length();
                         if closest > r {
                             continue;
                         }
                         if solver_owns(refl, coherent && !bent, loud, l_s / SPEED_OF_SOUND - accs[si].t_free) {
                             continue; // the exact solver counts this one
                         }
-                        let t = world.transmission(origin, s.pos, &mut self.hits);
+                        let t = world.transmission(origin, sp, &mut self.hits);
                         let air = air_attenuation(l_s);
                         let w = 4.0 * inv_n / (budget.k * budget.k * l_s * l_s);
                         // a bent path with no reflection is the DIRECT
@@ -1797,7 +1916,7 @@ impl Tracer {
                         let gate: [f32; NBANDS] = match bend_from {
                             Some(_) if refl == 0 => core::array::from_fn(|b| 1.0 - vis[si][b]),
                             Some(f) => {
-                                let tv = world.transmission(f, s.pos, &mut self.hits);
+                                let tv = world.transmission(f, sp, &mut self.hits);
                                 core::array::from_fn(|b| (1.0 - tv[b]).clamp(0.0, 1.0))
                             }
                             None => [1.0; NBANDS],
@@ -1806,7 +1925,7 @@ impl Tracer {
                             thr[b] * t[b] * t[b] * air[b] * air[b] * w * gate[b]
                         });
                         if debug {
-                            keep_path(dbg, s.id, e[1], &verts, s.pos);
+                            keep_path(dbg, s.id, e[1], &verts, sp);
                         }
                         // a sphere hit only knows the path to within the
                         // sphere: its arrival is spread over r/c each way
@@ -1909,7 +2028,9 @@ impl Tracer {
                     }
                     for &(si, pw) in picks.iter() {
                         let s = &sources[si];
-                        let to = s.pos - off;
+                        // where it emitted what this connection brings now
+                        let Some(sp) = self.motion.emit(si, s.pos, off, length) else { continue };
+                        let to = sp - off;
                         let r = to.length();
                         if r < 1e-4 {
                             continue;
@@ -1918,7 +2039,7 @@ impl Tracer {
                         if cos_in <= 0.0 {
                             continue; // source behind this surface
                         }
-                        let t = world.transmission(off, s.pos, &mut self.hits);
+                        let t = world.transmission(off, sp, &mut self.hits);
                         let rr = r.max(MIN_DIST);
                         let air = air_attenuation(length + r);
                         let w = pw * mat.scattering * cos_in * 4.0 * inv_n / (rr * rr);
@@ -1926,7 +2047,7 @@ impl Tracer {
                             thr[b] * keep[b] * t[b] * t[b] * air[b] * air[b] * w
                         });
                         if debug {
-                            keep_path(dbg, s.id, e[1], &verts, s.pos);
+                            keep_path(dbg, s.id, e[1], &verts, sp);
                         }
                         if pooled {
                             ray_deps.push((si, e, (length + r) / SPEED_OF_SOUND, 0.0));
@@ -2219,7 +2340,8 @@ impl Tracer {
         self.find_chains(world, listener, sources, budget, chain_finders(budget));
         let mut accs: Vec<Acc> = sources
             .iter()
-            .map(|s| Acc::new((s.pos - listener).length() / SPEED_OF_SOUND, self.v4))
+            .enumerate()
+            .map(|(si, s)| Acc::new((self.direct_from(si, s, listener).unwrap_or(s.pos) - listener).length() / SPEED_OF_SOUND, self.v4))
             .collect();
         self.solve_chains(world, listener, sources, budget, &mut accs);
         accs
@@ -2251,6 +2373,13 @@ impl Tracer {
             let tick = self.tick;
             let result = match c.solved {
                 Some((l, s, t, r)) if l == listener && s == src && tick < t + CHAIN_RESOLVE_TICKS => Some(r),
+                _ if self.motion.moving(si) => {
+                    // a moving source: the image of where it emitted
+                    let planes = c.planes.clone();
+                    let r = self.solve_chain_at(world, &planes, listener, si, src);
+                    self.chains.get_mut(&key).expect("listed above").solved = r.map(|r| (listener, src, tick, r));
+                    r
+                }
                 _ => {
                     let r = solve_chain(world, &c.planes, listener, src, &mut self.hits);
                     c.solved = r.map(|r| (listener, src, tick, r));
@@ -2446,14 +2575,21 @@ impl Tracer {
         let debug = self.debug;
         // 1. direct: one exact segment per source
         let mut direct: Vec<Option<Tap>> = Vec::with_capacity(sources.len());
-        for s in sources {
-            let to = s.pos - listener;
+        // where each source emitted what arrives straight now (moving
+        // sources: back along their track; None: outside its span)
+        let emitted: Vec<Option<Vec3>> = sources.iter().enumerate().map(|(si, s)| self.direct_from(si, s, listener)).collect();
+        for (s, sp) in sources.iter().zip(&emitted) {
+            let Some(sp) = *sp else {
+                direct.push(None);
+                continue;
+            };
+            let to = sp - listener;
             let d = to.length().max(MIN_DIST);
-            let t = world.transmission(listener, s.pos, &mut self.hits);
+            let t = world.transmission(listener, sp, &mut self.hits);
             let air = air_attenuation(d);
             let gains: [f32; NBANDS] = core::array::from_fn(|b| t[b] * air[b] / d);
             if debug && gains[1] > 1e-7 {
-                self.exact.push(ExactPath { source: s.id, kind: 0, key: 0, energy: gains[1] * gains[1], points: vec![listener, s.pos] });
+                self.exact.push(ExactPath { source: s.id, kind: 0, key: 0, energy: gains[1] * gains[1], points: vec![listener, sp] });
             }
             direct.push(if gains.iter().any(|&g| g > 1e-7) {
                 let dir = to * (1.0 / to.length().max(1e-6));
@@ -2468,9 +2604,9 @@ impl Tracer {
         let vis: Vec<[f32; NBANDS]> = sources
             .iter()
             .zip(&direct)
-            .map(|(s, d)| match d {
+            .map(|(_, d)| match d {
                 Some(t) => {
-                    let dd = (s.pos - listener).length().max(MIN_DIST);
+                    let dd = (t.delay_s * SPEED_OF_SOUND).max(MIN_DIST);
                     let air = air_attenuation(dd);
                     core::array::from_fn(|b| (t.gains[b] * dd / air[b].max(1e-9)).clamp(0.0, 1.0))
                 }
@@ -2529,6 +2665,9 @@ impl Tracer {
                 if vis[si][1] > 0.999 {
                     continue;
                 }
+                // the bends reach the source where it emitted (its direct
+                // sound's moment: a bend is only slightly longer)
+                let Some(sp) = emitted[si] else { continue };
                 if let Some((pl, ps, t, taps, bends)) = self.edge_cache.get(&s.id) {
                     if (*pl - listener).length() < EDGE_REUSE_M
                         && (*ps - s.pos).length() < EDGE_REUSE_M
@@ -2537,7 +2676,7 @@ impl Tracer {
                         // the same bends, re-timed for where both ends are
                         // now (as `exact_taps` does between ticks: a reused
                         // bend never jumps back to an old delay)
-                        edge_taps[si] = taps.iter().zip(bends).map(|(tap, p)| retimed(tap, *p, listener, s.pos)).collect();
+                        edge_taps[si] = taps.iter().zip(bends).map(|(tap, p)| retimed(tap, *p, listener, sp)).collect();
                         if debug {
                             for (tap, p) in taps.iter().zip(bends) {
                                 self.exact.push(ExactPath {
@@ -2545,14 +2684,14 @@ impl Tracer {
                                     kind: 1,
                                     key: tap.key as u64,
                                     energy: tap.gains[1] * tap.gains[1],
-                                    points: vec![listener, *p, s.pos],
+                                    points: vec![listener, *p, sp],
                                 });
                             }
                         }
                         continue;
                     }
                 }
-                let direct_len = (s.pos - listener).length().max(MIN_DIST);
+                let direct_len = (sp - listener).length().max(MIN_DIST);
                 // rank every exposed edge by its pure knife-edge bound
                 let mut cand: Vec<(f32, usize, Vec3)> = es
                     .edges
@@ -2561,8 +2700,8 @@ impl Tracer {
                     .filter(|(ei, _)| seen_from_ear[*ei])
 
                     .filter_map(|(ei, (a, b))| {
-                        let p = crate::paths::bend_point(*a, *b, s.pos, listener);
-                        let (d1, d2) = ((p - listener).length(), (s.pos - p).length());
+                        let p = crate::paths::bend_point(*a, *b, sp, listener);
+                        let (d1, d2) = ((p - listener).length(), (sp - p).length());
                         if d1 < 0.2 || d2 < 0.2 {
                             return None;
                         }
@@ -2583,20 +2722,20 @@ impl Tracer {
                 for (_, ei, p) in cand.into_iter().take(EDGE_CANDIDATES) {
                     let to_edge = p - listener;
                     let n1 = to_edge.normalize();
-                    let (d1, d2) = (to_edge.length(), (s.pos - p).length());
+                    let (d1, d2) = (to_edge.length(), (sp - p).length());
                     // both legs meet 3 cm off the edge on the OUTSIDE of
                     // the bend (away from whatever the path bends around):
                     // a true silhouette edge has open air there and neither
                     // leg grazes it; an edge lying on a zero-thickness wall
                     // plane leaves one leg crossing that wall
-                    let n2 = (s.pos - p).normalize();
+                    let n2 = (sp - p).normalize();
                     let out = n1 - n2;
                     if out.length() < 1e-3 {
                         continue; // no bend: the straight line itself
                     }
                     let q = p + out.normalize() * 0.03;
                     let t1 = world.transmission(listener, q, &mut self.hits);
-                    let t2 = world.transmission(q, s.pos, &mut self.hits);
+                    let t2 = world.transmission(q, sp, &mut self.hits);
                     if t1[0] * t2[0] < 1e-6 {
                         continue;
                     }
@@ -2637,7 +2776,7 @@ impl Tracer {
                             kind: 1,
                             key: tap.key as u64,
                             energy: tap.gains[1] * tap.gains[1],
-                            points: vec![listener, p, s.pos],
+                            points: vec![listener, p, sp],
                         });
                     }
                     edge_taps[si].push(tap);

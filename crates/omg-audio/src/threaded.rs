@@ -123,7 +123,10 @@ enum MixCmd {
 enum SimCmd {
     Geometry(Box<Geometry>),
     AddSource(SourceId, SourceDesc),
-    SetSource(SourceId, [f32; 3], bool),
+    /// A source's position, active, and when it was there (the engine's
+    /// clock: where it was when is what lets far paths reach it where it
+    /// emitted).
+    SetSource(SourceId, [f32; 3], bool, f64),
     SourceGain(SourceId, f32),
     RemoveSource(SourceId),
     AddObject(ObjectId, [f32; 3], [f32; 3], Material),
@@ -296,7 +299,8 @@ impl Engine {
     }
 
     pub fn set_source(&mut self, id: SourceId, position: [f32; 3], active: bool) {
-        self.sim(SimCmd::SetSource(id, position, active));
+        let t = self.clock.elapsed().as_secs_f64();
+        self.sim(SimCmd::SetSource(id, position, active, t));
     }
 
     /// Acoustic loudness (see `SourceDesc::gain`).
@@ -427,7 +431,10 @@ fn handle(sim: &mut Simulation, c: SimCmd) {
     match c {
         SimCmd::Geometry(g) => sim.set_geometry(*g),
         SimCmd::AddSource(id, d) => sim.add_source_as(id, d),
-        SimCmd::SetSource(id, p, a) => sim.set_source(id, p, a),
+        SimCmd::SetSource(id, p, a, t) => {
+            sim.set_time(t);
+            sim.set_source(id, p, a)
+        }
         SimCmd::SourceGain(id, g) => sim.set_source_gain(id, g),
         SimCmd::RemoveSource(id) => sim.remove_source(id),
         SimCmd::AddObject(id, a, b, m) => sim.add_object_as(id, a, b, m),
@@ -495,7 +502,7 @@ fn sim_loop(
                 Ok(c) => {
                     let wakes = match &c {
                         SimCmd::AddSource(_, d) => d.active,
-                        SimCmd::SetSource(id, _, on) => *on && !sim.is_active(*id),
+                        SimCmd::SetSource(id, _, on, _) => *on && !sim.is_active(*id),
                         _ => false,
                     };
                     held.push(c);

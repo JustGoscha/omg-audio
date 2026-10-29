@@ -17,7 +17,8 @@ use omg_core::material::Material;
 use omg_core::mesh::{Mesh, MeshBuilder};
 use omg_core::params::{ParamBlock, RemoteReverb, Tap};
 use omg_core::v3::walker::{trace_with, V3Walker};
-use omg_core::v3::{Budget, DenseResponse, Source, Tracer, World};
+use omg_core::v3::{Budget, DenseResponse, Motion, Source, Track, Tracer, World};
+use std::collections::VecDeque;
 use omg_dsp::dense::{build_kernel_max, DenseKernel, KernelBuilder};
 use std::sync::Arc;
 use omg_core::vec3::Vec3;
@@ -224,6 +225,21 @@ struct Src {
     /// from one (with the response, gain and tick it was built from).
     dense: Option<DenseResponse>,
     kernel: Option<(Arc<DenseKernel>, DenseResponse, f32, u64)>,
+    /// Where it was (simulation clock, position), oldest first: every
+    /// path reaches it where it emitted what arrives now (`Track`).
+    track: VecDeque<(f64, Vec3)>,
+    /// When and where the host last set it (it stood there since).
+    seen: (f64, Vec3),
+    /// What it emitted before `since` left from somewhere else (it jumped
+    /// then: the old place's emissions are a ghost's).
+    since: f64,
+    /// Switched off at this time (still traced while what it emitted
+    /// before arrives and rings out): None while on.
+    off_at: Option<f64>,
+    /// A ghost: the place a jumped source left (its parent's id), traced
+    /// until `ghost.1`; it emitted only before `until`.
+    ghost: Option<(SourceId, f64)>,
+    until: f64,
 }
 
 struct Obj {
@@ -245,6 +261,14 @@ pub struct Simulation {
     objects: Vec<Obj>,
     listener: Listener,
     listener_time: Option<f64>,
+    /// The simulation's clock (s): the host's time (`set_time`,
+    /// `set_listener_at`), or a tick period per tick when it gives none.
+    clock: f64,
+    clock_given: bool,
+    /// Ghosts made since the last frame (ghost, parent), and the next
+    /// ghost id.
+    new_ghosts: Vec<(SourceId, SourceId)>,
+    next_ghost: u32,
     tick_no: u64,
     /// Frames out (full ticks and exact ones): their and their blocks'
     /// versions.
@@ -311,6 +335,70 @@ fn v3(p: [f32; 3]) -> Vec3 {
     Vec3::new(p[0], p[1], p[2])
 }
 
+/// Ghosts' ids (`Src::ghost`): their own range, never a host's.
+const GHOST_ID_BASE: u32 = 0x4000_0000;
+const GHOST_ID_SPAN: u32 = 0x1000_0000;
+
+/// How long after its last emission a source at `pos` still sounds at the
+/// listener (s): its direct sound's travel, then the longest response a
+/// path or kernel carries (`omg_dsp::dense::MAX_KERNEL_S`).
+fn ring_out(pos: Vec3, ear: Vec3) -> f64 {
+    ((pos - ear).length() / omg_core::SPEED_OF_SOUND) as f64 + omg_dsp::dense::MAX_KERNEL_S as f64 + 0.5
+}
+
+/// How long a source's track reaches back (s): its paths' emission times
+/// (the longest traced response after the farthest direct arrival).
+const TRACK_KEEP_S: f64 = 40.0;
+/// A source that moved within this long (s) still has paths moving: what
+/// arrives now along them left it while it moved.
+const RECENT_MOVE_S: f64 = 10.0;
+
+/// Is `s` traced now: on, or switched off (or a ghost) while what it
+/// emitted is still arriving and ringing.
+fn sounding(s: &Src, now: f64, ear: Vec3) -> bool {
+    match (s.ghost, s.off_at) {
+        (Some((_, until)), _) => now <= until,
+        (None, None) => true,
+        (None, Some(off)) => now - off < ring_out(s.pos, ear),
+    }
+}
+
+/// A source at `p` at `t` on its track (a move of more than a millimetre
+/// from where it was last `seen`; a time already on the track updates its
+/// last place).
+fn record(track: &mut VecDeque<(f64, Vec3)>, seen: (f64, Vec3), t: f64, p: Vec3) {
+    if (seen.1 - p).length() <= 1e-3 {
+        return;
+    }
+    // it stood where it was last seen until then
+    if track.back().is_some_and(|b| b.0 < seen.0) {
+        track.push_back(seen);
+    }
+    match track.back_mut() {
+        Some(last) if last.0 >= t => last.1 = p,
+        _ => track.push_back((t, p)),
+    }
+    // forget what no path reaches any more (keeping where it stood then)
+    while track.len() > 2 && track[1].0 < t - TRACK_KEEP_S {
+        track.pop_front();
+    }
+}
+
+/// The motion of `sources` (in a trace's order) as the tracer takes it:
+/// the moving ones' tracks, at `now`.
+fn motion(now: f64, sources: &[&Src]) -> Motion {
+    Motion {
+        now,
+        tracks: sources
+            .iter()
+            .map(|s| {
+                (s.track.len() > 1 || s.since.is_finite() || s.until.is_finite())
+                    .then(|| Track { knots: s.track.iter().copied().collect(), from: s.since, until: s.until })
+            })
+            .collect(),
+    }
+}
+
 /// v4 kernel rebuilds (crossfaded): a dense response whose envelope moved
 /// by this share (`DenseResponse::difference_from`, ~0.6 dB) is rebuilt.
 /// Smaller differences don't land: standing still they are the estimate's
@@ -352,6 +440,10 @@ impl Simulation {
             objects: Vec::new(),
             listener: Listener::default(),
             listener_time: None,
+            clock: 0.0,
+            clock_given: false,
+            new_ghosts: Vec::new(),
+            next_ghost: 0,
             tick_no: 0,
             frame_no: 0,
             last_sky: Vec::new(),
@@ -517,15 +609,73 @@ impl Simulation {
             traced: None,
             dense: None,
             kernel: None,
+            track: VecDeque::from([(self.clock, v3(desc.position))]),
+            seen: (self.clock, v3(desc.position)),
+            since: f64::NEG_INFINITY,
+            off_at: (!desc.active).then_some(f64::NEG_INFINITY),
+            ghost: None,
+            until: f64::INFINITY,
         });
     }
 
     /// Move a source and/or switch it on or off.
     pub fn set_source(&mut self, id: SourceId, position: [f32; 3], active: bool) {
-        if let Some(s) = self.sources.iter_mut().find(|s| s.id == id) {
-            s.pos = v3(position);
-            s.active = active;
+        let now = self.clock;
+        let ear = v3(self.listener.position);
+        let Some(i) = self.sources.iter().position(|s| s.id == id && s.ghost.is_none()) else { return };
+        let p = v3(position);
+        let s = &mut self.sources[i];
+        // a jump (faster than sound: a teleport, a reused slot): what it
+        // emitted at the old place plays on from there in a ghost, until
+        // it has all arrived and rung out
+        let (t_seen, q) = s.seen;
+        let jumped = (p - q).length() > omg_core::SPEED_OF_SOUND * (now - t_seen).max(1e-3) as f32;
+        if jumped && s.off_at.is_none_or(|t| now - t < ring_out(s.pos, ear)) {
+            let gid = SourceId(GHOST_ID_BASE + self.next_ghost);
+            self.next_ghost = self.next_ghost.wrapping_add(1) % GHOST_ID_SPAN;
+            let ghost = Src {
+                id: gid,
+                pos: s.pos,
+                gain: s.gain,
+                active: true,
+                block: ParamBlock::default(),
+                traced: None,
+                dense: None,
+                kernel: None,
+                track: s.track.clone(),
+                seen: s.seen,
+                since: s.since,
+                off_at: s.off_at,
+                ghost: Some((id, now + ring_out(s.pos, ear) as f64)),
+                until: now,
+            };
+            s.track = VecDeque::from([(now, p)]);
+            s.seen = (now, p);
+            s.since = now;
+            self.new_ghosts.push((gid, id));
+            self.sources.push(ghost);
         }
+        let s = &mut self.sources[i];
+        s.pos = p;
+        if active {
+            s.off_at = None;
+        } else if s.active || s.off_at.is_none() {
+            s.off_at = Some(now);
+        }
+        s.active = active;
+        record(&mut s.track, s.seen, now, s.pos);
+        s.seen = (now, s.pos);
+    }
+
+    /// The host's clock (s, any steady clock — the one `set_listener_at`
+    /// stamps poses with): positions set from now on were current at
+    /// `time`. Where each source was when is what lets every path reach it
+    /// where it emitted what arrives (a car 1 km off is heard from where it
+    /// was ~3 s ago). Without it the simulation counts a tick period per
+    /// tick.
+    pub fn set_time(&mut self, time: f64) {
+        self.clock = time;
+        self.clock_given = true;
     }
 
     /// Is the source traced and heard (see `SourceDesc::active`)?
@@ -609,6 +759,7 @@ impl Simulation {
     pub fn set_listener_at(&mut self, position: [f32; 3], yaw: f32, pitch: f32, roll: f32, time: f64) {
         self.listener = Listener { position, yaw, pitch, roll };
         self.listener_time = Some(time);
+        self.set_time(time);
     }
 
     /// Sources traced in the last tick (≤ `max_traced_sources`).
@@ -805,6 +956,9 @@ impl Simulation {
 
     /// Trace once and return every source's paths.
     pub fn tick(&mut self) -> Frame {
+        if !self.clock_given {
+            self.clock += self.cfg.tick_s as f64;
+        }
         self.tick_no += 1;
         let tick = self.tick_no;
         self.frame_no += 1;
@@ -821,7 +975,7 @@ impl Simulation {
         // loudness × age (a moved source is overdue at once)
         self.picks.clear();
         for (i, s) in self.sources.iter().enumerate() {
-            if !s.active {
+            if !sounding(s, self.clock, ear) {
                 continue;
             }
             let score = match s.traced {
@@ -859,18 +1013,25 @@ impl Simulation {
         }
         let cpu_budget = self.cfg.quality.budget(false);
         let world = World { grade: self.grade, pockets: &[], ..World::new(&self.mesh, &self.panels) };
+        let traced: Vec<&Src> = self.picks.iter().map(|&(_, i)| &self.sources[i]).collect();
+        let mo = motion(self.clock, &traced);
+        let onsets: Vec<f32> = traced
+            .iter()
+            .enumerate()
+            .map(|(k, s)| (mo.emit(k, s.pos, ear, 0.0).unwrap_or(s.pos) - ear).length() / omg_core::SPEED_OF_SOUND)
+            .collect();
+        self.tracer.set_motion(mo);
         let walker = self.walker.as_mut().map(|w| &mut **w as &mut dyn V3Walker);
         let fields = trace_with(&mut self.tracer, &world, ear, &srcs, budget, cpu_budget, walker);
 
         // fields → blocks (the generic half of the demo's WorldSim::v3_blocks)
         let mut first_traced = Vec::new();
-        for (&(_, i), f) in self.picks.iter().zip(fields) {
+        for ((&(_, i), f), onset_s) in self.picks.iter().zip(fields).zip(onsets) {
             let s = &mut self.sources[i];
             if s.traced.is_none() {
                 first_traced.push(s.id);
             }
             let g = s.gain;
-            let onset_s = (s.pos - ear).length() / omg_core::SPEED_OF_SOUND;
             let mut pb = ParamBlock { version, onset_s, ..Default::default() };
             pb.taps.reserve(f.taps.len());
             for t in f.taps {
@@ -903,16 +1064,24 @@ impl Simulation {
             s.block = pb;
             s.traced = Some((s.pos, tick));
         }
+        let now = self.clock;
         for s in &mut self.sources {
-            if !s.active && (!s.block.taps.is_empty() || s.block.reverb.level[1] > 0.0 || s.block.remote.is_some()) {
-                // silent from now on (the mixer fades it out)
+            let on = sounding(s, now, ear);
+            if !on && (!s.block.taps.is_empty() || s.block.reverb.level[1] > 0.0 || s.block.remote.is_some()) {
+                // rung out: silent from now on (the mixer fades it out)
                 s.block = ParamBlock { version, ..Default::default() };
                 s.traced = None;
             }
-            if !self.cfg.v4 || !s.active {
+            if !self.cfg.v4 || !on {
                 s.dense = None;
                 s.kernel = None;
             }
+        }
+        // ghosts that have rung out leave
+        let gone: Vec<SourceId> = self.sources.iter().filter(|s| s.ghost.is_some_and(|g| now > g.1)).map(|s| s.id).collect();
+        for id in gone {
+            self.sources.retain(|s| s.id != id);
+            self.tracer.reset(id.0);
         }
         if self.cfg.v4 {
             self.build_kernels(tick);
@@ -930,6 +1099,7 @@ impl Simulation {
             kernels: self.sources.iter().filter_map(|s| s.kernel.as_ref().map(|k| (s.id, k.0.clone()))).collect(),
             sky,
             first_traced,
+            ghosts: std::mem::take(&mut self.new_ghosts),
             env,
         }
     }
@@ -944,18 +1114,24 @@ impl Simulation {
     pub fn tick_exact(&mut self) -> Option<Frame> {
         let ear = v3(self.listener.position);
         let sig = self.objects_sig();
+        let now = self.clock;
         // something moved: the listener, a source, or an object (a door
-        // shutting is heard at the next exact frame, not the next tick)
+        // shutting is heard at the next exact frame, not the next tick) —
+        // or a source moved lately: what arrives now left it along its
+        // track, so its paths go on moving after it stopped
         let moved = match &self.exact_at {
             Some((l, ps, o)) => {
                 (*l - ear).length() > 1e-4
                     || *o != sig
                     || ps.len() != self.sources.len()
                     || self.sources.iter().zip(ps).any(|(s, p)| (s.pos - *p).length() > 1e-4)
+                    || self.sources.iter().any(|s| s.track.len() > 1 && s.track.back().is_some_and(|b| b.0 > now - RECENT_MOVE_S))
             }
             None => true,
         };
-        if !moved || self.frame_no == 0 {
+        // (a source jumped: the next full tick traces its ghost and hands
+        // both over together)
+        if !moved || self.frame_no == 0 || !self.new_ghosts.is_empty() {
             return None;
         }
         self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect(), sig));
@@ -964,7 +1140,8 @@ impl Simulation {
             self.panels.push((o.min, o.max, o.material));
         }
         let world = World { grade: self.grade, pockets: &[], ..World::new(&self.mesh, &self.panels) };
-        let idx: Vec<usize> = (0..self.sources.len()).filter(|&i| self.sources[i].active && self.sources[i].traced.is_some()).collect();
+        let idx: Vec<usize> =
+            (0..self.sources.len()).filter(|&i| sounding(&self.sources[i], now, ear) && self.sources[i].traced.is_some()).collect();
         let srcs: Vec<Source> = idx
             .iter()
             .map(|&i| {
@@ -972,13 +1149,21 @@ impl Simulation {
                 Source { id: s.id.0, pos: s.pos, weight: s.gain * s.gain }
             })
             .collect();
+        let traced: Vec<&Src> = idx.iter().map(|&i| &self.sources[i]).collect();
+        let mo = motion(now, &traced);
+        let onsets: Vec<f32> = traced
+            .iter()
+            .enumerate()
+            .map(|(k, s)| (mo.emit(k, s.pos, ear, 0.0).unwrap_or(s.pos) - ear).length() / omg_core::SPEED_OF_SOUND)
+            .collect();
+        self.tracer.set_motion(mo);
         let taps = self.tracer.exact_taps(&world, ear, &srcs);
         self.frame_no += 1;
         let version = self.frame_no;
         for (k, &i) in idx.iter().enumerate() {
             let s = &mut self.sources[i];
             let g = s.gain;
-            let onset_s = (s.pos - ear).length() / omg_core::SPEED_OF_SOUND;
+            let onset_s = onsets[k];
             let mut changed = s.block.onset_s != onset_s;
             s.block.onset_s = onset_s;
             for t in s.block.taps.iter_mut() {
@@ -999,6 +1184,7 @@ impl Simulation {
             kernels: self.sources.iter().filter_map(|s| s.kernel.as_ref().map(|k| (s.id, k.0.clone()))).collect(),
             sky: self.last_sky.clone(),
             first_traced: Vec::new(),
+            ghosts: Vec::new(),
             env: self.last_env.clone(),
         })
     }

@@ -22,6 +22,7 @@ pub type Clip = Arc<[f32]>;
 /// flight toward the listener); further plays are dropped.
 pub const MAX_SHOTS: usize = 24;
 
+#[derive(Clone)]
 struct LoopSeg {
     clip: Clip,
     /// Emission time this loop took over (its phase origin);
@@ -34,6 +35,7 @@ struct LoopSeg {
 /// Loop segments kept preallocated (a few hand-overs within one horizon).
 const LOOPS_RESERVED: usize = 4;
 
+#[derive(Clone)]
 struct Shot {
     kind: u32,
     clip: Clip,
@@ -63,10 +65,20 @@ pub struct Sounding<'a> {
     pub looped: bool,
 }
 
-#[derive(Default)]
 pub struct PlayLog {
     loops: Vec<LoopSeg>,
     shots: Vec<Shot>,
+    /// The emission times that are this emitter's: what the source emitted
+    /// before `since` or from `until` on left from another place (a
+    /// teleport: the old place's emissions play on in a ghost, `ghost`).
+    since: f64,
+    until: f64,
+}
+
+impl Default for PlayLog {
+    fn default() -> Self {
+        Self { loops: Vec::new(), shots: Vec::new(), since: f64::NEG_INFINITY, until: f64::INFINITY }
+    }
 }
 
 impl PlayLog {
@@ -77,7 +89,7 @@ impl PlayLog {
     /// A log with its event storage reserved up front: `play` and loop
     /// hand-overs then never allocate (real-time callers).
     pub fn preallocated() -> Self {
-        Self { loops: Vec::with_capacity(LOOPS_RESERVED), shots: Vec::with_capacity(MAX_SHOTS) }
+        Self { loops: Vec::with_capacity(LOOPS_RESERVED), shots: Vec::with_capacity(MAX_SHOTS), ..Self::default() }
     }
 
     /// Loop `clip` from emission time `now` on. A source's first loop has
@@ -103,12 +115,25 @@ impl PlayLog {
         }
     }
 
+    /// What emitted before `t` is no longer this emitter's (the source
+    /// jumped: it left from the old place — see `ghost`).
+    pub fn emitted_from(&mut self, t: f64) {
+        self.since = self.since.max(t);
+    }
+
+    /// The emitter the source was until `t` (it jumped then): the same
+    /// record, ending at `t` — its paths from the old place play what it
+    /// emitted there, until it has all arrived and rung out.
+    pub fn ghost(&self, t: f64) -> PlayLog {
+        PlayLog { loops: self.loops.clone(), shots: self.shots.clone(), since: self.since, until: t.min(self.until) }
+    }
+
     /// Last emission time anything on record still sounds: +∞ while a
     /// loop plays, −∞ when nothing was ever played. A renderer whose
     /// paths and reverb have all moved past this has nothing left to say.
     pub fn sounds_until(&self) -> f64 {
         if self.loops.last().is_some_and(|l| !l.clip.is_empty() && l.gain != 0.0) {
-            return f64::INFINITY;
+            return self.until;
         }
         // a stopped loop sounds up to its stop
         let mut end = f64::NEG_INFINITY;
@@ -118,7 +143,7 @@ impl PlayLog {
         for s in &self.shots {
             end = end.max(s.end());
         }
-        end
+        end.min(self.until)
     }
 
     /// Start a one-shot at emission time `now`. False when the log is full.
@@ -159,19 +184,24 @@ impl PlayLog {
     /// a loop (`looped`: at any phase) or a one-shot (read from its
     /// beginning at `from`... see `Sounding`).
     pub fn sounding(&self, t0: f64, t1: f64, mut f: impl FnMut(Sounding<'_>)) {
+        // only what is this emitter's
+        let (t0, t1) = (t0.max(self.since), t1.min(self.until));
+        if t1 <= t0 {
+            return;
+        }
         for (i, seg) in self.loops.iter().enumerate() {
             let until = self.loops.get(i + 1).map_or(f64::INFINITY, |n| n.start);
             if seg.clip.is_empty() || seg.gain == 0.0 || until <= t0 || seg.start >= t1 {
                 continue;
             }
-            f(Sounding { clip: &seg.clip, gain: seg.gain, start: seg.start, end: until, rate: seg.rate, looped: true });
+            f(Sounding { clip: &seg.clip, gain: seg.gain, start: seg.start.max(self.since), end: until.min(self.until), rate: seg.rate, looped: true });
         }
         for s in &self.shots {
             let end = s.end();
             if end <= t0 || s.start >= t1 {
                 continue;
             }
-            f(Sounding { clip: &s.clip, gain: s.gain, start: s.start, end, rate: s.rate, looped: false });
+            f(Sounding { clip: &s.clip, gain: s.gain, start: s.start, end: end.min(self.until), rate: s.rate, looped: false });
         }
     }
 
@@ -189,6 +219,9 @@ impl PlayLog {
     /// interpolation between samples; exact on whole samples).
     #[inline]
     pub fn at(&self, t: f64) -> f32 {
+        if t < self.since || t >= self.until {
+            return 0.0;
+        }
         let mut x = 0.0f32;
         let seg = match self.loops.as_slice() {
             [only] if only.start <= t => Some(only),
@@ -204,7 +237,9 @@ impl PlayLog {
             } * seg.gain;
         }
         for s in &self.shots {
-            if t >= s.start && t < s.stop {
+            // (a read up to one sample before the start interpolates into
+            // the first sample from the silence before it)
+            if t > s.start - 1.0 / s.rate as f64 && t < s.stop {
                 x += clip_sample(&s.clip, (t - s.start) * s.rate as f64) * s.gain;
             }
         }
@@ -271,13 +306,22 @@ impl PlayLog {
             }
         }
         for s in &self.shots {
-            if hi < s.start || lo >= s.end() {
+            let rate = s.rate as f64;
+            let from = s.start - 1.0 / rate;
+            if hi <= from || lo >= s.end() {
                 continue;
             }
-            let rate = s.rate as f64;
             for ((o, &x), g) in out.iter_mut().zip(t).zip(gain) {
-                if x >= s.start && x < s.stop {
+                if x > from && x < s.stop {
                     *o += clip_sample(&s.clip, (x - s.start) * rate) * s.gain * g;
+                }
+            }
+        }
+        // only what is this emitter's (a ghost's, a jumped source's)
+        if self.since > f64::NEG_INFINITY || self.until < f64::INFINITY {
+            for (o, &x) in out.iter_mut().zip(t) {
+                if x < self.since || x >= self.until {
+                    *o = 0.0;
                 }
             }
         }
@@ -346,7 +390,14 @@ fn loop_block(c: &[f32], t: &[f64], origin: f64, rate: f64, seg_gain: f32, gain:
     }
 }
 
+/// A clip's sample at fractional position `p`, linear between samples and
+/// from the silence on either side: a read within a sample before its
+/// start ramps into the first sample (a fractional delay must not lose
+/// the onset — a click read at a phase of 0.9 kept 1 % of its energy).
 fn clip_sample(c: &[f32], p: f64) -> f32 {
+    if p < 0.0 {
+        return if p > -1.0 { c.first().copied().unwrap_or(0.0) * (1.0 + p) as f32 } else { 0.0 };
+    }
     let i = p as usize;
     if i >= c.len() {
         return 0.0;

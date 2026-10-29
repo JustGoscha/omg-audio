@@ -110,8 +110,9 @@ struct Rig {
     clicks: Vec<(f32, usize, [f32; 3])>,
     /// Per block: where the listener was (for reading responses).
     track: Vec<[f32; 3]>,
-    /// Moving logical sources (dynamic slots): their position over time.
-    movers: Vec<(usize, Box<dyn Fn(f32) -> [f32; 3]>)>,
+    /// Moving logical sources (dynamic slots): their position over time
+    /// (None: switched off).
+    movers: Vec<(usize, Box<dyn Fn(f32) -> Option<[f32; 3]>>)>,
     /// The listener's own motion (None: still).
     walk: Option<Box<dyn Fn(f32) -> [f32; 3]>>,
     /// A dynamic slot that follows the listener (0.3 m ahead, chest high).
@@ -221,7 +222,7 @@ impl Rig {
 
     fn current_pos(&self, i: usize) -> [f32; 3] {
         if let Some((_, f)) = self.movers.iter().find(|(m, _)| *m == i) {
-            return f(self.t());
+            return f(self.t()).unwrap_or([0.0; 3]);
         }
         if self.hands == Some(i) {
             return [self.pos[0] + 0.3 * self.yaw.cos(), self.pos[1] + 0.3 * self.yaw.sin(), 1.2];
@@ -245,6 +246,9 @@ impl Rig {
         let base = omg_scene::walkthrough::DYN_BASE;
         for _ in 0..n {
             let t = self.t();
+            // the engine's clock is the audio clock: positions set below
+            // were current now
+            self.sim.set_time(t as f64);
             if let Some(w) = &self.walk {
                 let p = w(t);
                 let q = w(t + 0.05);
@@ -255,15 +259,23 @@ impl Rig {
             }
             for k in 0..self.movers.len() {
                 let (i, p) = (self.movers[k].0, (self.movers[k].1)(t));
-                self.town.set_dynamic(&mut self.sim, i - base, Some((p, 1.0)));
+                self.town.set_dynamic(&mut self.sim, i - base, p.map(|p| (p, 1.0)));
             }
             if let Some(h) = self.hands {
                 let p = [self.pos[0] + 0.3 * self.yaw.cos(), self.pos[1] + 0.3 * self.yaw.sin(), 1.2];
                 self.town.set_dynamic(&mut self.sim, h - base, Some((p, 1.0)));
             }
-            self.sim.set_listener(self.pos, self.yaw, 0.0, 0.0);
+            self.sim.set_listener_at(self.pos, self.yaw, 0.0, 0.0, t as f64);
             if self.blocks % TICK_EVERY == 0 {
                 let f = self.sim.tick();
+                if env("DEBUG_GHOST").is_some() {
+                    for (id, pb) in &f.blocks {
+                        if id.0 >= 0x4000_0000 || !f.ghosts.is_empty() {
+                            let taps: Vec<String> = pb.taps.iter().take(4).map(|t| format!("{}:{:.4}s {:.1}dB", t.key, t.delay_s, 20.0 * t.gains[1].max(1e-9).log10())).collect();
+                            eprintln!("t {:.3} id {:x} ghosts {:?} onset {:.4} rev {:.2e} taps {}", t, id.0, f.ghosts, pb.onset_s, pb.reverb.level[1], taps.join(" "));
+                        }
+                    }
+                }
                 self.mix.apply(&f);
             } else if let Some(f) = self.sim.tick_exact() {
                 self.mix.apply(&f);
@@ -519,11 +531,11 @@ fn walkout() {
 fn moving() {
     let mut rig = Rig::new();
     rig.only(&[CAR]);
-    let v = 27.78f32;
+    let v: f32 = env("SPEED").and_then(|v| v.parse().ok()).unwrap_or(27.78);
     // open land west of the town: the listener at (−100, 100), the road
     // x = −400, driving north
     rig.pos = [-100.0, 100.0, 1.6];
-    let road = move |t: f32| -> [f32; 3] { [-400.0, -150.0 + v * t, 0.7] };
+    let road = move |t: f32| -> Option<[f32; 3]> { Some([-400.0, -150.0 + v * t, 0.7]) };
     rig.movers.push((CAR, Box::new(road)));
     rig.run(2.0);
     let n = 40;
@@ -543,14 +555,91 @@ fn moving() {
     let mut errs = Vec::new();
     for k in 0..n {
         let want = rig.arrival(k);
+        // the onset: the first sample within 10 dB of the window's loudest
+        // (a strong late reflection can outdo the direct sound)
         let (a, b) = (((want - 0.12) * SR) as usize, ((want + 0.12) * SR) as usize);
-        let (i, _) = s[a..b.min(s.len())].iter().enumerate().fold((0, 0.0f32), |m, (i, &v)| if v > m.1 { (i, v) } else { m });
+        let w = &s[a..b.min(s.len())];
+        let peak = w.iter().fold(0.0f32, |m, &v| m.max(v));
+        let i = w.iter().position(|&v| v >= 0.1 * peak).unwrap_or(0);
         errs.push(((a + i) as f32 / SR - want) * 1e3);
     }
     let e: Vec<String> = errs.iter().map(|e| format!("{e:+.0}")).collect();
     println!("   {}", e.join(" "));
+    // the direct sound's energy at its physical arrival (±3 ms), per click:
+    // a blocked line of sight shows here, not as a timing error
+    let d: Vec<String> = (0..n)
+        .map(|k| {
+            let a = rig.arrival(k);
+            let e = rig.energy(a - 0.003, a + 0.003);
+            format!("{:.0}", db(e[0] + e[1] + e[2]))
+        })
+        .collect();
+    println!("   direct dB: {}", d.join(" "));
     let worst = errs.iter().fold(0.0f32, |m, e| m.max(e.abs()));
     println!("   worst {worst:.1} ms");
+}
+
+/// Energy per ear (L, R) over output times `t0..t1`.
+fn ears(rig: &Rig, t0: f32, t1: f32) -> (f64, f64) {
+    let (a, b) = ((t0.max(0.0) * SR) as usize, ((t1 * SR) as usize).min(rig.l.len()));
+    let l: f64 = rig.l[a..b].iter().map(|v| (v * v) as f64).sum();
+    let r: f64 = rig.r[a..b].iter().map(|v| (v * v) as f64).sum();
+    (l, r)
+}
+
+/// A click from 100 m west; while it is on its way the source jumps 4 m
+/// north of the listener and clicks again: the first must still arrive
+/// from the west on time, the second from the north.
+fn teleport() {
+    let mut rig = Rig::new();
+    const BALL: usize = 8;
+    rig.only(&[BALL]);
+    rig.pos = [-100.0, 100.0, 1.6];
+    rig.yaw = std::f32::consts::FRAC_PI_2; // facing north: west is on the left
+    let (a, b) = ([-200.0f32, 100.0, 1.6], [-100.0f32, 104.0, 1.6]);
+    rig.movers.push((BALL, Box::new(move |t: f32| Some(if t < 3.1 { a } else { b }))));
+    rig.run(3.0);
+    rig.click(BALL, 4.0);
+    rig.run(0.2);
+    eprintln!("sources after the jump: {}", rig.sim.source_count());
+    rig.click(BALL, 4.0);
+    rig.run(1.5);
+    rig.wav(&format!("teleport_{}", mode()));
+    let (t1, t2) = (rig.arrival(0), rig.arrival(1));
+    let e = |rig: &Rig, t: f32| ears(rig, t - 0.002, t + 0.004);
+    let (l1, r1) = e(&rig, t1);
+    let (l2, r2) = e(&rig, t2);
+    let (lw, rw) = ears(&rig, t1 - 0.06, t1 - 0.004);
+    println!("teleport ({}): a click from 100 m west in flight while the source jumps 4 m north", mode());
+    println!("   click 1 (west, due {t1:.3} s): L {:.1} dB  R {:.1} dB  (L−R {:+.1}); before it {:.1} dB", db(l1), db(r1), db(l1) - db(r1), db(lw + rw));
+    println!("   click 2 (north, due {t2:.3} s): L {:.1} dB  R {:.1} dB  (L−R {:+.1})", db(l2), db(r2), db(l2) - db(r2));
+    let expect = 20.0 * (4.0f32 / 100.0).log10();
+    println!("   click 1 − click 2: {:+.1} dB (spreading alone: {expect:+.1} dB)", db(l1 + r1) - db(l2 + r2));
+}
+
+/// A click from 100 m, the source switched off 50 ms later: the click is
+/// still on its way and must arrive whole.
+fn ringout() {
+    let mut rig = Rig::new();
+    const BALL: usize = 8;
+    rig.only(&[BALL]);
+    rig.pos = [-100.0, 100.0, 1.6];
+    let a = [-200.0f32, 100.0, 1.6];
+    let off: f32 = env("OFF").and_then(|v| v.parse().ok()).unwrap_or(3.05);
+    rig.movers.push((BALL, Box::new(move |t: f32| (t < off).then_some(a))));
+    rig.run(1.0);
+    rig.click(BALL, 4.0);
+    rig.run(2.0);
+    rig.click(BALL, 4.0);
+    rig.run(2.0);
+    rig.wav(&format!("ringout_{}", mode()));
+    let (t1, t2) = (rig.arrival(0), rig.arrival(1));
+    let e1 = rig.energy(t1 - 0.002, t1 + 0.004);
+    let e2 = rig.energy(t2 - 0.002, t2 + 0.004);
+    let (l1, l2) = (rig.energy(t1 + 0.004, t1 + 1.0), rig.energy(t2 + 0.004, t2 + 1.0));
+    println!("ringout ({}): a click from 100 m; the source switched off {:.2} s after the second", mode(), off - 3.0);
+    println!("   direct: on {:.1} dB, switched off in flight {:.1} dB", db(e1[0] + e1[1] + e1[2]), db(e2[0] + e2[1] + e2[2]));
+    println!("   after it (1 s): on {:.1} dB, switched off {:.1} dB", db(l1[0] + l1[1] + l1[2]), db(l2[0] + l2[1] + l2[2]));
 }
 
 fn main() {
@@ -567,6 +656,8 @@ fn main() {
         "still" => still(),
         "walkout" => walkout(),
         "moving" => moving(),
+        "teleport" => teleport(),
+        "ringout" => ringout(),
         s => panic!("unknown scene {s}"),
     }
 }

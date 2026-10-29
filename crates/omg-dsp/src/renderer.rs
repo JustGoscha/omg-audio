@@ -1184,6 +1184,13 @@ impl Renderer {
         self.snap_born = true;
     }
 
+    /// A fresh renderer taking over mid-sound (a source that jumped: its
+    /// old renderer went on with the place it left): its first paths fade
+    /// in like any new path instead of starting at full level.
+    pub fn fade_in_first(&mut self) {
+        self.first_params = false;
+    }
+
     /// One mono source sample in (a live or generated source: its past
     /// lives in the delay line). Diffuse content (reflections, reverb)
     /// accumulates onto the shared SH bus; point-rendered taps return their
