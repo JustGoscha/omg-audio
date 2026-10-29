@@ -98,6 +98,24 @@ the next lever; the late family's rays could take Russian roulette past
 what the reverb is fitted from, but measured no cheaper in either world
 (Oct 29: the rays end at 3 s or escape before they fade 35 dB).
 
+### A car behind things along the west road
+The Godot demo's car scenario (`record.gd --scenario=car --tone`): once
+the car is ~120 m north, the tone's level steps up ~10 dB within 5–10
+ms and decays over 60–120 ms, again and again — bursts above 3 kHz to
+−15…−26 dB under the tone. The morning's engine (93405ea) does the
+same: not from the edge or thread changes. Likely the straight line to
+the car crossing small obstacles by the road, its occlusion switching
+at once; at 500 Hz the first Fresnel zone 60 m out is ~6 m wide, so
+something that thin barely shades it — the bends around it should keep
+the field near the free one, and they come at the tick.
+
+### The door's lag and a treble floor after it
+At the club's inner door (`--scenario=door --tone`): after the leaf
+shuts the tone keeps falling for 2+ s (−24 → −39 dB), and a broadband
+floor above 3 kHz built while it was open (~−62 dB absolute) stays — a
+linear reverb fed a pure tone makes none: reverb parameters stepping
+under the signal while the estimate restarts after the world change.
+
 ### A distinct echo found by chance
 A car passing the field (`assess cartone`): with seeds 1 and 3 a facade
 echo 726 ms late, 12 dB under the direct sound, plays as its own tap

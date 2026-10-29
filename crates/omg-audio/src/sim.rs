@@ -195,7 +195,8 @@ pub struct Config {
     pub walk_threads: usize,
 }
 
-/// `Config::walk_threads`' default for this machine.
+/// `Config::walk_threads`' default for this machine (the environment's
+/// `OMG_WALK_THREADS` when set).
 pub fn default_walk_threads() -> usize {
     #[cfg(target_arch = "wasm32")]
     {
@@ -203,6 +204,9 @@ pub fn default_walk_threads() -> usize {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if let Some(n) = std::env::var("OMG_WALK_THREADS").ok().and_then(|v| v.parse::<usize>().ok()) {
+            return n.max(1);
+        }
         std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 4))
     }
 }

@@ -1184,6 +1184,14 @@ impl Mixer {
     /// comes in through the sky inlets of each frame's `env`.
     pub fn set_ambience(&mut self, mut data: Vec<f32>, stereo: bool) {
         omg_dsp::level::flatten_slow_loudness(&mut data, if stereo { 2 } else { 1 }, self.sample_rate);
+        self.set_ambience_levelled(data, stereo);
+    }
+
+    /// `set_ambience` for a bed already levelled
+    /// (`omg_dsp::level::flatten_slow_loudness`): that pass over a whole
+    /// bed takes tens of milliseconds — a host whose mixer renders on a
+    /// real-time path does it elsewhere first, and this only swaps it in.
+    pub fn set_ambience_levelled(&mut self, data: Vec<f32>, stereo: bool) {
         self.has_bed = !data.is_empty();
         self.ambience.set_loop(data, stereo);
     }

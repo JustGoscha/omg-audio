@@ -361,6 +361,15 @@ impl Rig {
                 self.town.set_dynamic(&mut self.sim, h - base, Some((p, 1.0)));
             }
             self.sim.set_listener_at(self.pos, self.yaw, 0.0, 0.0, t as f64);
+            // SWITCH=t:level — the quality ladder's rung changes at t (as
+            // quality auto changes it while playing)
+            if let Some((at, level)) = env("SWITCH").and_then(|v| v.split_once(':').and_then(|(a, l)| Some((a.parse::<f32>().ok()?, l.parse::<usize>().ok()?)))) {
+                if t >= at && t - BLOCK as f32 / SR < at {
+                    let cfg = Config { quality: Quality::Level(level), ..*self.sim.config() };
+                    self.sim.set_config(cfg);
+                    eprintln!("t {t:.3}: quality → rung {level}");
+                }
+            }
             let dbg_win = env("DEBUG_TAPS").and_then(|v| v.parse::<f32>().ok());
             {
                 let full = self.blocks % TICK_EVERY == 0;

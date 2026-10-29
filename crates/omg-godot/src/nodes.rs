@@ -1135,7 +1135,7 @@ impl OmgWorld {
         }
         if let Some((id, false)) = self.amb_clip {
             if let Some(c) = clips::get(id) {
-                h.send(OutCmd::Ambience(c.to_vec(), true));
+                h.set_ambience(c.to_vec(), true, engine_rate());
                 self.amb_clip = Some((id, true));
             }
         }

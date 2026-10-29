@@ -33,6 +33,7 @@ const BLOCK: usize = 256;
 
 /// Commands for the output thread's own state (beds, budgets).
 pub enum OutCmd {
+    /// A levelled ambience bed (`Host::set_ambience` levels it first).
     Ambience(Vec<f32>, bool),
     AmbienceGain(f32),
     RainBank(Vec<f32>),
@@ -135,7 +136,7 @@ impl Out {
         let t0 = Instant::now();
         while let Ok(c) = self.rx.try_recv() {
             match c {
-                OutCmd::Ambience(d, st) => self.audio.mixer().set_ambience(d, st),
+                OutCmd::Ambience(d, st) => self.audio.mixer().set_ambience_levelled(d, st),
                 OutCmd::AmbienceGain(g) => self.audio.mixer().set_ambience_gain(g),
                 OutCmd::RainBank(b) => self.audio.mixer().set_rain_bank(b),
                 OutCmd::Rain(x) => self.audio.mixer().set_rain(x),
@@ -344,6 +345,18 @@ impl Host {
 
     pub fn send(&self, c: OutCmd) {
         let _ = self.tx.send(c);
+    }
+
+    /// A new ambience bed (interleaved stereo when `stereo`): levelled on
+    /// a thread of its own (`flatten_slow_loudness`, ~45 ms for the demo's
+    /// bed — in the render it held the lock the audio callback takes: a
+    /// 23 ms callback, a dropout), then handed to the renderer to swap in.
+    pub fn set_ambience(&self, mut data: Vec<f32>, stereo: bool, sample_rate: f32) {
+        let tx = self.tx.clone();
+        let _ = std::thread::Builder::new().name("omg-ambience".into()).spawn(move || {
+            omg_dsp::level::flatten_slow_loudness(&mut data, if stereo { 2 } else { 1 }, sample_rate);
+            let _ = tx.send(OutCmd::Ambience(data, stereo));
+        });
     }
 
     /// Head orientation at audio rate.

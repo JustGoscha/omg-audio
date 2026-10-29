@@ -4,7 +4,7 @@
 # recorded in real time (OmgWorld.start_recording: exactly the frames
 # Godot plays, and every audio callback's timing).
 #
-#   Godot --path godot -- --record=<dir> --scenario=fly|car|door --engine=v6 [--tone] [--gpu]
+#   Godot --path godot -- --record=<dir> --scenario=fly|car|door --engine=v6 [--tone] [--quality=0..3|-1] [--gpu]
 #
 # Writes <dir>/<scenario>_<engine>[_tone].wav (+ .wav.csv: the audio
 # callbacks) and <dir>/<scenario>_<engine>[_tone].frames.csv (per game
@@ -30,6 +30,7 @@ var out_dir := ""
 var scenario := "fly"
 var engine := "v6"
 var tone := false
+var quality := -2 # unset: the demo's (auto)
 var frames: FileAccess
 var t0 := 0
 var phase := ""
@@ -47,6 +48,8 @@ func _init(d: Node, w: OmgWorld, p: DemoPlayer) -> void:
 			engine = a.trim_prefix("--engine=")
 		elif a == "--tone":
 			tone = true
+		elif a.begins_with("--quality="):
+			quality = int(a.trim_prefix("--quality="))
 
 func run() -> void:
 	if demo.loading:
@@ -54,6 +57,8 @@ func run() -> void:
 	world.engine_v6 = engine == "v6"
 	world.engine_v4 = engine == "v4" or engine == "v5"
 	world.engine_v5 = engine == "v5"
+	if quality >= -1:
+		world.quality = quality
 	DirAccess.make_dir_recursive_absolute(out_dir)
 	var name := "%s_%s%s" % [scenario, engine, "_tone" if tone else ""]
 	player.set_physics_process(false) # the script moves the ears
