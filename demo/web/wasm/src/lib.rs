@@ -109,7 +109,9 @@ pub extern "C" fn sim_setup(sample_rate: f32) {
     let cfg = Config {
         quality: Quality::Medium,
         compute: Compute::Cpu,
-        v4: true,
+        // v6: v3's estimate and reverb with v6's refinements (the page's
+        // engine switch picks others)
+        v6: true,
         sample_rate,
         // no threads in a worker's wasm: kernels a step a tick
         kernel_thread: false,
@@ -200,6 +202,14 @@ pub extern "C" fn sim_set_v4(on: u32) {
 pub extern "C" fn sim_set_v5(on: u32) {
     let h = sim();
     h.cfg.v5 = on != 0;
+    h.reconfigure();
+}
+
+/// Engine v6 (v3's estimate and reverb, with v6's refinements).
+#[no_mangle]
+pub extern "C" fn sim_set_v6(on: u32) {
+    let h = sim();
+    h.cfg.v6 = on != 0;
     h.reconfigure();
 }
 

@@ -79,8 +79,9 @@ func _ready() -> void:
 	v.add_child(release)
 
 	_section(v, "engine modules")
-	_row(v, "engine", _choice_box("engine", ["v3", "v4", "v5.5"], (2 if world.engine_v5 else 1) if world.engine_v4 else 0, func(i: int) -> void:
-		world.engine_v4 = i >= 1
+	_row(v, "engine", _choice_box("engine", ["v3", "v4", "v5.5", "v6"], 3 if world.engine_v6 else ((2 if world.engine_v5 else 1) if world.engine_v4 else 0), func(i: int) -> void:
+		world.engine_v6 = i == 3
+		world.engine_v4 = i == 1 or i == 2
 		world.engine_v5 = i == 2))
 	var web := OS.has_feature("web")
 	_row(v, "compute", _choice_box("compute", ["cpu", "gpu"], 1 if world.use_gpu else 0, func(i: int) -> void:

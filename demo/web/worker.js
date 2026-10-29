@@ -26,10 +26,11 @@ function handle(m) {
     debugOn = !!m.on;
     w.sim_set_debug(debugOn ? 1 : 0);
   } else if (m.type === 'early') {
-    // the engine: 3 = v3, 4 = v4, anything else v5 (v4, its late paths
-    // reused across ticks)
-    w.sim_set_v4(m.mode === 3 ? 0 : 1);
-    w.sim_set_v5(m.mode === 3 || m.mode === 4 ? 0 : 1);
+    // the engine: 3 = v3, 4 = v4, 5 = v5 (v4, its late paths reused
+    // across ticks), 6 = v6 (v3's estimate with v6's refinements)
+    w.sim_set_v6(m.mode === 6 ? 1 : 0);
+    w.sim_set_v4(m.mode === 4 || m.mode === 5 ? 1 : 0);
+    w.sim_set_v5(m.mode === 5 ? 1 : 0);
   } else if (m.type === 'mute') {
     // a muted source is not traced at all
     m.srcs.forEach((i) => w.sim_set_mute(i, m.on ? 1 : 0));

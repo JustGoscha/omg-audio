@@ -26,7 +26,12 @@
 //!            click around it (CROWD=0: alone): the club's own channel
 //!            per click (SPOT=square|north|entrance|inside|field)
 //!
-//!     MODE=v3|v4|v5  RUNG=0..4 (unset: governed)  QUALITY=0..3  EAR=0
+//!   fly      the listener flies (8 m/s) through the cathedral's wall to
+//!            the flute, clicking every 50 ms: pops (periods off course)
+//!   cartone  a car passes 30 m off at 100 km/h playing a steady tone:
+//!            its pitch and level, demodulated, and how they jitter
+//!
+//!     MODE=v3|v4|v5|v6  RUNG=0..4 (unset: governed)  QUALITY=0..3  EAR=0
 //!     PACE=0  WAV=dir (write the output)  SEED=n  NEE=n (next-event
 //!     connections a bounce; 0: every source)
 //!
@@ -196,9 +201,11 @@ impl Rig {
         let pace = env("PACE").as_deref() != Some("0");
         let mut cfg = Config {
             quality,
-            compute: Compute::Cpu,
-            v4: mode != "v3",
-            v5: mode != "v3" && mode != "v4",
+            // COMPUTE=gpu: the walk on the GPU, as the Godot host runs it
+            compute: if env("COMPUTE").as_deref() == Some("gpu") { Compute::Gpu } else { Compute::Cpu },
+            v4: mode == "v4" || mode == "v5",
+            v5: mode == "v5",
+            v6: mode == "v6",
             sample_rate: SR,
             ..Config::default()
         };
@@ -211,6 +218,9 @@ impl Rig {
         }
         let mut sim = Simulation::new(cfg);
         let town = Town::new(&mut sim);
+        if env("COMPUTE").as_deref() == Some("gpu") {
+            eprintln!("gpu walk: {}", if sim.gpu_active() { "on" } else { "unavailable (build with --features omg-audio/gpu)" });
+        }
         let hrir = if env("HRIR").as_deref() == Some("0") { Hrir::none() } else { Hrir::builtin() };
         let mut mix = Mixer::with_capacity(SR, hrir, 64);
         if env("EAR").as_deref() == Some("0") {
@@ -694,6 +704,235 @@ fn crowd() {
     println!("   mean  first {me:6.1} (sd {se:4.2})  after {ml:6.1} (sd {sl:4.2})");
 }
 
+/// The listener flies (8 m/s, Godot's fly) from the field north through
+/// the cathedral's south wall to 4 m from the flute, which clicks every
+/// 50 ms (a click train: the flute, as impulses), then hovers. Per click
+/// period, the output's level (both ears, all bands); a pop is a period
+/// off the course of its neighbours (their median over five) — counted
+/// outside, crossing the wall, and inside. (SPEED=m/s, X=the flight's x.)
+fn fly() {
+    let mut rig = Rig::new();
+    let flute = 3usize;
+    rig.only(&[flute]);
+    let speed: f32 = env("SPEED").and_then(|v| v.parse().ok()).unwrap_or(8.0);
+    let x: f32 = env("X").and_then(|v| v.parse().ok()).unwrap_or(4.0);
+    let (y0, y1, t0) = (40.0f32, 62.0f32, 3.0f32);
+    rig.pos = [x, y0, 2.0];
+    rig.walk = Some(Box::new(move |t: f32| [x, (y0 + (t - t0).max(0.0) * speed).min(y1), 2.0]));
+    let period = 0.05f32;
+    let total = t0 + (y1 - y0) / speed + 3.0;
+    let n = (total / period) as usize;
+    if env("SIGNAL").as_deref() == Some("tone") {
+        // a steady 500 Hz tone instead of clicks: whatever the output holds
+        // above 3 kHz, the engine made
+        let f0 = 500.0f32;
+        let cycle = (SR / f0).round() as usize;
+        let tone: Vec<f32> = (0..cycle * 10).map(|k| 0.5 * (std::f32::consts::TAU * f0 * k as f32 / SR).sin()).collect();
+        let tone = clip(&tone);
+        for &id in &rig.ids[flute].clone() {
+            rig.mix.play(id, &tone, Play::LOOP);
+        }
+        rig.run(total);
+        rig.wav(&format!("fly_tone_{}", mode()));
+        let cross = t0 + (52.0 - y0) / speed;
+        println!("fly ({}): through the cathedral wall at {speed} m/s, the flute playing a steady 500 Hz; artifacts = output above 3 kHz, under the tone", mode());
+        println!("   {}", artifact_line("outside", &artifacts(&rig, 1.0, cross - 0.15)));
+        println!("   {}", artifact_line("crossing", &artifacts(&rig, cross - 0.15, cross + 0.4)));
+        println!("   {}", artifact_line("inside", &artifacts(&rig, cross + 0.4, total)));
+        if env("TRACE").is_some() {
+            for (k, v) in artifacts(&rig, 1.0, total).iter().enumerate() {
+                if *v > -40.0 {
+                    println!("   t {:6.3}  {:6.1} dB", 1.0 + k as f32 * 0.005, v);
+                }
+            }
+        }
+        return;
+    }
+    for _ in 0..n {
+        rig.click(flute, 1.0);
+        rig.run(period);
+    }
+    rig.wav(&format!("fly_{}", mode()));
+    let at_y = |t: f32| (y0 + (t - t0).max(0.0) * speed).min(y1);
+    let lv: Vec<(f32, f32, f32)> = (0..n.saturating_sub(1))
+        .map(|k| {
+            let a = rig.arrival(k);
+            let e = rig.energy(a, a + period);
+            (a, at_y(a), db(e[0] + e[1] + e[2]))
+        })
+        .collect();
+    let mut res = Vec::new();
+    for k in 2..lv.len().saturating_sub(2) {
+        let mut w: Vec<f32> = lv[k - 2..=k + 2].iter().map(|v| v.2).collect();
+        w.sort_by(|a, b| a.total_cmp(b));
+        res.push((lv[k].0, lv[k].1, lv[k].2, lv[k].2 - w[2]));
+    }
+    println!("fly ({}): through the cathedral wall at {speed} m/s, the flute clicking every 50 ms; pops = periods off their neighbours' median", mode());
+    let wall = 52.0f32;
+    let phases: [(&str, Box<dyn Fn(f32) -> bool>); 3] = [
+        ("outside", Box::new(move |y| y < wall - 1.0)),
+        ("crossing", Box::new(move |y| (wall - 1.0..wall + 1.5).contains(&y))),
+        ("inside", Box::new(move |y| y >= wall + 1.5)),
+    ];
+    for (name, f) in phases.iter() {
+        let r: Vec<f32> = res.iter().filter(|v| f(v.1)).map(|v| v.3.abs()).collect();
+        if r.is_empty() {
+            continue;
+        }
+        let over = |d: f32| r.iter().filter(|&&x| x > d).count();
+        let mx = r.iter().cloned().fold(0.0f32, f32::max);
+        println!("   {name:8} {:3} periods: off course >2 dB {:3}, >4 dB {:3}, worst {mx:4.1} dB", r.len(), over(2.0), over(4.0));
+    }
+    if env("TRACE").is_some() {
+        for v in &res {
+            println!("   t {:6.2} y {:5.1}  {:6.1} dB  {:+5.1}", v.0, v.1, v.2, v.3);
+        }
+    }
+}
+
+/// What a pure tone came out with besides itself: the output above
+/// 3 kHz (4th-order high-pass) against the whole, in 5 ms windows from
+/// `t0` to `t1` (s) — a 500 Hz tone through a linear engine has nothing
+/// there but what the engine made: pops, clicks, crackle. Returns (the
+/// windows' artifact levels in dB under the tone).
+fn artifacts(rig: &Rig, t0: f32, t1: f32) -> Vec<f32> {
+    let (mut hl1, mut hl2, mut hr1, mut hr2) = (Biq::new(1, 3000.0), Biq::new(1, 3000.0), Biq::new(1, 3000.0), Biq::new(1, 3000.0));
+    let w = (0.005 * SR) as usize;
+    let (a, b) = ((t0 * SR) as usize, ((t1 * SR) as usize).min(rig.l.len()));
+    let mut out = Vec::new();
+    let (mut eh, mut et, mut k) = (0.0f64, 0.0f64, 0usize);
+    for i in 0..b {
+        let (l, r) = (rig.l[i] as f64, rig.r[i] as f64);
+        let hl = {
+            let y = hl1.tick(l);
+            hl2.tick(y)
+        };
+        let hr = {
+            let y = hr1.tick(r);
+            hr2.tick(y)
+        };
+        if i < a {
+            continue;
+        }
+        eh += hl * hl + hr * hr;
+        et += l * l + r * r;
+        k += 1;
+        if k == w {
+            out.push((10.0 * (eh.max(1e-30) / et.max(1e-30)).log10()) as f32);
+            eh = 0.0;
+            et = 0.0;
+            k = 0;
+        }
+    }
+    out
+}
+
+fn artifact_line(name: &str, v: &[f32]) -> String {
+    if v.is_empty() {
+        return format!("{name}: —");
+    }
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.total_cmp(b));
+    let over = |d: f32| v.iter().filter(|&&x| x > d).count();
+    format!(
+        "{name:8} {:4} windows: median {:6.1} dB, worst {:6.1} dB, over −40 dB {:3}, over −30 dB {:3}",
+        v.len(),
+        s[s.len() / 2],
+        s[s.len() - 1],
+        over(-40.0),
+        over(-30.0)
+    )
+}
+
+/// A car passes 30 m off (ROAD=x of the road) at 100 km/h playing a steady
+/// 500 Hz tone (a sweep at one frequency). The output demodulated at the
+/// tone: its pitch and level, millisecond by millisecond, against their
+/// own 25 ms course — what moves faster than the motion can is jitter.
+/// (The ground's reflection beats with the direct sound — real, and the
+/// same in every mode: compare modes, not against zero.)
+fn cartone() {
+    let mut rig = Rig::new();
+    rig.only(&[CAR]);
+    let v: f32 = env("SPEED").and_then(|v| v.parse().ok()).unwrap_or(27.78);
+    let road: f32 = env("ROAD").and_then(|v| v.parse().ok()).unwrap_or(-130.0);
+    rig.pos = [-100.0, 100.0, 1.6];
+    let at = move |t: f32| -> Option<[f32; 3]> { Some([road, 100.0 - 150.0 + v * t, 0.7]) };
+    rig.movers.push((CAR, Box::new(at)));
+    let f0 = 500.0f32;
+    let cycle = (SR / f0).round() as usize;
+    let tone: Vec<f32> = (0..cycle * 10).map(|k| 0.5 * (std::f32::consts::TAU * f0 * k as f32 / SR).sin()).collect();
+    let tone = clip(&tone);
+    for &id in &rig.ids[CAR].clone() {
+        rig.mix.play(id, &tone, Play::LOOP);
+    }
+    let total = 300.0 / v + 1.0;
+    rig.run(total);
+    rig.wav(&format!("cartone_{}", mode()));
+    // quadrature demodulation at f0, two one-pole low-passes (60 Hz)
+    let c = 1.0 - (-std::f32::consts::TAU * 60.0 / SR).exp();
+    let w0 = std::f64::consts::TAU * f0 as f64 / SR as f64;
+    let (mut i1, mut q1, mut i2, mut q2) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let mut ph = Vec::new();
+    let mut amp = Vec::new();
+    for (n, (&l, &r)) in rig.l.iter().zip(&rig.r).enumerate() {
+        let y = 0.5 * (l + r);
+        let (cs, sn) = ((w0 * n as f64).cos() as f32, (w0 * n as f64).sin() as f32);
+        i1 += c * (y * cs - i1);
+        q1 += c * (-y * sn - q1);
+        i2 += c * (i1 - i2);
+        q2 += c * (q1 - q2);
+        if n % 48 == 0 {
+            ph.push(q2.atan2(i2) as f64);
+            amp.push(10.0 * (i2 * i2 + q2 * q2).max(1e-30).log10());
+        }
+    }
+    // unwrap → frequency per ms
+    let mut f = Vec::new();
+    let mut acc = 0.0f64;
+    for k in 1..ph.len() {
+        let mut d = ph[k] - ph[k - 1];
+        while d > std::f64::consts::PI {
+            d -= std::f64::consts::TAU;
+        }
+        while d < -std::f64::consts::PI {
+            d += std::f64::consts::TAU;
+        }
+        acc += d;
+        f.push(f0 as f64 + d * 1000.0 / std::f64::consts::TAU);
+    }
+    let _ = acc;
+    let course = |x: &[f64], k: usize| -> f64 {
+        let (a, b) = (k.saturating_sub(12), (k + 13).min(x.len()));
+        x[a..b].iter().sum::<f64>() / (b - a) as f64
+    };
+    // the pass: 1 s in until the end, while the tone is loud enough to read
+    let (a, b) = (1000usize, f.len().saturating_sub(200));
+    let amp64: Vec<f64> = amp.iter().map(|&v| v as f64).collect();
+    let (mut fj, mut aj, mut n) = (0.0f64, 0.0f64, 0.0f64);
+    let mut jumps = 0;
+    for k in a..b {
+        let df = f[k] - course(&f, k);
+        let da = amp64[k + 1] - course(&amp64, k + 1);
+        fj += df * df;
+        aj += da * da;
+        n += 1.0;
+        if da.abs() > 2.0 {
+            jumps += 1;
+        }
+    }
+    println!(
+        "cartone ({}): a car {:.0} m off at {:.0} km/h playing 500 Hz; jitter against the 25 ms course: pitch {:.2} Hz rms, level {:.2} dB rms, level off by >2 dB in {} of {} ms",
+        mode(),
+        (road + 100.0).abs(),
+        v * 3.6,
+        (fj / n).sqrt(),
+        (aj / n).sqrt(),
+        jumps,
+        n as usize
+    );
+    println!("   artifacts (output above 3 kHz, under the tone): {}", artifact_line("pass", &artifacts(&rig, 1.0, total - 0.2)));
+}
+
 /// A clap (click) in the hall, then the listener walks out of the hall's
 /// door while it rings: the tail's 10 ms envelope, its steps.
 fn walkout() {
@@ -890,6 +1129,8 @@ fn main() {
         "teleport" => teleport(),
         "ringout" => ringout(),
         "crowd" => crowd(),
+        "fly" => fly(),
+        "cartone" => cartone(),
         s => panic!("unknown scene {s}"),
     }
 }

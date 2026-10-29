@@ -6,5 +6,6 @@ pub mod clips;
 pub mod decode;
 pub mod host;
 pub mod materials;
+pub mod record;
 
 pub use host::{Host, OutCmd, OutputReader};

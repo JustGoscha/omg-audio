@@ -143,6 +143,12 @@ func _ready() -> void:
 			_shots(args[i + 1])
 		if a == "--print-fps":
 			_print_fps()
+		# `-- --record=<dir> --scenario=fly --engine=v6 [--tone]`: a
+		# scripted scenario recorded as Godot plays it (demo/record.gd)
+		if a.begins_with("--record="):
+			var rec := DemoRecord.new(self, world, player)
+			add_child(rec)
+			rec.run()
 
 # `-- --print-fps`: ~10 s of frame rate (start room, then the square,
 # slowly turning), printed, then quit.

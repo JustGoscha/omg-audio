@@ -387,7 +387,10 @@ impl IAudioStreamPlayback for OmgOutputPlayback {
         self.scratch.clear();
         self.scratch.resize(n, (0.0, 0.0));
         if let (Some(r), true) = (&self.reader, self.playing) {
+            let (t0, late0) = (std::time::Instant::now(), r.late());
             r.read(&mut self.scratch);
+            // a recording (OmgWorld.start_recording): exactly what Godot plays
+            crate::backend::record::push(&self.scratch, t0.elapsed().as_micros() as u32, (r.late() - late0) as u32);
         }
         for (o, (l, r)) in out.iter_mut().zip(&self.scratch) {
             o.left = *l;
@@ -504,6 +507,11 @@ pub struct OmgWorld {
     #[export]
     #[init(val = true)]
     engine_v5: bool,
+    /// Engine v6 (ENGINE_V6.md): v3's estimate and reverb, steady in
+    /// motion, with v6's refinements — the default; on, v4/v5 are off.
+    #[export]
+    #[init(val = true)]
+    engine_v6: bool,
     /// Record each tick's strongest traced paths for `paths()` (a debug
     /// view). Off: the tracer records nothing.
     #[export]
@@ -513,7 +521,7 @@ pub struct OmgWorld {
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 14],
+    sent: [f32; 15],
     #[init(val = TierGovernor::new(3))]
     auto_tier: TierGovernor,
     auto_ticks: u32,
@@ -805,6 +813,23 @@ impl OmgWorld {
 
     /// The ear (loud places duck, quiet ones come up, the reflex) on or
     /// off: off, the scene plays at its own level.
+    /// Record what Godot plays — every frame its audio thread takes from
+    /// the engine — to `path` (a float WAV at the mix rate), with each
+    /// audio callback's timing in `path`.csv (when, frames, how long the
+    /// take took, frames rendered late). True when it started.
+    #[func]
+    fn start_recording(&self, path: GString) -> bool {
+        let sr = AudioServer::singleton().get_mix_rate() as u32;
+        crate::backend::record::start(&path.to_string(), sr).is_ok()
+    }
+
+    /// Finish the recording; how many frames it lost (0 unless the disk
+    /// fell behind).
+    #[func]
+    fn stop_recording(&self) -> i64 {
+        crate::backend::record::stop() as i64
+    }
+
     #[func]
     fn set_ear(&self, on: bool) {
         if let Some(h) = host().as_ref() {
@@ -845,6 +870,7 @@ impl OmgWorld {
             compute: if self.use_gpu { Compute::Gpu } else { Compute::Cpu },
             v4: self.engine_v4,
             v5: self.engine_v4 && self.engine_v5,
+            v6: self.engine_v6,
             sample_rate: engine_rate(),
             gpu_budget: self.gpu_budget.clamp(0.02, 1.0),
             ..Config::default()
@@ -869,7 +895,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 14];
+        self.sent = [f32::NAN; 15];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -1061,6 +1087,7 @@ impl OmgWorld {
             self.engine_v4 as i32 as f32,
             self.gpu_budget,
             self.engine_v5 as i32 as f32,
+            self.engine_v6 as i32 as f32,
         ];
         let cfg = self.sim_config();
         let mut g = host();

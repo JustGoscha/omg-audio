@@ -111,6 +111,10 @@ pub struct Config {
     /// each reconnected exactly to where the listener is now — ×8 samples
     /// for the reverb's estimate, standing still or moving (`Tracer::v5`).
     pub v5: bool,
+    /// Engine v6 (ENGINE_V6.md): v3's estimate and reverb — discrete early
+    /// arrivals and a parametric reverb gliding with the trace, steady in
+    /// motion — with v6's refinements. On, `v4` and `v5` are off.
+    pub v6: bool,
     /// The mixer's sample rate (v4 builds its convolution kernels for it).
     pub sample_rate: f32,
     /// v4: build convolution kernels on a thread of their own (off the
@@ -141,6 +145,18 @@ pub struct Config {
     pub tick_s: f32,
 }
 
+impl Config {
+    /// The engine switches made consistent: v6 runs v3's estimate (v4
+    /// and v5 off); v5 needs v4.
+    pub fn engine(mut self) -> Self {
+        if self.v6 {
+            self.v4 = false;
+        }
+        self.v5 &= self.v4;
+        self
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -150,6 +166,7 @@ impl Default for Config {
             seed: 0x0e3_5eed,
             v4: true,
             v5: true,
+            v6: false,
             sample_rate: 48_000.0,
             kernel_thread: true,
             max_kernels: 64,
@@ -427,6 +444,7 @@ impl Simulation {
     /// An empty world (free field: no geometry, no ground) until
     /// `set_geometry`.
     pub fn new(cfg: Config) -> Self {
+        let cfg = cfg.engine();
         let mut s = Self {
             cfg,
             mesh: MeshBuilder::new().build(),
@@ -435,6 +453,7 @@ impl Simulation {
                 let mut t = Tracer::new(cfg.seed);
                 t.v4 = cfg.v4;
                 t.v5 = cfg.v5;
+                t.v6 = cfg.v6;
                 t
             },
             walker: None,
@@ -477,10 +496,12 @@ impl Simulation {
 
     /// Change quality or compute on the fly (takes effect next tick).
     pub fn set_config(&mut self, cfg: Config) {
+        let cfg = cfg.engine();
         let rebuild = cfg.compute != self.cfg.compute || cfg.v4 != self.cfg.v4 || cfg.gpu_budget != self.cfg.gpu_budget;
         self.cfg = cfg;
         self.tracer.v4 = cfg.v4;
         self.tracer.v5 = cfg.v5;
+        self.tracer.v6 = cfg.v6;
         if rebuild {
             self.make_walker();
         }
@@ -496,6 +517,7 @@ impl Simulation {
         self.tracer = Tracer::new(self.cfg.seed);
         self.tracer.v4 = self.cfg.v4;
         self.tracer.v5 = self.cfg.v5;
+        self.tracer.v6 = self.cfg.v6;
         self.tracer.debug = self.debug_paths;
         for s in &mut self.sources {
             s.traced = None;
@@ -830,6 +852,11 @@ impl Simulation {
     /// window (variance of ln fresh/mean: the trace's own noise).
     pub fn dense_scatter(&self, id: SourceId) -> Option<[f32; omg_core::v3::HISTORY_WINDOWS]> {
         self.tracer.dense_scatter(id.0)
+    }
+
+    /// The last tick's tracer cost by part (ms; zeros in wasm).
+    pub fn tick_costs(&self) -> omg_core::v3::TickCosts {
+        self.tracer.costs
     }
 
     pub fn dense_response(&self, id: SourceId) -> Option<&DenseResponse> {

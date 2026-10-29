@@ -25,6 +25,54 @@ use crate::tracer::{estimate_reverb, Echogram, BIN_DT, MAX_TIME};
 use crate::vec3::Vec3;
 use crate::{NBANDS, SPEED_OF_SOUND};
 
+/// A tick's wall-clock by part (ms; zeros in wasm, which has no clock
+/// here): what each part of the trace costs, for the budgets that share
+/// a tick out by what matters most.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TickCosts {
+    /// Direct paths and their visibility, every source.
+    pub direct: f32,
+    /// Single-edge bends (the edges the ear sees, the search per hidden
+    /// source).
+    pub edges: f32,
+    /// Two-edge strings (of `edges`).
+    pub edges2: f32,
+    /// The early and the late family's walk.
+    pub early: f32,
+    pub late: f32,
+    /// Mirror chains: named and solved.
+    pub chains: f32,
+    /// The tick's estimates folded into each source's field.
+    pub fold: f32,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+struct Stopwatch(std::time::Instant);
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+struct Stopwatch;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Stopwatch {
+    fn start() -> Self {
+        Self(std::time::Instant::now())
+    }
+    fn ms(&self) -> f32 {
+        self.0.elapsed().as_secs_f32() * 1e3
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Stopwatch {
+    fn start() -> Self {
+        Self
+    }
+    fn ms(&self) -> f32 {
+        0.0
+    }
+}
+
 /// V3.3: the walk run elsewhere (the GPU kernel), folded back here.
 pub mod fold;
 /// V3.3: the seam an external walker (the GPU kernel) plugs into.
@@ -1405,6 +1453,11 @@ pub struct Tracer {
     /// — past their first (diffuse) bounce, reconnected exactly to where
     /// the listener is now (`reuse_late`).
     pub v5: bool,
+    /// Engine v6 (on v3: `v4` off): v3's estimate and reverb — steady in
+    /// motion — with v6's refinements (ENGINE_V6.md).
+    pub v6: bool,
+    /// The last tick's cost by part.
+    pub costs: TickCosts,
     late_pool: std::collections::VecDeque<PoolTick>,
     /// The world signature the pool was walked in (a door moved: gone).
     late_pool_sig: u64,
@@ -1630,6 +1683,8 @@ impl Tracer {
             rejected: HashMap::new(),
             v4: false,
             v5: false,
+            v6: false,
+            costs: TickCosts::default(),
             late_pool: std::collections::VecDeque::new(),
             late_pool_sig: 0,
             world_sig: 0,
@@ -1814,10 +1869,13 @@ impl Tracer {
 
         let debug = self.debug;
         let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
+        self.costs = TickCosts::default();
 
         // 1. direct, visibility, edge next-event paths (shared with the
         // externally walked tick, fold.rs)
+        let clock = Stopwatch::start();
         let (direct, vis, mut edge_taps) = self.prepare(world, listener, sources, budget);
+        self.costs.direct = clock.ms() - self.costs.edges;
         // the world just changed: more rays for the responses restarting
         let budget = if self.burst > 0 {
             self.burst -= 1;
@@ -1837,12 +1895,15 @@ impl Tracer {
 
         // 4b. the exact solver's chains: named by a few mirror rays,
         // solved every tick while cached
+        let clock = Stopwatch::start();
         self.find_chains(world, listener, sources, budget, chain_finders(budget));
         self.solve_chains(world, listener, sources, budget, &mut accs);
+        self.costs.chains = clock.ms();
 
 
 
         // 5. smooth over ticks and build each source's field
+        let clock = Stopwatch::start();
         let mut out = Vec::with_capacity(sources.len());
         let shared = self.shared_ticks();
         for (si, s) in sources.iter().enumerate() {
@@ -1861,6 +1922,7 @@ impl Tracer {
                 out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total));
             }
         }
+        self.costs.fold = clock.ms();
         out
     }
 
@@ -1926,7 +1988,11 @@ impl Tracer {
         let mut records: Vec<LateRecord> = Vec::new();
         let mut ray_deps: Vec<(usize, [f32; NBANDS], f32, f32)> = Vec::new();
         let mut late_rays = 0usize;
+        let mut fam_clock: Option<(Stopwatch, bool)> = None;
         for (dirs, lo, hi, segments, nee) in fams {
+        if let Some((c, late)) = fam_clock.replace((Stopwatch::start(), lo > 0)) {
+            *if late { &mut self.costs.late } else { &mut self.costs.early } += c.ms();
+        }
         if dirs.is_empty() || lo > hi {
             continue;
         }
@@ -2282,6 +2348,9 @@ impl Tracer {
                 }
             }
         }
+        }
+        if let Some((c, late)) = fam_clock.take() {
+            *if late { &mut self.costs.late } else { &mut self.costs.early } += c.ms();
         }
         if pooling && late_rays > 0 {
             self.reuse_late(world, listener, sources, late_rays as f32, records, &mut late_a);
@@ -2742,6 +2811,7 @@ impl Tracer {
         self.tick += 1;
         let tick = self.tick;
         let mut edge_taps: Vec<Vec<Tap>> = vec![Vec::new(); sources.len()];
+        let edges_clock = Stopwatch::start();
         if let (true, Some(es)) = (budget.diffraction, self.edges.as_ref()) {
             // which edges can the listener see at all? (shared by every
             // source: a few points along each edge, pulled 5 cm toward the
@@ -2901,7 +2971,9 @@ impl Tracer {
                 if (sv.0 - sp).length() > EDGE_REUSE_M || sv.1.len() != es.edges.len() {
                     *sv = (sp, vec![0; es.edges.len()]);
                 }
+                let clock2 = Stopwatch::start();
                 let two = two_edge_paths(world, es, seen_from_ear, &mut sv.1, &mut self.hits, listener, sp, vis[si]);
+                self.costs.edges2 += clock2.ms();
                 for (pts, tap) in two {
                     if kept.iter().any(|q| (*q - pts[0]).length() < 1.0 || (*q - pts[1]).length() < 1.0) {
                         continue; // a single bend already carries it
@@ -2922,6 +2994,7 @@ impl Tracer {
             }
         }
 
+        self.costs.edges = edges_clock.ms();
         (direct, vis, edge_taps)
     }
 }

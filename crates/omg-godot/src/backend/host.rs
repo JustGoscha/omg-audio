@@ -74,6 +74,12 @@ pub struct OutputReader {
 }
 
 impl OutputReader {
+    /// Frames the output thread hadn't rendered when they were taken
+    /// (rendered on the taker's thread instead), so far.
+    pub fn late(&self) -> usize {
+        self.sh.underruns.load(Ordering::Relaxed)
+    }
+
     /// Fill `out` from the ring. When the ring runs short (a mix callback
     /// bigger than the ring, a stalled output thread) the rest is rendered
     /// right here instead of played as silence, and counted as `late`.
