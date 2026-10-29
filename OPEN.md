@@ -145,13 +145,17 @@ busy (`docs/runs/2026-10-29/godot/`). The direct path's direction swings
 crossfade at that rate. Not yet looked into.
 
 ### A distinct echo found by chance
-A car passing the field (`assess cartone`): with seeds 1 and 3 a facade
-echo 726 ms late, 12 dB under the direct sound, plays as its own tap
-and beats against it at ~18 Hz (its Doppler differs: physical); with
-seed 2 and the default seed there is no such tap — the chain not found
-by the finder rays, or not judged distinct (`ECHO_ENTER`, against the
-diffuse field's estimate, noisy at the low rungs' few late rays). The
-pass's "pitch jitter" (`cartone`) is that beat, not tick jitter.
+A car passing the field (`assess cartone`): on Oct 29 morning seeds 1
+and 3 played a facade echo 726 ms late, 12 dB under the direct sound,
+as its own tap, and seed 2 did not. Not reproduced in the evening
+(seeds 1–3, paced or not): the finder names one chain on the pass, ~660
+ms, 38–44 dB under the direct sound, in every seed. With 100× the finder
+rays no chain plays at all — the many chains named are rejected (no
+exact path solved for the moving car, or short and early: the sampled
+estimate's) and a rejection holds for 40 ticks. Whether a strong
+first-order facade echo should be there needs a deterministic
+reference: every plane's image source of the car, validated (the
+solver can do it per plane). Open.
 
 ### Interpolation on moving paths
 Paths read with a cubic (Hermite): a 10 kHz tone on a sliding delay
