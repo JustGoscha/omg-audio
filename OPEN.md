@@ -50,10 +50,22 @@ echoes reach that point too (exact only on the CPU, which solves each
 connection's own emission time). Pass the track to the kernel.
 
 ### The mixer's tap budget drops paths with their energy
-Over its budget (rung 0: 48 taps for every source) a quiet source keeps
-its strongest path only; the rest go silent instead of joining its
-convolution. Fold dropped paths' energy into the dense response, or give
-the simulation the budget so it does.
+Over its budget a quiet source keeps its strongest paths only; the rest
+go silent. Measured in the clicking town (`assess crowd`, `TAPS=96` on
+the top rung): no level change for the club — the loss that was there
+came from the convolution hand-over (fixed). Not yet measured for many
+loud sources at once (rung 0: 48 paths for everything).
+
+### A tap's band shape
+A path's three band gains are rendered by two shelves relative to the
+mid (capped at ±12 dB) or, bass-heavy (through a wall), by a one-pole
+low-pass fitted through 800 Hz that ignores the treble gain — hand-fit
+shapes, while the kernel renders the same arrivals as the tracer's
+band sum (`BandSplit::process`). The band sum has its own limit: its
+one-pole skirts let the loudest band through where a wall's mid is
+14 dB down (≈ −8 dB at 800 Hz). Fix: a band model both share — steeper
+crossovers, or the spectrum interpolated between band centres — and
+one shaping for taps, kernel impulses and the reverb.
 
 ### Tick cost
 The town with every source traced: ~56 ms per tick native High on the

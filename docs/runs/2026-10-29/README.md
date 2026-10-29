@@ -221,3 +221,75 @@ converges slowly (above, "after" sd 1.3–1.9 dB; the club's tail at the
 square lands within ±2 dB of the reference only after ~20 s; the same
 click's tail differs by up to 8 dB between seeds) — see OPEN.md, "A
 loud room's field through its walls".
+
+## Later still: the hand-over between convolution and its stand-in
+
+The club's level in the clicking town depended on the mixer's rung:
+at the default (96 paths, 4 convolved sources) its own channel was
+2.2–3.3 dB under what it plays with every source convolved — and it
+moves between the two whenever the convolution budget re-ranks the
+sources, which is heard as the club popping. Separated (`TAPS=96` vs
+`CONV=4` on the top rung, `standin/crowd_*_before.txt`): the path
+budget costs nothing; the whole loss was the parametric reverb that
+stands in for a source's convolution. At the ears it was off by up to
+8 dB per band against the convolution it replaced
+(`standin/ears_*`; `means.sh` averages a run):
+
+| stand-in − convolved (dB, low / mid / high) | early, before | late, before | **early, after** | **late, after** |
+|---|---|---|---|---|
+| club from the square | +4.1 / +0.7 / −4.2 | +2.3 / −0.2 / −4.3 | +0.9 / +3.5 / +2.9 | +1.2 / +2.2 / +0.3 |
+| club from the street north | −0.3 / −5.8 / −8.0 | +2.4 / −4.1 / −7.5 | +0.9 / +1.6 / +3.7 | +1.4 / +0.3 / +0.1 |
+| club from the entrance | −0.1 / −2.3 / −2.1 | −2.2 / −4.6 / −6.0 | −0.2 / +2.4 / +4.6 | +0.8 / +0.3 / −2.2 |
+
+Mean |error| 3.4 → 1.6 dB, worst 8.0 → 4.6 dB. What is left is time:
+one decay per band from the free-field arrival can match a response's
+energy and its centre time, not its shape — a field heard through
+walls builds up first, or starts strong and rings long. Four faults,
+each isolated in a DSP test:
+
+- **Band shaping** (`fx_fdn_bands`): the reverb's send was two
+  shelves relative to the mid (capped at ±12 dB; the one-sided part a
+  low-pass fitted through 800 Hz): with the bass 20 dB over the mids,
+  the mids came out +7 dB, the highs +14…+25 dB. Now the bands as the
+  kernel synthesizes them (`BandSplit::shape`), and the three sends
+  solved together so each band plays the energy it is given through a
+  network whose treble decays faster (`Fdn::band_make_up`): within
+  0.2 dB at equal decays, 1.7 dB otherwise.
+- **The one-sided share** (`fx_reverb_handover`): the diffuse and the
+  one-sided networks were identical, fed the same input — copies,
+  adding coherently in W: +3 dB. The second network now has its own
+  line lengths and orthogonal injection signs (`Fdn::second`).
+- **When it arrives**: the stand-in decayed at the response's late
+  slope (T20) from the free-field arrival; a field through a door is
+  front-loaded, so 50 ms after the club door shut its first 100 ms
+  came 3.5 dB short (`town_system`
+  `a_door_shut_between_sounds_is_shut_for_the_next_one`). Now the decay
+  that gives the network's output the response's centre time — its
+  energy arrives on average as late (`DenseResponse::centre_time`,
+  `fdn::rt60_for_centre_time`).
+- **Several sources of one signal** (the club's four speakers):
+  identical networks in every renderer, so four speakers' stand-ins
+  added coherently (up to +6 dB) where their kernels — of different
+  noise seeds — add as energies. Every renderer the mixer makes now
+  has networks of its own (`Renderer::decorrelate`).
+
+Crowd, the club's own channel (dB, first 0.25 s / after), default rung
+against every source convolved:
+
+| | before: rung 1 | before: rung 4 | **after: rung 1** | **after: rung 4** |
+|---|---|---|---|---|
+| square | −39.8 / −44.1 | −37.6 / −41.6 | −36.7 / −43.3 | −37.6 / −41.6 |
+| street north | −39.4 / −44.1 | −36.8 / −40.8 | −35.8 / −41.9 | −36.8 / −40.8 |
+| entrance | −19.6 / −26.6 | −19.4 / −26.2 | −19.3 / −26.7 | −19.4 / −26.2 |
+
+The club door shut, the click δ later against settled (from the
+entrance, `PACE=0`: kernels rebuilt in the tick, one a tick — the
+stand-ins play meanwhile; `standin/door_*`):
+
+| δ | before: early | before: late | **after: early** | **after: late** |
+|---|---|---|---|---|
+| 0.05 s | −3.6 / −1.6 / −1.2 | −5.8 / −4.9 / −5.0 | −2.1 / −0.6 / +0.1 | −4.5 / −4.2 / −4.0 |
+| 0.1 s | −2.6 / −1.6 / −0.8 | −5.3 / −4.5 / −4.3 | −1.5 / +1.0 / +3.5 | −4.9 / −4.0 / −3.1 |
+
+Render cost unchanged (web 18.5 % of real time; Godot stress 2.93×).
+

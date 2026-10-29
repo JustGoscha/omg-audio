@@ -1,0 +1,10 @@
+crowd (v5): the club at north, 8 clicks every 3 s, the town clicking around it; its own channel, dB
+   click  0  first 0.25 s  -36.6  after  -45.0
+   click  1  first 0.25 s  -36.4  after  -44.0
+   click  2  first 0.25 s  -34.4  after  -39.5
+   click  3  first 0.25 s  -35.2  after  -40.3
+   click  4  first 0.25 s  -35.7  after  -41.2
+   click  5  first 0.25 s  -35.9  after  -41.6
+   click  6  first 0.25 s  -35.9  after  -41.8
+   click  7  first 0.25 s  -36.0  after  -42.3
+   mean  first  -35.8 (sd 0.67)  after  -41.9 (sd 1.69)

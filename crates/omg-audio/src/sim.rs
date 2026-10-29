@@ -836,6 +836,12 @@ impl Simulation {
         self.sources.iter().find(|s| s.id == id).and_then(|s| s.dense.as_ref())
     }
 
+    /// v4: the response a source's current kernel was built from (it is
+    /// rebuilt when the response has changed audibly since).
+    pub fn kernel_response(&self, id: SourceId) -> Option<&DenseResponse> {
+        self.sources.iter().find(|s| s.id == id).and_then(|s| s.kernel.as_ref().map(|k| &k.1))
+    }
+
     /// v4: (re)build the convolution kernels of the members (the
     /// `max_kernels` loudest) whose dense response changed audibly since
     /// theirs was built — the most changed (× loudness) first: queued on
@@ -1057,10 +1063,14 @@ impl Simulation {
             let mut lv = f.reverb.level;
             if let Some(d) = f.dense {
                 // v4: the scattered response is convolved (`kernels`); the
-                // block also carries it as a parametric reverb — its whole
-                // energy and its measured decay — for a mixer that does
-                // not convolve this source (its convolution budget)
-                pb.reverb.rt60 = d.rt60();
+                // block also carries it as a parametric reverb for a mixer
+                // that does not convolve this source (its convolution
+                // budget): its whole energy, arriving on average as late
+                // as the response's (the decay that gives the network's
+                // output the response's centre time — a field heard
+                // through a door arrives sooner than its tail decays)
+                let ts = d.centre_time();
+                pb.reverb.rt60 = core::array::from_fn(|b| omg_dsp::fdn::rt60_for_centre_time(ts[b]));
                 lv = core::array::from_fn(|b| d.bins.iter().map(|x| x[b].max(0.0)).sum::<f32>().sqrt());
                 s.dense = Some(d);
             }

@@ -476,6 +476,9 @@ const SOURCE_POINTS: usize = 8;
 /// The real-time renderer for all sources.
 pub struct Mixer {
     sample_rate: f32,
+    /// Renderers made so far: each gets its own reverb networks
+    /// (`Renderer::decorrelate`).
+    renderers: u32,
     grid: Option<Arc<HrirGrid>>,
     slots: Vec<Slot>,
     index: HashMap<u32, usize>,
@@ -522,6 +525,7 @@ impl Mixer {
     pub fn with_capacity(sample_rate: f32, hrir: Hrir, sources: usize) -> Self {
         let mut m = Self {
             sample_rate,
+            renderers: 0,
             grid: hrir.grid.clone(),
             slots: Vec::with_capacity(sources),
             index: HashMap::with_capacity(sources * 2),
@@ -557,8 +561,18 @@ impl Mixer {
         m
     }
 
-    fn new_slot(&self) -> Slot {
+    /// A renderer of its own: reverb networks no other renderer shares —
+    /// sources playing one signal (a club's speakers) ring uncorrelated,
+    /// as their kernels do.
+    fn new_renderer(&mut self) -> Renderer {
+        self.renderers += 1;
         let mut r = Renderer::with_grid(self.sample_rate, self.grid.clone()).without_line();
+        r.decorrelate(self.renderers);
+        r
+    }
+
+    fn new_slot(&mut self) -> Slot {
+        let mut r = self.new_renderer();
         r.set_point_budget(SOURCE_POINTS);
         // the mixer cuts each block to the source's share itself (`select`)
         r.set_tap_ceiling(omg_dsp::renderer::MAX_TAPS);
@@ -689,6 +703,7 @@ impl Mixer {
         for &(ghost, src) in &frame.ghosts {
             let Some(&pi) = self.index.get(&src.0) else { continue };
             let gi = self.slot_of(ghost);
+            let fresh = self.new_renderer();
             let (p, g) = if pi < gi {
                 let (a, b) = self.slots.split_at_mut(gi);
                 (&mut a[pi], &mut b[0])
@@ -701,7 +716,7 @@ impl Mixer {
             core::mem::swap(&mut g.renderer, &mut p.renderer);
             core::mem::swap(&mut g.kernel, &mut p.kernel);
             core::mem::swap(&mut g.convolving, &mut p.convolving);
-            p.renderer = Renderer::with_grid(self.sample_rate, self.grid.clone()).without_line();
+            p.renderer = fresh;
             p.renderer.set_point_budget(SOURCE_POINTS);
             p.renderer.set_tap_ceiling(omg_dsp::renderer::MAX_TAPS);
             p.renderer.set_head(self.head[0], self.head[1], self.head[2]);

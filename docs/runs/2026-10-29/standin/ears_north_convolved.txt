@@ -1,0 +1,9 @@
+still (v5): club at north, 6 clicks every 3 s; dB low/mid/high
+   click  0  early  -41.2  -44.2  -47.1  late  -44.5  -44.7  -46.7
+   click  1  early  -41.0  -43.9  -47.0  late  -42.1  -42.7  -45.7
+   click  2  early  -41.1  -44.0  -47.0  late  -42.2  -42.7  -45.4
+   click  3  early  -41.0  -43.8  -46.8  late  -43.3  -43.7  -46.1
+   click  4  early  -41.0  -43.8  -46.8  late  -39.8  -40.7  -44.1
+   click  5  early  -40.6  -43.0  -46.0  late  -37.9  -38.7  -42.7
+   early spread  low sd 0.18 span  0.6  mid sd 0.37 span  1.2  high sd 0.35 span  1.0
+   late  spread  low sd 2.20 span  6.6  mid sd 1.98 span  6.0  high sd 1.35 span  4.1

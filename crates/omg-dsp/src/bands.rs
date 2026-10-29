@@ -30,6 +30,22 @@ impl BandSplit {
         [self.lp_lo, self.lp_hi - self.lp_lo, x - self.lp_hi]
     }
 
+    /// One sample in → shaped sample out, the low and high bands at
+    /// `g_low`, `g_high` times the mid's — the bands as the kernel
+    /// synthesizes them (`dense.rs`), so whatever is shaped here sounds
+    /// like the same energies convolved. Unit gains are bit-transparent.
+    #[inline]
+    pub fn shape(&mut self, x: f32, g_low: f32, g_high: f32) -> f32 {
+        self.lp_lo += self.c_lo * (x - self.lp_lo);
+        self.lp_hi += self.c_hi * (x - self.lp_hi);
+        x + (g_low - 1.0) * self.lp_lo + (g_high - 1.0) * (x - self.lp_hi)
+    }
+
+    /// Both internal states below `eps` (fed silence, nothing left).
+    pub fn quiet(&self, eps: f32) -> bool {
+        self.lp_lo.abs() < eps && self.lp_hi.abs() < eps
+    }
+
     /// One sample in → shaped sample out, with per-band amplitude gains.
     #[inline]
     pub fn process(&mut self, x: f32, gains: &[f32; 3]) -> f32 {

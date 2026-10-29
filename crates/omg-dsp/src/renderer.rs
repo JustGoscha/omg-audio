@@ -22,6 +22,7 @@
 //! together.
 
 use crate::ambi::{encode_gains, rotate_z, HeadRotation, NCH};
+use crate::bands::BandSplit;
 use crate::delay::{DelayLine, READ_SLACK};
 use crate::fdn::{Fdn, NLINES};
 use crate::filter::{OnePoleLp, TapEq};
@@ -263,6 +264,24 @@ fn targets_of(t: &omg_core::params::Tap, sample_rate: f32) -> TapTargets {
             g_sh: core::array::from_fn(|k| g_mid * enc[k]),
             lp_coef: 1.0, // bypass
         }
+    }
+}
+
+/// `Fdn::band_make_up` for the decays and band shape it was last asked
+/// for.
+#[derive(Default)]
+struct SendCache {
+    key: Option<([f32; 2], [f32; 3])>,
+    sends: [f32; 3],
+}
+
+impl SendCache {
+    fn get(&mut self, fdn: &Fdn, rt60: [f32; 2], shape: [f32; 3]) -> [f32; 3] {
+        if self.key != Some((rt60, shape)) {
+            self.key = Some((rt60, shape));
+            self.sends = fdn.band_make_up(shape);
+        }
+        self.sends
     }
 }
 
@@ -631,16 +650,20 @@ pub struct Renderer {
     fdn_mix: Smoothed,
     send_low: Smoothed,
     send_high: Smoothed,
-    send_eq: TapEq,
+    /// The reverb's send: the bands as the kernel synthesizes them, so the
+    /// parametric stand-in has the convolution's colour.
+    send_eq: BandSplit,
+    /// The networks' band sends, solved again only when what they depend
+    /// on changes (exact frames repeat the reverb as it was).
+    own_sends: SendCache,
+    remote_sends: SendCache,
     // Coupled-room wet path: the source room's reverb heard through the
     // portal — its own FDN, output encoded at the doorway direction.
     remote_fdn: Fdn,
     remote_level: Smoothed,
     remote_low: Smoothed,
     remote_high: Smoothed,
-    remote_eq: TapEq,
-    remote_lp: OnePoleLp,
-    remote_lp_coef: Smoothed,
+    remote_eq: BandSplit,
     remote_sh: [Smoothed; NCH],
     /// Doorway aperture: the remote FDN's lines are spread over an angular
     /// arc around the door direction instead of collapsing to mono at a
@@ -741,14 +764,14 @@ impl Renderer {
             fdn_mix: Smoothed::new(1.0, CONV_XFADE_TAU_S, sample_rate),
             send_low: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
             send_high: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
-            send_eq: TapEq::default(),
-            remote_fdn: Fdn::new(sample_rate),
+            send_eq: BandSplit::new(sample_rate),
+            own_sends: SendCache::default(),
+            remote_sends: SendCache::default(),
+            remote_fdn: Fdn::second(sample_rate),
             remote_level: Smoothed::new(0.0, FDN_TAU_S, sample_rate),
             remote_low: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
             remote_high: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
-            remote_eq: TapEq::default(),
-            remote_lp: OnePoleLp::default(),
-            remote_lp_coef: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
+            remote_eq: BandSplit::new(sample_rate),
             remote_sh: [Smoothed::new(0.0, FDN_TAU_S, sample_rate); NCH],
             remote_spread: [[0.0; NCH]; NLINES],
             fdn_dirs: core::array::from_fn(|i| encode_gains(corner_dirs[i])),
@@ -779,6 +802,16 @@ impl Renderer {
     pub fn without_line(mut self) -> Self {
         self.src_line = DelayLine::empty();
         self
+    }
+
+    /// Give the parametric reverb networks of their own (`Fdn::seeded`):
+    /// renderers of different seeds fed one signal play uncorrelated
+    /// fields. Call before the first block.
+    pub fn decorrelate(&mut self, seed: u32) {
+        self.fdn = Fdn::seeded(self.sample_rate, seed, false);
+        self.remote_fdn = Fdn::seeded(self.sample_rate, seed, true);
+        self.own_sends = SendCache::default();
+        self.remote_sends = SendCache::default();
     }
 
     /// How far back (samples) any path may still read, now or once its
@@ -915,7 +948,6 @@ impl Renderer {
             &mut self.remote_level,
             &mut self.remote_low,
             &mut self.remote_high,
-            &mut self.remote_lp_coef,
         ] {
             g.snap(g.target_val());
         }
@@ -1139,32 +1171,31 @@ impl Renderer {
 
         self.fdn.set_rt60(pb.reverb.rt60[1], pb.reverb.rt60[2]);
         let lv = pb.reverb.level;
-        let ratio = |x: f32| if lv[1] > 1e-6 { (x / lv[1]).clamp(0.0, 4.0) } else { 1.0 };
-        self.fdn_level.set(lv[1]);
-        self.send_low.set(ratio(lv[0]));
-        // each band's energy as traced: the high band's faster decay
-        // gives it less tail energy per send, made up here
-        self.send_high.set((ratio(lv[2]) * self.fdn.high_make_up()).min(8.0));
+        // the bands as sends relative to the mid (the network's level): a
+        // mid far under the others (bass through a wall) is floored 80 dB
+        // under the loudest band, so the ratios stay finite
+        let mid = lv[1].max(lv.iter().fold(0.0f32, |a, &b| a.max(b)) * 1e-4);
+        let ratio = |x: f32| if mid > 0.0 { x / mid } else { 1.0 };
+        // each band's energy as traced: a band that decays faster gives
+        // less tail energy per send — made up here, the mid's on the level
+        let shape = [ratio(lv[0]), 1.0, ratio(lv[2])];
+        let m = self.own_sends.get(&self.fdn, [pb.reverb.rt60[1], pb.reverb.rt60[2]], shape);
+        self.fdn_level.set(mid * m[1]);
+        self.send_low.set(shape[0] * m[0] / m[1]);
+        self.send_high.set(shape[2] * m[2] / m[1]);
 
         match &pb.remote {
             Some(r) => {
+                // as the own network: the bands as the kernel synthesizes
+                // them, each sent so it plays the energy traced
                 self.remote_fdn.set_rt60(r.rt60[1], r.rt60[2]);
-                let rl_raw = if r.send[1] > 1e-9 { r.send[0] / r.send[1] } else { 1.0 };
-                if rl_raw > 2.0 {
-                    // wall-leaked wet: continuous lowpass, anchored at lows
-                    let fc = (800.0 / (rl_raw * rl_raw - 1.0).sqrt()).clamp(60.0, 2000.0);
-                    self.remote_level.set(r.send[0]);
-                    self.remote_low.set(1.0);
-                    self.remote_high.set(1.0);
-                    self.remote_lp_coef.set(OnePoleLp::coef(fc, self.sample_rate));
-                } else {
-                    let rr =
-                        |x: f32| if r.send[1] > 1e-6 { (x / r.send[1]).clamp(0.0, 4.0) } else { 1.0 };
-                    self.remote_level.set(r.send[1]);
-                    self.remote_low.set(rr(r.send[0]));
-                    self.remote_high.set(rr(r.send[2]));
-                    self.remote_lp_coef.set(1.0);
-                }
+                let sd = r.send;
+                let mid = sd[1].max(sd.iter().fold(0.0f32, |a, &b| a.max(b)) * 1e-4);
+                let shape = if mid > 0.0 { [sd[0] / mid, 1.0, sd[2] / mid] } else { [1.0; 3] };
+                let m = self.remote_sends.get(&self.remote_fdn, [r.rt60[1], r.rt60[2]], shape);
+                self.remote_level.set(mid * m[1]);
+                self.remote_low.set(shape[0] * m[0] / m[1]);
+                self.remote_high.set(shape[2] * m[2] / m[1]);
                 for k in 0..NCH {
                     self.remote_sh[k].set(r.sh[k]);
                 }
@@ -1334,8 +1365,7 @@ impl Renderer {
             && self.remote_level.current() <= 1e-6
             && self.remote_level.target_val() <= 1e-6
             && self.send_eq.quiet(1e-9)
-            && self.remote_eq.quiet(1e-9)
-            && self.remote_lp.state.abs() < 1e-9;
+            && self.remote_eq.quiet(1e-9);
         let dense = self.dense.has_kernel() || self.dense.is_warm();
         if quiet && !dense {
             for _ in 0..m {
@@ -1349,7 +1379,6 @@ impl Renderer {
                 &mut self.remote_level,
                 &mut self.remote_low,
                 &mut self.remote_high,
-                &mut self.remote_lp_coef,
             ] {
                 advance_n(core::slice::from_mut(g), m);
             }
@@ -1368,7 +1397,6 @@ impl Renderer {
                     &mut self.remote_level,
                     &mut self.remote_low,
                     &mut self.remote_high,
-                    &mut self.remote_lp_coef,
                 ] {
                     advance_n(core::slice::from_mut(g), m);
                 }
@@ -1523,13 +1551,7 @@ impl Renderer {
         let own_level = self.fdn_level.tick();
         let mix = self.fdn_mix.tick();
         let own_gate = if own_level > 1e-6 || self.fdn_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
-        let wet_in = self.send_eq.tick(
-            x * own_gate,
-            self.send_low.tick(),
-            self.send_high.tick(),
-            self.c_low,
-            self.c_high,
-        );
+        let wet_in = self.send_eq.shape(x * own_gate, self.send_low.tick(), self.send_high.tick());
         // energy-calibrated on the way in (`Fdn::energy_norm`)
         let [own_norm, rem_norm] = self.norm_at(RESELECT_EVERY - 1 - self.reselect_countdown);
         let own_in = if self.mute_own_fdn { 0.0 } else { wet_in * own_norm };
@@ -1542,14 +1564,7 @@ impl Renderer {
         // of that room reaches you through the portal, right now)
         let rem_level = self.remote_level.tick();
         let rem_gate = if rem_level > 1e-6 || self.remote_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
-        let rpre = self.remote_lp.tick(x * rem_gate, self.remote_lp_coef.tick());
-        let rin = self.remote_eq.tick(
-            rpre,
-            self.remote_low.tick(),
-            self.remote_high.tick(),
-            self.c_low,
-            self.c_high,
-        );
+        let rin = self.remote_eq.shape(x * rem_gate, self.remote_low.tick(), self.remote_high.tick());
         // Tick the direction smoothers (spread cache reads them at 375 Hz).
         for k in 0..NCH {
             self.remote_sh[k].tick();
@@ -1574,7 +1589,6 @@ impl Renderer {
     /// sample, exactly as `late`).
     fn late_block(&mut self, x: &[f32], off: usize, bus: &mut BusBlock) {
         let m = x.len();
-        let (c_low, c_high) = (self.c_low, self.c_high);
         let mut own_in = [0.0f32; BLOCK];
         let mut own_lvl = [0.0f32; BLOCK];
         let mut own_gate = [0.0f32; BLOCK];
@@ -1589,14 +1603,13 @@ impl Renderer {
             let own_level = self.fdn_level.tick();
             let mix = self.fdn_mix.tick();
             let gate = if own_level > 1e-6 || self.fdn_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
-            let wet_in = self.send_eq.tick(x * gate, self.send_low.tick(), self.send_high.tick(), c_low, c_high);
+            let wet_in = self.send_eq.shape(x * gate, self.send_low.tick(), self.send_high.tick());
             own_in[j] = if self.mute_own_fdn { 0.0 } else { wet_in * own_norm };
             own_lvl[j] = own_level * mix;
             own_gate[j] = gate;
             let rem_level = self.remote_level.tick();
             let gate = if rem_level > 1e-6 || self.remote_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
-            let rpre = self.remote_lp.tick(x * gate, self.remote_lp_coef.tick());
-            let rin = self.remote_eq.tick(rpre, self.remote_low.tick(), self.remote_high.tick(), c_low, c_high);
+            let rin = self.remote_eq.shape(x * gate, self.remote_low.tick(), self.remote_high.tick());
             rem_in[j] = if self.mute_remote { 0.0 } else { rin * rem_norm };
             rem_lvl[j] = rem_level * mix;
             rem_gate[j] = gate;

@@ -49,6 +49,17 @@ follows from how those points move. Static sources skip the solve.
   convolver keeps its input (`DenseConv::set_warm` / `prepare`), so the
   rebuilt kernel crossfades back in over the true recent input. The same
   for sources moving in and out of the convolution budget.
+- A source out of the convolution budget plays a parametric stand-in
+  (its response's energy per band, a decay that gives it the response's
+  centre time, its one-sided share from where it comes) that now sounds
+  like the convolution it replaces: the bands shaped as the kernel
+  synthesizes them, the three sends solved so each band plays its
+  energy through a network whose treble decays faster
+  (`Fdn::band_make_up`), the one-sided network uncorrelated with the
+  diffuse one, and every renderer's networks its own — a club's four
+  speakers ring as four uncorrelated fields, as their kernels do. Mean
+  error at the ears 3.4 → 1.6 dB; the club no longer drops 2–3 dB when
+  the budget hands it over.
 - A channel that isn't rendering (silent, masked, virtualized) settles:
   its glides and fades jump to their targets, so a door shut between two
   sounds is shut for the next one.

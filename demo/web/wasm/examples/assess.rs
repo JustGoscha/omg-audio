@@ -175,6 +175,15 @@ impl Rig {
         gov.apply(&mut mix);
         if let Some(r) = env("RUNG").and_then(|r| r.parse().ok()) {
             gov.pin(&mut mix, Some(r));
+            // single levers on the pinned rung: TAPS=n (mix-wide paths),
+            // CONV=n (convolved sources)
+            let lad = omg_audio::governor::LADDER[r];
+            if let Some(t) = env("TAPS").and_then(|t| t.parse().ok()) {
+                mix.set_budget(t, lad.1, lad.2);
+            }
+            if let Some(c) = env("CONV").and_then(|c| c.parse().ok()) {
+                mix.set_convolution_budget(c);
+            }
         }
         let ids = town.sources.clone();
         let mut rig = Self {
@@ -496,6 +505,22 @@ fn still() {
         let span = d.iter().cloned().fold(f32::MIN, f32::max) - d.iter().cloned().fold(f32::MAX, f32::min);
         (sd, span)
     };
+    if env("KERNEL_LAG").is_some() {
+        // the club's current estimate against what its kernels play
+        let (mut now_e, mut ker_e) = ([0.0f64; 3], [0.0f64; 3]);
+        for &id in &rig.ids[i] {
+            for (dst, d) in [(&mut now_e, rig.sim.dense_response(id)), (&mut ker_e, rig.sim.kernel_response(id))] {
+                if let Some(d) = d {
+                    for x in &d.bins {
+                        for b in 0..3 {
+                            dst[b] += x[b] as f64;
+                        }
+                    }
+                }
+            }
+        }
+        println!("   estimate now {}  kernel's {}", bands_db(now_e), bands_db(ker_e));
+    }
     for (name, v) in [("early", &early), ("late", &late)] {
         let s: Vec<String> = (0..3)
             .map(|b| {

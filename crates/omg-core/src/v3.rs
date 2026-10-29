@@ -623,28 +623,7 @@ impl DenseResponse {
             if n < 8 || dt <= 0.0 {
                 return 0.0;
             }
-            // ln E per bin over the last second: slope k (< 0), end level
-            let fit_from = n.saturating_sub((1.0 / dt) as usize);
-            let (mut sx, mut sy, mut sxx, mut sxy, mut m) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
-            for (i, v) in self.bins.iter().enumerate().skip(fit_from) {
-                if v[b] > 0.0 {
-                    let (x, y) = (i as f64, (v[b] as f64).ln());
-                    sx += x;
-                    sy += y;
-                    sxx += x * x;
-                    sxy += x * y;
-                    m += 1.0;
-                }
-            }
-            let fit = (m >= 8.0).then(|| (m * sxy - sx * sy) / (m * sxx - sx * sx)).filter(|k| *k < 0.0);
-            let ringing = (n as f32) * self.bin_s >= RESPONSE_MAX_S - 0.05;
-            let beyond = match (ringing, fit) {
-                (true, Some(k)) => {
-                    let end = ((sy - k * sx) / m + k * (n - 1) as f64).exp();
-                    end * k.exp() / (1.0 - k.exp())
-                }
-                _ => 0.0,
-            };
+            let (fit, beyond) = self.tail(b);
             // the decay curve, in dB under the total
             let mut edc = vec![0.0f64; n];
             let mut acc = beyond;
@@ -674,6 +653,72 @@ impl DenseResponse {
             }
             let slope = if m >= 2.0 { (m * sxy - sx * sy) / (m * sxx - sx * sx) } else { -20.0 / ((i25 - i5).max(1) as f64 * dt) };
             if slope < 0.0 { (-60.0 / slope) as f32 } else { 0.0 }
+        })
+    }
+}
+
+impl DenseResponse {
+    /// Band `b`'s decay over the window's last second — ln E per bin, its
+    /// slope k (< 0) — and, for a response still ringing at the window's
+    /// end (`RESPONSE_MAX_S`), the energy past it along that decay (as the
+    /// renderer continues it).
+    fn tail(&self, b: usize) -> (Option<f64>, f64) {
+        let n = self.bins.len();
+        let dt = self.bin_s as f64;
+        let fit_from = n.saturating_sub((1.0 / dt) as usize);
+        let (mut sx, mut sy, mut sxx, mut sxy, mut m) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for (i, v) in self.bins.iter().enumerate().skip(fit_from) {
+            if v[b] > 0.0 {
+                let (x, y) = (i as f64, (v[b] as f64).ln());
+                sx += x;
+                sy += y;
+                sxx += x * x;
+                sxy += x * y;
+                m += 1.0;
+            }
+        }
+        let fit = (m >= 8.0).then(|| (m * sxy - sx * sy) / (m * sxx - sx * sx)).filter(|k| *k < 0.0);
+        let ringing = (n as f32) * self.bin_s >= RESPONSE_MAX_S - 0.05;
+        let beyond = match (ringing, fit) {
+            (true, Some(k)) => {
+                let end = ((sy - k * sx) / m + k * (n - 1) as f64).exp();
+                end * k.exp() / (1.0 - k.exp())
+            }
+            _ => 0.0,
+        };
+        (fit, beyond)
+    }
+
+    /// Per band, the response's centre time: its energy's mean arrival
+    /// after the free-field arrival (s), the continued tail included. 0
+    /// where there is none.
+    pub fn centre_time(&self) -> [f32; NBANDS] {
+        let n = self.bins.len();
+        let dt = self.bin_s as f64;
+        core::array::from_fn(|b| {
+            if n == 0 || dt <= 0.0 {
+                return 0.0;
+            }
+            let (mut e, mut et) = (0.0f64, 0.0f64);
+            for (i, v) in self.bins.iter().enumerate() {
+                let x = v[b].max(0.0) as f64;
+                e += x;
+                et += x * (i as f64 + 0.5) * dt;
+            }
+            if n >= 8 {
+                if let (Some(k), beyond) = self.tail(b) {
+                    // past the window, bin by bin along e^{k·j}: its mean
+                    // lies e^k / (1 − e^k) bins past the end
+                    let q = k.exp();
+                    e += beyond;
+                    et += beyond * (n as f64 + 0.5 + q / (1.0 - q)) * dt;
+                }
+            }
+            if e > 0.0 {
+                (et / e) as f32
+            } else {
+                0.0
+            }
         })
     }
 }

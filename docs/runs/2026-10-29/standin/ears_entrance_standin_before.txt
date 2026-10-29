@@ -1,0 +1,9 @@
+still (v5): club at entrance, 6 clicks every 3 s; dB low/mid/high
+   click  0  early  -31.4  -36.0  -37.1  late  -28.5  -33.4  -37.9
+   click  1  early  -29.8  -35.0  -36.4  late  -27.6  -32.8  -37.1
+   click  2  early  -30.8  -35.8  -36.9  late  -27.7  -32.8  -37.3
+   click  3  early  -28.6  -33.3  -35.6  late  -27.0  -31.5  -35.7
+   click  4  early  -29.0  -33.8  -35.9  late  -27.2  -31.8  -36.1
+   click  5  early  -28.9  -33.7  -35.8  late  -26.9  -31.7  -35.9
+   early spread  low sd 1.04 span  2.8  mid sd 1.05 span  2.6  high sd 0.56 span  1.5
+   late  spread  low sd 0.54 span  1.6  mid sd 0.71 span  1.9  high sd 0.82 span  2.2

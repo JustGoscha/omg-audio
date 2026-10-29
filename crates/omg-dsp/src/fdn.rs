@@ -12,6 +12,11 @@ pub const NLINES: usize = 8;
 
 /// Mutually prime-ish lengths, ~23–81 ms at 48 kHz, scaled for actual rate.
 const LEN_MS: [f32; NLINES] = [23.4, 32.5, 39.7, 46.9, 55.9, 62.9, 72.0, 81.4];
+/// A second network's (`Fdn::second`): other lengths, and injection signs
+/// orthogonal to the first's — two networks fed the same input play two
+/// uncorrelated fields. (Identical networks play copies: summed in the
+/// bus they add coherently, the one-sided share of a field heard +3 dB.)
+const LEN_MS_B: [f32; NLINES] = [25.1, 29.9, 37.3, 43.9, 51.7, 59.3, 67.9, 77.3];
 /// Band centres the loop filter is fitted at (omg-dsp bands: 125 / 790 /
 /// 5600 Hz).
 const MID_HZ: f32 = 790.0;
@@ -48,11 +53,67 @@ fn shelf_for(ratio: f32, c: f32, sample_rate: f32) -> f32 {
     0.5 * (lo + hi)
 }
 
+/// The decay that makes the network's output arrive, on average, `ts`
+/// seconds after its input — the energy's centre time (its first moment).
+/// The lines hand their content on every L̄ (their mean length) keeping
+/// ḡ² of it: pass n's energy ∝ ḡ²ⁿ at n·L̄, so the centre time is
+/// L̄ / (1 − ḡ²), and ḡ² = 10^(−6·L̄/rt60). A response arriving sooner
+/// on average than the network can (its first pass): the fastest decay.
+pub fn rt60_for_centre_time(ts: f32) -> f32 {
+    let lbar = LEN_MS.iter().sum::<f32>() / NLINES as f32 * 1e-3;
+    let q = 1.0 - lbar / ts.max(1e-6);
+    if q <= 1e-6 {
+        return MIN_RT60;
+    }
+    (-6.0 * lbar / q.log10()).max(MIN_RT60)
+}
+
+/// The fastest decay `set_rt60` plays.
+const MIN_RT60: f32 = 0.05;
+
+/// The tracer's band crossovers (omg-dsp bands: one-pole at 314 Hz and
+/// 2.1 kHz, `bands::BandSplit`).
+const BAND_XOVER_HZ: [f32; 2] = [314.0, 2100.0];
+/// Frequencies the band averages are taken at (log-spaced, 20 Hz to
+/// Nyquist).
+const BAND_POINTS: usize = 48;
+
+/// The one-pole bands' responses at log-spaced points: per point its
+/// width Δf and each band's complex response (low = LP, mid = LP_hi −
+/// LP_lo, high = 1 − LP_hi; they sum to 1), and the frequency.
+#[derive(Clone, Copy)]
+struct BandPoint {
+    f: f32,
+    df: f32,
+    s: [(f32, f32); 3],
+}
+
+fn band_points(sample_rate: f32) -> [BandPoint; BAND_POINTS] {
+    let lp = |fc: f32, f: f32| -> (f32, f32) {
+        let c = 1.0 - (-core::f32::consts::TAU * fc / sample_rate).exp();
+        let w = core::f32::consts::TAU * f / sample_rate;
+        let a = 1.0 - c;
+        let (dr, di) = (1.0 - a * w.cos(), a * w.sin());
+        let d2 = dr * dr + di * di;
+        (c * dr / d2, -c * di / d2)
+    };
+    let (f0, f1) = (20.0f32, 0.5 * sample_rate);
+    let at = |k: f32| f0 * (f1 / f0).powf(k / (BAND_POINTS - 1) as f32);
+    core::array::from_fn(|k| {
+        let f = at(k as f32);
+        let df = at(k as f32 + 0.5) - at(k as f32 - 0.5);
+        let (lr, li) = lp(BAND_XOVER_HZ[0], f);
+        let (hr, hi) = lp(BAND_XOVER_HZ[1], f);
+        BandPoint { f, df, s: [(lr, li), (hr - lr, hi - li), (1.0 - hr, -hi)] }
+    })
+}
+
 /// Input share written into each line (`energy_norm` accounts for it),
 /// with alternating signs: the lines start incoherent, as a diffuse field
 /// is — the same sign everywhere would sum coherently in the decode.
 const INJECT: f32 = 0.35;
 const INJECT_SIGN: [f32; NLINES] = [1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0];
+const INJECT_SIGN_B: [f32; NLINES] = [1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0];
 
 pub struct Fdn {
     lines: Vec<DelayLine>,
@@ -64,13 +125,52 @@ pub struct Fdn {
     /// The shelf's crossover lowpass coefficient (`XOVER_HZ`).
     xover: f32,
     sample_rate: f32,
+    /// The tracer's bands at the points `band_make_up` integrates over.
+    bands: [BandPoint; BAND_POINTS],
+    /// Per line: the sign its input is written with.
+    sign: [f32; NLINES],
 }
 
 impl Fdn {
     pub fn new(sample_rate: f32) -> Self {
+        Self::with(sample_rate, LEN_MS, INJECT_SIGN)
+    }
+
+    /// A network uncorrelated with `new`'s, fed the same input (the
+    /// renderer's one-sided field beside its diffuse one).
+    pub fn second(sample_rate: f32) -> Self {
+        Self::with(sample_rate, LEN_MS_B, INJECT_SIGN_B)
+    }
+
+    /// `new` (or `second`) of its own: line lengths moved by up to ±6 %
+    /// and injection signs flipped, both by `seed` — networks of different
+    /// seeds fed the same input play uncorrelated fields, as the
+    /// reverberant fields of two sources playing one signal are (and as
+    /// their kernels, of different noise seeds, are). Identical networks
+    /// play copies, which add coherently: four speakers of one club, each
+    /// a source with the same network, came out up to 6 dB too loud.
+    /// Seed 0: `new` / `second` themselves.
+    pub fn seeded(sample_rate: f32, seed: u32, second: bool) -> Self {
+        let (len, sign) = if second { (LEN_MS_B, INJECT_SIGN_B) } else { (LEN_MS, INJECT_SIGN) };
+        if seed == 0 {
+            return Self::with(sample_rate, len, sign);
+        }
+        let mut h = seed.wrapping_mul(0x9e37_79b9) ^ if second { 0x85eb_ca6b } else { 0 };
+        let mut next = || {
+            h ^= h << 13;
+            h ^= h >> 17;
+            h ^= h << 5;
+            h as f32 / u32::MAX as f32
+        };
+        let len = core::array::from_fn(|i| len[i] * (1.0 + 0.12 * (next() - 0.5)));
+        let sign = core::array::from_fn(|i| if next() < 0.5 { -sign[i] } else { sign[i] });
+        Self::with(sample_rate, len, sign)
+    }
+
+    fn with(sample_rate: f32, len_ms: [f32; NLINES], sign: [f32; NLINES]) -> Self {
         // whole samples: a fractional read interpolates, and linear
         // interpolation lowpasses every pass of the loop
-        let lens: [f32; NLINES] = core::array::from_fn(|i| (LEN_MS[i] * 1e-3 * sample_rate).round());
+        let lens: [f32; NLINES] = core::array::from_fn(|i| (len_ms[i] * 1e-3 * sample_rate).round());
         Self {
             lines: (0..NLINES)
                 .map(|i| DelayLine::new(lens[i] as usize + 4))
@@ -81,6 +181,8 @@ impl Fdn {
             damp_coef: [Smoothed::new(1.0, 0.15, sample_rate); NLINES],
             xover: OnePoleLp::coef(XOVER_HZ, sample_rate),
             sample_rate,
+            bands: band_points(sample_rate),
+            sign,
         }
     }
 
@@ -114,8 +216,8 @@ impl Fdn {
     pub fn set_rt60(&mut self, rt60_mid: f32, rt60_high: f32) {
         for i in 0..NLINES {
             let len_s = self.lens[i] / self.sample_rate;
-            let g_mid = 10f32.powf(-3.0 * len_s / rt60_mid.max(0.05));
-            let g_high = 10f32.powf(-3.0 * len_s / rt60_high.max(0.05));
+            let g_mid = 10f32.powf(-3.0 * len_s / rt60_mid.max(MIN_RT60));
+            let g_high = 10f32.powf(-3.0 * len_s / rt60_high.max(MIN_RT60));
             let ratio = (g_high / g_mid).clamp(0.0, 1.0);
             let shelf = if ratio >= 0.999 { 1.0 } else { shelf_for(ratio, self.xover, self.sample_rate) };
             let make_up = shelf_gain(shelf, self.xover, MID_HZ, self.sample_rate);
@@ -160,22 +262,62 @@ impl Fdn {
         1.0 / e.max(1e-12).sqrt()
     }
 
-    /// How much more the input's high band must be sent for the network to
-    /// play it with the energy the mid band gets: the tail's energy grows
-    /// with its decay (ḡ² / (1 − ḡ²) per band), and the high band decays
-    /// faster. √(E_mid / E_high), from the targets `set_rt60` left.
-    pub fn high_make_up(&self) -> f32 {
-        let e = |f: f32| -> f32 {
-            self.gains
+    /// The sends that make the network play each band (the tracer's
+    /// one-pole bands, as a click shaped at `level` per band holds them —
+    /// the kernel's own synthesis) with that band's energy: per band a
+    /// factor on its send, the mid's on the level. The tail's energy at a
+    /// frequency grows with its decay there (ḡ² / (1 − ḡ²), the loop
+    /// shelf included; the level is calibrated at the mid centre,
+    /// `energy_norm`), the bands overlap — a band's skirt lands where
+    /// another decays — so the three are solved together: each band's
+    /// energy integrated over frequency, the factors iterated until every
+    /// band holds what it is given. From the targets `set_rt60` left.
+    pub fn band_make_up(&self, level: [f32; 3]) -> [f32; 3] {
+        // the lines mix every pass: the network keeps the mean ḡ² of
+        // what it holds per pass (as `energy_norm` counts it)
+        let tail = |f: f32| -> f32 {
+            let g2 = self
+                .gains
                 .iter()
                 .zip(&self.damp_coef)
                 .map(|(g, s)| {
                     let g = g.target_val() * shelf_gain(s.target_val(), self.xover, f, self.sample_rate);
-                    g * g / (1.0 - g * g).max(1e-6)
+                    g * g
                 })
                 .sum::<f32>()
+                / NLINES as f32;
+            g2 / (1.0 - g2).max(1e-6)
         };
-        (e(MID_HZ) / e(HIGH_HZ).max(1e-12)).sqrt()
+        let mid = tail(MID_HZ).max(1e-12);
+        let rel: [f32; BAND_POINTS] = core::array::from_fn(|k| tail(self.bands[k].f) / mid);
+        // band b's energy of a click shaped at gains `a`, through the
+        // network's tail (`t`: true) or dry (the target)
+        let energy = |a: [f32; 3], t: bool| -> [f32; 3] {
+            let mut e = [0.0f32; 3];
+            for (k, p) in self.bands.iter().enumerate() {
+                let (mut re, mut im) = (0.0f32, 0.0f32);
+                for c in 0..3 {
+                    re += a[c] * p.s[c].0;
+                    im += a[c] * p.s[c].1;
+                }
+                let y = (re * re + im * im) * p.df * if t { rel[k] } else { 1.0 };
+                for (b, eb) in e.iter_mut().enumerate() {
+                    *eb += y * (p.s[b].0 * p.s[b].0 + p.s[b].1 * p.s[b].1);
+                }
+            }
+            e
+        };
+        let want = energy(level, false);
+        let mut m = [1.0f32; 3];
+        for _ in 0..8 {
+            let got = energy(core::array::from_fn(|c| level[c] * m[c]), true);
+            for b in 0..3 {
+                if want[b] > 0.0 && got[b] > 0.0 {
+                    m[b] *= (want[b] / got[b]).sqrt();
+                }
+            }
+        }
+        m
     }
 
     /// Most samples `process_block` takes at once: a little under the
@@ -240,7 +382,7 @@ impl Fdn {
         let norm = 1.0 / (NLINES as f32).sqrt();
         for (i, v) in v.iter_mut().enumerate() {
             for (v, x) in v[..m].iter_mut().zip(&input[..m]) {
-                *v = x * INJECT * INJECT_SIGN[i] + *v * norm;
+                *v = x * INJECT * self.sign[i] + *v * norm;
             }
             self.lines[i].write_block(&v[..m]);
         }
@@ -267,7 +409,7 @@ impl Fdn {
         }
         let norm = 1.0 / (NLINES as f32).sqrt();
         for i in 0..NLINES {
-            self.lines[i].write(input * INJECT * INJECT_SIGN[i] + v[i] * norm);
+            self.lines[i].write(input * INJECT * self.sign[i] + v[i] * norm);
         }
     }
 }
