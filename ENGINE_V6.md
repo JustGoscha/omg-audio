@@ -310,6 +310,13 @@ long — what the swing should sound like at every instant):
   22 dB down where v6.1 still holds at −12 dB until the leaf settles;
   within 3 dB of shut at 6.94 against 7.11 s; no level jumps, nothing
   over −40 dB above 3 kHz (`docs/runs/2026-10-29/door`).
+- Standing doors gain from the split too: the club heard from the
+  square through its walls and shut door (`assess still`, click to
+  click) spreads 3.0 / 2.4 / 2.6 → 1.1 / 0.9 / 1.2 dB late, 1.1 / 1.1 /
+  2.6 → 0.5 / 0.5 / 0.5 dB early, where v6.1's drifted 7 dB down over
+  30 s; a door slammed shut (`assess door`), 0.1 s on, the highs +8 /
+  +11 dB over where they settle → −5 / −3 dB. Walking out of the hall and
+  flying through the cathedral's wall: unchanged.
 - Cost (the town, every source sounding, the ears by the club door,
   `examples/door_ms`): a tick 15.4 → 17.8 ms standing (the split at
   leaves and the paths' records), 18.8 → 23.1 ms while the door moves; a
@@ -317,8 +324,9 @@ long — what the swing should sound like at every instant):
 
 Left: a door seen at a slant through a centimetre-wide gap is still a
 heavy-tailed estimate (one position of the four: v6.1 2.2, v6.2 2.7 dB);
-the GPU's walk records no door paths (with the walk on the GPU only the
-CPU's late family is priced); a path meeting apertures more than six
+the GPU's walk records no door paths and doesn't split at leaves (with
+the walk on the GPU — Godot's default — only the CPU's late family, the
+reverb, is priced); a path meeting apertures more than six
 times is left to the averages; the virtual reflections are first order;
 where a door comes to rest the averages still start over (young).
 

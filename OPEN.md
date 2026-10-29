@@ -162,9 +162,11 @@ standing at each openness, rms 5.85 → 4.08 dB (the town's club, three
 seeds), 4.4 → 2.9 dB (an isolated doorway, four places); in Godot 22 dB
 down 0.7 s after the shut command where v6.1 still held at −12 dB.
 Left over: a door seen at a slant through a centimetre-wide gap (a
-heavy tail: through a narrow gap a few paths carry all), the GPU walk's
-door paths unrecorded, the restart where a door comes to rest (young
-estimate, below).
+heavy tail: through a narrow gap a few paths carry all); the GPU walk
+(Godot's default) records no door paths and doesn't split at leaves —
+there only the reverb is priced, the early taps behind a door still
+trail it; the restart where a door comes to rest (young estimate,
+below).
 
 ### A facade's echo found by chance — first order solved Oct 29
 A car passing the field (`assess cartone`) played the town's facade
