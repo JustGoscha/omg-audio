@@ -60,6 +60,11 @@ follows from how those points move. Static sources skip the solve.
   speakers ring as four uncorrelated fields, as their kernels do. Mean
   error at the ears 3.4 → 1.6 dB; the club no longer drops 2–3 dB when
   the budget hands it over.
+- Bands as traced: the kernel's noise and impulses, the stand-in's
+  send and the beds seeping through walls split the sound with
+  Linkwitz–Riley crossovers (`bands::BandSplit`), so a band plays its
+  own gain — a wall's −14 / −34 dB mids and treble were played at −7 /
+  −18 dB by one-pole bands; a closed door now sounds as closed as traced.
 - A channel that isn't rendering (silent, masked, virtualized) settles:
   its glides and fades jump to their targets, so a door shut between two
   sounds is shut for the next one.

@@ -57,15 +57,14 @@ came from the convolution hand-over (fixed). Not yet measured for many
 loud sources at once (rung 0: 48 paths for everything).
 
 ### A tap's band shape
-A path's three band gains are rendered by two shelves relative to the
+The kernel, the stand-in and the beds play bands with Linkwitz–Riley
+crossovers (each band centre at its gain within 1.5 dB). A path's own
+three gains are still rendered by two one-pole shelves relative to the
 mid (capped at ±12 dB) or, bass-heavy (through a wall), by a one-pole
 low-pass fitted through 800 Hz that ignores the treble gain — hand-fit
-shapes, while the kernel renders the same arrivals as the tracer's
-band sum (`BandSplit::process`). The band sum has its own limit: its
-one-pole skirts let the loudest band through where a wall's mid is
-14 dB down (≈ −8 dB at 800 Hz). Fix: a band model both share — steeper
-crossovers, or the spectrum interpolated between band centres — and
-one shaping for taps, kernel impulses and the reverb.
+shapes. The same split per tap costs nine second-order sections a
+sample (the shelves: two one-poles): cheaper forms — two second-order
+shelves at the crossovers — would put taps on the same band model.
 
 ### Tick cost
 The town with every source traced: ~56 ms per tick native High on the

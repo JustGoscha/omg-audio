@@ -1,0 +1,8 @@
+still (v5): club at inside, 4 clicks every 3 s; dB low/mid/high
+   click  0  early    5.0    8.8   16.4  late    1.4    5.6   10.7
+   click  1  early    5.4    8.8   16.4  late    2.0    5.9   10.8
+   click  2  early    5.5    8.9   16.4  late    2.0    5.9   10.8
+   click  3  early    5.5    8.9   16.4  late    2.0    5.9   10.8
+   tail kurtosis (noise ≈ 3)  low   2.6  mid   2.9  high   3.1
+   early spread  low sd 0.20 span  0.5  mid sd 0.01 span  0.0  high sd 0.03 span  0.1
+   late  spread  low sd 0.28 span  0.6  mid sd 0.13 span  0.3  high sd 0.02 span  0.0

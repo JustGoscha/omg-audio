@@ -20,6 +20,7 @@
 //!   compensated by starting the kernel `HEAD_B` samples into the
 //!   response.
 
+use crate::bands::BandSplit;
 use std::sync::{Arc, OnceLock};
 
 use omg_core::v3::DenseResponse;
@@ -42,22 +43,19 @@ const RING: usize = 4 * TAIL_B;
 /// First-order ambisonics: W, Y, Z, X (ACN, SN3D) — the bus's first four.
 const FOA: usize = 4;
 const BANK_LEN: usize = 1 << 17;
-/// The one-pole crossovers of `bands::BandSplit` (the tracer's bands).
-const XOVER_LO_HZ: f32 = 314.0;
-const XOVER_HI_HZ: f32 = 2100.0;
-
 /// Five independent unit-variance white noises (one coherent, four
-/// diffuse: W, Y, Z, X), each split into the three bands (bands sum to
-/// the white noise): `[seq][band][sample]`.
+/// diffuse: W, Y, Z, X), each split into the tracer's three bands
+/// (`bands::BandSplit`; the bands sum to an all-pass of the noise):
+/// `[seq][band][sample]`. And the bands' impulse responses, for the
+/// coherent arrivals.
 struct Bank {
     n: Vec<[Vec<f32>; 3]>,
+    ir: [Vec<f32>; 3],
 }
 
 fn bank(sample_rate: f32) -> &'static Bank {
     static B: OnceLock<Bank> = OnceLock::new();
     B.get_or_init(|| {
-        let coef = |fc: f32| 1.0 - (-core::f32::consts::TAU * fc / sample_rate).exp();
-        let (c_lo, c_hi) = (coef(XOVER_LO_HZ), coef(XOVER_HI_HZ));
         let mut state = 0x9e37_79b9u32;
         let mut rnd = || {
             // xorshift, uniform in [-1, 1), scaled to unit variance
@@ -69,24 +67,45 @@ fn bank(sample_rate: f32) -> &'static Bank {
         let n = (0..5)
             .map(|_| {
                 let mut b: [Vec<f32>; 3] = core::array::from_fn(|_| vec![0.0; BANK_LEN]);
-                let (mut lo, mut hi) = (0.0f32, 0.0f32);
+                let mut split = BandSplit::new(sample_rate);
                 // run in once so the filters start settled (the bank wraps)
                 for pass in 0..2 {
                     for i in 0..BANK_LEN {
-                        let x = rnd();
-                        lo += c_lo * (x - lo);
-                        hi += c_hi * (x - hi);
+                        let bands = split.split(rnd());
                         if pass == 1 {
-                            b[0][i] = lo;
-                            b[1][i] = hi - lo;
-                            b[2][i] = x - hi;
+                            for k in 0..3 {
+                                b[k][i] = bands[k];
+                            }
                         }
                     }
                 }
                 b
             })
             .collect();
-        Bank { n }
+        // each band's impulse response, until what is left of it is 80 dB
+        // under its whole
+        let mut split = BandSplit::new(sample_rate);
+        let mut ir: [Vec<f32>; 3] = core::array::from_fn(|_| Vec::with_capacity(IMPULSE_MAX));
+        for i in 0..IMPULSE_MAX {
+            let b = split.split(if i == 0 { 1.0 } else { 0.0 });
+            for k in 0..3 {
+                ir[k].push(b[k]);
+            }
+        }
+        let total: f64 = ir.iter().flatten().map(|v| (*v as f64).powi(2)).sum();
+        let mut rest = total;
+        let mut len = IMPULSE_MAX;
+        for i in 0..IMPULSE_MAX {
+            rest -= ir.iter().map(|b| (b[i] as f64).powi(2)).sum::<f64>();
+            if rest < total * 1e-8 {
+                len = i + 1;
+                break;
+            }
+        }
+        for b in &mut ir {
+            b.truncate(len);
+        }
+        Bank { n, ir }
     })
 }
 
@@ -268,25 +287,18 @@ fn synth(resp: &DenseResponse, sample_rate: f32, gain: f32, seed: u32, from: usi
             }
         }
     }
-    // the coherent arrivals: each a delta split by the tracer's crossovers
-    // and played at its band amplitudes (the renderer's tap EQ:
-    // a_lo·lp_lo + a_mid·(lp_hi − lp_lo) + a_hi·(δ − lp_hi)), from its
-    // direction
-    let coef = |fc: f32| 1.0 - (-core::f32::consts::TAU * fc / sample_rate).exp();
-    let (c_lo, c_hi) = (coef(XOVER_LO_HZ), coef(XOVER_HI_HZ));
+    // the coherent arrivals: each a delta split into the tracer's bands
+    // and played at its band amplitudes, from its direction
     for imp in &resp.impulses {
         let at = (imp[0] * sample_rate).round() as isize - HEAD_B as isize;
         let a: [f32; 3] = core::array::from_fn(|b| imp[1 + b].max(0.0).sqrt() * gain);
         let enc = [1.0, imp[5], imp[6], imp[4]];
-        let (mut lo, mut hi) = (c_lo, c_hi);
-        for n in 0..IMPULSE_LEN {
+        for n in 0..bank.ir[0].len() {
             let s = at + n as isize;
-            let h = a[0] * lo + a[1] * (hi - lo) + if n == 0 { a[2] * (1.0 - hi) } else { -a[2] * hi };
-            lo *= 1.0 - c_lo;
-            hi *= 1.0 - c_hi;
             if s < from as isize || s >= to as isize {
                 continue;
             }
+            let h = a[0] * bank.ir[0][n] + a[1] * bank.ir[1][n] + a[2] * bank.ir[2][n];
             for c in 0..FOA {
                 out[c][s as usize - from] += h * enc[c];
             }
@@ -294,9 +306,9 @@ fn synth(resp: &DenseResponse, sample_rate: f32, gain: f32, seed: u32, from: usi
     }
 }
 
-/// An impulse's band split rings this long (samples: the low band's
-/// one-pole at 314 Hz falls 80 dB in ~450).
-const IMPULSE_LEN: usize = 512;
+/// The longest an impulse's band split may ring (samples; the bank
+/// keeps it until 80 dB down).
+const IMPULSE_MAX: usize = 4096;
 
 /// Longest kernel (s): a continued tail stops here even if it is still
 /// above -60 dB (memory and cost: ~30 MB per source per 20 s).

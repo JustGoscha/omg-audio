@@ -5,15 +5,12 @@
 //! Claim: a click through a renderer with reverb levels L_b plays, per
 //! band, the energy the click shaped by the tracer's bands at L_b holds
 //! (`BandSplit::process`, the kernel's own synthesis) — whatever the
-//! decays: the high band faster than the mid, as traced, or not. Equal
-//! decays: within 0.2 dB. A faster high band: within 1.7 dB (measured)
-//! for every band within 10 dB of the loudest — the sends are solved from
-//! a model of the network's tail per frequency (`Fdn::band_make_up`),
-//! not exact for its first passes. A band far under the loudest carries
-//! that band's skirt through a network decaying differently there:
-//! measured up to +4.3 dB on a low band 30 dB under a treble-heavy field
-//! (rare in a scattered field). (Two shelves relative to the mid, as
-//! before: up to +25 dB.)
+//! decays: the high band faster than the mid, as traced, or not — every
+//! band within 2 dB (measured: 0.3 at equal decays, 1.5 at worst, a mid
+//! under a treble-heavy field at the shortest decays). The sends are
+//! solved from a model of the network's tail per frequency
+//! (`Fdn::band_make_up`), not exact for its first passes. (Two shelves
+//! relative to the mid, as before: up to +25 dB.)
 //!
 //! Isolation: bus-only `Renderer::new`, no taps, the W channel split into
 //! the tracer's bands (its scale against energy taken from a flat case).
@@ -67,25 +64,19 @@ fn each_band_plays_the_energy_it_is_given() {
     // the W channel's share of the network's energy (flat, equal decays)
     let flat = split_energy(&reverb_w([0.1; 3], [1.0; 3]));
     let w_scale = flat.iter().sum::<f64>() / split_energy(&shaped_click([0.1; 3])).iter().sum::<f64>();
-    let (mut worst, mut worst_far) = (0.0f64, 0.0f64);
+    let mut worst = 0.0f64;
     for rt60 in [[1.0f32, 1.0, 1.0], [1.2, 1.2, 0.4], [3.0, 3.0, 0.8], [0.5, 0.5, 0.2]] {
         for level in [[0.1f32, 0.1, 0.1], [1.0, 0.1, 0.01], [0.03, 0.1, 0.3], [0.5, 0.1, 0.002]] {
             let got = split_energy(&reverb_w(level, rt60));
             let want = split_energy(&shaped_click(level));
             let mut line = String::new();
             for b in 0..3 {
-                let top = want.iter().fold(0.0f64, |a, &x| a.max(x));
                 let d = db_pow(got[b] / w_scale) - db_pow(want[b]);
-                if want[b] > top * 0.1 {
-                    worst = worst.max(d.abs());
-                } else {
-                    worst_far = worst_far.max(d.abs());
-                }
+                worst = worst.max(d.abs());
                 line += &format!(" {d:+5.1}");
             }
             println!("rt60 {rt60:?} levels {level:?}: band error dB{line}");
         }
     }
-    assert!(worst < 2.0, "a band within 10 dB of the loudest off by {worst:.1} dB");
-    assert!(worst_far < 6.0, "a band far under the loudest off by {worst_far:.1} dB");
+    assert!(worst < 2.0, "a band off by {worst:.1} dB");
 }

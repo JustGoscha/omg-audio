@@ -312,3 +312,37 @@ v5.5's tails indoors are noise-like. On the open square a clap's tail
 is a sparse train of facade echoes — physically so; v3 makes it ten
 times spikier.
 
+## A closed door sounds closed: the bands
+
+The tracer gives energies in three bands (centres 125 / 790 / 5600 Hz);
+the renderer plays them by splitting the sound into bands and summing
+them at their gains. The kernel's noise, its impulses, the stand-in's
+send and the beds seeping through walls split with one-pole crossovers
+(6 dB/octave): the loudest band's skirt covered the others. A response
+shaped like a wall's transmission — bass 0, mids −14, treble −34 dB —
+played its mids at −7 and its treble at −18 dB (`fx_band_colour`): the
+field behind a closed door far brighter than traced. Now
+Linkwitz–Riley crossovers (24 dB/octave; `bands::BandSplit`, the low
+band through the upper crossover's all-pass so equal gains stay flat):
+−13.1 and −32.9 dB. The impulse rig splits its output the same way
+(kept in the rig, so engines of any age read alike — numbers from here
+on are in these bands; earlier tables in one-pole bands).
+
+The club from the entrance, door shut against open, settled (dB,
+low / mid / high; `bands/door_*`):
+
+| | before | after |
+|---|---|---|
+| early | −25.4 / −30.0 / −37.9 | −25.9 / −34.6 / −41.1 |
+| late | −23.8 / −27.7 / −33.9 | −24.0 / −32.8 / −38.6 |
+
+The bass leaks as it did; the mids and treble are 3–5 dB further down,
+as the door's transmission says. Right after a shut the field through
+the door is a young estimate and its treble reads low (the click 50 ms
+after: −2.6 / −2.6 / −5.2 dB against settled; one-pole bands hid it
+under the bass's skirt). The stand-in still follows the convolution
+(`bands/ears_*`: mean |error| 1.4 dB). Render cost: the split costs nine
+second-order sections where it ran two one-poles — web render 18.7 →
+19.2 % of real time, Godot stress 2.85 → 2.60× (per-path taps keep their
+own shaping: OPEN.md).
+

@@ -1,6 +1,7 @@
 //! The engine measured with IMPULSES: single-sample clicks played on the
 //! demo town's sources through the whole engine (simulation + mixer + the
-//! render governor), the output split into the tracer's three bands and
+//! render governor), the output split into the tracer's three bands
+//! (Linkwitz–Riley; before Oct 29's band change, one-pole) and
 //! read as impulse responses — energy per band, early (≤ 80 ms after the
 //! free-field arrival) and late, arrival times, envelope steps. No music,
 //! no loops: what comes out is the engine's response and nothing else.
@@ -67,24 +68,68 @@ fn db(x: f64) -> f32 {
     (10.0 * x.max(1e-30).log10()) as f32
 }
 
-/// One-pole band split at the tracer's crossovers (314 Hz, 2.1 kHz): the
-/// bands sum to the input.
+/// The tracer's bands, split by Linkwitz–Riley crossovers (4th order)
+/// at 314 Hz and 2.1 kHz — what each band holds, without one band's skirt
+/// over the next. Kept here, not taken from the engine, so engines of any
+/// age are read alike.
 struct Bands {
-    lo: f32,
-    hi: f32,
-    c_lo: f32,
-    c_hi: f32,
+    lp1: [Biq; 2],
+    hp1: [Biq; 2],
+    lp2: [Biq; 2],
+    hp2: [Biq; 2],
+    ap2: Biq,
+}
+
+#[derive(Clone, Copy)]
+struct Biq {
+    b: [f64; 3],
+    a: [f64; 2],
+    z: [f64; 2],
+}
+
+impl Biq {
+    /// Butterworth low-pass (0), high-pass (1) or all-pass (2).
+    fn new(kind: u8, fc: f32) -> Self {
+        let w = std::f64::consts::TAU * fc as f64 / SR as f64;
+        let (cw, alpha) = (w.cos(), w.sin() / std::f64::consts::SQRT_2);
+        let a0 = 1.0 + alpha;
+        let b = match kind {
+            0 => [(1.0 - cw) / 2.0, 1.0 - cw, (1.0 - cw) / 2.0],
+            1 => [(1.0 + cw) / 2.0, -(1.0 + cw), (1.0 + cw) / 2.0],
+            _ => [1.0 - alpha, -2.0 * cw, 1.0 + alpha],
+        };
+        Self { b: b.map(|v| v / a0), a: [-2.0 * cw / a0, (1.0 - alpha) / a0], z: [0.0; 2] }
+    }
+    fn tick(&mut self, x: f64) -> f64 {
+        let y = self.b[0] * x + self.z[0];
+        self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
+        self.z[1] = self.b[2] * x - self.a[1] * y;
+        y
+    }
 }
 
 impl Bands {
     fn new() -> Self {
-        let c = |f: f32| 1.0 - (-std::f32::consts::TAU * f / SR).exp();
-        Self { lo: 0.0, hi: 0.0, c_lo: c(314.0), c_hi: c(2100.0) }
+        Self {
+            lp1: [Biq::new(0, 314.0); 2],
+            hp1: [Biq::new(1, 314.0); 2],
+            lp2: [Biq::new(0, 2100.0); 2],
+            hp2: [Biq::new(1, 2100.0); 2],
+            ap2: Biq::new(2, 2100.0),
+        }
     }
     fn split(&mut self, x: f32) -> [f32; 3] {
-        self.lo += self.c_lo * (x - self.lo);
-        self.hi += self.c_hi * (x - self.hi);
-        [self.lo, self.hi - self.lo, x - self.hi]
+        let two = |q: &mut [Biq; 2], x: f64| {
+            let y = q[0].tick(x);
+            q[1].tick(y)
+        };
+        let x = x as f64;
+        let l = two(&mut self.lp1, x);
+        let lo = self.ap2.tick(l);
+        let r = two(&mut self.hp1, x);
+        let mid = two(&mut self.lp2, r);
+        let hi = two(&mut self.hp2, r);
+        [lo as f32, mid as f32, hi as f32]
     }
 }
 
@@ -510,6 +555,7 @@ fn still() {
         "hall" => [10.0, 19.0, 1.6],
         "entrance" => [21.0, 30.2, 1.6],
         "north" => [27.0, 48.0, 1.6],
+        "inside" => [27.0, 30.0, 1.6],
         _ => [15.0, 32.0, 1.6],
     };
     if i == FEET {

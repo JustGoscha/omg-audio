@@ -1,0 +1,6 @@
+door (v5): club door shut at 6 s, clicked 0.05 s later; energy dB low/mid/high
+   open        early   -4.2   -0.3    7.4  late   -1.9    1.1    4.6
+   shut+0.05   early  -31.7  -30.7  -30.6  late  -30.3  -30.8  -33.3
+   settled     early  -29.6  -30.2  -30.5  late  -25.7  -26.6  -29.2
+   shut+0.05 − settled: early  -2.1  -0.4  -0.2  late  -4.6  -4.2  -4.1
+   settled − open:     early -25.4 -30.0 -37.9  late -23.8 -27.7 -33.9

@@ -71,16 +71,13 @@ pub fn rt60_for_centre_time(ts: f32) -> f32 {
 /// The fastest decay `set_rt60` plays.
 const MIN_RT60: f32 = 0.05;
 
-/// The tracer's band crossovers (omg-dsp bands: one-pole at 314 Hz and
-/// 2.1 kHz, `bands::BandSplit`).
-const BAND_XOVER_HZ: [f32; 2] = [314.0, 2100.0];
 /// Frequencies the band averages are taken at (log-spaced, 20 Hz to
 /// Nyquist).
 const BAND_POINTS: usize = 48;
 
-/// The one-pole bands' responses at log-spaced points: per point its
-/// width Δf and each band's complex response (low = LP, mid = LP_hi −
-/// LP_lo, high = 1 − LP_hi; they sum to 1), and the frequency.
+/// The tracer's bands (`bands::BandSplit`) at log-spaced points: per
+/// point its width Δf and each band's complex response, and the
+/// frequency.
 #[derive(Clone, Copy)]
 struct BandPoint {
     f: f32,
@@ -89,22 +86,12 @@ struct BandPoint {
 }
 
 fn band_points(sample_rate: f32) -> [BandPoint; BAND_POINTS] {
-    let lp = |fc: f32, f: f32| -> (f32, f32) {
-        let c = 1.0 - (-core::f32::consts::TAU * fc / sample_rate).exp();
-        let w = core::f32::consts::TAU * f / sample_rate;
-        let a = 1.0 - c;
-        let (dr, di) = (1.0 - a * w.cos(), a * w.sin());
-        let d2 = dr * dr + di * di;
-        (c * dr / d2, -c * di / d2)
-    };
     let (f0, f1) = (20.0f32, 0.5 * sample_rate);
     let at = |k: f32| f0 * (f1 / f0).powf(k / (BAND_POINTS - 1) as f32);
     core::array::from_fn(|k| {
         let f = at(k as f32);
         let df = at(k as f32 + 0.5) - at(k as f32 - 0.5);
-        let (lr, li) = lp(BAND_XOVER_HZ[0], f);
-        let (hr, hi) = lp(BAND_XOVER_HZ[1], f);
-        BandPoint { f, df, s: [(lr, li), (hr - lr, hi - li), (1.0 - hr, -hi)] }
+        BandPoint { f, df, s: crate::bands::responses(sample_rate, f.min(0.499 * sample_rate)) }
     })
 }
 
