@@ -68,7 +68,4 @@ levelling the ambience bed on the render path, is gone).
 
 **Open** (OPEN.md): the car's bursts once it is ~120 m north (an
 occlusion switching at once — the morning's engine does the same); the
-door's lag (after the leaf shuts the tone keeps falling for 2+ s) and a
-treble floor after it that varies run to run; the flute's level wobbling
-±2 dB over 10 ms windows while hovering (the estimate's noise at the low
-rungs).
+estimate's ±2–5 dB wobble at the low rungs while moving.
