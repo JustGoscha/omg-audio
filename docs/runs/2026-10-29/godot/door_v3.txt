@@ -1,0 +1,17 @@
+/private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/runs_v6/door_v3: 9.0 s at 44100 Hz
+  artifacts (above 3 kHz, under the whole; a pure tone's output has none):
+    closed    390 windows: median  -50.5 dB, worst  -23.6 dB, over −40 dB  35, over −30 dB   5
+    opening   201 windows: median  -28.2 dB, worst   -5.0 dB, over −40 dB 166, over −30 dB 106
+    open      601 windows: median  -24.5 dB, worst   -4.1 dB, over −40 dB 585, over −30 dB 415
+    shutting  200 windows: median  -24.0 dB, worst   -7.7 dB, over −40 dB 199, over −30 dB 159
+    shut      403 windows: median  -29.0 dB, worst  -12.0 dB, over −40 dB 377, over −30 dB 225
+    loudest: 5.707s -4dB (open), 2.784s -5dB (opening), 5.702s -5dB (open), 5.692s -5dB (open), 5.712s -6dB (open), 2.474s -6dB (opening), 5.672s -6dB (open), 2.769s -7dB (opening)
+  level jumps (10 ms off its 90 ms course):
+    closed    196 windows: >2 dB  50, >4 dB  14
+    opening   100 windows: >2 dB  31, >4 dB   8
+    open      300 windows: >2 dB  88, >4 dB  31
+    shutting  100 windows: >2 dB  31, >4 dB   7
+    shut      197 windows: >2 dB  61, >4 dB  17
+  audio thread: 776 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 3 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 2 at the start; 0.5s → 3, 2.4s → 2
+  engine: tick 4.1–17.4 ms, load up to 0.29, budget changes 0 (taps 480 → 480), late frames 0
