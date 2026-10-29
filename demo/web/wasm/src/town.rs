@@ -42,7 +42,7 @@ pub fn geometry(rooms: &[RoomDef], doors: &[Door]) -> Geometry {
 /// hole is acoustically open) — a glass pane always, a leaf for the
 /// covered share (the walkthrough's `aperture_box`).
 pub fn aperture(d: &Door) -> Option<([f32; 3], [f32; 3], Material)> {
-    let (lat_c, plane) = if d.axis == 0 { (d.pos.1, d.pos.0) } else { (d.pos.0, d.pos.1) };
+    let lat_c = if d.axis == 0 { d.pos.1 } else { d.pos.0 };
     let (lat0, lat1, material) = if d.glass {
         let t = walkthrough::glass_transmission(d.heavy);
         (lat_c - d.half, lat_c + d.half, Material { transmission: t, ..Material::GLASS })
@@ -54,12 +54,27 @@ pub fn aperture(d: &Door) -> Option<([f32; 3], [f32; 3], Material)> {
         let t = if d.heavy { walkthrough::HEAVY_PANEL_TRANSMISSION } else { walkthrough::DOOR_PANEL_TRANSMISSION };
         (lat_c - d.half, lat_c - d.half + covered, Material { transmission: t, ..Material::DOOR })
     };
+    let (mn, mx) = slab(d, lat0, lat1);
+    Some((mn, mx, material))
+}
+
+/// A door's whole hole, the leaf's opening (`Simulation::
+/// set_object_aperture`: v6.2 prices the paths through it by how much of
+/// it the leaf covers).
+pub fn hole(d: &Door) -> ([f32; 3], [f32; 3]) {
+    let lat_c = if d.axis == 0 { d.pos.1 } else { d.pos.0 };
+    slab(d, lat_c - d.half, lat_c + d.half)
+}
+
+/// The door's 8 cm slab between `lat0` and `lat1` across its hole.
+fn slab(d: &Door, lat0: f32, lat1: f32) -> ([f32; 3], [f32; 3]) {
+    let plane = if d.axis == 0 { d.pos.0 } else { d.pos.1 };
     let (z0, z1) = (d.zc - 0.5 * d.height, d.zc + 0.5 * d.height);
-    Some(if d.axis == 0 {
-        ([plane - 0.04, lat0, z0], [plane + 0.04, lat1, z1], material)
+    if d.axis == 0 {
+        ([plane - 0.04, lat0, z0], [plane + 0.04, lat1, z1])
     } else {
-        ([lat0, plane - 0.04, z0], [lat1, plane + 0.04, z1], material)
-    })
+        ([lat0, plane - 0.04, z0], [lat1, plane + 0.04, z1])
+    }
 }
 
 /// Per logical source (the walkthrough's), its engine sources — one, or a
@@ -86,8 +101,8 @@ pub struct Town {
     pub rooms: Vec<RoomDef>,
     pub doors: Vec<Door>,
     pub defs: Vec<SourceDef>,
-    /// Per door: its object (None while the hole is open).
-    objects: Vec<Option<ObjectId>>,
+    /// Per door: its object (a leaf disabled while its hole is open).
+    objects: Vec<ObjectId>,
     /// Per logical source: its engine sources (one, or a speaker rig's).
     pub sources: Vec<Vec<SourceId>>,
     /// Per logical source: muted on the mixer (not traced at all), and a
@@ -107,7 +122,18 @@ impl Town {
         sim.set_geometry(geometry(&rooms, &doors));
         let objects = doors
             .iter()
-            .map(|d| aperture(d).map(|(mn, mx, m)| sim.add_object(mn, mx, m)))
+            .map(|d| {
+                // a leaf stays an object while its hole is open (disabled):
+                // what v6.2 learnt about its doorway stays with it
+                let (mn, mx) = hole(d);
+                let (a, b, m) = aperture(d).unwrap_or((mn, mx, Material::DOOR));
+                let id = sim.add_object(a, b, m);
+                if !d.glass {
+                    sim.set_object_aperture(id, mn, mx);
+                    sim.set_object_enabled(id, aperture(d).is_some());
+                }
+                id
+            })
             .collect();
         let dyn_slots = walkthrough::DYN_BASE..walkthrough::DYN_BASE + walkthrough::DYN_SLOTS;
         let sources: Vec<Vec<SourceId>> = defs
@@ -193,14 +219,14 @@ impl Town {
             return;
         }
         d.openness = o;
-        match (aperture(d), self.objects[i]) {
-            (Some((mn, mx, _)), Some(id)) => sim.set_object(id, mn, mx),
-            (Some((mn, mx, m)), None) => self.objects[i] = Some(sim.add_object(mn, mx, m)),
-            (None, Some(id)) => {
-                sim.remove_object(id);
-                self.objects[i] = None;
+        let id = self.objects[i];
+        match aperture(d) {
+            Some((mn, mx, m)) => {
+                sim.set_object(id, mn, mx);
+                sim.set_object_material(id, m);
+                sim.set_object_enabled(id, true);
             }
-            (None, None) => {}
+            None => sim.set_object_enabled(id, false),
         }
     }
 

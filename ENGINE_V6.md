@@ -242,6 +242,86 @@ them — an OmgDoor on its side, its covered share growing from the top,
 priced continuously as it comes down. The seminar room's RT60 4.8 → 1.0
 s, the cathedral's ~7 → 3.2 s (`record.gd` curtains, quality pinned).
 
+## v6.2: a door heard where it is
+
+v6 and v6.1 average each tick's traced field over the last few ticks
+(α 0.35 a tick while a door moves): a door swinging shut was heard where
+it had been ~0.15–0.3 s before — the reverb and the early sound behind
+it trailed the leaf ("a closing door seems to cut the sound later").
+Without the average a tick's estimate is too noisy (55–110 dB of
+climbing back, above). v6.2 (`Config::v62`, on v6.1; the demos'
+default) keeps the average and prices it again: every walked path that
+crossed a door's opening or bounced off its leaf keeps where and which
+way (`v3::Event`), and at every tick and every frame between, the
+average's door paths are priced with the leaf where it is now — a path
+that crossed where the leaf now stands passes t² (its transmission), a
+bounce off where the leaf no longer stands is gone. The host says what
+an object fills (`Simulation::set_object_aperture`: a doorway for its
+leaf, a window for its curtain); Godot sends every OmgDoor's whole box,
+the web town every door's hole.
+
+What it took to be exact, each found by measuring:
+
+- **Not by area.** The share of the opening covered is an assumption,
+  and wrong: through a gap a few millimetres wide in a 4 cm leaf only
+  near-straight rays pass — the walk's energy through a 5 mm gap sat 14
+  dB under its area (a slot's view factor). Each path priced by its own
+  crossing needs no model.
+- **A slot passes what enters it.** A path entering the leaf's slab
+  through the gap that runs into the leaf's edge reflects along the slot
+  and through: a crossing is priced by where it enters the slab.
+- **Reflections a closing leaf would give.** A closing door keeps in the
+  room what it no longer lets out — reflections never walked, as the
+  leaf wasn't there. Where a path passes an opening's open part, a
+  quarter of the time it also walks on as the leaf would reflect it
+  there: recorded for the pricing, nothing deposited (`VIRTUAL_P`).
+- **A ratio, not a difference.** Priced as the average as walked less
+  what the door now removes — two large noisy sums — near shut the noise
+  was all that was left, under the shut door's level. Now: what the door
+  paths deposited (exact) × what the kept paths carry now against as
+  walked.
+- **Split at the leaf.** What passes a shut leaf was one ray in thirty
+  (the draw's floor, × 34): a heavy-tailed few that a short average reads
+  low — v6.2 without it was worse than v6.1 (5.5 against 4.8 dB rms,
+  below). At a door's leaf a ray now splits (v4's rule, once a ray): what
+  passes and what reflects are both walked. A curtain (it reflects
+  nothing) neither splits nor reflects virtually.
+- **Kept, not dropped.** Per tick 256 paths a part (early, late), by
+  energy over a 4 × 4 grid of where they met the opening (pre-thinned
+  while walking against the last tick's threshold, unbiased); the six
+  newest ticks apart, older ones joined — a path walked by an open door
+  weighs in long after its tick's weight is small (its share is tens of
+  dB over the shut door's), so none is dropped by weight. A door
+  standing still costs no pricing (its paths' signature unchanged).
+
+Measured against the door standing still at each openness (averaged
+long — what the swing should sound like at every instant):
+
+- Isolated (`fx_simulation::a_door_swinging_shut_is_heard_where_it_is`,
+  a room's doorway, the ears at four places before and beside it): rms
+  v6.1 4.4 dB, v6.2 2.9 dB; over three seeds 4.80 → 3.40 dB (better in 10
+  of 12).
+- The town's club door, the ears 1 m before it (`assess doorswing
+  EAR=0`, three seeds, against `assess doortruth DUR=8`): v6.1 5.85 dB
+  rms, v6.2 4.08 dB, better in every seed; the treble under the tone
+  unchanged (−38 … −45 dB worst).
+- Godot, the club's inner door shutting while you stand before it
+  (`record.gd door`, quality auto): 0.7 s after the shut command v6.2 is
+  22 dB down where v6.1 still holds at −12 dB until the leaf settles;
+  within 3 dB of shut at 6.94 against 7.11 s; no level jumps, nothing
+  over −40 dB above 3 kHz (`docs/runs/2026-10-29/door`).
+- Cost (the town, every source sounding, the ears by the club door,
+  `examples/door_ms`): a tick 15.4 → 17.8 ms standing (the split at
+  leaves and the paths' records), 18.8 → 23.1 ms while the door moves; a
+  frame between ticks 0.18 → 0.38 ms while it moves.
+
+Left: a door seen at a slant through a centimetre-wide gap is still a
+heavy-tailed estimate (one position of the four: v6.1 2.2, v6.2 2.7 dB);
+the GPU's walk records no door paths (with the walk on the GPU only the
+CPU's late family is priced); a path meeting apertures more than six
+times is left to the averages; the virtual reflections are first order;
+where a door comes to rest the averages still start over (young).
+
 ## Still open (OPEN.md)
 
 A loud room heard through its walls or a shut door is a heavy-tailed

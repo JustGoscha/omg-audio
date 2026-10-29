@@ -123,11 +123,12 @@ pub extern "C" fn sim_setup(sample_rate: f32) {
     let cfg = Config {
         quality: Quality::Medium,
         compute: Compute::Cpu,
-        // v6.1: v3's estimate and reverb with v6's refinements, the
-        // reverb as long and loud as traced (the page's engine switch
-        // picks others)
+        // v6.2: v3's estimate and reverb with v6's refinements, the
+        // reverb as long and loud as traced, a door heard where it is
+        // (the page's engine switch picks others)
         v6: true,
         v61: true,
+        v62: true,
         sample_rate,
         // no threads in a worker's wasm: kernels a step a tick
         kernel_thread: false,
@@ -278,6 +279,15 @@ pub extern "C" fn sim_set_v6(on: u32) {
 pub extern "C" fn sim_set_v61(on: u32) {
     let h = sim();
     h.cfg.v61 = on != 0;
+    h.reconfigure();
+}
+
+/// Engine v6.2 (on v6.1): the paths that met a door priced again with
+/// its leaf where it is now, every tick and frame (`Config::v62`).
+#[no_mangle]
+pub extern "C" fn sim_set_v62(on: u32) {
+    let h = sim();
+    h.cfg.v62 = on != 0;
     h.reconfigure();
 }
 

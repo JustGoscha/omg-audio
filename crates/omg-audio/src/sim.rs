@@ -17,11 +17,12 @@ use omg_core::material::Material;
 use omg_core::mesh::{Mesh, MeshBuilder};
 use omg_core::params::{ParamBlock, RemoteReverb, Tap};
 use omg_core::v3::walker::{trace_with, V3Walker};
-use omg_core::v3::{Budget, DenseResponse, Motion, Source, Track, Tracer, World};
+use omg_core::v3::{Aperture, Budget, DenseResponse, Motion, Source, Track, Tracer, World};
 use std::collections::VecDeque;
 use omg_dsp::dense::{build_kernel_max, DenseKernel, KernelBuilder};
 use std::sync::Arc;
 use omg_core::vec3::Vec3;
+use omg_core::NBANDS;
 
 /// How much ray tracing a tick may do: a level on the quality ladder
 /// (`LADDER`), the named tiers being four of its rungs: low 4, medium
@@ -165,6 +166,12 @@ pub struct Config {
     /// the late level uncapped (`omg_core::tracer::fit_reverb`; v6 clamps
     /// the time at 5 s and the level under 0.7).
     pub v61: bool,
+    /// Engine v6.2 (on v6.1): an object with an aperture
+    /// (`Simulation::set_object_aperture`: a door's leaf in its doorway, a
+    /// curtain in its window) prices the paths through it at how much of
+    /// it is covered now — the reverb and the early field behind a door
+    /// follow it every tick and every frame between, not the averages.
+    pub v62: bool,
     /// The mixer's sample rate (v4 builds its convolution kernels for it).
     pub sample_rate: f32,
     /// v4: build convolution kernels on a thread of their own (off the
@@ -225,6 +232,7 @@ impl Config {
         }
         self.v5 &= self.v4;
         self.v61 &= self.v6;
+        self.v62 &= self.v61;
         self
     }
 }
@@ -240,6 +248,7 @@ impl Default for Config {
             v5: true,
             v6: false,
             v61: false,
+            v62: false,
             sample_rate: 48_000.0,
             kernel_thread: true,
             max_kernels: 64,
@@ -318,6 +327,9 @@ struct Src {
     /// from one (with the response, gain and tick it was built from).
     dense: Option<DenseResponse>,
     kernel: Option<(Arc<DenseKernel>, DenseResponse, f32, u64)>,
+    /// v6.2: by how much its block's estimated parts (early taps, reverb)
+    /// were repriced since its last tick, per band (`Tracer::reprice`).
+    repriced: [[f32; NBANDS]; 2],
     /// Where it was (simulation clock, position), oldest first: every
     /// path reaches it where it emitted what arrives now (`Track`).
     track: VecDeque<(f64, Vec3)>,
@@ -341,6 +353,17 @@ struct Obj {
     max: Vec3,
     material: Material,
     enabled: bool,
+    /// The opening it fills (`set_object_aperture`).
+    aperture: Option<(Vec3, Vec3)>,
+}
+
+impl Obj {
+    /// v6.2: its opening, and itself as the leaf in it while enabled.
+    fn aperture(&self) -> Option<Aperture> {
+        let (min, max) = self.aperture?;
+        let leaf = self.enabled.then_some((self.min, self.max));
+        Some(Aperture::new(self.id.0, min, max, leaf, self.material))
+    }
 }
 
 /// The acoustic world: geometry, objects, sources, listener.
@@ -375,6 +398,8 @@ pub struct Simulation {
     next_source: u32,
     next_object: u32,
     panels: Vec<(Vec3, Vec3, Material)>,
+    /// v6.2: the objects' apertures as they are (`Obj::aperture`).
+    apertures: Vec<Aperture>,
     picks: Vec<(f32, usize)>,
     traced_last: usize,
     debug_paths: bool,
@@ -530,6 +555,7 @@ impl Simulation {
                 t.v5 = cfg.v5;
                 t.v6 = cfg.v6;
                 t.v61 = cfg.v61;
+                t.v62 = cfg.v62;
                 t.threads = cfg.walk_threads;
                 t
             },
@@ -549,6 +575,7 @@ impl Simulation {
             next_source: 0,
             next_object: 0,
             panels: Vec::new(),
+            apertures: Vec::new(),
             picks: Vec::new(),
             traced_last: 0,
             debug_paths: false,
@@ -579,6 +606,7 @@ impl Simulation {
         self.tracer.v5 = cfg.v5;
         self.tracer.v6 = cfg.v6;
         self.tracer.v61 = cfg.v61;
+        self.tracer.v62 = cfg.v62;
         self.tracer.threads = cfg.walk_threads;
         if rebuild {
             self.make_walker();
@@ -597,6 +625,7 @@ impl Simulation {
         self.tracer.v5 = self.cfg.v5;
         self.tracer.v6 = self.cfg.v6;
         self.tracer.v61 = self.cfg.v61;
+        self.tracer.v62 = self.cfg.v62;
         self.tracer.threads = self.cfg.walk_threads;
         self.tracer.debug = self.debug_paths;
         for s in &mut self.sources {
@@ -713,6 +742,7 @@ impl Simulation {
             traced: None,
             dense: None,
             kernel: None,
+            repriced: [[1.0; NBANDS]; 2],
             track: VecDeque::from([(self.clock, v3(desc.position))]),
             seen: (self.clock, v3(desc.position)),
             since: f64::NEG_INFINITY,
@@ -756,6 +786,7 @@ impl Simulation {
                 traced: s.traced,
                 dense: s.dense.take(),
                 kernel: s.kernel.take(),
+                repriced: s.repriced,
                 track: s.track.clone(),
                 seen: s.seen,
                 since: s.since,
@@ -827,7 +858,7 @@ impl Simulation {
     pub(crate) fn add_object_as(&mut self, id: ObjectId, min: [f32; 3], max: [f32; 3], material: Material) {
         self.next_object = self.next_object.max(id.0 + 1);
         let (a, b) = (v3(min), v3(max));
-        self.objects.push(Obj { id, min: a.min(b), max: a.max(b), material, enabled: true });
+        self.objects.push(Obj { id, min: a.min(b), max: a.max(b), material, enabled: true, aperture: None });
     }
 
     /// Move / resize an object (a door swinging shut: its box grows
@@ -843,6 +874,19 @@ impl Simulation {
     pub fn set_object_material(&mut self, id: ObjectId, material: Material) {
         if let Some(o) = self.objects.iter_mut().find(|o| o.id == id) {
             o.material = material;
+        }
+    }
+
+    /// The opening the object fills (a doorway for its leaf, a window for
+    /// its curtain): a box, thin across it, that the object's box covers
+    /// in part or whole as it moves (disabled: none of it). v6.2 prices the
+    /// paths through the opening by how much is covered (`Config::v62`);
+    /// keep the object (disable it) while the opening is bare, so what
+    /// was learnt about it stays.
+    pub fn set_object_aperture(&mut self, id: ObjectId, min: [f32; 3], max: [f32; 3]) {
+        if let Some(o) = self.objects.iter_mut().find(|o| o.id == id) {
+            let (a, b) = (v3(min), v3(max));
+            o.aperture = Some((a.min(b), a.max(b)));
         }
     }
 
@@ -1105,10 +1149,7 @@ impl Simulation {
         let ear = v3(self.listener.position);
         self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect(), self.objects_sig(), self.clock));
 
-        self.panels.clear();
-        for o in self.objects.iter().filter(|o| o.enabled) {
-            self.panels.push((o.min, o.max, o.material));
-        }
+        self.collect_panels();
 
         // which sources trace this tick: all, or the most overdue by
         // loudness × age (a moved source is overdue at once)
@@ -1151,7 +1192,7 @@ impl Simulation {
             budget.rays = ((budget.rays as f32 * self.gpu_rays) as u32).max(64);
         }
         let cpu_budget = self.cfg.quality.budget(false);
-        let world = World { grade: self.grade, pockets: &[], ..World::new(&self.mesh, &self.panels) };
+        let world = World { grade: self.grade, pockets: &[], apertures: &self.apertures, ..World::new(&self.mesh, &self.panels) };
         let traced: Vec<&Src> = self.picks.iter().map(|&(_, i)| &self.sources[i]).collect();
         let mo = motion(self.clock, &traced);
         let onsets: Vec<f32> = traced
@@ -1205,6 +1246,7 @@ impl Simulation {
                 });
             }
             s.block = pb;
+            s.repriced = [[1.0; NBANDS]; 2];
             s.traced = Some((s.pos, tick));
         }
         let now = self.clock;
@@ -1284,11 +1326,8 @@ impl Simulation {
             return None;
         }
         self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect(), sig, now));
-        self.panels.clear();
-        for o in self.objects.iter().filter(|o| o.enabled) {
-            self.panels.push((o.min, o.max, o.material));
-        }
-        let world = World { grade: self.grade, pockets: &[], ..World::new(&self.mesh, &self.panels) };
+        self.collect_panels();
+        let world = World { grade: self.grade, pockets: &[], apertures: &self.apertures, ..World::new(&self.mesh, &self.panels) };
         let idx: Vec<usize> =
             (0..self.sources.len()).filter(|&i| sounding(&self.sources[i], now, ear) && self.sources[i].traced.is_some()).collect();
         let srcs: Vec<Source> = idx
@@ -1321,6 +1360,29 @@ impl Simulation {
                     changed = true;
                 }
             }
+            // v6.2: the estimated parts priced at the apertures as they
+            // are now (a door on its way between two ticks)
+            if let Some(r) = self.tracer.reprice(s.id.0, &self.apertures) {
+                let step = |part: usize| -> [f32; NBANDS] { core::array::from_fn(|b| (r[part][b] / s.repriced[part][b].max(1e-9)).sqrt()) };
+                let (early, late) = (step(0), step(1));
+                if early.iter().chain(&late).any(|&x| (x - 1.0).abs() > 1e-4) {
+                    for t in s.block.taps.iter_mut().filter(|t| omg_core::v3::estimated_key(t.key)) {
+                        for b in 0..NBANDS {
+                            t.gains[b] *= early[b];
+                        }
+                    }
+                    for b in 0..NBANDS {
+                        s.block.reverb.level[b] *= late[b];
+                    }
+                    if let Some(rm) = s.block.remote.as_mut() {
+                        for b in 0..NBANDS {
+                            rm.send[b] *= late[b];
+                        }
+                    }
+                    s.repriced = r;
+                    changed = true;
+                }
+            }
             if changed {
                 s.block.version = version;
             }
@@ -1336,6 +1398,19 @@ impl Simulation {
             ghosts: Vec::new(),
             env: self.last_env.clone(),
         })
+    }
+
+    /// The enabled objects as the walk's panels, and (v6.2) every object's
+    /// aperture as it is.
+    fn collect_panels(&mut self) {
+        self.panels.clear();
+        for o in self.objects.iter().filter(|o| o.enabled) {
+            self.panels.push((o.min, o.max, o.material));
+        }
+        self.apertures.clear();
+        if self.cfg.v62 {
+            self.apertures.extend(self.objects.iter().filter_map(Obj::aperture));
+        }
     }
 
     /// A signature of the enabled objects (where they are, what they are).

@@ -47,7 +47,7 @@ fn main() {
         }
         Quality::Custom(b)
     };
-    let mut cfg = Config { quality, compute: Compute::Cpu, v4: mode == "v4" || mode == "v5", v5: mode == "v5", v6: mode == "v6" || mode == "v6.1", v61: mode == "v6.1", ..Config::default() };
+    let mut cfg = Config { quality, compute: Compute::Cpu, v4: mode == "v4" || mode == "v5", v5: mode == "v5", v6: mode.starts_with("v6"), v61: mode == "v6.1" || mode == "v6.2", v62: mode == "v6.2", ..Config::default() };
     // THREADS=n: the walk's threads (default: the machine's default)
     if let Some(n) = env("THREADS").and_then(|v| v.parse().ok()) {
         cfg.walk_threads = n;

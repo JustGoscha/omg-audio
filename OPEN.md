@@ -151,15 +151,20 @@ track stood still a frame and jumped at twice the speed the next, and
 at the closest pass the delay moves fastest. A place sent again now
 keeps the time it was first sent there: the pass −53 / −54 dB.
 
-### v6.1: a closing door seems to cut the sound later
+### A closing door is heard where it is — v6.2, Oct 29
 Reported while playing (Oct 29, night): with v6.1 a door shutting
-muffles what comes through it later than with v6 — the sound stays a
-moment longer. Likely the louder, longer reverb: the parametric
-reverb's energy already ringing decays at the source room's (now
-uncapped) time and from a level 12 dB higher, so it stays audible
-longer after the door's level drops. To measure (`assess doorswing`,
-v6 against v6.1) and to fix where the physics says: what a shut door
-lets through of a ringing room is its transmission, at once.
+muffles what comes through it later than with v6. Measured: not the
+reverb's length — the averages trail a moving door (α 0.35 a tick: ~0.15
+s), and v6.1's louder reverb made the trailing audible. v6.2
+(ENGINE_V6.md, "v6.2") prices the averaged paths through a door with
+its leaf where it is now, every tick and frame: against the door
+standing at each openness, rms 5.85 → 4.08 dB (the town's club, three
+seeds), 4.4 → 2.9 dB (an isolated doorway, four places); in Godot 22 dB
+down 0.7 s after the shut command where v6.1 still held at −12 dB.
+Left over: a door seen at a slant through a centimetre-wide gap (a
+heavy tail: through a narrow gap a few paths carry all), the GPU walk's
+door paths unrecorded, the restart where a door comes to rest (young
+estimate, below).
 
 ### A facade's echo found by chance — first order solved Oct 29
 A car passing the field (`assess cartone`) played the town's facade

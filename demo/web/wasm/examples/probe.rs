@@ -14,7 +14,7 @@ fn main() {
     let src: usize = std::env::var("SRC").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
     let at: Vec<f32> = std::env::var("AT").unwrap_or_else(|_| "15,32,1.6".into()).split(',').map(|v| v.parse().unwrap()).collect();
     let ticks: usize = std::env::var("TICKS").ok().and_then(|s| s.parse().ok()).unwrap_or(200);
-    let cfg = Config { quality: Quality::High, compute: Compute::Cpu, v4: mode == "v4" || mode == "v5", v5: mode == "v5", v6: mode == "v6" || mode == "v6.1", v61: mode == "v6.1", kernel_thread: false, ..Config::default() };
+    let cfg = Config { quality: Quality::High, compute: Compute::Cpu, v4: mode == "v4" || mode == "v5", v5: mode == "v5", v6: mode.starts_with("v6"), v61: mode == "v6.1" || mode == "v6.2", v62: mode == "v6.2", kernel_thread: false, ..Config::default() };
     let mut sim = Simulation::new(cfg);
     let mut town = Town::new(&mut sim);
     // DOOR=i@tick: door i shuts at that tick (doors 3 and i open before)

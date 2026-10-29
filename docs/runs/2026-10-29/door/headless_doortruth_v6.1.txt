@@ -1,0 +1,27 @@
+doortruth (v6.1): the club's tone, the door standing at each openness (ears at 21,30.2,1.6)
+   openness 1.0000: -6.3 dB
+   openness 0.7047: -6.6 dB
+   openness 0.4966: -7.7 dB
+   openness 0.3499: -7.9 dB
+   openness 0.2466: -10.3 dB
+   openness 0.1738: -12.2 dB
+   openness 0.1225: -12.4 dB
+   openness 0.0863: -14.5 dB
+   openness 0.0608: -12.7 dB
+   openness 0.0429: -14.6 dB
+   openness 0.0302: -17.6 dB
+   openness 0.0213: -15.7 dB
+   openness 0.0150: -18.7 dB
+   openness 0.0106: -22.0 dB
+   openness 0.0074: -21.3 dB
+   openness 0.0052: -20.2 dB
+   openness 0.0037: -25.9 dB
+   openness 0.0026: -23.3 dB
+   openness 0.0018: -22.2 dB
+   openness 0.0013: -23.1 dB
+   openness 0.0009: -23.6 dB
+   openness 0.0006: -26.9 dB
+   openness 0.0005: -26.9 dB
+   openness 0.0003: -26.9 dB
+   openness 0.0002: -26.9 dB
+   openness 0.0000: -30.0 dB

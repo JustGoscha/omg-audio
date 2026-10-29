@@ -417,6 +417,8 @@ struct DoorRec {
     id: ObjectId,
     min: [f32; 3],
     max: [f32; 3],
+    /// The whole opening (its aperture).
+    hole: ([f32; 3], [f32; 3]),
     enabled: bool,
     seen: u64,
 }
@@ -521,10 +523,16 @@ pub struct OmgWorld {
     engine_v6: bool,
     /// Engine v6.1 (on v6): its reverb as long and as loud as the trace
     /// says — the decay time fitted without a cap, the late field at the
-    /// traced level (v6: clamped at 5 s, 12 dB under). The default.
+    /// traced level (v6: clamped at 5 s, 12 dB under).
     #[export]
     #[init(val = true)]
     engine_v61: bool,
+    /// Engine v6.2 (on v6.1): a door heard where it is — the averaged
+    /// paths through an `OmgDoor`'s opening or off its leaf priced again
+    /// with the leaf where it is, every tick and frame. The default.
+    #[export]
+    #[init(val = true)]
+    engine_v62: bool,
     /// Record each tick's strongest traced paths for `paths()` (a debug
     /// view). Off: the tracer records nothing.
     #[export]
@@ -534,7 +542,7 @@ pub struct OmgWorld {
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 16],
+    sent: [f32; 17],
     #[init(val = LevelGovernor::new(LEVELS - 1))]
     auto_tier: LevelGovernor,
     auto_ticks: u32,
@@ -961,6 +969,7 @@ impl OmgWorld {
             v5: self.engine_v4 && self.engine_v5,
             v6: self.engine_v6,
             v61: self.engine_v6 && self.engine_v61,
+            v62: self.engine_v6 && self.engine_v61 && self.engine_v62,
             sample_rate: engine_rate(),
             gpu_budget: self.gpu_budget.clamp(0.02, 1.0),
             ..Config::default()
@@ -985,7 +994,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 16];
+        self.sent = [f32::NAN; 17];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -1122,32 +1131,44 @@ impl OmgWorld {
             };
             let Some(m) = materials::get(&mat) else { continue };
             let t = d.get_global_transform();
-            let (x0, x1) = (-0.5 * size.x, -0.5 * size.x + (1.0 - open) * size.x);
-            let mut mn = [f32::MAX; 3];
-            let mut mx = [f32::MIN; 3];
-            for &x in &[x0, x1] {
-                for &y in &[-0.5 * size.y, 0.5 * size.y] {
-                    for &z in &[-0.5 * size.z, 0.5 * size.z] {
-                        let p = eng(t * Vector3::new(x, y, z));
-                        for k in 0..3 {
-                            mn[k] = mn[k].min(p[k]);
-                            mx[k] = mx[k].max(p[k]);
+            // the engine's box over local x from x0 to x1
+            let aabb = |x0: f32, x1: f32| {
+                let mut mn = [f32::MAX; 3];
+                let mut mx = [f32::MIN; 3];
+                for &x in &[x0, x1] {
+                    for &y in &[-0.5 * size.y, 0.5 * size.y] {
+                        for &z in &[-0.5 * size.z, 0.5 * size.z] {
+                            let p = eng(t * Vector3::new(x, y, z));
+                            for k in 0..3 {
+                                mn[k] = mn[k].min(p[k]);
+                                mx[k] = mx[k].max(p[k]);
+                            }
                         }
                     }
                 }
-            }
+                (mn, mx)
+            };
+            let (mn, mx) = aabb(-0.5 * size.x, -0.5 * size.x + (1.0 - open) * size.x);
+            // the whole opening the leaf fills (v6.2 prices the paths
+            // through it by where the leaf is)
+            let hole = aabb(-0.5 * size.x, 0.5 * size.x);
             let enabled = open < 0.999;
             let key = d.instance_id();
             match self.doors.get_mut(&key) {
                 None => {
                     let id = h.engine.add_object(mn, mx, m);
+                    h.engine.set_object_aperture(id, hole.0, hole.1);
                     if !enabled {
                         h.engine.set_object_enabled(id, false);
                     }
-                    self.doors.insert(key, DoorRec { id, min: mn, max: mx, enabled, seen: frame });
+                    self.doors.insert(key, DoorRec { id, min: mn, max: mx, hole, enabled, seen: frame });
                 }
                 Some(r) => {
                     r.seen = frame;
+                    if r.hole != hole {
+                        h.engine.set_object_aperture(r.id, hole.0, hole.1);
+                        r.hole = hole;
+                    }
                     if enabled && (r.min != mn || r.max != mx) {
                         h.engine.set_object(r.id, mn, mx);
                         r.min = mn;
@@ -1185,6 +1206,7 @@ impl OmgWorld {
             self.engine_v5 as i32 as f32,
             self.engine_v6 as i32 as f32,
             self.engine_v61 as i32 as f32,
+            self.engine_v62 as i32 as f32,
         ];
         let cfg = self.sim_config();
         let mut g = host();

@@ -399,13 +399,14 @@ impl Tracer {
                     .iter()
                     .map(|s| Acc::new((s.pos - listener).length() / SPEED_OF_SOUND, self.v4))
                     .collect();
+                self.pre_record(&mut accs, sources);
                 let late_budget = Budget { late_rays: n, ..budget };
                 let sky = self.walk_rays(world, listener, sources, late_budget, &vis, false, &mut accs, &mut dbg);
                 Some((accs, sky))
             }
             _ => None,
         };
-        Some(self.fold_walked(listener, sources, budget, direct, edge_taps, dbg, walked, chains, late))
+        Some(self.fold_walked(listener, sources, budget, direct, edge_taps, dbg, walked, chains, late, world.apertures))
     }
 
     /// Fold a walk's binned contributions (or none, while one is in
@@ -424,6 +425,7 @@ impl Tracer {
         walked: Option<Walked>,
         chains: Option<Vec<Acc>>,
         late: Option<(Vec<Acc>, Vec<([f32; NBANDS], Vec3)>)>,
+        apertures: &[Aperture],
     ) -> Vec<SourceField> {
         // a walk launched before the listener crossed a surface describes
         // the other side: drop it, the next one is from here
@@ -476,6 +478,9 @@ impl Tracer {
         let mut out = Vec::with_capacity(sources.len());
         let shared = self.shared_ticks();
         let fit: fn(&Echogram) -> ReverbParams = if self.v61 { reverb_v61 } else { estimate_reverb };
+        // v6.2: the GPU's walk is not tagged (`Aperture`): only the CPU's
+        // late family's paths are priced by the apertures
+        let aps = (self.v62 && !self.v4).then_some(apertures);
         for (si, s) in sources.iter().enumerate() {
             let t_free = (self.direct_from(si, s, listener).unwrap_or(s.pos) - listener).length() / SPEED_OF_SOUND;
             let block = walked.as_ref().filter(|_| fresh).and_then(|w| {
@@ -496,12 +501,15 @@ impl Tracer {
                     st.fold_v4(acc, budget, listener, s.pos);
                 } else {
                     st.fold(acc.early, acc.echo, budget, self.v6, listener, s.pos);
+                    if let Some(aps) = aps {
+                        st.fold_paths(acc.paths, acc.walked, aps, (self.tick as f32 * 0.618_034).fract());
+                    }
                 }
             }
             out.push(if self.v4 {
                 st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared, fit)
             } else {
-                st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], total, fit)
+                st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], total, fit, aps)
             });
         }
         self.note_heard(sources, &out);

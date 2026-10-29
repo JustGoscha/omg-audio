@@ -38,9 +38,11 @@ function handle(m) {
   } else if (m.type === 'early') {
     // the engine: 3 = v3, 4 = v4, 5 = v5 (v4, its late paths reused
     // across ticks), 6 = v6 (v3's estimate with v6's refinements), 61 =
-    // v6.1 (v6, its reverb as long and loud as traced)
-    w.sim_set_v6(m.mode === 6 || m.mode === 61 ? 1 : 0);
-    w.sim_set_v61(m.mode === 61 ? 1 : 0);
+    // v6.1 (v6, its reverb as long and loud as traced), 62 = v6.2 (v6.1,
+    // a door heard where it is)
+    w.sim_set_v6(m.mode === 6 || m.mode === 61 || m.mode === 62 ? 1 : 0);
+    w.sim_set_v61(m.mode === 61 || m.mode === 62 ? 1 : 0);
+    w.sim_set_v62(m.mode === 62 ? 1 : 0);
     w.sim_set_v4(m.mode === 4 || m.mode === 5 ? 1 : 0);
     w.sim_set_v5(m.mode === 5 ? 1 : 0);
   } else if (m.type === 'mute') {

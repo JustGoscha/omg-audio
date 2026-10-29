@@ -251,6 +251,205 @@ pub struct World<'a> {
     pub grade: Option<f32>,
     /// Below-grade air volumes (a bunker): (min, max).
     pub pockets: &'a [(Vec3, Vec3)],
+    /// v6.2: the openings panels fill (doorways, curtained windows): the
+    /// walked paths through them are priced by how much passes them now
+    /// (`Aperture`).
+    pub apertures: &'a [Aperture],
+}
+
+/// v6.2: an opening a leaf fills — a doorway and its door, a window and
+/// its curtain: the whole opening (a thin box) and what fills it now. A
+/// walked path that crossed the opening or bounced off the leaf keeps
+/// where and which way (`Event`), and is priced again whenever the leaf
+/// moves — at every tick and every frame between, exactly: what each
+/// path would carry with the leaf where it is now (`Aperture::passes`,
+/// `covers`). The averages over ticks hold the paths as they were walked;
+/// a door on its way is heard where it is, not where the average saw it.
+#[derive(Clone, Copy, Debug)]
+pub struct Aperture {
+    /// Keys the paths across ticks (the host's object id).
+    pub id: u32,
+    pub min: Vec3,
+    pub max: Vec3,
+    /// The leaf's box now (None: the opening is bare), and what it is made
+    /// of (bare too: where a path crossed, it might have stood).
+    pub leaf: Option<(Vec3, Vec3)>,
+    pub material: Material,
+    /// The axis across the opening (its box's thinnest), and its middle.
+    ax: usize,
+    mid: f32,
+}
+
+impl Aperture {
+    pub fn new(id: u32, min: Vec3, max: Vec3, leaf: Option<(Vec3, Vec3)>, material: Material) -> Self {
+        let e = max - min;
+        let ax = if e.x <= e.y && e.x <= e.z {
+            0
+        } else if e.y <= e.z {
+            1
+        } else {
+            2
+        };
+        Self { id, min, max, leaf, material, ax, mid: 0.5 * (min.get(ax) + max.get(ax)) }
+    }
+
+    /// Where the segment a→b passes through the opening — across its
+    /// middle plane, within its extent — if it does.
+    fn crossed_by(&self, a: Vec3, b: Vec3) -> Option<Vec3> {
+        let (da, db) = (a.get(self.ax) - self.mid, b.get(self.ax) - self.mid);
+        if da * db >= 0.0 {
+            return None;
+        }
+        let q = a + (b - a) * (da / (da - db));
+        (0..3).filter(|&k| k != self.ax).all(|k| q.get(k) >= self.min.get(k) - 1e-3 && q.get(k) <= self.max.get(k) + 1e-3).then_some(q)
+    }
+
+    /// Its state, hashed into `h`: where its leaf is (gone: none).
+    fn sign(&self, h: u64) -> u64 {
+        let (lo, hi) = self.leaf.unwrap_or((Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.0)));
+        let t = self.material.transmission;
+        let mut h = (h ^ self.id as u64).wrapping_mul(0x100_0000_01b3);
+        for x in [lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, t[0], t[1], t[2]] {
+            h = (h ^ x.to_bits() as u64).wrapping_mul(0x100_0000_01b3);
+        }
+        h
+    }
+
+    /// The energy a path crossing at `x` along `d` keeps through the
+    /// opening as it is: t² where it enters the opening's slab on the leaf,
+    /// all of it where it enters by the open part — a slanted path through
+    /// a narrow gap that runs into the leaf's edge is reflected along the
+    /// gap and through (a slot with reflecting walls passes what enters
+    /// it).
+    fn passes(&self, x: Vec3, d: Vec3) -> [f32; NBANDS] {
+        let Some((lo, hi)) = self.leaf else { return [1.0; NBANDS] };
+        let ax = self.ax;
+        let entry = x - d * (0.5 * (self.max.get(ax) - self.min.get(ax)) / d.get(ax).abs().max(1e-6));
+        if (0..3).filter(|&k| k != ax).all(|k| entry.get(k) >= lo.get(k) && entry.get(k) <= hi.get(k)) {
+            self.material.transmission.map(|t| t * t)
+        } else {
+            [1.0; NBANDS]
+        }
+    }
+
+    /// Is `p`, a bounce on the leaf, still on it?
+    fn covers(&self, p: Vec3) -> bool {
+        self.leaf.is_some_and(|(lo, hi)| (0..3).all(|k| p.get(k) >= lo.get(k) - 2e-3 && p.get(k) <= hi.get(k) + 2e-3))
+    }
+
+    /// Where a path crossing at `x` along `d` would meet a leaf standing
+    /// there: the opening's near face, and the face's normal (against `d`).
+    fn face(&self, x: Vec3, d: Vec3) -> (Vec3, Vec3) {
+        let dn = d.get(self.ax);
+        let half = 0.5 * (self.max.get(self.ax) - self.min.get(self.ax));
+        let mut n = [0.0f32; 3];
+        n[self.ax] = -dn.signum();
+        (x - d * (half / dn.abs().max(1e-6)), Vec3::new(n[0], n[1], n[2]))
+    }
+}
+
+/// v6.2: the share of a path passing an aperture's open part that also
+/// walks on as the leaf would reflect it there (`walk_ray`): a closing
+/// door keeps in the room what it no longer lets out, and the paths
+/// priced as it closes need those reflections — never walked, as the
+/// leaf wasn't there. Walked for the pricing only (nothing deposited as
+/// walked: the leaf wasn't there), each × 1/this.
+const VIRTUAL_P: f32 = 0.25;
+
+/// v6.2: what a walked path did at an aperture (`Aperture`): crossed it
+/// (at `x` along `d`) or bounced off its leaf (at `x`), and what that
+/// gave it then (per band; a bounce: 1, priced again as there or not; a
+/// virtual bounce, where no leaf stood: 0 — `VIRTUAL_P`).
+#[derive(Clone, Copy, Debug)]
+struct Event {
+    /// The aperture: its index in the walk's `World::apertures`, then
+    /// (`SourceState`) its id.
+    ap: u32,
+    bounce: bool,
+    x: Vec3,
+    d: Vec3,
+    then: [f32; NBANDS],
+}
+
+impl Event {
+    fn now(&self, ap: Option<&Aperture>) -> [f32; NBANDS] {
+        match ap {
+            // gone: a bare opening (nothing to bounce off)
+            None => [if self.bounce { 0.0 } else { 1.0 }; NBANDS],
+            Some(a) if self.bounce => [if a.covers(self.x) { 1.0 } else { 0.0 }; NBANDS],
+            Some(a) => a.passes(self.x, self.d),
+        }
+    }
+}
+
+/// v6.2: entries of paths kept (`SourceState::paths`), each of
+/// `PATHS_KEEP` paths at most.
+const PATHS_TICKS: usize = 6;
+const PATHS_KEEP: usize = 256;
+
+/// v6.2: a signature of the apertures `ids` as they are (gone: marked).
+fn apertures_sig(ids: &[u32], aps: &[Aperture]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &id in ids {
+        h = match aps.iter().find(|a| a.id == id) {
+            Some(a) => a.sign(h),
+            None => (h ^ !(id as u64)).wrapping_mul(0x100_0000_01b3),
+        };
+    }
+    h.max(1)
+}
+
+/// A walked branch's events so far (`Event`), a few: a path with more is
+/// left to the averages (`OVERFLOW`).
+#[derive(Clone, Copy)]
+struct Events {
+    n: u8,
+    e: [Event; MAX_EVENTS],
+}
+
+const MAX_EVENTS: usize = 6;
+const OVERFLOW: u8 = u8::MAX;
+
+impl Events {
+    const NONE: Self = Self { n: 0, e: [Event { ap: 0, bounce: false, x: Vec3::new(0.0, 0.0, 0.0), d: Vec3::new(0.0, 0.0, 0.0), then: [0.0; NBANDS] }; MAX_EVENTS] };
+
+    fn push(&mut self, e: Event) {
+        if (self.n as usize) < MAX_EVENTS {
+            self.e[self.n as usize] = e;
+            self.n += 1;
+        } else {
+            self.n = OVERFLOW;
+        }
+    }
+
+    fn list(&self) -> &[Event] {
+        if self.n == OVERFLOW { &[] } else { &self.e[..self.n as usize] }
+    }
+
+    /// With the apertures the segment a→b crosses.
+    fn crossing(mut self, aps: &[Aperture], a: Vec3, b: Vec3) -> Self {
+        if self.n == OVERFLOW {
+            return self;
+        }
+        for (k, ap) in aps.iter().enumerate() {
+            if let Some(x) = ap.crossed_by(a, b) {
+                let d = (b - a).normalize();
+                self.push(Event { ap: k as u32, bounce: false, x, d, then: ap.passes(x, d) });
+            }
+        }
+        self
+    }
+
+    /// With a bounce at `p`, if it is on a leaf.
+    fn bouncing(mut self, aps: &[Aperture], p: Vec3) -> Self {
+        if self.n == OVERFLOW {
+            return self;
+        }
+        if let Some(k) = aps.iter().position(|a| a.covers(p)) {
+            self.push(Event { ap: k as u32, bounce: true, x: p, d: Vec3::new(0.0, 0.0, 0.0), then: [1.0; NBANDS] });
+        }
+        self
+    }
 }
 
 /// Amplitude through earth (a few meters of soil: nothing audible).
@@ -259,7 +458,7 @@ const EARTH: f32 = 1e-4;
 impl<'a> World<'a> {
     /// A world with no earth (open below), no overlays added.
     pub fn new(mesh: &'a Mesh, panels: &'a [(Vec3, Vec3, Material)]) -> Self {
-        Self { mesh, panels, grade: None, pockets: &[] }
+        Self { mesh, panels, grade: None, pockets: &[], apertures: &[] }
     }
 
     /// Would a ray leaving `p` along `d` with nothing left to hit run
@@ -599,6 +798,10 @@ struct Branch {
     last_edge: Option<usize>,
     seg0: u32,
     split: bool,
+    /// v6.2: what it did at apertures so far (`Event`), and whether it
+    /// walks on from a leaf that wasn't there (`VIRTUAL_P`).
+    ev: Events,
+    virt: bool,
 }
 
 impl Branch {
@@ -619,6 +822,8 @@ impl Branch {
             last_edge: None,
             seg0: 0,
             split: false,
+            ev: Events::NONE,
+            virt: false,
         }
     }
 }
@@ -907,6 +1112,25 @@ struct SourceState {
     /// 1/Σw² of their (normalized) weights: n after n ticks of a running
     /// mean, (2 − α)/α in an EMA's steady state, 0 empty (`fold`).
     held: [f32; 2],
+    /// The early and the late average's weight for the last tick (`fold`).
+    alphas: [f32; 2],
+    /// v6.2: the averaged paths that met apertures, by the apertures they
+    /// were walked with: per entry its weight in the early and the late
+    /// average now, the apertures' signature then, its paths
+    /// (`fold_paths`).
+    paths: std::collections::VecDeque<PathsEntry>,
+    /// v6.2: the estimate's early (the estimated taps') and late (the
+    /// reverb's) energy as averaged, and the factor its last field was
+    /// priced by (`price`): what a frame between ticks prices against.
+    tots: [[f32; NBANDS]; 2],
+    priced: [[f32; NBANDS]; 2],
+    /// v6.2: what the paths that met apertures deposited, averaged as the
+    /// estimate is (`Acc::walked`).
+    walked: [[f32; NBANDS]; 2],
+    /// v6.2: the energy over which a walked path is recorded for sure
+    /// (`Acc::record`), early and late: half the last tick's share per
+    /// kept path.
+    pre_tau: [f32; 2],
 }
 
 /// The diffuse field's mid-band energy in one echo slot at `rel`: the
@@ -971,6 +1195,7 @@ impl SourceState {
             }
             [alpha_early, alpha_late] = alphas;
         }
+        self.alphas = [alpha_early, alpha_late];
         // solved chains are exact, not noisy: averaged like the early bins
         // only so a chain that just validated fades in rather than pops
         let alpha_echo = alpha_early;
@@ -1285,15 +1510,118 @@ impl SourceState {
         SourceField { taps, dense: Some(DenseResponse { bin_s: DENSE_BIN_S, bins: dense, noise, impulses }), reverb, late_dir, aniso, reflected }
     }
 
-    /// Step 5b: this source's field from the smoothed state.
+    /// v6.2: one tick's paths that met apertures (walked with `aps`),
+    /// weighed into the averages as `fold` weighed the tick: every earlier
+    /// entry's weight × (1 − α), this tick's α — joining the last entry if
+    /// that was walked with the same apertures as they are (standing
+    /// doors: one entry, however long the average). Past `PATHS_TICKS`
+    /// entries the two oldest join: a path walked by an open door weighs
+    /// in the average long after its tick's weight is small — the door's
+    /// share is tens of dB over the shut door's — and each path is priced
+    /// against how it was walked, whichever entry holds it. Each entry
+    /// keeps `PATHS_KEEP` paths a part (`Paths::thin`).
+    fn fold_paths(&mut self, mut paths: Paths, walked: [[f32; NBANDS]; 2], aps: &[Aperture], u: f32) {
+        let a = self.alphas;
+        for p in 0..2 {
+            for b in 0..NBANDS {
+                self.walked[p][b] += a[p] * (walked[p][b] - self.walked[p][b]);
+            }
+        }
+        for e in &mut self.paths {
+            for k in 0..2 {
+                e.w[k] *= 1.0 - a[k];
+            }
+        }
+        self.paths.retain(|e| e.w[0] > 1e-9 || e.w[1] > 1e-9);
+        for part in 0..2 {
+            let total: f32 = paths.recs.iter().filter(|r| r.0 as usize == part).map(|r| r.1.iter().sum::<f32>()).sum();
+            self.pre_tau[part] = total / (2 * PATHS_KEEP) as f32;
+        }
+        if paths.recs.is_empty() {
+            return;
+        }
+        let mut ids: Vec<u32> = paths.evs.iter().map(|e| e.ap).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        // two entries as one: each's paths by its share of their weight
+        let join = |x: &mut PathsEntry, wy: [f32; 2], mut y: Paths, yids: &[u32]| {
+            let w: [f32; 2] = core::array::from_fn(|k| x.w[k] + wy[k]);
+            let share = |v: [f32; 2]| -> [f32; 2] { core::array::from_fn(|k| if w[k] > 0.0 { v[k] / w[k] } else { 0.5 }) };
+            x.paths.scale(share(x.w));
+            y.scale(share(wy));
+            x.paths.join(y);
+            x.paths.thin(PATHS_KEEP, u);
+            x.w = w;
+            x.ids.extend_from_slice(yids);
+            x.ids.sort_unstable();
+            x.ids.dedup();
+            x.then = x.paths.values(None);
+        };
+        match self.paths.back_mut() {
+            // the last entry was walked with the apertures as they are
+            Some(last) if last.sig != 0 && apertures_sig(&last.ids, aps) == last.sig => {
+                join(last, a, paths, &ids);
+                last.sig = apertures_sig(&last.ids, aps);
+            }
+            _ => {
+                paths.thin(PATHS_KEEP, u);
+                let sig = apertures_sig(&ids, aps);
+                let then = paths.values(None);
+                self.paths.push_back(PathsEntry { w: a, ids, sig, paths, then });
+                if self.paths.len() > PATHS_TICKS {
+                    let mut old = self.paths.pop_front().expect("over the cap");
+                    let next = self.paths.pop_front().expect("over the cap");
+                    join(&mut old, next.w, next.paths, &next.ids);
+                    // walked with different apertures: always priced
+                    old.sig = 0;
+                    self.paths.push_front(old);
+                }
+            }
+        }
+    }
+
+    /// v6.2: by how much the estimate (early, late) changes per band with
+    /// the apertures as they are: what the paths that met them deposited
+    /// (`walked`, exact) × what the kept paths carry now against as walked,
+    /// each entry by its weight in the average — a ratio, not the
+    /// difference of two large noisy sums (near shut one nearly cancels
+    /// the other, and the noise was all that was left). An entry walked
+    /// with the apertures as they are carries what it did.
+    fn price(&self, aps: &[Aperture]) -> [[f32; NBANDS]; 2] {
+        let (mut now, mut then) = ([[0.0f32; NBANDS]; 2], [[0.0f32; NBANDS]; 2]);
+        for e in &self.paths {
+            let same = e.sig != 0 && apertures_sig(&e.ids, aps) == e.sig;
+            let n = if same { e.then } else { e.paths.values(Some(aps)) };
+            for p in 0..2 {
+                for b in 0..NBANDS {
+                    now[p][b] += e.w[p] * n.v[p][b];
+                    then[p][b] += e.w[p] * e.then.v[p][b];
+                }
+            }
+        }
+        core::array::from_fn(|p| {
+            core::array::from_fn(|b| {
+                let (t, w) = (self.tots[p][b], self.walked[p][b].min(self.tots[p][b]));
+                if t <= 1e-30 || then[p][b] <= 1e-30 {
+                    return 1.0;
+                }
+                1.0 + w / t * (now[p][b] / then[p][b] - 1.0)
+            })
+        })
+    }
+
+    /// Step 5b: this source's field from the smoothed state (v6.2: priced
+    /// at the apertures as they are, `apertures`).
+    #[allow(clippy::too_many_arguments)]
     fn field(
-        &self,
+        &mut self,
         cells: &[Vec3],
         t_free: f32,
         direct: Option<Tap>,
         edge_taps: &mut Vec<Tap>,
         reflected: [f32; NBANDS],
         fit: fn(&Echogram) -> ReverbParams,
+        apertures: Option<&[Aperture]>,
     ) -> SourceField {
         let mut taps: Vec<Tap> = Vec::new();
         if let Some(t) = direct {
@@ -1370,10 +1698,33 @@ impl SourceState {
             owned = rest;
             echo = &owned;
         }
-        let reverb = fit(echo);
+        let mut reverb = fit(echo);
         let (late_dir, aniso) = echo.late_direction(EARLY_S);
+        if let Some(aps) = apertures {
+            // v6.2: the estimate priced at the apertures as they are
+            let late_start = (EARLY_S / BIN_DT) as usize;
+            self.tots = [
+                core::array::from_fn(|b| self.early.iter().filter(|(k, _)| **k < KEY_CHAIN_BASE).map(|(_, x)| x.e[b].max(0.0)).sum()),
+                core::array::from_fn(|b| echo.bins.iter().skip(late_start).map(|x| x[b]).sum::<f32>() / LEGACY_UNITS),
+            ];
+            self.priced = self.price(aps);
+            for t in taps.iter_mut().filter(|t| estimated_key(t.key)) {
+                for b in 0..NBANDS {
+                    t.gains[b] *= self.priced[0][b].sqrt();
+                }
+            }
+            for b in 0..NBANDS {
+                reverb.level[b] *= self.priced[1][b].sqrt();
+            }
+        }
         SourceField { taps, dense: None, reverb, late_dir, aniso, reflected }
     }
+}
+
+/// An estimated early tap's key (v3/v6: an early bin's — a direction cell
+/// and a delay bin), not an exact path's.
+pub fn estimated_key(key: u32) -> bool {
+    (KEY_EARLY_BASE..KEY_EARLY_BASE + N_CELLS as u32 * 256).contains(&key)
 }
 
 /// v6.1's reverb from the late echogram: `fit_reverb`, the level brought
@@ -1435,11 +1786,199 @@ struct Acc {
     /// n for each of n parts of a spread one (so it still counts as ONE
     /// sample: n parts of (e/n)² · n = e²/n each, e² over the spread).
     sq_scale: f32,
+    /// v6.2: the walked paths that met an aperture (`Event`) — what they
+    /// deposited, early (the estimated taps') or late (the reverb's) —
+    /// and their events (`Paths`); recorded by energy against `pre`'s
+    /// threshold (0: all), each kept one weighted by 1/its chance, drawn
+    /// from `pre`'s seed and count.
+    paths: Paths,
+    pre: ([f32; 2], u64, u64),
+    /// v6.2: what the paths that met apertures deposited, exactly (before
+    /// any is left out), per part and band.
+    walked: [[f32; NBANDS]; 2],
+}
+
+/// v6.2: an entry of a source's kept paths (`SourceState::paths`): its
+/// weight in the early and the late average now, the apertures its paths
+/// met (ids) and their signature as walked (0: walked with different ones,
+/// an entry of joined ticks — priced always), the paths.
+#[derive(Clone)]
+struct PathsEntry {
+    w: [f32; 2],
+    ids: Vec<u32>,
+    sig: u64,
+    paths: Paths,
+    /// What its paths carried as walked (`Paths::values`).
+    then: Totals,
+}
+
+/// v6.2: what an entry's paths carry, per part and band (one tick's
+/// worth).
+#[derive(Clone, Copy, Default)]
+struct Totals {
+    v: [[f32; NBANDS]; 2],
+}
+
+/// v6.2: walked paths that met apertures, kept to be priced again as the
+/// apertures change (`Aperture`): per path its part (0 early, 1 late),
+/// its energy bare — as if every event gave it all (as deposited, divided
+/// by what each gave then; a virtual path's as walked) — and its events
+/// (where in `evs`, how many — their apertures by id). As walked it
+/// carried bare × ∏ then (a virtual path: nothing), now bare × ∏ now.
+#[derive(Default, Clone)]
+struct Paths {
+    recs: Vec<(u8, [f32; NBANDS], u32, u8)>,
+    evs: Vec<Event>,
+}
+
+impl Paths {
+    /// What the paths carry (`Totals`): as walked (None), or with the
+    /// apertures as they are.
+    fn values(&self, aps: Option<&[Aperture]>) -> Totals {
+        let now: Vec<[f32; NBANDS]> = match aps {
+            Some(aps) => self.evs.iter().map(|ev| ev.now(aps.iter().find(|a| a.id == ev.ap))).collect(),
+            None => self.evs.iter().map(|ev| ev.then).collect(),
+        };
+        let mut t = Totals::default();
+        for &(part, f, at, n) in &self.recs {
+            let mut pn = [1.0f32; NBANDS];
+            for x in &now[at as usize..at as usize + n as usize] {
+                for b in 0..NBANDS {
+                    pn[b] *= x[b];
+                }
+            }
+            for b in 0..NBANDS {
+                t.v[part as usize][b] += f[b] * pn[b];
+            }
+        }
+        t
+    }
+
+    /// Each path × `k` per part.
+    fn scale(&mut self, k: [f32; 2]) {
+        for r in &mut self.recs {
+            for e in &mut r.1 {
+                *e *= k[r.0 as usize];
+            }
+        }
+    }
+
+    fn join(&mut self, o: Paths) {
+        let at = self.evs.len() as u32;
+        self.evs.extend(o.evs);
+        self.recs.extend(o.recs.into_iter().map(|(part, e, a, n)| (part, e, a + at, n)));
+    }
+
+    /// At most about `m` paths of each part (early, late), spread over
+    /// where they met the apertures: per aperture a 4 × 4 grid over where
+    /// its paths met it (its two long axes) — a door narrowing to a gap
+    /// prices the paths through that strip, and kept by energy alone an
+    /// open door's paths would leave few there. Every stratum keeps its
+    /// share (half of `m` evenly, half by energy), within it the strongest
+    /// for sure, the rest by energy, each kept one weighted by 1/its
+    /// chance (`pick_systematic`: unbiased; `u` the systematic offset).
+    fn thin(&mut self, m: usize, u: f32) {
+        // each aperture's extent over its paths' events
+        let mut ext: Vec<(u32, Vec3, Vec3)> = Vec::new();
+        for ev in &self.evs {
+            match ext.iter_mut().find(|e| e.0 == ev.ap) {
+                Some(e) => {
+                    e.1 = e.1.min(ev.x);
+                    e.2 = e.2.max(ev.x);
+                }
+                None => ext.push((ev.ap, ev.x, ev.x)),
+            }
+        }
+        let stratum = |at: u32, n: u8| -> u32 {
+            let Some(ev) = self.evs.get(at as usize).filter(|_| n > 0) else { return 0 };
+            let (k, lo, hi) = ext.iter().enumerate().find(|(_, e)| e.0 == ev.ap).map(|(k, e)| (k, e.1, e.2)).expect("listed above");
+            let d = hi - lo;
+            let thin = if d.x <= d.y && d.x <= d.z { 0 } else if d.y <= d.z { 1 } else { 2 };
+            let mut cell = 0u32;
+            for ax in (0..3).filter(|&a| a != thin) {
+                let f = if d.get(ax) > 1e-6 { (ev.x.get(ax) - lo.get(ax)) / d.get(ax) } else { 0.0 };
+                cell = cell * 4 + ((f * 4.0) as u32).min(3);
+            }
+            1 + k as u32 * 16 + cell
+        };
+        let mut kept = Paths { recs: Vec::with_capacity(2 * m), ..Paths::default() };
+        for part in 0..2u8 {
+            let mut groups: Vec<(u32, Vec<Pick>)> = Vec::new();
+            for (i, r) in self.recs.iter().enumerate().filter(|(_, r)| r.0 == part) {
+                let c: f32 = r.1.iter().sum();
+                if c <= 0.0 {
+                    continue;
+                }
+                let s = stratum(r.2, r.3);
+                let pick = Pick { si: i as u32, c, pw: 1.0 };
+                match groups.iter_mut().find(|g| g.0 == s) {
+                    Some(g) => g.1.push(pick),
+                    None => groups.push((s, vec![pick])),
+                }
+            }
+            let total: f32 = groups.iter().flat_map(|g| g.1.iter().map(|p| p.c)).sum();
+            let even = m as f32 / (2 * groups.len().max(1)) as f32;
+            for (_, mut picks) in groups {
+                let c: f32 = picks.iter().map(|p| p.c).sum();
+                let share = ((even + 0.5 * m as f32 * c / total.max(1e-30)).round() as usize).max(1);
+                if picks.len() > share {
+                    pick_systematic(&mut picks, share, u);
+                }
+                for p in picks {
+                    let (part, e, at, n) = self.recs[p.si as usize];
+                    let a = kept.evs.len() as u32;
+                    kept.evs.extend_from_slice(&self.evs[at as usize..at as usize + n as usize]);
+                    kept.recs.push((part, e.map(|x| x * p.pw), a, n));
+                }
+            }
+        }
+        *self = kept;
+    }
 }
 
 impl Acc {
     fn new(t_free: f32, v4: bool) -> Self {
-        Self { early: HashMap::default(), echo: Echogram::new(), t_free, total: [0.0; NBANDS], dense: Vec::new(), v4, sq_scale: 1.0 }
+        Self { early: HashMap::default(), echo: Echogram::new(), t_free, total: [0.0; NBANDS], dense: Vec::new(), v4, sq_scale: 1.0, paths: Paths::default(), pre: ([0.0; 2], 0, 0), walked: [[0.0; NBANDS]; 2] }
+    }
+
+    /// v6.2: a deposit (as `deposit` routed it) whose path met apertures
+    /// (`evs`, theirs by index in `aps`).
+    fn record(&mut self, e: [f32; NBANDS], delay: f32, evs: &[Event], aps: &[Aperture], virt: bool) {
+        let rel = (delay - self.t_free).max(0.0);
+        let part = if rel < EARLY_S {
+            0
+        } else if ((rel / BIN_DT) as usize) < self.echo.bins.len() {
+            1
+        } else {
+            return;
+        };
+        if !virt {
+            for b in 0..NBANDS {
+                self.walked[part][b] += e[b];
+            }
+        }
+        // bare: as deposited (or walked, virtual), less what each event gave
+        let e: [f32; NBANDS] = core::array::from_fn(|b| {
+            let then: f32 = evs.iter().map(|ev| ev.then[b]).filter(|&t| t > 0.0).product();
+            e[b] / then.max(1e-30)
+        });
+        let (taus, seed, k) = self.pre;
+        let tau = taus[part];
+        self.pre.2 += 1;
+        let c: f32 = e.iter().sum();
+        let e = if c < tau {
+            // kept with chance c/τ, carrying τ
+            let u = (ray_seed(seed ^ k) >> 40) as f32 / (1u64 << 24) as f32;
+            if c <= 0.0 || u * tau >= c {
+                return;
+            }
+            e.map(|x| x * tau / c)
+        } else {
+            e
+        };
+        let at = self.paths.evs.len() as u32;
+        self.paths.evs.extend(evs.iter().map(|ev| Event { ap: aps[ev.ap as usize].id, ..*ev }));
+        self.paths.recs.push((part as u8, e, at, evs.len() as u8));
     }
 
     /// Every contribution × `f` (an estimate's weight: its samples' share
@@ -1470,6 +2009,11 @@ impl Acc {
             }
             b.ed *= f;
             b.dir = b.dir * f;
+        }
+        for r in &mut self.paths.recs {
+            for e in &mut r.1 {
+                *e *= f;
+            }
         }
     }
 
@@ -1505,6 +2049,12 @@ impl Acc {
             cur.ed += b.ed;
             cur.dir = cur.dir + b.dir;
             cur.last = b.last;
+        }
+        self.paths.join(o.paths);
+        for p in 0..2 {
+            for b in 0..NBANDS {
+                self.walked[p][b] += o.walked[p][b];
+            }
         }
     }
 }
@@ -1583,6 +2133,11 @@ pub struct Tracer {
     /// Engine v6.1 (on v6): the reverberation time as the traced decay
     /// says, however long, and the late level uncapped (`fit_reverb`).
     pub v61: bool,
+    /// Engine v6.2 (on v6.1): the walked paths that met an aperture (a
+    /// door, a curtain) priced again with its leaf where it is now
+    /// (`Aperture`): the estimate follows a door every tick and every
+    /// frame between (`reprice`); a ray splits at a leaf.
+    pub v62: bool,
     /// The last tick's cost by part.
     pub costs: TickCosts,
     /// Threads the ray walk is spread over (1: the tick's own; wasm walks
@@ -1886,6 +2441,7 @@ impl Tracer {
             v5: false,
             v6: false,
             v61: false,
+            v62: false,
             costs: TickCosts::default(),
             late_pool: std::collections::VecDeque::new(),
             late_pool_sig: 0,
@@ -2087,6 +2643,7 @@ impl Tracer {
         let debug = self.debug;
         let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
         self.costs = TickCosts::default();
+        self.pre_record(&mut accs, sources);
 
         // 1. direct, visibility, edge next-event paths (shared with the
         // externally walked tick, fold.rs)
@@ -2153,12 +2710,35 @@ impl Tracer {
                 out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared, fit));
             } else {
                 st.fold(acc.early, acc.echo, budget, self.v6, listener, s.pos);
-                out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total, fit));
+                let aps = self.v62.then_some(world.apertures);
+                if let Some(aps) = aps {
+                    st.fold_paths(acc.paths, acc.walked, aps, (self.tick as f32 * 0.618_034).fract());
+                }
+                out.push(st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], acc.total, fit, aps));
             }
         }
         self.costs.fold = clock.ms();
         self.note_heard(sources, &out);
         out
+    }
+
+    /// v6.2: between ticks, how a source's estimated parts (early taps,
+    /// reverb) change per band with the apertures as they are now, against
+    /// as its last tick priced them (`Aperture`) — None if nothing it
+    /// traced crossed one.
+    pub fn reprice(&self, id: u32, apertures: &[Aperture]) -> Option<[[f32; NBANDS]; 2]> {
+        let st = self.state.get(&id).filter(|st| self.v62 && !st.paths.is_empty())?;
+        let now = st.price(apertures);
+        Some(core::array::from_fn(|part| core::array::from_fn(|b| now[part][b] / st.priced[part][b].max(1e-9))))
+    }
+
+    /// v6.2: each source's threshold for recording its paths that meet
+    /// apertures (`Acc::record`), and their draws' seed.
+    fn pre_record(&self, accs: &mut [Acc], sources: &[Source]) {
+        for (acc, s) in accs.iter_mut().zip(sources) {
+            let tau = self.state.get(&s.id).map_or([0.0; 2], |st| st.pre_tau);
+            acc.pre = (tau, ray_seed(self.tick.wrapping_mul(0x9E37_79B9) ^ s.id as u64), 0);
+        }
     }
 
     /// What reached the listener from each source this tick (`heard`).
@@ -2267,14 +2847,19 @@ impl Tracer {
                     let mut deps = out.deps.into_iter();
                     for (a, k, record) in out.rays {
                         let into = if a { &mut late_a } else { &mut late_b };
-                        for (si, e, delay, half, first) in deps.by_ref().take(k as usize) {
+                        for (si, e, delay, half, first, _) in deps.by_ref().take(k as usize) {
                             deposit_spread(&mut into[si as usize], cx.cells, e, delay, first, half);
                         }
                         records.extend(record);
                     }
                 } else {
-                    for (si, e, delay, half, first) in out.deps {
-                        deposit_spread(&mut accs[si as usize], cx.cells, e, delay, first, half);
+                    for (si, e, delay, half, first, (at, n, virt)) in out.deps {
+                        if !virt {
+                            deposit_spread(&mut accs[si as usize], cx.cells, e, delay, first, half);
+                        }
+                        if n > 0 && n != OVERFLOW {
+                            accs[si as usize].record(e, delay, &out.evs[at as usize..at as usize + n as usize], world.apertures, virt);
+                        }
                     }
                 }
             }
@@ -3166,8 +3751,10 @@ struct WalkScratch {
 #[derive(Default)]
 struct ChunkOut {
     /// Deposits: (source, energy, delay, spread each way (0: a point),
-    /// the ray's first direction).
-    deps: Vec<(u32, [f32; NBANDS], f32, f32, Vec3)>,
+    /// the ray's first direction, its events at apertures (v6.2): where
+    /// in `evs`, how many).
+    deps: Vec<(u32, [f32; NBANDS], f32, f32, Vec3, (u32, u8, bool))>,
+    evs: Vec<Event>,
     /// Escapes to the sky: (direction cell, energy, its weighted
     /// direction).
     sky: Vec<(u32, [f32; NBANDS], Vec3)>,
@@ -3236,6 +3823,17 @@ fn walk_chunks(cx: &WalkCtx, fam: &Fam, scratch: &mut [WalkScratch], dirs: &[Vec
     (0..n_chunks).map(|c| walk(sc, c)).collect()
 }
 
+/// v6.2: a deposit's events into the chunk's list: (where, how many,
+/// whether its path is virtual — priced, not deposited).
+fn emit(out: &mut ChunkOut, ev: Events, virt: bool) -> (u32, u8, bool) {
+    if ev.n == 0 || ev.n == OVERFLOW {
+        return (0, ev.n, virt);
+    }
+    let at = out.evs.len() as u32;
+    out.evs.extend_from_slice(ev.list());
+    (at, ev.n, virt)
+}
+
 /// One ray of a family, walked whole (`walk_rays` step 2): what it
 /// deposits, what escapes to the sky and (debug) the paths it found go
 /// to `out`, in the order it made them.
@@ -3278,7 +3876,10 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         mut last_edge,
         seg0,
         mut split,
+        mut ev,
+        virt,
     } = br;
+    let aps = world.apertures;
     if debug {
         verts.clear();
         verts.push(listener);
@@ -3300,6 +3901,53 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
             None
         };
         let t_seg = edge.map_or(t_hit, |(te, _, _, _)| te);
+
+        if !virt && !aps.is_empty() {
+            // where this segment passes an aperture's open part (on to a
+            // bend, a surface or the open sky), the leaf might have stood:
+            // walk its reflection there too, for the pricing (`VIRTUAL_P`)
+            let end = origin + dir * t_seg.min(1e3);
+            for (k, ap) in aps.iter().enumerate() {
+                let Some(x) = ap.crossed_by(origin, end) else { continue };
+                if ap.passes(x, dir).iter().any(|&t| t < 1.0) || rng.next_f32() >= VIRTUAL_P {
+                    continue;
+                }
+                let (f, n) = ap.face(x, dir);
+                let m = ap.material;
+                let keep: [f32; NBANDS] = core::array::from_fn(|b| (1.0 - m.absorption[b] - m.transmission[b] * m.transmission[b]).max(0.0));
+                if keep.iter().all(|&k| k < 1e-6) {
+                    continue; // a leaf that reflects nothing (a curtain)
+                }
+                let scatter = rng.next_f32() < m.scattering;
+                let vdir = if scatter {
+                    let d = (n + rng.unit_sphere()).normalize();
+                    if d.dot(n) < 1e-3 { n } else { d }
+                } else {
+                    dir - n * (2.0 * dir.dot(n))
+                };
+                let mut vev = ev;
+                vev.push(Event { ap: k as u32, bounce: true, x: f, d: Vec3::new(0.0, 0.0, 0.0), then: [0.0; NBANDS] });
+                branches.push(Branch {
+                    origin: f + n * EPS,
+                    dir: vdir,
+                    thr: core::array::from_fn(|b| thr[b] * keep[b] / VIRTUAL_P),
+                    length: length + (f - origin).length(),
+                    refl: refl + 1,
+                    specular: !scatter,
+                    coherent: false,
+                    loud: false,
+                    mirror_thr: 0.0,
+                    bent: false,
+                    bends,
+                    bend_from: None,
+                    last_edge: None,
+                    seg0: seg + 1,
+                    split,
+                    ev: vev,
+                    virt: true,
+                });
+            }
+        }
 
         // 3. specular chains into a source sphere, priced from the
         // source's REAL position — except the exact solver's own
@@ -3347,7 +3995,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 let e: [f32; NBANDS] = core::array::from_fn(|b| {
                     thr[b] * t[b] * t[b] * air[b] * air[b] * w * gate[b]
                 });
-                if debug {
+                if debug && !virt {
                     out.dbg.push((s.id, e[1], verts.clone(), sp));
                 }
                 // a sphere hit only knows the path to within the
@@ -3355,7 +4003,8 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 if pooled {
                     ray_deps.push((si, e, l_s / SPEED_OF_SOUND, r / SPEED_OF_SOUND));
                 } else {
-                    out.deps.push((si as u32, e, l_s / SPEED_OF_SOUND, r / SPEED_OF_SOUND, first));
+                    let evs = emit(out, ev.crossing(aps, origin, sp), virt);
+                    out.deps.push((si as u32, e, l_s / SPEED_OF_SOUND, r / SPEED_OF_SOUND, first, evs));
                 }
             }
         }
@@ -3370,6 +4019,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 bend_from = Some(origin);
             }
             let (eps, w) = sample_bend(rng, a);
+            ev = ev.crossing(aps, origin, origin + dir * te);
             origin = origin + dir * te;
             length += te;
             if debug {
@@ -3391,7 +4041,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
             // split by reflection count like every other path
             // (early family ≤ bounces, late family beyond).
             let mine = if lo == 0 { refl <= hi } else { refl >= lo };
-            if mine && !world.escapes_into_earth(origin, dir) {
+            if mine && !virt && !world.escapes_into_earth(origin, dir) {
                 let mut best = 0usize;
                 let mut bd = f32::MIN;
                 for (ci, c) in cx.cells.iter().enumerate() {
@@ -3409,6 +4059,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         if debug {
             verts.push(p);
         }
+        ev = ev.crossing(aps, origin, p);
         length += t_hit;
         if length / SPEED_OF_SOUND > if v4 { RESPONSE_MAX_S } else { MAX_TIME } {
             break;
@@ -3460,13 +4111,14 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 let e: [f32; NBANDS] = core::array::from_fn(|b| {
                     thr[b] * keep[b] * t[b] * t[b] * air[b] * air[b] * w
                 });
-                if debug {
+                if debug && !virt {
                     out.dbg.push((s.id, e[1], verts.clone(), sp));
                 }
                 if pooled {
                     ray_deps.push((si, e, (length + r) / SPEED_OF_SOUND, 0.0));
                 } else {
-                    out.deps.push((si as u32, e, (length + r) / SPEED_OF_SOUND, 0.0, first));
+                    let evs = emit(out, ev.bouncing(aps, p).crossing(aps, off, sp), virt);
+                    out.deps.push((si as u32, e, (length + r) / SPEED_OF_SOUND, 0.0, first, evs));
                 }
             }
         }
@@ -3484,8 +4136,12 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         // the diffuse estimate, was calibrated on it. v6 too: from
         // the square its one split mostly went into some other
         // building — the club's late spread 5.1/4.2/3.5 → 6.7/6.1/
-        // 7.3 dB, `assess still`.)
-        let split_here = v4 && !split && p_t >= SPLIT_T2;
+        // 7.3 dB, `assess still`.) v6.2: a door's leaf splits — what
+        // passes a door is what a listener on its far side hears, and one
+        // ray in thirty through a door (the draw's floor) left a shut
+        // door's level to a heavy-tailed few
+        let leaf = !aps.is_empty() && !virt && keep.iter().any(|&k| k > 1e-6) && aps.iter().any(|a| a.covers(p));
+        let split_here = (v4 || leaf) && !split && p_t >= SPLIT_T2;
         if split_here && seg == 0 {
             reusable = false;
         }
@@ -3512,6 +4168,8 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 last_edge,
                 seg0: seg + 1,
                 split: true,
+                ev: ev.crossing(aps, p, beyond),
+                virt,
             });
         }
         // a surface that reflects nothing (a hanging drape: it passes or
@@ -3537,9 +4195,11 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
             }
             mirror_thr *= t2[1];
             loud &= mirror_thr >= COHERENT_FLOOR;
+            ev = ev.crossing(aps, p, beyond);
             origin = beyond;
             continue; // straight on; `specular` unchanged
         }
+        ev = ev.bouncing(aps, p);
         let before = thr.iter().fold(0.0f32, |a, &b| a.max(b));
         for b in 0..NBANDS {
             thr[b] *= keep[b] / (1.0 - pt);
@@ -3599,7 +4259,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
             _ => None,
         };
         for &(si, e, delay, half) in ray_deps.iter() {
-            out.deps.push((si as u32, e, delay, half, first));
+            out.deps.push((si as u32, e, delay, half, first, (0, 0, false)));
         }
         out.rays.push((a, ray_deps.len() as u32, record));
     }
@@ -4576,7 +5236,7 @@ mod tests {
         mb.tri(v(2.0, 0.0, 0.0), v(2.0, 4.0, 0.0), v(2.0, 4.0, 3.0), door);
         mb.tri(v(2.0, 0.0, 0.0), v(2.0, 4.0, 3.0), v(2.0, 0.0, 3.0), door);
         let mesh = mb.build();
-        let world = World { mesh: &mesh, panels: &[], grade: None, pockets: &[] };
+        let world = World::new(&mesh, &[]);
         let mut hits = Vec::new();
         let src = v(3.5, 1.0, 1.5);
         let wall = world.transmission(v(1.0, 2.0, 1.0), src, &mut hits)[1];

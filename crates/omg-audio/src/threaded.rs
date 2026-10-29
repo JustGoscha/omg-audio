@@ -133,6 +133,7 @@ enum SimCmd {
     SetObject(ObjectId, [f32; 3], [f32; 3]),
     ObjectMaterial(ObjectId, Material),
     ObjectEnabled(ObjectId, bool),
+    ObjectAperture(ObjectId, [f32; 3], [f32; 3]),
     RemoveObject(ObjectId),
     /// The listener's pose and when it was current (the simulation's
     /// clock goes to it).
@@ -367,6 +368,11 @@ impl Engine {
         self.sim(SimCmd::ObjectEnabled(id, enabled));
     }
 
+    /// The opening the object fills (`Simulation::set_object_aperture`).
+    pub fn set_object_aperture(&mut self, id: ObjectId, min: [f32; 3], max: [f32; 3]) {
+        self.sim(SimCmd::ObjectAperture(id, min, max));
+    }
+
     pub fn remove_object(&mut self, id: ObjectId) {
         self.sim(SimCmd::RemoveObject(id));
     }
@@ -494,6 +500,7 @@ fn handle(sim: &mut Simulation, c: SimCmd) {
         SimCmd::SetObject(id, a, b) => sim.set_object(id, a, b),
         SimCmd::ObjectMaterial(id, m) => sim.set_object_material(id, m),
         SimCmd::ObjectEnabled(id, e) => sim.set_object_enabled(id, e),
+        SimCmd::ObjectAperture(id, a, b) => sim.set_object_aperture(id, a, b),
         SimCmd::RemoveObject(id) => sim.remove_object(id),
         SimCmd::Listener(p, y, pi, r, t) => sim.set_listener_at(p, y, pi, r, t),
         SimCmd::Config(c) => sim.set_config(c),

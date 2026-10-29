@@ -4,7 +4,7 @@
 # recorded in real time (OmgWorld.start_recording: exactly the frames
 # Godot plays, and every audio callback's timing).
 #
-#   Godot --path godot -- --record=<dir> --scenario=fly|car|door|carfar|walk|bunker --engine=v3|v4|v5|v6|v6.1 [--tone] [--quality=0..3|-1] [--gpu]
+#   Godot --path godot -- --record=<dir> --scenario=fly|car|door|carfar|walk|bunker --engine=v3|v4|v5|v6|v6.1|v6.2 [--tone] [--quality=0..3|-1] [--gpu]
 #
 # Writes <dir>/<scenario>_<engine>[_tone].wav (+ .wav.csv: the audio
 # callbacks) and <dir>/<scenario>_<engine>[_tone].frames.csv (per game
@@ -78,8 +78,9 @@ func _init(d: Node, w: OmgWorld, p: DemoPlayer) -> void:
 func run() -> void:
 	if demo.loading:
 		await demo.loaded
-	world.engine_v6 = engine == "v6" or engine == "v6.1"
-	world.engine_v61 = engine == "v6.1"
+	world.engine_v6 = engine.begins_with("v6")
+	world.engine_v61 = engine == "v6.1" or engine == "v6.2"
+	world.engine_v62 = engine == "v6.2"
 	world.engine_v4 = engine == "v4" or engine == "v5"
 	world.engine_v5 = engine == "v5"
 	if quality >= -1:

@@ -538,3 +538,99 @@ fn a_hall_rings_and_sounds_as_long_and_loud_as_theory_says() {
         assert!((ratio - theory).abs() < 3.0, "{mode}: reflected {ratio:+.1} dB over direct, theory {theory:+.1} dB");
     }
 }
+
+/// `room_with_doorway` with a leaf in its doorway covering `1 − open` of
+/// it, and the doorway as the leaf's aperture (v6.2): the room's source
+/// heard outside by `ears` — through the doorway, off its straight line:
+/// what the estimate (early taps, reverb) carries.
+fn doorway_scene(mode: &str, ears: [f32; 3], open: f32) -> (Simulation, omg_audio::SourceId, omg_audio::ObjectId) {
+    let mut sim = Simulation::new(Config { quality: Quality::High, v6: true, v61: true, v62: mode == "v6.2", kernel_thread: false, ..Config::default() });
+    sim.set_geometry(room_with_doorway());
+    let src = sim.add_source(SourceDesc::at([2.0, 1.5, 1.5]));
+    sim.set_listener(ears, 0.0, 0.0, 0.0);
+    let door = sim.add_object([6.08, 2.0, 0.0], [6.12, 3.0, 2.1], Material::DOOR);
+    sim.set_object_aperture(door, [6.08, 2.0, 0.0], [6.12, 3.0, 2.1]);
+    set_leaf(&mut sim, door, open);
+    (sim, src, door)
+}
+
+fn set_leaf(sim: &mut Simulation, door: omg_audio::ObjectId, open: f32) {
+    sim.set_object(door, [6.08, 2.0, 0.0], [6.12, 2.0 + (1.0 - open).max(1e-3), 2.1]);
+    sim.set_object_enabled(door, open < 0.999);
+}
+
+/// A door swinging shut (openness e^(−7 t), as `assess doorswing`'s),
+/// heard against the door standing at each openness: the swing's level at
+/// every frame (ticks at 20 Hz, exact frames at 120 Hz between) against
+/// the standing door's at that frame's openness (averaged, interpolated
+/// in log openness). Returns the rms and the mean difference (dB).
+fn swing_against_standing(mode: &str, ears: [f32; 3]) -> (f32, f32) {
+    let db = |e: [f32; 3]| 10.0 * e[1].max(1e-20).log10();
+    let opens = [1.0f32, 0.5, 0.25, 0.12, 0.06, 0.03, 0.015, 0.008, 0.004, 0.002, 0.001, 0.0];
+    let truth: Vec<f32> = opens
+        .iter()
+        .map(|&o| {
+            let (mut sim, src, _) = doorway_scene(mode, ears, o);
+            settle(&mut sim, 30);
+            let mut acc = 0.0f32;
+            for _ in 0..80 {
+                acc += energy(sim.tick().block(src).unwrap())[1] / 80.0;
+            }
+            10.0 * acc.max(1e-20).log10()
+        })
+        .collect();
+    let standing = |o: f32| -> f32 {
+        let i = opens.iter().position(|&x| x <= o).unwrap_or(opens.len() - 1).max(1);
+        let (a, b) = (opens[i - 1], opens[i]);
+        let f = if b > 0.0 { (o.ln() - a.ln()) / (b.ln() - a.ln()) } else { (a - o) / a };
+        truth[i - 1] + f.clamp(0.0, 1.0) * (truth[i] - truth[i - 1])
+    };
+    let (mut sim, src, door) = doorway_scene(mode, ears, 1.0);
+    let frame = 1.0 / 120.0;
+    let mut t = 0.0f64;
+    for k in 0..240 {
+        sim.set_time(t);
+        if k % 6 == 0 {
+            sim.tick();
+        }
+        t += frame;
+    }
+    let (mut sq, mut sum, mut n) = (0.0f32, 0.0f32, 0);
+    let mut level = 0.0f32;
+    for k in 0..150 {
+        let s = k as f32 * frame as f32;
+        let mut open = (-7.0 * s).exp();
+        if open < 0.001 {
+            open = 0.0;
+        }
+        set_leaf(&mut sim, door, open);
+        sim.set_time(t);
+        let f = if k % 6 == 0 { Some(sim.tick()) } else { sim.tick_exact() };
+        if let Some(f) = f {
+            level = db(energy(f.block(src).unwrap()));
+        }
+        let d = level - standing(open);
+        sq += d * d;
+        sum += d;
+        n += 1;
+        t += frame;
+    }
+    ((sq / n as f32).sqrt(), sum / n as f32)
+}
+
+#[test]
+fn a_door_swinging_shut_is_heard_where_it_is() {
+    // in front of the doorway, and beside it (seeing it at a slant)
+    let ears = [[8.0, 6.0, 1.6], [7.5, 2.8, 1.6], [7.2, 1.2, 1.6], [7.0, 3.8, 1.6]];
+    let (mut e61, mut e62) = (0.0f32, 0.0f32);
+    for e in ears {
+        let (rms61, mean61) = swing_against_standing("v6.1", e);
+        let (rms62, mean62) = swing_against_standing("v6.2", e);
+        eprintln!("ears {e:?}: the swing against the door standing: v6.1 rms {rms61:.1} dB (mean {mean61:+.1}), v6.2 rms {rms62:.1} dB (mean {mean62:+.1})");
+        e61 += rms61 / ears.len() as f32;
+        e62 += rms62 / ears.len() as f32;
+    }
+    eprintln!("mean rms: v6.1 {e61:.1} dB, v6.2 {e62:.1} dB");
+    assert!(e62 < e61 - 0.5, "v6.2 follows the door closer than v6.1: {e62:.1} vs {e61:.1} dB");
+    assert!(e62 < 3.5, "v6.2 within 3.5 dB rms of the door standing where it is: {e62:.1} dB");
+}

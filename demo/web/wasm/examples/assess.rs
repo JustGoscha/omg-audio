@@ -35,9 +35,13 @@
 //!   doorswing the club plays a steady tone; its door swings shut at 4 s
 //!            as the Godot demo eases it (~1 s): the level through the
 //!            closing door — dips under the shut level, rises against
-//!            the closing, how near the shut level it lands
+//!            the closing, how near the shut level it lands (OPENING=1:
+//!            it swings open)
+//!   doortruth the club's tone with its door standing at each openness
+//!            the swing passes (DUR=s averaged): what doorswing should
+//!            read at every instant
 //!
-//!     MODE=v3|v4|v5|v6|v6.1  RUNG=0..4 (unset: governed)  QUALITY=0..3 | LEVEL=0..10  EAR=0
+//!     MODE=v3|v4|v5|v6|v6.1|v6.2  RUNG=0..4 (unset: governed)  QUALITY=0..3 | LEVEL=0..10  EAR=0
 //!     PACE=0  WAV=dir (write the output)  SEED=n  NEE=n (next-event
 //!     connections a bounce; 0: every source)  PHYS=hz (movers move at a
 //!     game's physics rate, sent every frame)
@@ -221,8 +225,8 @@ impl Rig {
             compute: if env("COMPUTE").as_deref() == Some("gpu") { Compute::Gpu } else { Compute::Cpu },
             v4: mode == "v4" || mode == "v5",
             v5: mode == "v5",
-            v6: mode == "v6" || mode == "v6.1",
-            v61: mode == "v6.1",
+            v6: mode.starts_with("v6"),
+            v61: mode == "v6.1" || mode == "v6.2", v62: mode == "v6.2",
             sample_rate: SR,
             ..Config::default()
         };
@@ -1039,6 +1043,12 @@ fn doorswing() {
         rig.mix.play(id, &tone, Play::LOOP);
     }
     let (shut_at, total) = (4.0f32, 12.0f32);
+    // OPENING=1: the other way — shut, then swung open (the same course
+    // backwards: 1 − openness)
+    let opening = env("OPENING").is_some();
+    if opening && !reference {
+        rig.town.set_door(&mut rig.sim, CLUB_DOOR, 0.0);
+    }
     rig.run(shut_at);
     let mut open = if reference { 0.0f32 } else { 1.0 };
     let frame = BLOCK as f32 / SR;
@@ -1047,7 +1057,7 @@ fn doorswing() {
         if open < 0.001 {
             open = 0.0;
         }
-        rig.town.set_door(&mut rig.sim, CLUB_DOOR, open);
+        rig.town.set_door(&mut rig.sim, CLUB_DOOR, if opening && !reference { 1.0 - open } else { open });
         rig.run(frame);
     }
     rig.wav(&format!("doorswing_{}", mode()));
@@ -1088,6 +1098,42 @@ fn doorswing() {
     let course: Vec<String> = (0..=60).map(|k| format!("{:.0}", at(shut_at - 0.1 + k as f32 * 0.05))).collect();
     println!("   level every 50 ms from {:.1} s: {}", shut_at - 0.1, course.join(" "));
     println!("   artifacts (output above 3 kHz, under the tone): {}", artifact_line("swing", &artifacts(&rig, shut_at, shut_at + 1.2)));
+}
+
+/// The truth `doorswing` is judged against: the club's tone with its door
+/// standing still at each openness the swing passes through (1 s to
+/// settle, then the mean over 2 s, `DUR`) — where the swing is at an instant, the
+/// level should be (the door ~1 m from the ears: a few ms of travel).
+fn doortruth() {
+    let opens: Vec<f32> = env("OPENS")
+        .map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect())
+        .unwrap_or_else(|| (0..=24).map(|k| (-7.0 * 0.05 * k as f32).exp()).chain([0.0]).collect());
+    println!("doortruth ({}): the club's tone, the door standing at each openness (ears at {})", mode(), env("LIS").unwrap_or("21,30.2,1.6".into()));
+    for o in opens {
+        let mut rig = Rig::new();
+        rig.only(&[CLUB]);
+        rig.town.set_door(&mut rig.sim, 3, 1.0);
+        rig.town.set_door(&mut rig.sim, CLUB_DOOR, o);
+        rig.pos = env("LIS")
+            .and_then(|v| {
+                let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                (p.len() == 3).then(|| [p[0], p[1], p[2]])
+            })
+            .unwrap_or([21.0, 30.2, 1.6]);
+        let f0 = 500.0f32;
+        let cycle = (SR / f0).round() as usize;
+        let tone: Vec<f32> = (0..cycle * 10).map(|k| 0.5 * (std::f32::consts::TAU * (k % cycle) as f32 / cycle as f32).sin()).collect();
+        let tone = clip(&tone);
+        for &id in &rig.ids[CLUB].clone() {
+            rig.mix.play(id, &tone, Play::LOOP);
+        }
+        // DUR=s: the mean over this long (default 2 s)
+        let dur: f32 = env("DUR").and_then(|v| v.parse().ok()).unwrap_or(2.0);
+        rig.run(1.0 + dur);
+        let n0 = rig.l.len() - (dur * SR) as usize;
+        let e: f32 = rig.l[n0..].iter().zip(&rig.r[n0..]).map(|(x, y)| 0.5 * (x * x + y * y)).sum::<f32>() / (rig.l.len() - n0) as f32;
+        println!("   openness {o:.4}: {:.1} dB", 10.0 * e.max(1e-20).log10());
+    }
 }
 
 /// A clap (click) in the hall, then the listener walks out of the hall's
@@ -1289,6 +1335,7 @@ fn main() {
         "fly" => fly(),
         "cartone" => cartone(),
         "doorswing" => doorswing(),
+        "doortruth" => doortruth(),
         s => panic!("unknown scene {s}"),
     }
 }
