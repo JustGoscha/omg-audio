@@ -33,6 +33,10 @@ pub struct Geometry {
     lo: Vec3,
     hi: Vec3,
     ground: Option<(f32, MaterialId)>,
+    /// The calls that built it, one line each, when recording (`record`):
+    /// `save` writes them, `load` builds the same geometry from them — a
+    /// host's level replayed headless.
+    log: Option<String>,
 }
 
 impl Default for Geometry {
@@ -67,6 +71,51 @@ impl Geometry {
             lo: Vec3::new(big, big, big),
             hi: Vec3::new(-big, -big, -big),
             ground: None,
+            log: None,
+        }
+    }
+
+    /// Keep every call from now on, for `save` (a host's level dumped to
+    /// be replayed headless: `load`).
+    pub fn record(&mut self) {
+        self.log.get_or_insert_with(|| String::from("omg-geometry 1\n"));
+    }
+
+    /// The recorded calls (`record`) as text, to `path`.
+    pub fn save(&self, path: &str) -> std::io::Result<()> {
+        std::fs::write(path, self.log.as_deref().unwrap_or(""))
+    }
+
+    /// A geometry built by the calls `save` wrote.
+    pub fn load(path: &str) -> std::io::Result<Self> {
+        let text = std::fs::read_to_string(path)?;
+        let bad = |l: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("geometry: {l}"));
+        let mut g = Self::new();
+        for line in text.lines().skip(1) {
+            let mut w = line.split_ascii_whitespace();
+            let op = w.next().unwrap_or("");
+            let f: Vec<f32> = w.map(|x| x.parse::<f32>().map_err(|_| bad(line))).collect::<Result<_, _>>()?;
+            match (op, f.len()) {
+                ("material", 7) => {
+                    g.material(Material { absorption: [f[0], f[1], f[2]], scattering: f[3], transmission: [f[4], f[5], f[6]] });
+                }
+                ("thickness", 2) => g.set_thickness(MaterialId(f[0] as u32), f[1]),
+                ("tri", 10) => {
+                    let m = MaterialId(f[0] as u32);
+                    g.check(m);
+                    g.tri(Vec3::new(f[1], f[2], f[3]), Vec3::new(f[4], f[5], f[6]), Vec3::new(f[7], f[8], f[9]), m);
+                }
+                ("ground", 2) => g.ground_plane(f[0], MaterialId(f[1] as u32)),
+                _ => return Err(bad(line)),
+            }
+        }
+        Ok(g)
+    }
+
+    fn note(&mut self, line: impl FnOnce() -> String) {
+        if let Some(l) = &mut self.log {
+            l.push_str(&line());
+            l.push('\n');
         }
     }
 
@@ -74,6 +123,10 @@ impl Geometry {
     /// via `Material::new` / `Material::simple`).
     pub fn material(&mut self, m: Material) -> MaterialId {
         assert!(self.n_materials < u16::MAX as u32, "at most 65535 materials");
+        self.note(|| {
+            let (a, t) = (m.absorption, m.transmission);
+            format!("material {} {} {} {} {} {} {}", a[0], a[1], a[2], m.scattering, t[0], t[1], t[2])
+        });
         self.n_materials += 1;
         MaterialId(self.mb.material(m) as u32)
     }
@@ -83,6 +136,7 @@ impl Geometry {
     /// wall's front and back faces; single-plane walls (no back face)
     /// default to 0.1 m. 0 restores the inference.
     pub fn set_thickness(&mut self, material: MaterialId, thickness_m: f32) {
+        self.note(|| format!("thickness {} {thickness_m}", material.0));
         self.mb.set_thickness(material.0 as u16, thickness_m);
     }
 
@@ -91,6 +145,7 @@ impl Geometry {
     }
 
     fn tri(&mut self, a: Vec3, b: Vec3, c: Vec3, m: MaterialId) {
+        self.note(|| format!("tri {} {} {} {} {} {} {} {} {} {}", m.0, a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z));
         self.lo = self.lo.min(a).min(b).min(c);
         self.hi = self.hi.max(a).max(b).max(c);
         self.mb.tri(a, b, c, m.0 as u16);
@@ -144,6 +199,7 @@ impl Geometry {
     /// like outside. Use `Material::GRASS`, `Material::EARTH`, … .
     pub fn ground_plane(&mut self, z: f32, material: MaterialId) {
         self.check(material);
+        self.note(|| format!("ground {z} {}", material.0));
         self.ground = Some((z, material));
     }
 

@@ -226,6 +226,13 @@ impl Rig {
         }
         let mut sim = Simulation::new(cfg);
         let town = Town::new(&mut sim);
+        // GEOMETRY=<file>: a host's level instead of the town's (the
+        // Godot demo's: OMG_DUMP_GEOMETRY), the town's sources and doors
+        // where they are
+        if let Some(path) = env("GEOMETRY") {
+            sim.set_geometry(omg_audio::Geometry::load(&path).expect("GEOMETRY: a dumped geometry"));
+            eprintln!("geometry: {path}");
+        }
         if env("COMPUTE").as_deref() == Some("gpu") {
             eprintln!("gpu walk: {}", if sim.gpu_active() { "on" } else { "unavailable (build with --features omg-audio/gpu)" });
         }
@@ -878,8 +885,16 @@ fn cartone() {
     rig.only(&[CAR]);
     let v: f32 = env("SPEED").and_then(|v| v.parse().ok()).unwrap_or(27.78);
     let road: f32 = env("ROAD").and_then(|v| v.parse().ok()).unwrap_or(-130.0);
-    rig.pos = [-100.0, 100.0, 1.6];
-    let at = move |t: f32| -> Option<[f32; 3]> { Some([road, 100.0 - 150.0 + v * t, 0.7]) };
+    // LIS=x,y,z: the listener elsewhere; Y0: where the car starts (the
+    // Godot demo's car scenario: ROAD=-17.1 LIS=-13.1,0,2 Y0=-150)
+    rig.pos = env("LIS")
+        .and_then(|v| {
+            let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+            (p.len() == 3).then(|| [p[0], p[1], p[2]])
+        })
+        .unwrap_or([-100.0, 100.0, 1.6]);
+    let y0: f32 = env("Y0").and_then(|v| v.parse().ok()).unwrap_or(-50.0);
+    let at = move |t: f32| -> Option<[f32; 3]> { Some([road, y0 + v * t, 0.7]) };
     rig.movers.push((CAR, Box::new(at)));
     let f0 = 500.0f32;
     let cycle = (SR / f0).round() as usize;

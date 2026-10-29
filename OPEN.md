@@ -119,7 +119,11 @@ exactly solved paths there are only its direct one, smooth through the
 burst (`record.gd --paths`: −40.5 → −41.6 dB): the burst is in the walk's
 sampled reflections (early bins, the reverb). Re-timing the early taps
 with the direct arrival at every exact frame changed nothing measurable.
-Next: the walk's ground hits by material over the burst.
+Replayed headless in the demo's own level (`OMG_DUMP_GEOMETRY`, then
+`GEOMETRY=… ROAD=-17.1 LIS=-13.1,0,2 Y0=-150 assess cartone`) there is
+no burst (worst −47 dB): it comes from the real-time host, not the
+geometry. (The tone there is heavily beaten all along, 4 dB rms — the
+facades by the road, each reflection with its own Doppler.)
 
 ### A distinct echo found by chance
 A car passing the field (`assess cartone`): with seeds 1 and 3 a facade

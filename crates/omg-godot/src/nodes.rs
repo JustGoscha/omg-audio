@@ -562,6 +562,12 @@ impl OmgWorld {
     fn rebuild_geometry(&mut self) -> Dictionary<Variant, Variant> {
         let default = if self.default_material.is_empty() { None } else { Some(self.default_material.to_variant()) };
         let mut c = Collector { g: Geometry::new(), default, mats: HashMap::new(), meshes: 0, boxes: 0 };
+        // OMG_DUMP_GEOMETRY=<path>: the geometry as handed to the engine,
+        // to replay headless (`Geometry::load`)
+        let dump = std::env::var("OMG_DUMP_GEOMETRY").ok();
+        if dump.is_some() {
+            c.g.record();
+        }
         if self.ground_plane {
             if let Some(m) = materials::get(&self.ground_material.to_string()) {
                 let id = c.material(m);
@@ -580,6 +586,12 @@ impl OmgWorld {
         d.set("triangles", c.g.triangle_count() as i64);
         d.set("boxes", c.boxes as i64);
         d.set("meshes", c.meshes as i64);
+        if let Some(path) = dump {
+            match c.g.save(&path) {
+                Ok(()) => godot_print!("omg: geometry written to {path}"),
+                Err(e) => godot_error!("omg: geometry not written to {path}: {e}"),
+            }
+        }
         if let Some(h) = host().as_mut() {
             h.engine.set_geometry(c.g);
         }
