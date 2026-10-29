@@ -158,12 +158,17 @@ fn a_jumped_source_still_delivers_what_it_emitted_before() {
 fn a_source_switched_off_still_delivers_what_it_emitted() {
     let lis = [-100.0f32, 100.0, 1.6];
     let a = [-200.0f32, 100.0, 1.6];
-    let (on_l, on_r) = render(BALL, |_| Some(a), &[3.0], 4.0, lis, 0.0);
-    let (off_l, off_r) = render(BALL, |t| (t < 3.05).then_some(a), &[3.0], 4.0, lis, 0.0);
+    let (on_l, on_r) = render(BALL, |_| Some(a), &[3.0], 4.5, lis, 0.0);
+    let (off_l, off_r) = render(BALL, |t| (t < 3.05).then_some(a), &[3.0], 4.5, lis, 0.0);
     let t1 = 3.0 + 100.0 / C;
     let on = energy(&on_l, t1 - 0.004, t1 + 0.006) + energy(&on_r, t1 - 0.004, t1 + 0.006);
     let off = energy(&off_l, t1 - 0.004, t1 + 0.006) + energy(&off_r, t1 - 0.004, t1 + 0.006);
     assert!((db(off) - db(on)).abs() < 3.0, "switched off in flight: {:.1} dB against {:.1} dB left on", db(off), db(on));
+    // and what scatters after it (the town's facades): the place it left
+    // rings on — a ghost whose paths have all arrived still convolves
+    let tail = |l: &[f32], r: &[f32]| energy(l, t1 + 0.004, t1 + 1.0) + energy(r, t1 + 0.004, t1 + 1.0);
+    let (on_t, off_t) = (tail(&on_l, &on_r), tail(&off_l, &off_r));
+    assert!((db(off_t) - db(on_t)).abs() < 3.0, "its tail switched off: {:.1} dB against {:.1} dB left on", db(off_t), db(on_t));
 }
 
 /// Standing still with nothing changing, the club heard from the street

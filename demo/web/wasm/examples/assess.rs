@@ -274,9 +274,11 @@ impl Rig {
                 if let (Some(w), Some(f)) = (dbg_win, &f) {
                     if (t - w).abs() < 0.12 {
                         for (id, pb) in &f.blocks {
-                            let loud: Vec<String> = pb.taps.iter().filter(|x| x.gains[1] > 0.003).map(|x| format!("{}:{:.1}ms {:.1}dB", x.key, x.delay_s * 1e3, 20.0 * x.gains[1].log10())).collect();
-                            if !loud.is_empty() {
-                                eprintln!("t {t:.3} {} id {} v{} {}", if full { "tick " } else { "exact" }, id.0, pb.version, loud.join(" "));
+                            let floor = if env("DEBUG_ALL").is_some() { 0.0 } else { 0.003 };
+                            let loud: Vec<String> = pb.taps.iter().filter(|x| x.gains[1] > floor).take(8).map(|x| format!("{}:{:.1}ms {:.1}dB", x.key, x.delay_s * 1e3, 20.0 * x.gains[1].max(1e-12).log10())).collect();
+                            if !loud.is_empty() || pb.reverb.level[1] > 0.0 {
+                                let k = f.kernels.iter().find(|(kid, _)| kid == id).map_or("none".to_string(), |(_, k)| format!("{:x}/{:.2}s", std::sync::Arc::as_ptr(k) as usize & 0xffffff, k.len as f32 / SR));
+                                eprintln!("t {t:.3} {} id {} v{} rev {:.1}dB rt60 {:.2} kernel {k} {}", if full { "tick " } else { "exact" }, id.0, pb.version, 20.0 * pb.reverb.level[1].max(1e-9).log10(), pb.reverb.rt60[1], loud.join(" "));
                             }
                         }
                     }
@@ -293,7 +295,10 @@ impl Rig {
                 if (t - w).abs() < 0.12 {
                     let (n, live, pts) = self.mix.occupancy();
                     let e: f32 = l.iter().chain(r.iter()).map(|v| v * v).sum();
-                    eprintln!("t {t:.4} render: {n} sources, {live} live paths, {pts} hrtf; block energy {:.1} dB", 10.0 * e.max(1e-30).log10());
+                    let mut ms = Vec::new();
+                    self.mix.take_meters(&mut ms);
+                    let m: Vec<String> = ms.iter().filter(|(_, m)| m.rms > 0.0).map(|(id, m)| format!("{}:{:.0}", id.0, 20.0 * m.rms.log10())).collect();
+                    eprintln!("t {t:.4} render: {n} sources, {live} live paths, {pts} hrtf; block energy {:.1} dB; meters {}", 10.0 * e.max(1e-30).log10(), m.join(" "));
                 }
             }
             self.l.extend_from_slice(&l);

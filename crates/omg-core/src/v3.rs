@@ -718,7 +718,7 @@ impl Bin {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct SourceState {
     early: HashMap<u32, Bin>,
     echo: Option<Echogram>,
@@ -1405,6 +1405,7 @@ pub struct ExactPath {
 
 /// A coherent chain past `bounces`: the planes its mirrors lie in, in
 /// order from the listener.
+#[derive(Clone)]
 struct MirrorChain {
     planes: Vec<(Vec3, f32)>,
     ttl: u32,
@@ -1647,6 +1648,28 @@ impl Tracer {
     /// fresh/mean) — the estimate's own noise.
     pub fn dense_scatter(&self, id: u32) -> Option<[f32; HISTORY_WINDOWS]> {
         self.state.get(&id).map(|s| s.dense_var)
+    }
+
+    /// Source `to` takes over what `from` has learnt — its averaged
+    /// response, its echo chains, its edge paths — and `from` starts over:
+    /// a source that jumped leaves a ghost at the place it left (`to`),
+    /// whose response is the one already converged there.
+    pub fn fork(&mut self, from: u32, to: u32) {
+        if let Some(st) = self.state.remove(&from) {
+            self.state.insert(to, st);
+        }
+        let moved: Vec<(u64, MirrorChain)> =
+            self.chains.iter().filter(|(k, _)| k.0 == from).map(|(k, c)| (k.1, c.clone())).collect();
+        self.chains.retain(|k, _| k.0 != from);
+        for (h, c) in moved {
+            self.chains.insert((to, h), c);
+        }
+        if let Some(e) = self.edge_cache.remove(&from) {
+            self.edge_cache.insert(to, e);
+        }
+        if let Some(v) = self.src_vis.remove(&from) {
+            self.src_vis.insert(to, v);
+        }
     }
 
     /// Forget a source's history (it moved discontinuously, or left).

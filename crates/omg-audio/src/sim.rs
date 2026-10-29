@@ -633,15 +633,16 @@ impl Simulation {
         if jumped && s.off_at.is_none_or(|t| now - t < ring_out(s.pos, ear)) {
             let gid = SourceId(GHOST_ID_BASE + self.next_ghost);
             self.next_ghost = self.next_ghost.wrapping_add(1) % GHOST_ID_SPAN;
+            // the ghost is the place it left: what was learnt there is its
             let ghost = Src {
                 id: gid,
                 pos: s.pos,
                 gain: s.gain,
                 active: true,
-                block: ParamBlock::default(),
-                traced: None,
-                dense: None,
-                kernel: None,
+                block: s.block.clone(),
+                traced: s.traced,
+                dense: s.dense.take(),
+                kernel: s.kernel.take(),
                 track: s.track.clone(),
                 seen: s.seen,
                 since: s.since,
@@ -652,6 +653,7 @@ impl Simulation {
             s.track = VecDeque::from([(now, p)]);
             s.seen = (now, p);
             s.since = now;
+            self.tracer.fork(id.0, gid.0);
             self.new_ghosts.push((gid, id));
             self.sources.push(ghost);
         }

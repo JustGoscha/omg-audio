@@ -330,6 +330,12 @@ impl Slot {
             a += (0..3).map(|b| tap.gains[b] * tap.gains[b] * max[b]).sum::<f32>();
         }
         self.arrival_t = t;
+        // no path arrives on its own (blocked, or a ghost's emissions all
+        // in): the scattered field still does, timed from the free-field
+        // arrival — a channel whose convolution rings is not silent
+        if !first.is_finite() && pb.onset_s > 0.0 && (pb.reverb.level[1] > 0.0 || pb.remote.is_some()) {
+            first = pb.onset_s as f64 * sr;
+        }
         if !first.is_finite() {
             self.late_p = [0.0; 3];
             self.remote_p = [0.0; 3];
