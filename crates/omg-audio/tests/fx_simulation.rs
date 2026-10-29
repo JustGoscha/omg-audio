@@ -381,7 +381,9 @@ fn exact_frames_follow_the_listener_between_ticks() {
 /// west face). While the facade mirrors the car to the listener its echo
 /// plays as its own tap — ~0.45 s after the car, ~11 dB under it — at the
 /// image source's delay and level: every tick and exact frame of that
-/// stretch at the cheapest rung and a middle one. The finders' rays found
+/// stretch at the cheapest rung and a middle one — and its twin off the
+/// ground (the facade, then the ground on the car's side: the ground's
+/// mirror share under it, 0.03 ms later), as the direct sound has its own. The finders' rays found
 /// it by chance (a facade 100 m off fills ~0.1 % of their sphere: at
 /// rung 4 the town's car was named twice in 10 s, both times outside its
 /// echo's 1.8 s), and a chain rejected as the car came up was held out
@@ -412,6 +414,7 @@ fn a_facades_echo_of_a_passing_car_plays_at_every_rung() {
         sim.set_geometry(g);
         let src = sim.add_source(SourceDesc::at(car(0.0)));
         let (mut want, mut heard, mut worst_ms, mut worst_db) = (0, 0, 0.0f64, 0.0f32);
+        let (mut twins, mut twin_db) = (0, 0.0f32);
         for k in 0..(5.0 * 120.0) as usize {
             let t = k as f64 / 120.0;
             sim.set_time(t);
@@ -443,11 +446,22 @@ fn a_facades_echo_of_a_passing_car_plays_at_every_rung() {
             let got_db = 20.0 * (echo.gains[1] / direct.gains[1]).log10();
             worst_ms = worst_ms.max(((echo.delay_s as f64 - len as f64 / c) * 1e3).abs());
             worst_db = worst_db.max((got_db - want_db).abs());
+            // its twin off the ground on the car's side (facade, then
+            // ground: the ground's mirror share under it, a few hundredths
+            // of a millisecond later)
+            if let Some(tw) = pb.taps.iter().find(|tp| tp.key >= 9_000_000 && tp.key != echo.key && (tp.delay_s - echo.delay_s).abs() < 1e-3) {
+                twins += 1;
+                let gm = Material::GRASS;
+                let share = (1.0 - gm.absorption[1] - gm.transmission[1] * gm.transmission[1]) * (1.0 - gm.scattering);
+                twin_db = twin_db.max((20.0 * (tw.gains[1] / echo.gains[1]).log10() - 10.0 * share.log10()).abs());
+            }
         }
-        eprintln!("level {level}: the echo in {heard} of {want} frames; delay off by ≤ {worst_ms:.2} ms, level by ≤ {worst_db:.2} dB");
+        eprintln!("level {level}: the echo in {heard} of {want} frames; delay off by ≤ {worst_ms:.2} ms, level by ≤ {worst_db:.2} dB; its ground twin in {twins}, off the ground's share by ≤ {twin_db:.2} dB");
         assert!(want > 100, "the facade mirrors the car for a while: {want} frames");
         assert!(heard as f32 >= 0.95 * want as f32, "level {level}: the echo plays in {heard} of {want} frames");
         assert!(worst_ms < 1.0, "level {level}: the echo's delay off by {worst_ms:.2} ms");
         assert!(worst_db < 1.0, "level {level}: the echo's level off by {worst_db:.2} dB");
+        assert!(twins as f32 >= 0.95 * want as f32, "level {level}: its ground twin in {twins} of {want} frames");
+        assert!(twin_db < 1.0, "level {level}: the twin off the ground's share by {twin_db:.2} dB");
     }
 }

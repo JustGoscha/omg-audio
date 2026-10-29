@@ -169,10 +169,12 @@ end moves, first-order chains are named from the world's flat faces
 every tick, and only the emission point is solved — the echo in 281 of
 281 frames at every rung, at the image source's delay and level
 (`fx_simulation::a_facades_echo_of_a_passing_car_plays_at_every_rung`;
-before, 18 at rung 0). Open: second order — an echo's ground
-reflection, a street's two facades — is still left to the finders (the
-ground with every face would be linear in the faces; any two faces,
-quadratic).
+before, 18 at rung 0). Each first-order chain's twins off the ground
+are named with it (the ground first or last: the echo's own ground
+reflection, as the direct sound has its): in the test the facade, then
+the ground on the car's side, 0.03 ms later at the grass's mirror share
+— 281 of 281 frames, 0 before. Open: other second order (a street's two
+facades) is still left to the finders (any two faces: quadratic).
 
 ### Doppler in the hosts: one instant per frame — solved Oct 29
 Measured in the browser (headless Chrome, `tools/web_doppler.mjs`) and

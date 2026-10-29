@@ -2453,6 +2453,12 @@ impl Tracer {
         let panels: Vec<MirrorFace> = world.panels.iter().flat_map(|&(lo, hi, _)| panel_faces((lo, hi))).collect();
         // (1 cm: a mirror point on the face's edge)
         let pad = Vec3::new(0.01, 0.01, 0.01);
+        let within = |p: Vec3, f: &MirrorFace| {
+            let (lo, hi) = (f.lo - pad, f.hi + pad);
+            p.x >= lo.x && p.y >= lo.y && p.z >= lo.z && p.x <= hi.x && p.y <= hi.y && p.z <= hi.z
+        };
+        // the ground, under every outdoor echo
+        let ground = world.grade.map(|g| plane_of(Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, g)));
         for f in faces.iter().chain(&panels) {
             let (n, d) = f.plane;
             let sl = n.dot(listener) - d;
@@ -2474,12 +2480,22 @@ impl Tracer {
                     continue;
                 }
                 let q = x + (image - x) * (sx / (sx + sl));
-                let (lo, hi) = (f.lo - pad, f.hi + pad);
-                if q.x < lo.x || q.y < lo.y || q.z < lo.z || q.x > hi.x || q.y > hi.y || q.z > hi.z {
+                if !within(q, f) {
                     continue;
                 }
                 let moving = self.motion.moving(si);
                 self.name_chain(s.id, &[f.plane], cached, (listener, s.pos, moving));
+                // and its twins off the ground, a few millimetres longer
+                // when both ends stand low over it: the ground first or
+                // last (the direct sound's own twin is the ground's
+                // first-order chain) — the finders' rays come across them
+                // as rarely
+                let Some(g) = ground.filter(|&g| !planes_eq(f.plane, g)) else { continue };
+                for (twin, at) in [([g, f.plane], 2), ([f.plane, g], 1)] {
+                    if within(chain_points(&twin, listener, x)[at], f) {
+                        self.name_chain(s.id, &twin, cached, (listener, s.pos, moving));
+                    }
+                }
             }
         }
         self.faces = Some((id, faces));

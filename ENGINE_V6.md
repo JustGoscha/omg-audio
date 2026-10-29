@@ -199,8 +199,10 @@ tick (the mesh's coplanar triangles and the panels' sides: the mirror
 point of where the source emitted inside the face), a rejection holds
 only while nothing moved, and the light cone runs on the chain's image
 with only the emission point solved: the echo in every frame at every
-rung, at the image source's delay and level. A tick over the Godot
-level's 3109 faces costs no more than before (`tick_move GEOMETRY=`).
+rung, at the image source's delay and level — with its twins off the
+ground (the ground first or last), as the direct sound has its own. A
+tick over the Godot level's 3109 faces costs no more than before
+(`tick_move GEOMETRY=`).
 
 ## Still open (OPEN.md)
 
@@ -209,6 +211,6 @@ estimate: young (right after a restart) it reads low and steps up as
 rare strong paths come — paths from the sources too (bidirectional) or
 learnt splitting at partitions would fix it. Also: the estimate's ±2–4
 dB wobble moving at the lowest rungs; a cheaper transmission query (half
-the walk); wasm walks on one thread; second-order echoes (an echo's
-ground reflection, a street's two facades) are still left to the
-finders' rays — first order is named from the faces.
+the walk); wasm walks on one thread; second-order echoes between two
+faces (a street's two facades) are still left to the finders' rays —
+first order and its ground twins are named from the faces.
