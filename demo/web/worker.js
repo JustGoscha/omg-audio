@@ -9,6 +9,9 @@ let gpuOn = false;
 // the share of the GPU's time the walk may take: the page's frames first
 let gpuBudget = 0.2;
 let debugOn = false;
+// the audio thread's render load (the page measures it): quality auto
+// sheds when it presses
+let load = 0;
 let pose = { x: 3.0, y: 3.0, z: 1.6, yaw: 0.0, projs: [] };
 // messages that arrive while init still awaits wasm are replayed after
 let preInit = [];
@@ -17,8 +20,12 @@ function handle(m) {
   if (m.type === 'pose') {
     pose = m;
   } else if (m.type === 'quality') {
-    // the page's tiers: 0 high, 1 med, 2 low
-    w.sim_set_quality(m.tier);
+    // the page's tiers: 0 high, 1 med, 2 low; −1 auto (the engine's
+    // level governor walks the quality ladder by what a tick costs)
+    if (m.tier < 0) w.sim_set_auto();
+    else w.sim_set_quality(m.tier);
+  } else if (m.type === 'load') {
+    load = m.value;
   } else if (m.type === 'override') {
     // a pinned tracer lever (5 rays, 6 reflections, 7 late rays); 0 = tier
     w.sim_set_override(m.id, m.value);
@@ -112,6 +119,8 @@ function tick() {
   const t0 = performance.now();
   w.sim_tick(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw || 0);
   const tickMs = performance.now() - t0;
+  const level = w.sim_govern(tickMs, load);
+  const budget = [w.sim_budget(0), w.sim_budget(1), w.sim_budget(2)];
   if (gpu && gpuOn) gpu.pump(w, gpuBudget);
   // views after the tick: wasm memory may have grown
   const f32 = (ptr, len) => new Float32Array(w.memory.buffer, ptr, len).slice();
@@ -126,7 +135,7 @@ function tick() {
   let rays = null;
   if (debugOn && w.sim_rays_len()) rays = f32(w.sim_rays_ptr(), w.sim_rays_len()).buffer;
   postMessage({
-    type: 'tick', frame, kernels, clears, state: state.buffer, envOff: w.sim_env_off(), tickMs,
+    type: 'tick', frame, kernels, clears, state: state.buffer, envOff: w.sim_env_off(), tickMs, level, budget,
     gpu: gpu && gpuOn ? 1 : 0, gpuAvail: gpu ? 1 : 0,
     gpuMs: gpu ? gpu.stats().ms : 0, v3Ms: gpu ? gpu.stats().ms : 0, v3N: gpu ? gpu.stats().walks : 0,
     gpuMaxMs: gpu ? gpu.stats().maxMs : 0, gpuRays: w.sim_gpu_rays_share ? w.sim_gpu_rays_share() : 1,

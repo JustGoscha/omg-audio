@@ -1287,6 +1287,7 @@ impl WorldSim {
             late_ema: 0.1,
             late_nee: 1,
             diffraction: crate::quality::diffraction_on(),
+            ..Budget::default()
         };
         let tracer = self.v3_tracer.get_or_insert_with(|| Tracer::new(0x0e3_5eed));
         let v4 = crate::quality::early_v4();

@@ -31,7 +31,7 @@
 //!   cartone  a car passes 30 m off at 100 km/h playing a steady tone:
 //!            its pitch and level, demodulated, and how they jitter
 //!
-//!     MODE=v3|v4|v5|v6  RUNG=0..4 (unset: governed)  QUALITY=0..3  EAR=0
+//!     MODE=v3|v4|v5|v6  RUNG=0..4 (unset: governed)  QUALITY=0..3 | LEVEL=0..10  EAR=0
 //!     PACE=0  WAV=dir (write the output)  SEED=n  NEE=n (next-event
 //!     connections a bounce; 0: every source)
 //!
@@ -182,10 +182,12 @@ struct Rig {
 impl Rig {
     fn new() -> Self {
         let mode = mode();
-        let quality = match env("QUALITY").as_deref() {
-            Some("0") => Quality::Low,
-            Some("1") => Quality::Medium,
-            Some("3") => Quality::Ultra,
+        // LEVEL=n: a rung of the quality ladder (QUALITY=0..3: the tiers)
+        let quality = match (env("LEVEL").and_then(|l| l.parse::<usize>().ok()), env("QUALITY").as_deref()) {
+            (Some(l), _) => Quality::Level(l),
+            (_, Some("0")) => Quality::Low,
+            (_, Some("1")) => Quality::Medium,
+            (_, Some("3")) => Quality::Ultra,
             _ => Quality::High,
         };
         // NEE=n: next-event connections per bounce (0: every source)
@@ -818,7 +820,9 @@ fn artifacts(rig: &Rig, t0: f32, t1: f32) -> Vec<f32> {
         et += l * l + r * r;
         k += 1;
         if k == w {
-            out.push((10.0 * (eh.max(1e-30) / et.max(1e-30)).log10()) as f32);
+            // a silent window (the source not yet in the audible window)
+            // holds no artifact: NaN, left out of the counts
+            out.push(if et < 1e-20 { f32::NAN } else { (10.0 * (eh.max(1e-30) / et).log10()) as f32 });
             eh = 0.0;
             et = 0.0;
             k = 0;
@@ -828,15 +832,18 @@ fn artifacts(rig: &Rig, t0: f32, t1: f32) -> Vec<f32> {
 }
 
 fn artifact_line(name: &str, v: &[f32]) -> String {
+    let silent = v.iter().filter(|x| x.is_nan()).count();
+    let v: Vec<f32> = v.iter().copied().filter(|x| !x.is_nan()).collect();
     if v.is_empty() {
-        return format!("{name}: —");
+        return format!("{name}: — ({silent} silent windows)");
     }
     let mut s = v.to_vec();
     s.sort_by(|a, b| a.total_cmp(b));
     let over = |d: f32| v.iter().filter(|&&x| x > d).count();
     format!(
-        "{name:8} {:4} windows: median {:6.1} dB, worst {:6.1} dB, over −40 dB {:3}, over −30 dB {:3}",
+        "{name:8} {:4} windows{}: median {:6.1} dB, worst {:6.1} dB, over −40 dB {:3}, over −30 dB {:3}",
         v.len(),
+        if silent > 0 { format!(" (+{silent} silent)") } else { String::new() },
         s[s.len() / 2],
         s[s.len() - 1],
         over(-40.0),
@@ -918,6 +925,9 @@ fn cartone() {
         n += 1.0;
         if da.abs() > 2.0 {
             jumps += 1;
+            if env("TRACE").is_some() {
+                println!("   t {:7.3}  level {:+5.1} dB  pitch {:+6.2} Hz", (k + 1) as f32 * 48.0 / SR, da, df);
+            }
         }
     }
     println!(

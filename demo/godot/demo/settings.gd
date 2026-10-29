@@ -273,8 +273,8 @@ func _refresh() -> void:
 	var st: Dictionary = world.stats()
 	var tick: float = st.get("tick_ms", 0.0)
 	stats_label.text = "%s · sim tick %.1f ms (%.0f %%) · %s · render load %.0f %% · %d/%d sources · %d paths · late %d" % [
-		["low", "medium", "high", "ultra"][world.effective_quality()] + (" (auto)" if world.quality < 0 else ""),
-		tick, tick / 50.0 * 100.0, "gpu" if st.get("gpu", false) else "cpu", 100.0 * st.get("load", 0.0),
+		world.quality_label(),
+		tick, tick / world.tick_target_ms * 100.0, "gpu" if st.get("gpu", false) else "cpu", 100.0 * st.get("load", 0.0),
 		st.get("rendering", 0), st.get("sources", 0), st.get("paths", 0), st.get("late", 0)]
 
 # ---------------------------------------------------------------- widgets

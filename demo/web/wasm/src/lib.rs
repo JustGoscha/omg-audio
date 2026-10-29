@@ -17,7 +17,8 @@
 
 pub mod town;
 
-use omg_audio::governor::Governor;
+use omg_audio::governor::{Governor, LevelGovernor};
+use omg_audio::sim::LEVELS;
 use omg_core::v3::fold::{self as walkfmt, LiveWalk, Walk, WalkJob, Walked};
 use omg_audio::{clip, normalize, Clip, Compute, Config, Frame, Hrir, Mixer, Play, Quality, Simulation, SourceId, VoiceId};
 use omg_dsp::dense::DenseKernel;
@@ -45,6 +46,10 @@ struct SimHost {
     cfg: Config,
     /// The quality tier (0 high, 1 med, 2 low) and pinned levers.
     tier: u32,
+    /// Quality auto: the level governor walks the whole ladder (the
+    /// page's tier otherwise).
+    auto: bool,
+    gov: LevelGovernor,
     rays: u32,
     bounces: u32,
     late_rays: u32,
@@ -74,12 +79,18 @@ const ENV_OFF: usize = 4 + NSRC * 9;
 
 impl SimHost {
     fn config(&self) -> Config {
-        let tier = match self.tier {
-            0 => Quality::High,
-            2 => Quality::Low,
+        Config { quality: Quality::Custom(self.budget(self.cfg.compute != Compute::Cpu)), ..self.cfg }
+    }
+
+    /// The tracer budget in effect: auto's level or the tier, the pinned
+    /// levers over it.
+    fn budget(&self, gpu: bool) -> omg_audio::Budget {
+        let tier = match (self.auto, self.tier) {
+            (true, _) => Quality::Level(self.gov.level()),
+            (_, 0) => Quality::High,
+            (_, 2) => Quality::Low,
             _ => Quality::Medium,
         };
-        let gpu = self.cfg.compute != Compute::Cpu;
         let mut b = tier.budget(gpu);
         if self.rays > 0 {
             b.rays = self.rays;
@@ -91,7 +102,7 @@ impl SimHost {
             b.late_rays = self.late_rays;
         }
         b.diffraction = self.diffraction;
-        Config { quality: Quality::Custom(b), ..self.cfg }
+        b
     }
 
     fn reconfigure(&mut self) {
@@ -130,6 +141,8 @@ pub extern "C" fn sim_setup(sample_rate: f32) {
         town,
         cfg,
         tier: 1,
+        auto: true,
+        gov: LevelGovernor::new(LEVELS - 1),
         rays: 0,
         bounces: 0,
         late_rays: 0,
@@ -162,7 +175,46 @@ pub extern "C" fn sim_dyn_ptr() -> *mut f32 {
 pub extern "C" fn sim_set_quality(tier: u32) {
     let h = sim();
     h.tier = tier.min(2);
+    h.auto = false;
     h.reconfigure();
+}
+
+/// What a tick may cost under quality auto (ms): the worker shares the
+/// machine with the page's frames.
+const TICK_TARGET_MS: f32 = 16.0;
+
+/// Quality auto: the level governor walks the ladder from here on.
+#[no_mangle]
+pub extern "C" fn sim_set_auto() {
+    let h = sim();
+    h.auto = true;
+    h.reconfigure();
+}
+
+/// Quality auto: a tick took `tick_ms` with the audio thread at `load`
+/// (render time over audio time). The level in effect (−1: a tier is
+/// pinned).
+#[no_mangle]
+pub extern "C" fn sim_govern(tick_ms: f32, load: f32) -> i32 {
+    let h = sim();
+    if !h.auto {
+        return -1;
+    }
+    if h.gov.report(tick_ms, TICK_TARGET_MS, load).is_some() {
+        h.reconfigure();
+    }
+    h.gov.level() as i32
+}
+
+/// The CPU tracer budget in effect: 0 rays, 1 reflections, 2 late rays.
+#[no_mangle]
+pub extern "C" fn sim_budget(i: u32) -> u32 {
+    let b = sim().budget(false);
+    match i {
+        0 => b.rays,
+        1 => b.bounces,
+        _ => b.late_rays,
+    }
 }
 
 /// Pin a tracer lever (0 hands it back to the tier): 5 rays from the

@@ -23,17 +23,52 @@ use omg_dsp::dense::{build_kernel_max, DenseKernel, KernelBuilder};
 use std::sync::Arc;
 use omg_core::vec3::Vec3;
 
-/// How much ray tracing a tick may do. Each step roughly doubles the
-/// cost; `High` is the demo's default.
+/// How much ray tracing a tick may do: a level on the quality ladder
+/// (`LADDER`), the named tiers being four of its rungs: low 4, medium
+/// 6, high 8, ultra 10.
 #[derive(Clone, Copy, Debug)]
 pub enum Quality {
     Low,
     Medium,
     High,
     Ultra,
+    /// A rung of `LADDER` (0 cheapest … `LEVELS` − 1): what quality auto
+    /// walks (`governor::LevelGovernor`).
+    Level(usize),
     /// Full control over the tracer's budget.
     Custom(Budget),
 }
+
+/// The quality ladder, cheapest first: (early rays, early bounces, late
+/// rays, next-event connections a bounce, one-bend edge searches a tick,
+/// two-bend searches a tick). Each rung costs about `LEVEL_STEP`× the one
+/// below. Every rung simulates the same physics — every path reaches the
+/// ears at every level, nothing is cut: the early family's bounces past
+/// its own count are the late family's, a source not searching keeps the
+/// edges it found, solved exactly. What a lower rung gives up is how
+/// many samples estimate what matters least to the ear, shed first and
+/// hardest going down: the two-bend searches (off below rung 3), then
+/// the early family's high bounces and the reverb's late rays, then the
+/// rays and the one-bend searches; the direct paths, their occlusion and
+/// the edges found are never shed.
+pub const LADDER: [(u32, u32, u32, usize, usize, usize); LEVELS] = [
+    (128, 2, 16, 1, 1, 0),
+    (192, 2, 24, 2, 1, 0),
+    (256, 3, 32, 2, 2, 0),
+    (384, 3, 32, 2, 2, 1),
+    (512, 3, 48, 3, 2, 1),
+    (640, 4, 64, 3, 3, 1),
+    (768, 4, 96, 3, 4, 1),
+    (896, 5, 112, 4, 6, 2),
+    (1024, 6, 128, 4, 8, 2),
+    (1536, 7, 192, 4, 12, 3),
+    (2048, 8, 256, 4, 16, 4),
+];
+pub const LEVELS: usize = 11;
+/// About how much more a rung costs than the one below (measured:
+/// tick_move, the town flying: 4.0, 6.1, 8.9, 12.4, 17.9 ms … on an M1
+/// Max).
+pub const LEVEL_STEP: f32 = 1.45;
 
 /// Where the ray walk runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,17 +96,25 @@ const GPU_RAYS_MIN: f32 = 0.125;
 const GPU_SIZING_PROBE: u32 = 200;
 
 impl Quality {
-    /// The tracer budget of this tier on the CPU (`gpu = false`) or GPU
-    /// (8× the early rays; the late rays are the CPU's either way).
+    /// The ladder's rung of this quality (None: a custom budget).
+    pub fn level(self) -> Option<usize> {
+        match self {
+            Quality::Low => Some(4),
+            Quality::Medium => Some(6),
+            Quality::High => Some(8),
+            Quality::Ultra => Some(10),
+            Quality::Level(n) => Some(n.min(LEVELS - 1)),
+            Quality::Custom(_) => None,
+        }
+    }
+
+    /// The tracer budget of this quality on the CPU (`gpu = false`) or
+    /// GPU (8× the early rays; the late rays are the CPU's either way).
     pub fn budget(self, gpu: bool) -> Budget {
-        // next-event connections per bounce step down with the rays: each
-        // tier costs about what the one above saves
-        let (rays, bounces, late, nee) = match self {
-            Quality::Low => (512, 3, 48, 3),
-            Quality::Medium => (768, 4, 96, 3),
-            Quality::High => (1024, 6, 128, 4),
-            Quality::Ultra => (2048, 8, 256, 4),
-            Quality::Custom(b) => return b,
+        let (rays, bounces, late, nee, edge, edge2) = match (self, self.level()) {
+            (Quality::Custom(b), _) => return b,
+            (_, Some(l)) => LADDER[l],
+            (_, None) => unreachable!("only a custom budget has no level"),
         };
         let rays = if gpu { (rays * 8).min(65536) } else { rays };
         Budget {
@@ -84,6 +127,8 @@ impl Quality {
             late_ema: 0.1,
             late_nee: 1,
             diffraction: true,
+            edge_searches: edge,
+            edge2_searches: edge2,
         }
     }
 }

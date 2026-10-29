@@ -91,6 +91,7 @@ fn the_vault_rings_longer_than_the_flat_ceiling() {
             late_ema: 0.5,
             late_nee: 0,
             diffraction: false,
+            ..Budget::default()
         };
         let mut f = None;
         for _ in 0..8 {

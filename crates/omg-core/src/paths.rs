@@ -655,33 +655,23 @@ fn upper_hull(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
 }
 
 /// The point on segment [a, b] minimizing |src→p| + |p→lis| (the physical
-/// bend point on a diffracting edge). Convex in the parameter — golden
-/// section on t ∈ [0, 1].
+/// bend point on a diffracting edge: equal angles to the edge on both
+/// legs). Exact: unfold both ends about the edge's line into one plane —
+/// along the line at `ts`, `tl`, off it by `rs`, `rl` — where the
+/// shortest path is straight and crosses the line at
+/// ts + (tl − ts)·rs/(rs + rl); the length is convex along the line, so
+/// clamping to the segment is the segment's minimum.
 pub fn bend_point(a: Vec3, b: Vec3, src: Vec3, lis: Vec3) -> Vec3 {
-    let cost = |t: f32| {
-        let p = a + (b - a) * t;
-        (p - src).length() + (lis - p).length()
-    };
-    let phi = 0.618_034f32;
-    let (mut lo, mut hi) = (0.0f32, 1.0f32);
-    let (mut m1, mut m2) = (hi - phi * (hi - lo), lo + phi * (hi - lo));
-    let (mut c1, mut c2) = (cost(m1), cost(m2));
-    for _ in 0..24 {
-        if c1 <= c2 {
-            hi = m2;
-            m2 = m1;
-            c2 = c1;
-            m1 = hi - phi * (hi - lo);
-            c1 = cost(m1);
-        } else {
-            lo = m1;
-            m1 = m2;
-            c1 = c2;
-            m2 = lo + phi * (hi - lo);
-            c2 = cost(m2);
-        }
+    let e = b - a;
+    let len2 = e.dot(e);
+    if len2 < 1e-12 {
+        return a;
     }
-    a + (b - a) * (0.5 * (lo + hi))
+    let (ts, tl) = ((src - a).dot(e) / len2, (lis - a).dot(e) / len2);
+    let rs = (src - (a + e * ts)).length();
+    let rl = (lis - (a + e * tl)).length();
+    let t = if rs + rl > 1e-9 { ts + (tl - ts) * rs / (rs + rl) } else { 0.5 * (ts + tl) };
+    a + e * t.clamp(0.0, 1.0)
 }
 
 #[cfg(test)]

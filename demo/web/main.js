@@ -247,6 +247,11 @@ function buildMixer() {
 // through sim_set_override (0 = follow tier); touching an audio lever
 // freezes the worklet governor and holds both audio values manually.
 // Mirrors of the tier tables in crates/omg-scene/src/quality.rs.
+// quality auto's target for a simulation tick (wasm lib.rs TICK_TARGET_MS)
+// and the ladder's top level (omg-audio sim.rs LEVELS − 1)
+const TICK_TARGET_MS = 16;
+const TOP_LEVEL = 10;
+const qualityName = (q) => (q.auto ? `auto ${q.level ?? 0}/${TOP_LEVEL}` : ['high', 'med', 'low'][q.tier]);
 const QUAL_TIER_VALS = {
   v3Rays: [1024, 768, 512], v3Bounces: [6, 4, 3], v3Late: [128, 96, 48],
 };
@@ -560,7 +565,8 @@ function buildQuality() {
         v = state.qual.gpuShare ?? 20;
       } else {
         pinned = state.qual.over[s.key] != null;
-        v = pinned ? state.qual.over[s.key] : QUAL_TIER_VALS[s.key][q.tier];
+        const inEffect = state.debug.budget && state.debug.budget[{ v3Rays: 0, v3Bounces: 1, v3Late: 2 }[s.key]];
+        v = pinned ? state.qual.over[s.key] : (inEffect ?? QUAL_TIER_VALS[s.key][q.tier]);
         // a GPU walk runs the early rays at up to 8x — as many as land a
         // walk every tick within its share (the late rays are the CPU's)
         if (s.key === 'v3Rays' && state.debug.gpu && state.debug.v3N) v = Math.round((pinned ? v : v * 8) * (state.debug.gpuRays ?? 1));
@@ -573,8 +579,8 @@ function buildQuality() {
     }
     const tick = state.debug.tickMs || 0;
     const load = state.debug.load || 0;
-    cells[0].textContent = `${tick.toFixed(1)}ms · ${(tick / 50 * 100).toFixed(0)}%`;
-    cells[0].classList.toggle('hot', tick > 40);
+    cells[0].textContent = `${tick.toFixed(1)}ms · ${(tick / TICK_TARGET_MS * 100).toFixed(0)}%`;
+    cells[0].classList.toggle('hot', tick > TICK_TARGET_MS);
     cells[1].textContent = `${(load * 100).toFixed(0)} %`;
     cells[1].classList.toggle('hot', load > 0.85);
     cells[2].textContent = `${state.debug.gaps || 0}`;
@@ -586,7 +592,7 @@ function buildQuality() {
     cells[4].textContent = state.debug.early === 3 ? 'v3: none' : `${state.debug.dense || 0}`;
     const btn = document.getElementById('qualbtn');
     btn.textContent = `⚙ ${state.qual.manual || Object.keys(state.qual.over).length
-      ? 'custom' : ['high', 'med', 'low'][q.tier] + (q.auto ? ' ·auto' : '')}`;
+      ? 'custom' : qualityName(q)}`;
   }, 350);
 }
 
@@ -2429,31 +2435,31 @@ async function startAudio() {
 
   const worker = new Worker('worker.js');
   worker.postMessage({ type: 'init', bytes: wasm2, sampleRate: audio.sampleRate }, [wasm2]);
-  // Sim-side quality ladder (GPU_PLAN.md Track B): ?q=high|med|low pins a
-  // tier, ?q=auto (default) walks it from the measured tick cost. The
+  // Sim-side quality ladder: ?q=high|med|low pins a tier, ?q=auto
+  // (default) lets the engine's level governor (omg-audio governor.rs,
+  // in the worker) walk the whole ladder by what a tick costs. The
   // audio-side ladder (point budget + tap ceiling) lives in the worklet's
   // own governor — this one only paces the 20 Hz sim.
   {
     const qp = (new URLSearchParams(location.search).get('q') || 'auto').toLowerCase();
     const tiers = { high: 0, med: 1, medium: 1, low: 2 };
-    // Auto starts at LOW and earns its way up: the cost of starting too
-    // high is audible (breakup until the first shed), the cost of
-    // starting too low is a few seconds of soft focus nobody notices.
+    // Auto starts at the bottom and earns its way up: the cost of
+    // starting too high is audible (breakup until the first shed), the
+    // cost of starting too low is a few seconds of soft focus.
     state.quality = {
-      auto: !(qp in tiers), tier: tiers[qp] ?? 2, calm: 0, hot: 0, forced: '',
+      auto: !(qp in tiers), tier: tiers[qp] ?? 2, level: 0,
       mode: qp in tiers ? (qp === 'medium' ? 'med' : qp) : 'auto',
     };
-    worker.postMessage({ type: 'quality', tier: state.quality.tier });
+    worker.postMessage({ type: 'quality', tier: state.quality.auto ? -1 : state.quality.tier });
     // Manual override (Q key / console): pins the sim tier AND floors the
     // worklet's tap-ceiling ladder to match, so a pinned "low" is low on
     // both clocks. "auto" hands both governors back their freedom.
     state.setQuality = (mode) => {
       const q = state.quality;
       q.mode = mode;
-      q.calm = 0;
-      q.forced = '';
       if (mode === 'auto') {
         q.auto = true;
+        worker.postMessage({ type: 'quality', tier: -1 });
       } else {
         q.auto = false;
         q.tier = tiers[mode];
@@ -2549,42 +2555,11 @@ async function startAudio() {
     state.debug.v3Ms = e.data.v3Ms || 0;
     state.debug.v3N = e.data.v3N || 0;
     state.debug.gpuMaxMs = e.data.gpuMaxMs || 0;
-    const q = state.quality;
-    if (q.auto) {
-      // shed on a blown budget immediately (a 20 Hz tick has 50 ms; at
-      // >40 the worker starts eating the next tick's slot), recover only
-      // after ~10 s of calm so the ladder can't oscillate at a doorway
-      if (e.data.tickMs > 40 && q.tier < 2) {
-        q.tier++;
-        q.calm = 0;
-        q.forced = `tick ${e.data.tickMs.toFixed(0)}ms`;
-        worker.postMessage({ type: 'quality', tier: q.tier });
-      } else if (state.debug.load > 0.8 && q.tier < 2) {
-        // sustained audio pressure sheds the sim tier too — a lower
-        // tier means fewer taps at the source of the pipeline
-        if (++q.hot >= 20) { // ~1 s of ticks over 80%
-          q.hot = 0;
-          q.tier++;
-          q.calm = 0;
-          q.forced = `load ${(state.debug.load * 100).toFixed(0)}%`;
-          worker.postMessage({ type: 'quality', tier: q.tier });
-        }
-      } else if (e.data.tickMs < 15 && q.tier > 0) {
-        // climb only with AUDIO headroom too: a higher tier raises tap
-        // counts, and the render load must never be pushed past 90%
-        q.hot = 0;
-        if (state.debug.load >= 0.8) {
-          q.calm = 0;
-        } else if (++q.calm >= 200) { // 200 ticks ≈ 10 s
-          q.tier--;
-          q.calm = 0;
-          q.forced = '';
-          worker.postMessage({ type: 'quality', tier: q.tier });
-        }
-      } else {
-        q.calm = 0;
-      }
-    }
+    // quality auto runs in the worker (the engine's level governor):
+    // it hears the audio thread's load from here
+    state.quality.level = e.data.level;
+    state.debug.budget = e.data.budget;
+    worker.postMessage({ type: 'load', value: state.debug.load || 0 });
     // the environment block (the ambience line reads it from the state;
     // the mixer gets it inside the frame)
     state.envOff = e.data.envOff;
@@ -3366,11 +3341,9 @@ function drawDebug() {
   const rung = LADDER[state.meters.rung ?? 1] || LADDER[1];
   graph(`render taps ${last ? last.taps : 0} · rung ${state.meters.rung ?? '–'}: ${rung[0]} paths, ${rung[1]} hrtf, ${rung[3]} conv`,
     90, (s) => s.taps / 96, { color: '#6ee0a0' });
-  const q = state.quality || { auto: true, tier: 0 };
-  graph(`sim tick ${state.debug.tickMs.toFixed(1)} ms (budget 50)`
-    + ` · quality ${['high', 'med', 'low'][q.tier]}${q.auto ? ' (auto)' : ''}`
-    + (q.forced ? ` ← ${q.forced}` : ''),
-    90, (s) => s.tickMs / 50, { color: '#ffaa3c' });
+  const q = state.quality || { auto: true, tier: 0, level: 0 };
+  graph(`sim tick ${state.debug.tickMs.toFixed(1)} ms (target ${TICK_TARGET_MS})` + ` · quality ${qualityName(q)}`,
+    90, (s) => s.tickMs / (2 * TICK_TARGET_MS), { color: '#ffaa3c' });
   // outputLatency is the device-side buffer: stable = healthy output
   // path; jumping around = the DEVICE is struggling (Bluetooth), not us
   const lat = state.audio ? (state.audio.outputLatency * 1000).toFixed(0) : '?';

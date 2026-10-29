@@ -77,20 +77,29 @@ split gets 1.2 dB at nine sections a sample; steeper shelves (4th order)
 at four would close it.
 
 ### Tick cost
-The town with every source traced: ~56 ms per tick native High on the
-CPU (50 ms budget at 20 Hz; 49 ms before the next-event draws reached
-farther sources, a faster BVH box test gave 6 ms back), the web
-worker's wasm 52 ms at Medium, 33 ms at Low (its governor sheds a tier
-over 40 ms). The tier governors shed quality; a lighter two-edge search
-(cache the string per listener cell), fewer chain solves at exact
-frames, and a cheaper transmission query (half the tick: every hit
-along a segment, sorted) would buy it back. Full ticks and the exact
-frames between them share one thread: a tick over the period (native
-High on the CPU) leaves no room for exact frames at all. A walk spread
-over threads (rays are independent: per-thread random streams, deposits
+Measured flying through the cathedral with all 19 town sources traced
+(`tick_move`, M1 Max, one core), per rung of the quality ladder
+(`sim::LADDER`): 4.0 · 6.1 · 8.9 · 12.4 · 17.9 (low) · 24.8 · 31.7
+(medium) · 46.0 · 57.9 (high) · 92.3 · 130 (ultra) ms. Quality auto
+targets 16 ms a tick (a 60 Hz frame; `LevelGovernor`): rung 3 here. The
+edge searches went by perceptual importance on Oct 29 (each source
+solves the edges it found every tick; only the loudest, most moved
+search: two-edge 22.9 → 1.3 ms a tick at low, the whole tick 42.5 →
+17.9 ms). What's left is the walk: early rays ~55 %, late rays ~30 %. A
+2020 mid-range desktop core is ~1.5× slower: rung 2. A walk spread over
+threads (rays are independent: per-thread random streams, deposits
 replayed in a fixed order so the result doesn't depend on the core
 count) would cut it several-fold on desktops; wasm workers have no
-threads.
+threads. Full ticks and the exact frames between them share one thread.
+
+### A distinct echo found by chance
+A car passing the field (`assess cartone`): with seeds 1 and 3 a facade
+echo 726 ms late, 12 dB under the direct sound, plays as its own tap
+and beats against it at ~18 Hz (its Doppler differs: physical); with
+seed 2 and the default seed there is no such tap — the chain not found
+by the finder rays, or not judged distinct (`ECHO_ENTER`, against the
+diffuse field's estimate, noisy at the low rungs' few late rays). The
+pass's "pitch jitter" (`cartone`) is that beat, not tick jitter.
 
 ### Interpolation on moving paths
 Paths read with a cubic (Hermite): a 10 kHz tone on a sliding delay

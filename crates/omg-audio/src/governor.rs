@@ -114,61 +114,63 @@ impl Governor {
     }
 }
 
-/// The simulation's quality tier, walked by what a tick costs (the web
-/// page's auto tier, shared): starts at the lowest tier and earns its way
-/// up — after `TIER_CALM_TICKS` ticks under `TIER_LIGHT` of the tick
-/// period with the audio thread under `TIER_LOAD`; sheds one tier at once
-/// when a tick runs over `TIER_HEAVY` of the period, or after
-/// `TIER_HOT_TICKS` ticks with the audio thread over `TIER_LOAD`.
-pub struct TierGovernor {
-    tier: usize,
+/// The simulation's quality level (`sim::LADDER`), walked by what a tick
+/// costs against a target (the host's: 16 ms leaves a 60 Hz game its
+/// frame — the tick shares the machine with it): starts at the lowest
+/// level and earns its way up, one level after `CALM_TICKS` ticks under
+/// `CLIMB` of the target with the audio thread under `LOAD`; sheds at
+/// once when a tick runs over the target — as many levels as the overrun
+/// asks, each about `sim::LEVEL_STEP`× the one below — and one level
+/// after `HOT_TICKS` ticks with the audio thread over `LOAD`.
+pub struct LevelGovernor {
+    level: usize,
     top: usize,
     calm: u32,
     hot: u32,
 }
 
-const TIER_HEAVY: f32 = 0.8;
-const TIER_LIGHT: f32 = 0.3;
-const TIER_LOAD: f32 = 0.8;
-const TIER_CALM_TICKS: u32 = 200;
-const TIER_HOT_TICKS: u32 = 20;
+const CLIMB: f32 = 0.6;
+const LOAD: f32 = 0.8;
+const CALM_TICKS: u32 = 40;
+const HOT_TICKS: u32 = 20;
 
-impl TierGovernor {
-    /// Tiers 0 (lowest) … `top`.
+impl LevelGovernor {
+    /// Levels 0 (lowest) … `top`.
     pub fn new(top: usize) -> Self {
-        Self { tier: 0, top, calm: 0, hot: 0 }
+        Self { level: 0, top, calm: 0, hot: 0 }
     }
 
-    pub fn tier(&self) -> usize {
-        self.tier
+    pub fn level(&self) -> usize {
+        self.level
     }
 
-    /// One tick took `tick_ms` of its `period_ms`, with the audio thread
-    /// at `load` (render time over audio time): the new tier if it moves.
-    pub fn report(&mut self, tick_ms: f32, period_ms: f32, load: f32) -> Option<usize> {
-        if tick_ms > TIER_HEAVY * period_ms && self.tier > 0 {
-            self.tier -= 1;
+    /// One tick took `tick_ms` against `target_ms`, with the audio thread
+    /// at `load` (render time over audio time): the new level if it moves.
+    pub fn report(&mut self, tick_ms: f32, target_ms: f32, load: f32) -> Option<usize> {
+        if tick_ms > target_ms && self.level > 0 {
+            let over = ((tick_ms / target_ms).ln() / crate::sim::LEVEL_STEP.ln()).ceil().max(1.0) as usize;
+            self.level = self.level.saturating_sub(over);
             self.calm = 0;
             self.hot = 0;
-            return Some(self.tier);
+            return Some(self.level);
         }
-        if load > TIER_LOAD {
+        if load > LOAD {
             self.calm = 0;
             self.hot += 1;
-            if self.hot >= TIER_HOT_TICKS && self.tier > 0 {
+            if self.hot >= HOT_TICKS && self.level > 0 {
                 self.hot = 0;
-                self.tier -= 1;
-                return Some(self.tier);
+                self.level -= 1;
+                return Some(self.level);
             }
             return None;
         }
         self.hot = 0;
-        if tick_ms < TIER_LIGHT * period_ms && self.tier < self.top {
+        if tick_ms < CLIMB * target_ms && self.level < self.top {
             self.calm += 1;
-            if self.calm >= TIER_CALM_TICKS {
+            if self.calm >= CALM_TICKS {
                 self.calm = 0;
-                self.tier += 1;
-                return Some(self.tier);
+                self.level += 1;
+                return Some(self.level);
             }
         } else {
             self.calm = 0;
@@ -179,22 +181,26 @@ impl TierGovernor {
 
 #[cfg(test)]
 mod tests {
-    use super::TierGovernor;
+    use super::LevelGovernor;
 
     #[test]
-    fn the_tier_climbs_when_calm_and_sheds_at_once() {
-        let mut g = TierGovernor::new(3);
-        for _ in 0..199 {
-            assert_eq!(g.report(5.0, 50.0, 0.2), None);
+    fn the_level_climbs_when_calm_and_sheds_at_once() {
+        let mut g = LevelGovernor::new(7);
+        for l in 1..=4 {
+            for _ in 0..39 {
+                assert_eq!(g.report(5.0, 16.0, 0.2), None);
+            }
+            assert_eq!(g.report(5.0, 16.0, 0.2), Some(l));
         }
-        assert_eq!(g.report(5.0, 50.0, 0.2), Some(1));
-        // a blown tick sheds now
-        assert_eq!(g.report(45.0, 50.0, 0.2), Some(0));
+        // a tick just over the target: one level down, now
+        assert_eq!(g.report(17.0, 16.0, 0.2), Some(3));
+        // three times over: as many levels as that takes
+        assert_eq!(g.report(48.0, 16.0, 0.2), Some(0));
         // the audio thread pressed for a second of ticks: no climb, and
         // at the floor nothing to shed
         for _ in 0..400 {
-            assert_eq!(g.report(5.0, 50.0, 0.9), None);
+            assert_eq!(g.report(5.0, 16.0, 0.9), None);
         }
-        assert_eq!(g.tier(), 0);
+        assert_eq!(g.level(), 0);
     }
 }

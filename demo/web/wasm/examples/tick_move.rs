@@ -5,7 +5,7 @@
 //! wall-clock. A tick over the 50 ms period leaves the simulation thread
 //! no time for the exact frames between ticks: paths then move in steps.
 //!
-//!   MODE=v3|v5|v6  SPEED=8  QUALITY=0..3  SECS=10
+//!   MODE=v3|v5|v6  SPEED=8  QUALITY=0..3 | LEVEL=0..10  SECS=10
 //!   cargo run --release -p omg-web --example tick_move
 use omg_audio::{Compute, Config, Quality, Simulation};
 use omg_web::town::Town;
@@ -17,10 +17,11 @@ fn env(k: &str) -> Option<String> {
 
 fn main() {
     let mode = env("MODE").unwrap_or_else(|| "v6".into());
-    let quality = match env("QUALITY").as_deref() {
-        Some("0") => Quality::Low,
-        Some("1") => Quality::Medium,
-        Some("3") => Quality::Ultra,
+    let quality = match (env("LEVEL").and_then(|v| v.parse::<usize>().ok()), env("QUALITY").as_deref()) {
+        (Some(l), _) => Quality::Level(l),
+        (_, Some("0")) => Quality::Low,
+        (_, Some("1")) => Quality::Medium,
+        (_, Some("3")) => Quality::Ultra,
         _ => Quality::High,
     };
     // DIFF=0: no diffraction (edge bends, two-edge paths); RAYS, BOUNCES,

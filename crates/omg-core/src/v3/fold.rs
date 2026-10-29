@@ -503,6 +503,7 @@ impl Tracer {
                 st.field(&self.cells, t_free, direct[si], &mut edge_taps[si], total)
             });
         }
+        self.note_heard(sources, &out);
         out
     }
 }

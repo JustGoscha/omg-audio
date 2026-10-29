@@ -750,7 +750,7 @@ func _process(dt: float) -> void:
 		var p := player.plan()
 		var room: String = DemoLevel.room_at(p.x, p.y, p.z + 0.5)[0]
 		var s := world.stats()
-		var q: String = ["low", "medium", "high", "ultra"][world.effective_quality()] + (" auto" if quality < 0 else "")
+		var q: String = world.quality_label()
 		hud.text = "%d fps · %s graphics\n%s · RT60 %.2f s · enclosure %.0f%%\nrain %s · %s%s\nsim %.1f ms (%s, %s) · render load %.0f%%\nbudget %d paths / %d hrtf / %d voices\n%d/%d sources rendering · %d paths · late %d" % [
 			Engine.get_frames_per_second(), "fine" if fine else "pixel %dp" % pixel_h,
 			room, s.get("rt60", 0.0), 100.0 * s.get("enclosure", 0.0), rain_name,

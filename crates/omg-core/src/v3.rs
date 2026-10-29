@@ -504,11 +504,29 @@ pub struct Budget {
     pub late_nee: usize,
     /// Rays passing close to a mesh edge bend around it (V3.4).
     pub diffraction: bool,
+    /// Blocked sources searching for the edges their direct field bends
+    /// over per tick, one bend / two bends: the rest keep the edges they
+    /// found, solved exactly for where they are now (`Tracer::edge_paths`;
+    /// the most needed search first — loud, and moved furthest since).
+    pub edge_searches: usize,
+    pub edge2_searches: usize,
 }
 
 impl Default for Budget {
     fn default() -> Self {
-        Self { rays: 1024, bounces: 4, k: 0.06, ema: 0.35, nee: 4, late_rays: 256, late_ema: 0.15, late_nee: 1, diffraction: true }
+        Self {
+            rays: 1024,
+            bounces: 4,
+            k: 0.06,
+            ema: 0.35,
+            nee: 4,
+            late_rays: 256,
+            late_ema: 0.15,
+            late_nee: 1,
+            diffraction: true,
+            edge_searches: 64,
+            edge2_searches: 64,
+        }
     }
 }
 
@@ -1433,10 +1451,16 @@ pub struct Tracer {
     edges: Option<EdgeSet>,
     tick: u64,
     /// Which edges the listener sees: (listener, tick, mask).
-    ear_vis: Option<(Vec3, u64, Vec<bool>)>,
-    /// Per source id: (listener, source, tick, edge-path taps, the bend
-    /// point of each).
-    edge_cache: HashMap<u32, (Vec3, Vec3, u64, Vec<Tap>, Vec<Vec<Vec3>>)>,
+    /// Which edges the listener sees, looked at as searches need them:
+    /// (where it was, per edge 0 not yet looked at / 1 seen / 2 hidden).
+    ear_vis: Option<(Vec3, Vec<u8>)>,
+    /// Per source id: the edges its paths bend over, solved every tick
+    /// (`edge_paths`).
+    edge_cache: HashMap<u32, EdgePaths>,
+    /// Per source id: the energy that reached the listener from it last
+    /// tick (every path, its gain² included) — how much its paths matter
+    /// to the ear (`edge_paths` searches by it).
+    heard: HashMap<u32, f32>,
     /// Per source id: where it stood, and which edges it sees (0 not yet
     /// looked at, 1 seen, 2 hidden) — two-edge strings start from these.
     src_vis: HashMap<u32, (Vec3, Vec<u8>)>,
@@ -1618,9 +1642,9 @@ impl Tracer {
                     taps.push(Tap { key: KEY_DIRECT, delay_s: d / SPEED_OF_SOUND, dir: [dir.x, dir.y, dir.z], gains });
                 }
             }
-            // the bends, through the points the last search found
-            if let Some((_, _, _, cached, points)) = self.edge_cache.get(&s.id) {
-                for (tap, p) in cached.iter().zip(points) {
+            // the bends, through this tick's bend points
+            if let Some(c) = self.edge_cache.get(&s.id) {
+                for (tap, p) in c.taps.iter().zip(&c.points) {
                     let last = *p.last().expect("a bend has its points");
                     if let Some(bp) = self.motion.emit(si, s.pos, last, polyline_len(listener, p)) {
                         taps.push(retimed(tap, p, listener, bp));
@@ -1678,6 +1702,7 @@ impl Tracer {
             tick: 0,
             ear_vis: None,
             edge_cache: HashMap::new(),
+            heard: HashMap::new(),
             src_vis: HashMap::new(),
             chains: HashMap::new(),
             rejected: HashMap::new(),
@@ -1771,6 +1796,9 @@ impl Tracer {
         }
         if let Some(v) = self.src_vis.remove(&from) {
             self.src_vis.insert(to, v);
+        }
+        if let Some(h) = self.heard.remove(&from) {
+            self.heard.insert(to, h);
         }
     }
 
@@ -1923,7 +1951,16 @@ impl Tracer {
             }
         }
         self.costs.fold = clock.ms();
+        self.note_heard(sources, &out);
         out
+    }
+
+    /// What reached the listener from each source this tick (`heard`).
+    fn note_heard(&mut self, sources: &[Source], out: &[SourceField]) {
+        for (s, f) in sources.iter().zip(out) {
+            let e: f32 = f.taps.iter().map(|t| t.gains[1] * t.gains[1]).sum::<f32>() + f.reflected[1];
+            self.heard.insert(s.id, e * s.weight);
+        }
     }
 
     /// Step 2 of a tick: the ray walk, deposited into `accs` (one per
@@ -2796,207 +2833,275 @@ impl Tracer {
             let key = (world.mesh.indices.len(), world.mesh.positions.len());
             if self.edges.as_ref().map_or(true, |e| e.key != key) {
                 self.edges = Some(EdgeSet::build(world.mesh));
+                // the paths kept name edges of the old set
+                self.edge_cache.clear();
+                self.src_vis.clear();
+                self.ear_vis = None;
             }
             if let Some(es) = self.edges.as_mut() {
                 es.mask_filled(world.panels, world.grade);
             }
         }
 
-        // Edge next-event estimation: the DIRECT field around one edge,
-        // connected deterministically for every blocked source (a random
-        // ray finding a distant source after bending is too rare to
-        // carry it). Knife-edge (Kurze–Anderson) per band, legs priced
-        // through whatever they cross, only the share the straight ray
-        // doesn't carry. Distinct edges add (each is its own path).
         self.tick += 1;
-        let tick = self.tick;
-        let mut edge_taps: Vec<Vec<Tap>> = vec![Vec::new(); sources.len()];
         let edges_clock = Stopwatch::start();
-        if let (true, Some(es)) = (budget.diffraction, self.edges.as_ref()) {
-            // which edges can the listener see at all? (shared by every
-            // source: a few points along each edge, pulled 5 cm toward the
-            // listener; reused while the listener stays put)
-            let fresh_vis = self.ear_vis.as_ref().map_or(true, |(p, t, m)| {
-                (*p - listener).length() > EDGE_REUSE_M || tick - t >= EDGE_REFRESH_TICKS || m.len() != es.edges.len()
-            });
-            if fresh_vis {
-            let seen_from_ear: Vec<bool> = es
-                .edges
-                .iter()
-                .enumerate()
-                .map(|(ei, (a, b))| {
-                    !es.filled[ei]
-                        && [0.1f32, 0.3, 0.5, 0.7, 0.9].iter().any(|f| {
-                            let m = *a + (*b - *a) * *f;
-                            let to = m - listener;
-                            let l = to.length();
-                            l > 0.2 && l < 400.0 && {
-                                let end = m - to * (0.05 / l);
-                                world.mesh.raycast(listener, to * (1.0 / l)).map_or(true, |(t, _)| t > l - 0.06)
-                                    && !world.crosses_earth(listener, end)
-                            }
-                        })
-                })
-                .collect();
-                self.ear_vis = Some((listener, tick, seen_from_ear));
-            }
-            let seen_from_ear = &self.ear_vis.as_ref().unwrap().2;
-            for (si, s) in sources.iter().enumerate() {
-                if vis[si][1] > 0.999 {
-                    continue;
-                }
-                // the bends reach the source where it emitted (its direct
-                // sound's moment: a bend is only slightly longer)
-                let Some(sp) = emitted[si] else { continue };
-                if let Some((pl, ps, t, taps, bends)) = self.edge_cache.get(&s.id) {
-                    if (*pl - listener).length() < EDGE_REUSE_M
-                        && (*ps - s.pos).length() < EDGE_REUSE_M
-                        && tick - t < EDGE_REFRESH_TICKS
-                    {
-                        // the same bends, re-timed for where both ends are
-                        // now (as `exact_taps` does between ticks: a reused
-                        // bend never jumps back to an old delay)
-                        edge_taps[si] = taps.iter().zip(bends).map(|(tap, p)| retimed(tap, p, listener, sp)).collect();
-                        if debug {
-                            for (tap, p) in taps.iter().zip(bends) {
-                                let mut points = vec![listener];
-                                points.extend_from_slice(p);
-                                points.push(sp);
-                                self.exact.push(ExactPath {
-                                    source: s.id,
-                                    kind: 1,
-                                    key: tap.key as u64,
-                                    energy: tap.gains[1] * tap.gains[1],
-                                    points,
-                                });
-                            }
-                        }
-                        continue;
-                    }
-                }
-                let direct_len = (sp - listener).length().max(MIN_DIST);
-                // rank every exposed edge by its pure knife-edge bound
-                let mut cand: Vec<(f32, usize, Vec3)> = es
-                    .edges
-                    .iter()
-                    .enumerate()
-                    .filter(|(ei, _)| seen_from_ear[*ei])
-
-                    .filter_map(|(ei, (a, b))| {
-                        let p = crate::paths::bend_point(*a, *b, sp, listener);
-                        let (d1, d2) = ((p - listener).length(), (sp - p).length());
-                        if d1 < 0.2 || d2 < 0.2 {
-                            return None;
-                        }
-                        // a bend AT ground level is no silhouette for an
-                        // above-ground path (it is where an edge meets the
-                        // ground, not where it stands out)
-                        if world.grade.is_some_and(|g| p.z < g + 0.3 && listener.z > g) {
-                            return None;
-                        }
-                        let det = d1 + d2 - direct_len;
-                        let ka = crate::diffraction::knife_edge_bands(det.max(1e-4));
-                        Some((ka[0] / (d1 + d2), ei, p))
-                    })
-                    .collect();
-                cand.sort_by(|x, y| y.0.total_cmp(&x.0));
-                // price every candidate, then keep the strongest distinct
-                let mut found: Vec<(f32, Vec3, Tap)> = Vec::new();
-                for (_, ei, p) in cand.into_iter().take(EDGE_CANDIDATES) {
-                    let to_edge = p - listener;
-                    let n1 = to_edge.normalize();
-                    let (d1, d2) = (to_edge.length(), (sp - p).length());
-                    // both legs meet 3 cm off the edge on the OUTSIDE of
-                    // the bend (away from whatever the path bends around):
-                    // a true silhouette edge has open air there and neither
-                    // leg grazes it; an edge lying on a zero-thickness wall
-                    // plane leaves one leg crossing that wall
-                    let n2 = (sp - p).normalize();
-                    let out = n1 - n2;
-                    if out.length() < 1e-3 {
-                        continue; // no bend: the straight line itself
-                    }
-                    let q = p + out.normalize() * 0.03;
-                    let t1 = world.transmission(listener, q, &mut self.hits);
-                    let t2 = world.transmission(q, sp, &mut self.hits);
-                    if t1[0] * t2[0] < 1e-6 {
-                        continue;
-                    }
-                    let det = d1 + d2 - direct_len;
-                    let ka = crate::diffraction::knife_edge_bands(det.max(1e-4));
-                    let air = air_attenuation(d1 + d2);
-                    let gains: [f32; NBANDS] = core::array::from_fn(|b| {
-                        ka[b] * t1[b] * t2[b] * air[b] / (d1 + d2) * (1.0 - vis[si][b]).sqrt()
-                    });
-                    if gains.iter().all(|&g| g < 1e-7) {
-                        continue;
-                    }
-                    found.push((
-                        gains[0] + gains[1],
-                        p,
-                        Tap {
-                            key: KEY_EDGE_BASE + ei as u32,
-                            delay_s: (d1 + d2) / SPEED_OF_SOUND,
-                            dir: [n1.x, n1.y, n1.z],
-                            gains,
-                        },
-                    ));
-                }
-                found.sort_by(|x, y| y.0.total_cmp(&x.0));
-                let mut kept: Vec<Vec3> = Vec::new();
-                for (_, p, tap) in found {
-                    if kept.len() >= EDGE_PATHS {
-                        break;
-                    }
-                    // coincident edges (a parapet over its slab) are one path
-                    if kept.iter().any(|q| (*q - p).length() < 1.0) {
-                        continue;
-                    }
-                    kept.push(p);
-                    if debug {
-                        self.exact.push(ExactPath {
-                            source: s.id,
-                            kind: 1,
-                            key: tap.key as u64,
-                            energy: tap.gains[1] * tap.gains[1],
-                            points: vec![listener, p, sp],
-                        });
-                    }
-                    edge_taps[si].push(tap);
-                }
-                let mut bends: Vec<Vec<Vec3>> = kept.iter().map(|p| vec![*p]).collect();
-                // two edges: the string over a thick building or around
-                // two corners, where no single bend carries the field
-                let sv = self.src_vis.entry(s.id).or_insert_with(|| (sp, vec![0; es.edges.len()]));
-                if (sv.0 - sp).length() > EDGE_REUSE_M || sv.1.len() != es.edges.len() {
-                    *sv = (sp, vec![0; es.edges.len()]);
-                }
-                let clock2 = Stopwatch::start();
-                let two = two_edge_paths(world, es, seen_from_ear, &mut sv.1, &mut self.hits, listener, sp, vis[si]);
-                self.costs.edges2 += clock2.ms();
-                for (pts, tap) in two {
-                    if kept.iter().any(|q| (*q - pts[0]).length() < 1.0 || (*q - pts[1]).length() < 1.0) {
-                        continue; // a single bend already carries it
-                    }
-                    if debug {
-                        self.exact.push(ExactPath {
-                            source: s.id,
-                            kind: 1,
-                            key: tap.key as u64,
-                            energy: tap.gains[1] * tap.gains[1],
-                            points: vec![listener, pts[0], pts[1], sp],
-                        });
-                    }
-                    edge_taps[si].push(tap);
-                    bends.push(pts.to_vec());
-                }
-                self.edge_cache.insert(s.id, (listener, s.pos, tick, edge_taps[si].clone(), bends));
-            }
-        }
-
+        let edge_taps = self.edge_paths(world, listener, sources, &emitted, &vis, budget);
         self.costs.edges = edges_clock.ms();
         (direct, vis, edge_taps)
     }
+
+    /// Edge next-event estimation: the DIRECT field around one or two
+    /// edges, connected deterministically for every blocked source (a
+    /// random ray finding a distant source after bending is too rare to
+    /// carry it). One edge: knife-edge (Kurze–Anderson) per band; two: the
+    /// string over both, priced by its detour (ISO 9613-2). Legs are priced
+    /// through whatever they cross, only the share the straight ray
+    /// doesn't carry; distinct edges add (each is its own path).
+    ///
+    /// Each source keeps the edges its last search found and solves them
+    /// again every tick for where both ends are now — bend points, legs,
+    /// prices: exact and continuous however it moves. Searching which
+    /// edges carry it (every exposed edge for one bend, pairs for two)
+    /// costs far more, so searches go by perceptual importance: each tick
+    /// at most `Budget::edge_searches` (one bend) and
+    /// `Budget::edge2_searches` (two) sources search, those whose stale
+    /// search costs the ear most first — how loud they arrive (`heard`, as
+    /// loudness) × how far either end moved since their last search.
+    fn edge_paths(
+        &mut self,
+        world: &World,
+        listener: Vec3,
+        sources: &[Source],
+        emitted: &[Option<Vec3>],
+        vis: &[[f32; NBANDS]],
+        budget: Budget,
+    ) -> Vec<Vec<Tap>> {
+        let mut edge_taps: Vec<Vec<Tap>> = vec![Vec::new(); sources.len()];
+        if !budget.diffraction {
+            return edge_taps;
+        }
+        let Some(es) = self.edges.take() else { return edge_taps };
+        let tick = self.tick;
+        let debug = self.debug;
+
+        // who searches: the blocked sources due a search (either end
+        // moved `EDGE_REUSE_M` since; never searched: first), the most
+        // needed first
+        let mut due1: Vec<(bool, f32, usize)> = Vec::new();
+        let mut due2: Vec<(bool, f32, usize)> = Vec::new();
+        for (si, s) in sources.iter().enumerate() {
+            if vis[si][1] > 0.999 {
+                continue;
+            }
+            let Some(sp) = emitted[si] else { continue };
+            let loud = self.heard.get(&s.id).map_or(0.0, |&e| e.powf(LOUDNESS_EXP));
+            let need = |at: Option<(Vec3, Vec3, u64)>| match at {
+                None => (true, loud),
+                Some((l, p, _)) => {
+                    let n = (l - listener).length().max((p - sp).length()) / EDGE_REUSE_M;
+                    (false, if n >= 1.0 { loud * n } else { -1.0 })
+                }
+            };
+            let c = self.edge_cache.get(&s.id);
+            let (first, n) = need(c.and_then(|c| c.one_at));
+            if first || n >= 0.0 {
+                due1.push((first, n, si));
+            }
+            let (first, n) = need(c.and_then(|c| c.two_at));
+            if first || n >= 0.0 {
+                due2.push((first, n, si));
+            }
+        }
+        let most_needed = |a: &(bool, f32, usize), b: &(bool, f32, usize)| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1));
+        due1.sort_by(most_needed);
+        due1.truncate(budget.edge_searches);
+        due2.sort_by(most_needed);
+        due2.truncate(budget.edge2_searches);
+
+        // which edges the listener sees, as the searches ask (shared by
+        // every search; while the listener stays put)
+        if self.ear_vis.as_ref().is_none_or(|(p, m)| (*p - listener).length() > EDGE_REUSE_M || m.len() != es.edges.len()) {
+            self.ear_vis = Some((listener, vec![0; es.edges.len()]));
+        }
+        // one bend: rank every exposed edge by its pure knife-edge bound,
+        // price the best the listener sees, keep the strongest distinct
+        for &(_, _, si) in &due1 {
+            let s = &sources[si];
+            let sp = emitted[si].expect("due sources emitted");
+            let ear_seen = &mut self.ear_vis.as_mut().expect("set above").1;
+            let direct_len = (sp - listener).length().max(MIN_DIST);
+            let mut cand: Vec<(f32, usize)> = es
+                .edges
+                .iter()
+                .enumerate()
+                .filter(|(ei, _)| !es.filled[*ei])
+                .filter_map(|(ei, (a, b))| {
+                    let p = crate::paths::bend_point(*a, *b, sp, listener);
+                    let (d1, d2) = ((p - listener).length(), (sp - p).length());
+                    if d1 < 0.2 || d2 < 0.2 {
+                        return None;
+                    }
+                    // a bend AT ground level is no silhouette for an
+                    // above-ground path (it is where an edge meets the
+                    // ground, not where it stands out)
+                    if world.grade.is_some_and(|g| p.z < g + 0.3 && listener.z > g) {
+                        return None;
+                    }
+                    let ka = crate::diffraction::knife_edge_bands((d1 + d2 - direct_len).max(1e-4));
+                    Some((ka[0] / (d1 + d2), ei))
+                })
+                .collect();
+            cand.sort_by(|x, y| y.0.total_cmp(&x.0));
+            let mut found: Vec<(f32, Vec3, usize)> = cand
+                .into_iter()
+                .filter(|&(_, ei)| ear_sees(world, &es, ear_seen, ei, listener))
+                .take(EDGE_CANDIDATES)
+                .filter_map(|(_, ei)| price_one(world, &es, &mut self.hits, ei, listener, sp, vis[si]).map(|(p, tap)| (tap.gains[0] + tap.gains[1], p, ei)))
+                .collect();
+            found.sort_by(|x, y| y.0.total_cmp(&x.0));
+            let mut kept: Vec<(Vec3, usize)> = Vec::new();
+            for (_, p, ei) in found {
+                if kept.len() >= EDGE_PATHS {
+                    break;
+                }
+                // coincident edges (a parapet over its slab) are one path
+                if kept.iter().any(|q| (q.0 - p).length() < 1.0) {
+                    continue;
+                }
+                kept.push((p, ei));
+            }
+            let c = self.edge_cache.entry(s.id).or_default();
+            c.one = kept.into_iter().map(|k| k.1).collect();
+            c.one_at = Some((listener, sp, tick));
+        }
+        // two bends: the string over a thick building or around two
+        // corners, where no single bend carries the field
+        for &(_, _, si) in &due2 {
+            let s = &sources[si];
+            let sp = emitted[si].expect("due sources emitted");
+            let ear_seen = &mut self.ear_vis.as_mut().expect("set above").1;
+            let sv = self.src_vis.entry(s.id).or_insert_with(|| (sp, vec![0; es.edges.len()]));
+            if (sv.0 - sp).length() > EDGE_REUSE_M || sv.1.len() != es.edges.len() {
+                *sv = (sp, vec![0; es.edges.len()]);
+            }
+            let clock2 = Stopwatch::start();
+            let two = two_edge_paths(world, &es, ear_seen, &mut sv.1, &mut self.hits, listener, sp, vis[si]);
+            self.costs.edges2 += clock2.ms();
+            // where the source's single bends are now: a string through
+            // one of them is that bend's path
+            let ones: Vec<Vec3> = self.edge_cache.get(&s.id).map_or(Vec::new(), |c| {
+                c.one.iter().map(|&ei| crate::paths::bend_point(es.edges[ei].0, es.edges[ei].1, sp, listener)).collect()
+            });
+            let c = self.edge_cache.entry(s.id).or_default();
+            c.two = two
+                .into_iter()
+                .filter(|(_, _, pts)| !ones.iter().any(|q| (*q - pts[0]).length() < 1.0 || (*q - pts[1]).length() < 1.0))
+                .map(|(e1, e2, _)| (e1, e2))
+                .collect();
+            c.two_at = Some((listener, sp, tick));
+        }
+
+        // every blocked source's paths, solved for now
+        for (si, s) in sources.iter().enumerate() {
+            if vis[si][1] > 0.999 {
+                continue;
+            }
+            let Some(sp) = emitted[si] else { continue };
+            let Some(c) = self.edge_cache.get_mut(&s.id) else { continue };
+            c.taps.clear();
+            c.points.clear();
+            for &ei in &c.one {
+                if let Some((p, tap)) = price_one(world, &es, &mut self.hits, ei, listener, sp, vis[si]) {
+                    c.taps.push(tap);
+                    c.points.push(vec![p]);
+                }
+            }
+            for &(e1, e2) in &c.two {
+                let (l, p1, p2) = refine_two(&es, e1, e2, listener, sp);
+                if let Some((tap, _)) = price_two(world, &es, &mut self.hits, e1, e2, l, p1, p2, listener, sp, vis[si]) {
+                    c.taps.push(tap);
+                    c.points.push(vec![p1, p2]);
+                }
+            }
+            if debug {
+                for (tap, p) in c.taps.iter().zip(&c.points) {
+                    let mut points = vec![listener];
+                    points.extend_from_slice(p);
+                    points.push(sp);
+                    self.exact.push(ExactPath { source: s.id, kind: 1, key: tap.key as u64, energy: tap.gains[1] * tap.gains[1], points });
+                }
+            }
+            edge_taps[si] = c.taps.clone();
+        }
+        self.edges = Some(es);
+        edge_taps
+    }
+}
+
+/// What a source keeps of its edge paths between searches
+/// (`Tracer::edge_paths`).
+#[derive(Clone, Default)]
+struct EdgePaths {
+    /// The edges its single bends go over, and where both ends were
+    /// (listener, source) and the tick when they were searched.
+    one: Vec<usize>,
+    one_at: Option<(Vec3, Vec3, u64)>,
+    /// The edge pairs its two-edge strings go over, likewise.
+    two: Vec<(usize, usize)>,
+    two_at: Option<(Vec3, Vec3, u64)>,
+    /// This tick's taps and each one's bend points (between ticks they
+    /// are re-timed through them: `exact_taps`).
+    taps: Vec<Tap>,
+    points: Vec<Vec<Vec3>>,
+}
+
+/// Loudness grows as energy to this power (Stevens: twice as loud per
+/// 10 dB): how much a source's paths matter to the ear.
+const LOUDNESS_EXP: f32 = 0.3;
+
+/// The single-edge path over edge `ei` for where both ends are now: its
+/// bend point and tap — only the share the straight ray doesn't carry
+/// (`vis`); None where nothing bends there. Both legs meet 3 cm off the
+/// edge on the OUTSIDE of the bend (away from whatever the path bends
+/// around): a true silhouette edge has open air there and neither leg
+/// grazes it; an edge lying on a zero-thickness wall plane leaves one leg
+/// crossing that wall.
+#[allow(clippy::too_many_arguments)]
+fn price_one(world: &World, es: &EdgeSet, hits: &mut Vec<SegHit>, ei: usize, listener: Vec3, sp: Vec3, vis: [f32; NBANDS]) -> Option<(Vec3, Tap)> {
+    if es.filled[ei] {
+        return None;
+    }
+    let (a, b) = es.edges[ei];
+    let p = crate::paths::bend_point(a, b, sp, listener);
+    let (d1, d2) = ((p - listener).length(), (sp - p).length());
+    if d1 < 0.2 || d2 < 0.2 {
+        return None;
+    }
+    if world.grade.is_some_and(|g| p.z < g + 0.3 && listener.z > g) {
+        return None;
+    }
+    let n1 = (p - listener) * (1.0 / d1);
+    let out = n1 - (sp - p) * (1.0 / d2);
+    if out.length() < 1e-3 {
+        return None; // no bend: the straight line itself
+    }
+    let q = p + out.normalize() * 0.03;
+    let t1 = world.transmission(listener, q, hits);
+    if t1[0] < 1e-6 {
+        return None;
+    }
+    let t2 = world.transmission(q, sp, hits);
+    if t1[0] * t2[0] < 1e-6 {
+        return None;
+    }
+    let det = d1 + d2 - (sp - listener).length().max(MIN_DIST);
+    let ka = crate::diffraction::knife_edge_bands(det.max(1e-4));
+    let air = air_attenuation(d1 + d2);
+    let gains: [f32; NBANDS] = core::array::from_fn(|b| ka[b] * t1[b] * t2[b] * air[b] / (d1 + d2) * (1.0 - vis[b]).clamp(0.0, 1.0).sqrt());
+    if gains.iter().all(|&g| g < 1e-7) {
+        return None;
+    }
+    Some((p, Tap { key: KEY_EDGE_BASE + ei as u32, delay_s: (d1 + d2) / SPEED_OF_SOUND, dir: [n1.x, n1.y, n1.z], gains }))
 }
 
 /// An edge path's tap for where listener and source are now: its delay
@@ -3040,11 +3145,26 @@ const KEY_EDGE2_SPAN: u32 = 3_000_000;
 /// Does `p` see edge `(a, b)` (a few points along it, pulled 5 cm toward
 /// `p`; not through the earth)?
 fn sees_edge(world: &World, p: Vec3, a: Vec3, b: Vec3) -> bool {
+    sees_edge_within(world, p, a, b, 2000.0)
+}
+
+/// Does the listener at `p` see edge `ei` (not filled; points within
+/// 400 m)? Looked at once per `seen` entry (0 not yet, 1 yes, 2 no).
+fn ear_sees(world: &World, es: &EdgeSet, seen: &mut [u8], ei: usize, p: Vec3) -> bool {
+    if seen[ei] == 0 {
+        let (a, b) = es.edges[ei];
+        seen[ei] = if !es.filled[ei] && sees_edge_within(world, p, a, b, 400.0) { 1 } else { 2 };
+    }
+    seen[ei] == 1
+}
+
+/// `sees_edge`, only points nearer than `reach` (m).
+fn sees_edge_within(world: &World, p: Vec3, a: Vec3, b: Vec3, reach: f32) -> bool {
     [0.1f32, 0.3, 0.5, 0.7, 0.9].iter().any(|f| {
         let m = a + (b - a) * *f;
         let to = m - p;
         let l = to.length();
-        l > 0.2 && l < 2000.0 && {
+        l > 0.2 && l < reach && {
             let end = m - to * (0.05 / l);
             world.mesh.raycast(p, to * (1.0 / l)).map_or(true, |(t, _)| t > l - 0.06) && !world.crosses_earth(p, end)
         }
@@ -3060,18 +3180,18 @@ fn sees_edge(world: &World, p: Vec3, a: Vec3, b: Vec3) -> bool {
 /// than thin walls, not 5 dB per grazing corner), only the share the
 /// straight line doesn't carry. `src_seen` caches which edges the source
 /// sees (0 unknown, 1 yes, 2 no). Strongest first, at most
-/// `TWO_EDGE_PATHS`, as (bend points, tap).
+/// `TWO_EDGE_PATHS`, as (edge pair, bend points).
 #[allow(clippy::too_many_arguments)]
 fn two_edge_paths(
     world: &World,
     es: &EdgeSet,
-    seen_from_ear: &[bool],
+    ear_seen: &mut [u8],
     src_seen: &mut [u8],
     hits: &mut Vec<SegHit>,
     listener: Vec3,
     src: Vec3,
     vis: [f32; NBANDS],
-) -> Vec<([Vec3; 2], Tap)> {
+) -> Vec<(usize, usize, [Vec3; 2])> {
     let direct = (src - listener).length().max(MIN_DIST);
     let limit = TWO_EDGE_DETOUR_M.min(TWO_EDGE_DETOUR_SHARE * direct).max(4.0);
     // the edges near the straight line (an ellipse around it), each with
@@ -3091,7 +3211,7 @@ fn two_edge_paths(
     // a string starts at an edge the ear sees and ends at one the source
     // sees: the nearest of each (an edge near the line that neither sees —
     // the pews inside a closed church — starts nothing)
-    let first: Vec<&(f32, usize, Vec3)> = near.iter().filter(|e| seen_from_ear[e.1]).take(TWO_EDGE_NEAR).collect();
+    let first: Vec<&(f32, usize, Vec3)> = near.iter().filter(|e| ear_sees(world, es, ear_seen, e.1, listener)).take(TWO_EDGE_NEAR).collect();
     let mut last: Vec<&(f32, usize, Vec3)> = Vec::new();
     for e in &near {
         if last.len() >= TWO_EDGE_NEAR {
@@ -3123,82 +3243,117 @@ fn two_edge_paths(
     let mut strings: Vec<(f32, usize, usize, Vec3, Vec3)> = pairs
         .into_iter()
         .map(|(_, e1, e2)| {
-            let ((a1, b1), (a2, b2)) = (es.edges[e1], es.edges[e2]);
-            let mut p2 = (a2 + b2) * 0.5;
-            let mut p1 = crate::paths::bend_point(a1, b1, p2, listener);
-            for _ in 0..4 {
-                p2 = crate::paths::bend_point(a2, b2, src, p1);
-                p1 = crate::paths::bend_point(a1, b1, p2, listener);
-            }
-            let l = (p1 - listener).length() + (p2 - p1).length() + (src - p2).length();
+            let (l, p1, p2) = refine_two(es, e1, e2, listener, src);
             (l, e1, e2, p1, p2)
         })
         .collect();
     strings.sort_by(|x, y| x.0.total_cmp(&y.0));
-    let mut out: Vec<(f32, [Vec3; 2], Tap)> = Vec::new();
+    let mut out: Vec<(f32, usize, usize, [Vec3; 2])> = Vec::new();
     let mut clear = 0;
     for (l, e1, e2, p1, p2) in strings.into_iter().take(TWO_EDGE_VALIDATE) {
         // shortest first: two strings with open air all along end the search
         if clear >= TWO_EDGE_PATHS {
             break;
         }
-        let z = l - direct;
-        if z > limit || z <= 0.0 || (p2 - p1).length() < 0.5 {
+        if l - direct > limit {
             continue;
         }
-        let na = (p1 - listener).normalize();
-        // legs meet 3 cm off each edge on the outside of the string — away
-        // from the straight line it goes around (a grazing edge, the
-        // string almost straight there, still has an outside)
-        let line = src - listener;
-        let off = |p: Vec3| -> Option<Vec3> {
-            let k = ((p - listener).dot(line) / line.dot(line)).clamp(0.0, 1.0);
-            let o = p - (listener + line * k);
-            (o.length() > 1e-4).then(|| p + o.normalize() * 0.03)
-        };
-        let (Some(q1), Some(q2)) = (off(p1), off(p2)) else { continue };
-        // a leg through the fixed geometry (a string through a church, not
-        // over it): one ray each, before pricing anything
-        let open = |a: Vec3, b: Vec3| {
-            let d = b - a;
-            let l = d.length();
-            l < 1e-3 || world.mesh.raycast(a, d * (1.0 / l)).is_none_or(|(t, _)| t >= l - 1e-3)
-        };
-        if !open(listener, q1) || !open(q1, q2) || !open(q2, src) {
-            continue;
+        if let Some((tap, open)) = price_two(world, es, hits, e1, e2, l, p1, p2, listener, src, vis) {
+            clear += open as usize;
+            out.push((tap.gains[0] + tap.gains[1], e1, e2, [p1, p2]));
         }
-        let t1 = world.transmission(listener, q1, hits);
-        let t12 = world.transmission(q1, q2, hits);
-        let t2 = world.transmission(q2, src, hits);
-        if t1[0] * t12[0] * t2[0] < 1e-6 {
-            continue;
-        }
-        if t1[1] * t12[1] * t2[1] > 0.5 {
-            clear += 1;
-        }
-        let lateral = p1.z.max(p2.z) < listener.z.max(src.z) + 0.5;
-        let iso = crate::diffraction::iso9613_barrier_bands(z, 2, (p2 - p1).length(), (src - p2).length(), (p1 - listener).length(), direct, lateral);
-        let air = air_attenuation(l);
-        let gains: [f32; NBANDS] =
-            core::array::from_fn(|b| iso[b] * t1[b] * t12[b] * t2[b] * air[b] / l * (1.0 - vis[b]).clamp(0.0, 1.0).sqrt());
-        if gains.iter().all(|&g| g < 1e-7) {
-            continue;
-        }
-        let key = KEY_EDGE2_BASE + ((e1 as u64 * 7919 + e2 as u64) % KEY_EDGE2_SPAN as u64) as u32;
-        out.push((gains[0] + gains[1], [p1, p2], Tap { key, delay_s: l / SPEED_OF_SOUND, dir: [na.x, na.y, na.z], gains }));
     }
     out.sort_by(|x, y| y.0.total_cmp(&x.0));
-    let mut kept: Vec<([Vec3; 2], Tap)> = Vec::new();
-    for (_, pts, tap) in out {
+    let mut kept: Vec<(usize, usize, [Vec3; 2])> = Vec::new();
+    for (_, e1, e2, pts) in out {
         if kept.len() >= TWO_EDGE_PATHS {
             break;
         }
-        if kept.iter().any(|(q, _)| (q[0] - pts[0]).length() < 1.0 && (q[1] - pts[1]).length() < 1.0) {
+        if kept.iter().any(|(_, _, q)| (q[0] - pts[0]).length() < 1.0 && (q[1] - pts[1]).length() < 1.0) {
             continue;
         }
-        kept.push((pts, tap));
+        kept.push((e1, e2, pts));
     }
     kept
+}
+
+/// The shortest string over edges `e1` (the ear's side) then `e2`: each
+/// bend point where the string is shortest, alternating until it settles.
+/// (length, bend points)
+fn refine_two(es: &EdgeSet, e1: usize, e2: usize, listener: Vec3, src: Vec3) -> (f32, Vec3, Vec3) {
+    let ((a1, b1), (a2, b2)) = (es.edges[e1], es.edges[e2]);
+    let mut p2 = (a2 + b2) * 0.5;
+    let mut p1 = crate::paths::bend_point(a1, b1, p2, listener);
+    for _ in 0..4 {
+        p2 = crate::paths::bend_point(a2, b2, src, p1);
+        p1 = crate::paths::bend_point(a1, b1, p2, listener);
+    }
+    ((p1 - listener).length() + (p2 - p1).length() + (src - p2).length(), p1, p2)
+}
+
+/// The two-edge string of length `l` through bend points `p1`, `p2`
+/// (`refine_two`), validated and priced: every leg through whatever it
+/// crosses, the whole by its detour (ISO 9613-2's multi-edge barrier),
+/// only the share the straight line doesn't carry (`vis`). With whether
+/// it has open air all along. None where no string goes over this pair.
+#[allow(clippy::too_many_arguments)]
+fn price_two(
+    world: &World,
+    es: &EdgeSet,
+    hits: &mut Vec<SegHit>,
+    e1: usize,
+    e2: usize,
+    l: f32,
+    p1: Vec3,
+    p2: Vec3,
+    listener: Vec3,
+    src: Vec3,
+    vis: [f32; NBANDS],
+) -> Option<(Tap, bool)> {
+    if es.filled[e1] || es.filled[e2] {
+        return None;
+    }
+    let direct = (src - listener).length().max(MIN_DIST);
+    let z = l - direct;
+    if z <= 0.0 || (p2 - p1).length() < 0.5 {
+        return None;
+    }
+    let na = (p1 - listener).normalize();
+    // legs meet 3 cm off each edge on the outside of the string — away
+    // from the straight line it goes around (a grazing edge, the string
+    // almost straight there, still has an outside)
+    let line = src - listener;
+    let off = |p: Vec3| -> Option<Vec3> {
+        let k = ((p - listener).dot(line) / line.dot(line)).clamp(0.0, 1.0);
+        let o = p - (listener + line * k);
+        (o.length() > 1e-4).then(|| p + o.normalize() * 0.03)
+    };
+    let (q1, q2) = (off(p1)?, off(p2)?);
+    // a leg through the fixed geometry (a string through a church, not
+    // over it): one ray each, before pricing anything
+    let open = |a: Vec3, b: Vec3| {
+        let d = b - a;
+        let l = d.length();
+        l < 1e-3 || world.mesh.raycast(a, d * (1.0 / l)).is_none_or(|(t, _)| t >= l - 1e-3)
+    };
+    if !open(listener, q1) || !open(q1, q2) || !open(q2, src) {
+        return None;
+    }
+    let t1 = world.transmission(listener, q1, hits);
+    let t12 = world.transmission(q1, q2, hits);
+    let t2 = world.transmission(q2, src, hits);
+    if t1[0] * t12[0] * t2[0] < 1e-6 {
+        return None;
+    }
+    let lateral = p1.z.max(p2.z) < listener.z.max(src.z) + 0.5;
+    let iso = crate::diffraction::iso9613_barrier_bands(z, 2, (p2 - p1).length(), (src - p2).length(), (p1 - listener).length(), direct, lateral);
+    let air = air_attenuation(l);
+    let gains: [f32; NBANDS] = core::array::from_fn(|b| iso[b] * t1[b] * t12[b] * t2[b] * air[b] / l * (1.0 - vis[b]).clamp(0.0, 1.0).sqrt());
+    if gains.iter().all(|&g| g < 1e-7) {
+        return None;
+    }
+    let key = KEY_EDGE2_BASE + ((e1 as u64 * 7919 + e2 as u64) % KEY_EDGE2_SPAN as u64) as u32;
+    Some((Tap { key, delay_s: l / SPEED_OF_SOUND, dir: [na.x, na.y, na.z], gains }, t1[1] * t12[1] * t2[1] > 0.5))
 }
 
 fn cell_of(key: u32) -> usize {
@@ -3439,10 +3594,10 @@ pub const DIFF_C: f32 = 4.0 * core::f32::consts::PI;
 const MAX_BENDS: u32 = 3;
 /// How far along one ray segment edges are searched (m).
 const EDGE_SEARCH: f32 = 120.0;
-/// Edge paths and listener edge visibility are reused until the
-/// listener (or the source) moves this far, refreshed every N ticks.
+/// A source's edge search, and which edges the listener and the source
+/// see, hold until either moves this far (meanwhile the edges found are
+/// solved for where both are: `Tracer::edge_paths`).
 const EDGE_REUSE_M: f32 = 0.2;
-const EDGE_REFRESH_TICKS: u64 = 8;
 /// Deterministic single-edge direct paths kept per source.
 const EDGE_PATHS: usize = 3;
 /// Edges whose legs are checked per blocked source (best knife-edge

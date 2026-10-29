@@ -440,7 +440,7 @@ fn v3_bends_over_a_barrier_match_cpu() {
     let Some(mut g) = gpu(&mesh, "v3_bends") else { return };
     let w = World { grade: Some(0.0), ..World::new(&mesh, &[]) };
     let (lis, src) = (v(0.0, 5.0, 1.6), v(0.0, 40.0, 3.0));
-    let on = Budget { rays: 8192, bounces: 3, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0, diffraction: true };
+    let on = Budget { rays: 8192, bounces: 3, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0, diffraction: true, ..Budget::default() };
     let off = Budget { diffraction: false, ..on };
     let (c_on, g_on) = median_reflected(&mut g, &w, lis, &one(0, src), on, 9);
     let (c_off, g_off) = median_reflected(&mut g, &w, lis, &one(0, src), off, 9);
@@ -470,7 +470,7 @@ fn v3_knife_edge_shadow_matches_cpu() {
     let Some(mut g) = gpu(&mesh, "v3_knife_edge") else { return };
     let w = World::new(&mesh, &[]);
     let src = one(0, v(-20.0, 0.0, -1.0));
-    let b = Budget { rays: 8192, bounces: 1, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0, diffraction: true };
+    let b = Budget { rays: 8192, bounces: 1, k: 0.06, ema: 1.0, nee: 0, late_rays: 0, late_ema: 1.0, late_nee: 0, diffraction: true, ..Budget::default() };
     let energy = |f: &SourceField| {
         f.taps.iter().fold([0.0f32; 3], |e, t| core::array::from_fn(|k| e[k] + t.gains[k] * t.gains[k]))
     };
@@ -512,7 +512,7 @@ fn v3_demo_world_fields_match_cpu() {
             Source { id: i, pos: v(22.5 + r * a.cos(), 31.0 + r * a.sin(), 1.6), weight: 1.0 }
         })
         .collect();
-    let b = Budget { rays: 2048, bounces: 6, k: 0.06, ema: 0.35, nee: 4, late_rays: 1024, late_ema: 0.1, late_nee: 1, diffraction: true };
+    let b = Budget { rays: 2048, bounces: 6, k: 0.06, ema: 0.35, nee: 4, late_rays: 1024, late_ema: 0.1, late_nee: 1, diffraction: true, ..Budget::default() };
     let (mut tc, mut tg) = (Tracer::new(1), Tracer::new(2));
     let n = 30;
     let mut ec = vec![Vec::new(); srcs.len()];

@@ -39,8 +39,8 @@ use godot::classes::{
 use godot::meta::conv::RawPtr;
 use godot::prelude::*;
 
-use omg_audio::governor::TierGovernor;
-use omg_audio::threaded::EngineConfig;
+use omg_audio::governor::LevelGovernor;
+use omg_audio::sim::LEVELS;
 use omg_audio::{from_y_up, to_y_up, Compute, Config, Geometry, Material, MaterialId, ObjectId, Play, Quality, SourceDesc, SourceId, VoiceId};
 
 use crate::backend::clips::{self, Import};
@@ -477,11 +477,18 @@ pub struct OmgWorld {
     #[export]
     master_db: f32,
     /// Simulation quality: 0 low, 1 medium, 2 high, 3 ultra; −1 auto
-    /// (omg-audio's tier governor: starts low, climbs while ticks are
-    /// cheap and the audio thread calm, sheds when a tick runs long).
+    /// (omg-audio's level governor walks the whole quality ladder: starts
+    /// at the bottom, climbs while ticks are cheap and the audio thread
+    /// calm, sheds at once when a tick runs over `tick_target_ms`).
     #[export]
-    #[init(val = 2)]
+    #[init(val = -1)]
     quality: i32,
+    /// Quality auto: what a simulation tick may cost (ms). It runs on a
+    /// thread of its own, but shares the machine with the game: 16 ms is
+    /// a 60 Hz frame.
+    #[export]
+    #[init(val = 16.0)]
+    tick_target_ms: f32,
     /// Pin single levers of the tracer budget over the quality tier
     /// (0 = the tier's own): rays from the listener per tick, early
     /// reflections per ray, late (reverb) rays per tick.
@@ -522,8 +529,8 @@ pub struct OmgWorld {
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
     sent: [f32; 15],
-    #[init(val = TierGovernor::new(3))]
-    auto_tier: TierGovernor,
+    #[init(val = LevelGovernor::new(LEVELS - 1))]
+    auto_tier: LevelGovernor,
     auto_ticks: u32,
     amb_clip: Option<(usize, bool)>,
     rain_clip: Option<(usize, bool)>,
@@ -676,14 +683,24 @@ impl OmgWorld {
             return;
         }
         self.auto_ticks = s.ticks;
-        self.auto_tier.report(s.tick_ms, 1000.0 / EngineConfig::default().tick_hz, s.load);
+        self.auto_tier.report(s.tick_ms, self.tick_target_ms, s.load);
     }
 
-    /// The tier in effect (0 low … 3 ultra): the pinned one, or where
-    /// quality auto stands.
+    /// The quality ladder's level in effect (0 … `LEVELS` − 1): the
+    /// pinned tier's, or where quality auto stands.
     #[func]
     fn effective_quality(&self) -> i32 {
-        if self.quality < 0 { self.auto_tier.tier() as i32 } else { self.quality }
+        self.sim_quality().level().unwrap_or(0) as i32
+    }
+
+    /// The quality in effect, for a screen: the tier's name, or auto's
+    /// level on the ladder.
+    #[func]
+    fn quality_label(&self) -> GString {
+        match self.quality {
+            0..=3 => ["low", "medium", "high", "ultra"][self.quality as usize].into(),
+            _ => format!("auto {}/{}", self.auto_tier.level(), LEVELS - 1).as_str().into(),
+        }
     }
 
     /// Engine state: rt60 (s, mid band, loudest field), enclosure, sim
@@ -839,14 +856,19 @@ impl OmgWorld {
 }
 
 impl OmgWorld {
-    fn sim_config(&self) -> Config {
-        let q = if self.quality < 0 { self.auto_tier.tier() as i32 } else { self.quality };
-        let tier = match q {
+    /// The pinned tier, or quality auto's level.
+    fn sim_quality(&self) -> Quality {
+        match self.quality {
             0 => Quality::Low,
             1 => Quality::Medium,
+            2 => Quality::High,
             3 => Quality::Ultra,
-            _ => Quality::High,
-        };
+            _ => Quality::Level(self.auto_tier.level()),
+        }
+    }
+
+    fn sim_config(&self) -> Config {
+        let tier = self.sim_quality();
         // pinned levers: the tier's budget with them overridden
         let pinned = self.rays > 0 || self.bounces > 0 || self.late_rays > 0 || !self.diffraction;
         let quality = if pinned {
