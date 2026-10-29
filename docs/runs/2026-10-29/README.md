@@ -411,8 +411,10 @@ high):
 
 Not a regression of the paths — the shut door's paths are exact from
 the first frame — but of the scattered field through the door, a young
-estimate for its first ~0.3 s (OPEN.md: the burst that would fix it and
-why it waits for a multi-threaded walk). The rest: the car at 100 km/h
+estimate for its first ~0.3 s; this is one realization (the default
+seed) and a poor one: across four seeds the same clicks land on average
+2.3 dB (early) and 1.5 dB (tail) per band from settled, one band in
+five more than 3 dB off (OPEN.md). The rest: the car at 100 km/h
 on time within 0.4 ms; a clap's tail walking out of the hall smooth
 (0.85 s to −60 dB, no 10 ms window off its course by 4 dB); a click in
 flight while its source jumps still arrives from where it left; a
