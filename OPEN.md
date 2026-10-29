@@ -114,8 +114,12 @@ changes (pinned, the same). Along the road there is only the street and
 its kerbs (layout.json `ground`): the likely cause is the ground
 reflection's specular point sliding across the asphalt / kerb / grass
 boundaries as the car recedes — a point switching material at once,
-where its Fresnel zone (metres wide at grazing) blends it. Next: confirm
-with the debug paths, then weigh a reflection's material over its zone.
+where its Fresnel zone (metres wide at grazing) blends it. The car's
+exactly solved paths there are only its direct one, smooth through the
+burst (`record.gd --paths`: −40.5 → −41.6 dB): the burst is in the walk's
+sampled reflections (early bins, the reverb). Re-timing the early taps
+with the direct arrival at every exact frame changed nothing measurable.
+Next: the walk's ground hits by material over the burst.
 
 ### A distinct echo found by chance
 A car passing the field (`assess cartone`): with seeds 1 and 3 a facade

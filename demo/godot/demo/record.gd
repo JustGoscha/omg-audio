@@ -17,6 +17,8 @@
 #         (from 150 m south to 150 m north)
 #   door  in the club's vestibule, 1 m outside its closed inner door: it
 #         opens at 2 s and shuts again at 6 s while the club plays
+#   --paths the scenario's source's exactly solved paths (direct, edge
+#           bends, mirror chains) per frame to <name>.paths.csv
 #   --tone  the scenario's source plays a steady 500 Hz instead of its
 #           recording, alone (the other sources and the beds off):
 #           whatever comes out above ~3 kHz, the engine made
@@ -31,6 +33,8 @@ var scenario := "fly"
 var engine := "v6"
 var tone := false
 var quality := -2 # unset: the demo's (auto)
+var log_paths := false # --paths: the scenario source's exact paths per frame
+var paths_file: FileAccess
 var frames: FileAccess
 var t0 := 0
 var phase := ""
@@ -50,6 +54,8 @@ func _init(d: Node, w: OmgWorld, p: DemoPlayer) -> void:
 			tone = true
 		elif a.begins_with("--quality="):
 			quality = int(a.trim_prefix("--quality="))
+		elif a == "--paths":
+			log_paths = true
 
 func run() -> void:
 	if demo.loading:
@@ -111,6 +117,10 @@ func _place(x: float, y: float, z: float) -> void:
 	player.global_position = DemoGeo.P(x, y, z)
 
 func _start(base: String) -> bool:
+	if log_paths:
+		world.debug_paths = true
+		paths_file = FileAccess.open(base + ".paths.csv", FileAccess.WRITE)
+		paths_file.store_line("t_ms,kind,key,energy_db,points...")
 	frames = FileAccess.open(base + ".frames.csv", FileAccess.WRITE)
 	frames.store_line("t_ms,x,y,tick_ms,load,taps,rendering,paths,late,ticks,level,direct,edges,edges2,early,late_rays,chains,fold,phase")
 	if not world.start_recording(base + ".wav"):
@@ -119,9 +129,26 @@ func _start(base: String) -> bool:
 	t0 = Time.get_ticks_usec()
 	return true
 
+# The exact paths of `src` now: time, kind (0 direct, 1 bend, 2 chain),
+# key, mid-band energy (dB), and each path's points after the ears.
+func _paths_log(t_ms: float, src: Node) -> void:
+	if paths_file == null:
+		return
+	for p in world.paths():
+		if p["source"] != src or int(p["kind"]) > 2:
+			continue
+		var pts: PackedVector3Array = p["points"]
+		var tail := ""
+		for i in range(1, pts.size() - 1):
+			var q := Vector3(pts[i].x, -pts[i].z, pts[i].y) # plan: x, y north, z up
+			tail += ",%.2f,%.2f,%.2f" % [q.x, q.y, q.z]
+		paths_file.store_line("%.1f,%d,%d,%.1f%s" % [t_ms, int(p["kind"]), int(p["key"]), 10.0 * log(maxf(float(p["energy"]), 1e-30)) / log(10.0), tail])
+
 func _stop(base: String) -> void:
 	var lost := world.stop_recording()
 	frames.close()
+	if paths_file:
+		paths_file.close()
 	print("recorded %s.wav (%d frames lost)" % [base, lost])
 
 func _now() -> float:
@@ -190,6 +217,7 @@ func _car(base: String) -> void:
 		var along: float = c["y"] if north else -float(c["y"])
 		phase = "approach" if along < -15.0 else ("pass" if along < 15.0 else "away")
 		_frame_log(t * 1000.0, x, 0.0)
+		_paths_log(t * 1000.0, snd.cars_src[c["slot"]])
 	_stop(base)
 
 func _door(base: String) -> void:
