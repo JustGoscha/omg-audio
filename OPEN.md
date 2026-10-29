@@ -47,7 +47,10 @@ a first bounce from each source stored on its room's surfaces and
 connected through walls from the listener's vertices, weighted against
 the walk's own paths by multiple importance sampling (bidirectional) —
 or split at partitions by a learnt value of what lies beyond (path
-guiding). Large.
+guiding). Large. v6.2 splits at a door's leaf (once a ray): the club from
+the square, its late part click to click 3.0 / 2.4 / 2.6 → 1.1 / 0.9 /
+1.2 dB, its drift over 30 s gone (`assess still`) — what comes through
+its walls is still the draw's.
 The same shows right after a door shuts: the field through the shut
 door restarts as a young estimate. Across four seeds the click 50 ms to
 0.8 s after the shut lands on average 2.3 dB (early part, per band) and
@@ -142,6 +145,10 @@ Headless, `assess door` (instant shut, PACE=0): the click 50 ms after
 the shut, its late treble against settled: +13.9 dB with the default
 seed, −12.9 … +0.3 dB with seeds 1–4 — the same heavy tail (the treble
 has the fewest paths through a heavy door), not a bug of its own.
+v6.2 (the split at the door's leaf): the click 0.1 s after the shut,
+early −5.3 dB and late −2.6 dB in the treble from settled (v6.1 +8.0 /
++11.4 dB, `assess door`); on the GPU walk (Godot's default) the early
+family doesn't split yet.
 
 ### The car's closest pass: a one-sample step — solved Oct 29
 The Godot car scenario showed a single-sample step as the car passed
