@@ -48,7 +48,15 @@ door restarts as a young estimate — 50–100 ms after the shut its first
 part reads 2–4 dB low in the bass and mids, 7–8 dB in the treble, its
 tail 5–10 dB low; at 0.8 s a strong sample overshoots the mids +4 dB
 (`assess door`, real time, Linkwitz–Riley bands). One-pole bands and
-the stand-ins' coherent sum (+6 dB, fixed) had hidden it.
+the stand-ins' coherent sum (+6 dB, fixed) had hidden it. More rays
+right after the change fix most of it — four times the rays for six
+ticks (now: twice for three) bring the click 50 ms after the shut within
+−2.1…+3.6 dB and take the overshoot away — but one thread runs the full
+ticks and the exact frames between them, so a 4× tick (~220 ms native)
+would hold the direct paths still just when the door moved. A walk
+spread over threads (rays are independent: per-thread random streams
+and accumulators, merged in a fixed order) would buy the burst — and
+the tick cost — on desktops; wasm workers have no threads.
 
 ### Moving sources on the GPU walk
 The GPU walk connects to where a source emitted its direct sound; its
