@@ -29,7 +29,8 @@ frame, the ears' position, the tick's cost by part, the rung, the phase.
 ## Results (tone runs)
 
 Recorded again in the evening with the afternoon's fixes (engine at
-b16bcfa: the ambience fader, a door's averages, the corner leak), the
+b16bcfa: the ambience fader, a door's averages, the corner leak; the
+car at aa02443: a source's place stamped when it was first sent), the
 machine otherwise idle. Worst 5 ms window above 3 kHz under the whole,
 per phase (dB); the tick's range (ms); where quality auto went; the
 audio thread (callbacks with frames rendered late / slowest take).
@@ -38,8 +39,8 @@ audio thread (callbacks with frames rendered late / slowest take).
 |---|---|---|---|---|---|
 | fly | v3 | outside -53.4; crossing -41.8; inside -38.7 | 1.2–16.5 | rung 2 at the start; 0.7s → 3, 6.3s → 4 | 0 / 3 µs |
 | fly | v6 | outside -54.8; crossing -40.8; inside -42.0 | 1.2–15.7 | rung 2 at the start; 0.6s → 3 | 0 / 3 µs |
-| car | v3 | approach -50.6; pass -40.9; away -51.0 | 1.0–7.5 | rung 2 at the start; 0.5s → 3, 2.6s → 4, 4.6s → 5, 6.6s → 6, 8.6s → 7, 10.6s → 8 | 0 / 5 µs |
-| car | v6 | approach -50.3; pass -47.2; away -50.6 | 1.0–8.9 | rung 2 at the start; 0.6s → 3, 2.6s → 4, 4.6s → 5, 6.6s → 6, 8.7s → 7, 10.7s → 8 | 0 / 14 µs |
+| car | v3 | approach -51.6; pass -54.0; away -41.1 | 1.0–7.0 | rung 2 at the start; 0.6s → 3, 2.6s → 4, 4.7s → 5, 6.7s → 6, 8.7s → 7, 10.7s → 8 | 0 / 7 µs |
+| car | v6 | approach -53.6; pass -53.1; away -44.9 | 1.0–6.0 | rung 2 at the start; 0.6s → 3, 2.7s → 4, 4.7s → 5, 6.7s → 6, 8.7s → 7, 10.7s → 8 | 0 / 5 µs |
 | door | v3 | closed -42.4; opening -47.5; open -48.5; shutting -49.3; shut -61.7 | 4.2–19.2 | rung 2 at the start; 0.6s → 3 | 0 / 3 µs |
 | door | v6 | closed -61.3; opening -47.4; open -48.5; shutting -49.2; shut -41.4 | 4.4–26.5 | rung 2 at the start; 0.7s → 3 | 0 / 3 µs |
 
@@ -79,8 +80,14 @@ whether the leaf happened to pause before it closed).
   average following quickly on its way. A bounce in a corner no longer
   sees a speaker through the wall beside it.
 
-**Open** (OPEN.md): at the car's closest pass a one-sample step in both
-engines (−38 … −45 dB here, −35 dB in a run recorded while the machine
-was busy) — not yet looked into; a shut door's field is a heavy-tailed
+- Evening: every moving source's pitch jittered at the frame rate — the
+  demo moves its cars on 60 Hz physics and sends their places every
+  120 Hz frame, each send stamped with its own time (the track stood
+  still a frame and jumped at twice the speed the next). A place sent
+  again now keeps the time it was first sent there. The car's closest
+  pass had a one-sample step in both engines (−38 … −45 dB above 3
+  kHz); now −53 / −54 dB.
+
+**Open** (OPEN.md): a shut door's field is a heavy-tailed
 estimate (it reads low right after a restart and steps up as rare
 strong paths come); the estimate's wobble at the low rungs while moving.

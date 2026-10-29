@@ -136,13 +136,13 @@ the shut, its late treble against settled: +13.9 dB with the default
 seed, −12.9 … +0.3 dB with seeds 1–4 — the same heavy tail (the treble
 has the fewest paths through a heavy door), not a bug of its own.
 
-### The car's closest pass: a one-sample step
-The Godot car scenario (tone) shows a single-sample step as the car
-passes 4 m away, in v3 and v6 alike: −38 … −45 dB above 3 kHz under the
-tone on an idle machine, −35 dB in a run recorded while the machine was
-busy (`docs/runs/2026-10-29/godot/`). The direct path's direction swings
-~7 rad/s there; a guess is an HRTF direction switching without enough
-crossfade at that rate. Not yet looked into.
+### The car's closest pass: a one-sample step — solved Oct 29
+The Godot car scenario showed a single-sample step as the car passed
+4 m away (v3 and v6, −38 … −45 dB above 3 kHz). The car's places were
+stamped with each 120 Hz send while its physics moved it at 60 Hz: its
+track stood still a frame and jumped at twice the speed the next, and
+at the closest pass the delay moves fastest. A place sent again now
+keeps the time it was first sent there: the pass −53 / −54 dB.
 
 ### A distinct echo found by chance
 A car passing the field (`assess cartone`): on Oct 29 morning seeds 1
