@@ -40,6 +40,8 @@ pub enum OutCmd {
     RainGain(f32),
     /// Pin a ladder rung (None = governor).
     Budget(Option<usize>),
+    /// The ear on or off (`Mixer::set_ear`).
+    Ear(bool),
 }
 
 #[derive(Default)]
@@ -136,6 +138,7 @@ impl Out {
                     self.gov.pin(self.audio.mixer(), b);
                     sh.rung.store(self.gov.rung(), Ordering::Relaxed);
                 }
+                OutCmd::Ear(on) => self.audio.mixer().set_ear(on),
             }
         }
         let n = out.len();

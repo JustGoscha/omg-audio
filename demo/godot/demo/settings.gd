@@ -79,7 +79,7 @@ func _ready() -> void:
 	v.add_child(release)
 
 	_section(v, "engine modules")
-	_row(v, "engine", _choice_box("engine", ["v3", "v4", "v5"], (2 if world.engine_v5 else 1) if world.engine_v4 else 0, func(i: int) -> void:
+	_row(v, "engine", _choice_box("engine", ["v3", "v4", "v5.5"], (2 if world.engine_v5 else 1) if world.engine_v4 else 0, func(i: int) -> void:
 		world.engine_v4 = i >= 1
 		world.engine_v5 = i == 2))
 	var web := OS.has_feature("web")
@@ -91,6 +91,8 @@ func _ready() -> void:
 		world.diffraction = i == 0))
 	_row(v, "render budget", _choice_box("budget", ["auto", "1", "2", "3", "4", "5"], 0, func(i: int) -> void:
 		world.set_render_budget(i - 1)))
+	_row(v, "ear", _choice_box("ear", ["on", "off"], 0, func(i: int) -> void:
+		world.set_ear(i == 0)))
 
 	_mixer(_tab(tabs, "mixer"))
 

@@ -802,6 +802,15 @@ impl OmgWorld {
             h.send(OutCmd::Budget((rung >= 0).then_some(rung as usize)));
         }
     }
+
+    /// The ear (loud places duck, quiet ones come up, the reflex) on or
+    /// off: off, the scene plays at its own level.
+    #[func]
+    fn set_ear(&self, on: bool) {
+        if let Some(h) = host().as_ref() {
+            h.send(OutCmd::Ear(on));
+        }
+    }
 }
 
 impl OmgWorld {
