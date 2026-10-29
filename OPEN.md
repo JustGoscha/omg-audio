@@ -56,15 +56,15 @@ the top rung): no level change for the club — the loss that was there
 came from the convolution hand-over (fixed). Not yet measured for many
 loud sources at once (rung 0: 48 paths for everything).
 
-### A tap's band shape
-The kernel, the stand-in and the beds play bands with Linkwitz–Riley
-crossovers (each band centre at its gain within 1.5 dB). A path's own
-three gains are still rendered by two one-pole shelves relative to the
-mid (capped at ±12 dB) or, bass-heavy (through a wall), by a one-pole
-low-pass fitted through 800 Hz that ignores the treble gain — hand-fit
-shapes. The same split per tap costs nine second-order sections a
-sample (the shelves: two one-poles): cheaper forms — two second-order
-shelves at the crossovers — would put taps on the same band model.
+### A tap's band shape at a wall's whole span
+Paths play their band gains through two second-order shelves at the
+band edges: within 1.7 dB of each band centre for steps up to 20 dB
+between neighbouring bands, but a wall's whole span (bass 28 dB over the
+mids, treble 20 under) only within 2–4.3 dB — the shelves haven't
+finished turning by the next centre, and no gains of two second-order
+shelves fit all three (the solve diverges). The kernel's Linkwitz–Riley
+split gets 1.2 dB at nine sections a sample; steeper shelves (4th order)
+at four would close it.
 
 ### Tick cost
 The town with every source traced: ~56 ms per tick native High on the

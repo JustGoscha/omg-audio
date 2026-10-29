@@ -346,3 +346,21 @@ second-order sections where it ran two one-poles — web render 18.7 →
 19.2 % of real time, Godot stress 2.85 → 2.60× (per-path taps keep their
 own shaping: OPEN.md).
 
+## Taps: each path's own band shape
+
+Every path (the direct sound, the solved echoes, the edge bends) carries
+three band gains. They were played by two first-order shelves relative
+to the mid, capped at ±12 dB — a −20 dB band near −8 (`fx_tap_eq`'s
+`deep_band_cuts_reach_their_band_gain`, ignored as a known bug) — or,
+bass-heavy, by a one-pole low-pass fitted through 800 Hz that ignored
+the treble gain (a wall's −34 dB treble played 28 dB high). Now two
+second-order shelves at the band edges (`filter::Shelves`, their
+coefficients following the gliding gains every 16 samples): each band
+centre within 1.7 dB for steps up to 20 dB between neighbouring bands,
+a wall's whole 62 dB span within 2–4.3 dB; the deep-cut test passes.
+
+The bell across the open field — its direct sound's treble carrying
+261 m of air absorption — early treble −18.1 → −21.0 dB (`taps/`).
+Render cost: web 19.2 → 20.1 % of real time; Godot's 480-path rung
+7.3–7.6× → 6.4× real time.
+

@@ -65,6 +65,9 @@ follows from how those points move. Static sources skip the solve.
   Linkwitz–Riley crossovers (`bands::BandSplit`), so a band plays its
   own gain — a wall's −14 / −34 dB mids and treble were played at −7 /
   −18 dB by one-pole bands; a closed door now sounds as closed as traced.
+  Each path's own three gains play through two second-order shelves at
+  the band edges (`filter::Shelves`; first-order shelves capped a band
+  at −8 dB, a fitted low-pass ignored a wall's treble).
 - A channel that isn't rendering (silent, masked, virtualized) settles:
   its glides and fades jump to their targets, so a door shut between two
   sounds is shut for the next one.

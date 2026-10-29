@@ -1,0 +1,8 @@
+still (v5): club at square, 4 clicks every 3 s; dB low/mid/high
+   click  0  early  -46.6  -54.1  -56.0  late  -45.1  -53.6  -59.0
+   click  1  early  -46.3  -54.6  -55.8  late  -45.2  -53.9  -59.8
+   click  2  early  -46.6  -55.1  -55.5  late  -45.6  -53.9  -58.5
+   click  3  early  -47.0  -55.4  -55.7  late  -45.4  -53.9  -58.6
+   tail kurtosis (noise ≈ 3)  low   2.7  mid   3.1  high   3.2
+   early spread  low sd 0.26 span  0.7  mid sd 0.51 span  1.4  high sd 0.16 span  0.4
+   late  spread  low sd 0.20 span  0.5  mid sd 0.11 span  0.3  high sd 0.52 span  1.3

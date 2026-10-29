@@ -1,0 +1,8 @@
+still (v5): bell at field, 4 clicks every 3 s; dB low/mid/high
+   click  0  early  -26.6  -23.6  -20.1  late  -43.8  -37.9  -36.1
+   click  1  early  -26.6  -23.6  -20.1  late  -43.8  -37.9  -36.1
+   click  2  early  -32.0  -28.9  -25.8  late  -48.8  -42.9  -41.1
+   click  3  early  -26.6  -23.6  -20.1  late  -43.8  -37.9  -36.1
+   tail kurtosis (noise ≈ 3)  low   3.4  mid   5.5  high   5.4
+   early spread  low sd 2.36 span  5.4  mid sd 2.29 span  5.3  high sd 2.46 span  5.7
+   late  spread  low sd 2.18 span  5.0  mid sd 2.18 span  5.0  high sd 2.18 span  5.0

@@ -1,17 +1,18 @@
-//! Effect: per-tap band EQ (filter.rs `TapEq`, two first-order shelves
-//! at 250 Hz / 2.5 kHz) and the through-wall one-pole lowpass
-//! (filter.rs `OnePoleLp`, chosen by renderer.rs `targets_of` when a
-//! tap's low/mid gain ratio exceeds 2).
+//! Effect: per-tap band EQ (filter.rs `Shelves`: second-order shelves at
+//! the tracer's band edges, 314 Hz and 2.1 kHz, at the low and high
+//! band's gains over the mid's; renderer.rs `targets_of`).
 //!
 //! Claims:
 //!  - flat band gains are transparent (pure broadband gain);
-//!  - shelved taps reach their band gains at the band extremes — the
-//!    traced per-band absorption is heard as tone, highs reduced relative
-//!    to lows when the high band is weaker;
-//!  - transmission-shaped taps (lows ≫ mids, i.e. through a wall) are
-//!    anchored at the LOW band and get a continuous lowpass slope through
-//!    the mid band that passes 1/r at 800 Hz — "muffled", not merely
-//!    "quieter".
+//!  - each band centre (125 / 790 / 5600 Hz) plays its band's gain —
+//!    the traced absorption heard as tone, a wall's transmission (bass 0,
+//!    mids −14, treble −34 dB) as muffled as traced, deep cuts reached;
+//!  - a transmission-shaped tap (lows ≫ mids, through a wall) slopes on
+//!    through the mid band — "muffled", not merely "quieter".
+//!
+//! (Before: first-order shelves capped at ±12 dB, and a one-pole
+//! low-pass fitted through 800 Hz for bass-heavy taps that ignored the
+//! treble gain — a −20 dB band played near −8.)
 //!
 //! Isolation: bus-only `Renderer::new`, single tap, steady tones, W
 //! channel; plus the raw filter structs.
@@ -79,14 +80,9 @@ fn shelves_shape_the_band_extremes() {
 }
 
 /// Deep band cuts ([0.1, 1, 0.1], −20 dB, e.g. a far source's air
-/// absorption or a heavy absorber) should be rendered as roughly −20 dB
-/// across their band. The first-order shelves with turnover AT the band
-/// edge can't get there: the discrete one-pole LP keeps |H| = c/(2−c)
-/// ≈ 0.16 at Nyquist, so the high shelf bottoms out near −12 dB at
-/// 20 kHz and averages ≈ −8 dB over 2.5–16 kHz; the low shelf reaches
-/// only ≈ −13 dB at 50 Hz.
+/// absorption or a heavy absorber) are rendered as roughly −20 dB across
+/// their band (first-order shelves bottomed out near −8 dB).
 #[test]
-#[ignore = "BUG: first-order band shelves cap deep cuts — band gain 0.1 (−20 dB) renders ≈ −8 dB mean over the high band, ≈ −10 dB over the low band"]
 fn deep_band_cuts_reach_their_band_gain() {
     let band_mean_db = |probes: &[f32]| -> f32 {
         probes.iter().map(|&f| db(tap_gain([0.1, 1.0, 0.1], f))).sum::<f32>() / probes.len() as f32
@@ -99,9 +95,9 @@ fn deep_band_cuts_reach_their_band_gain() {
     );
 }
 
-/// Through-wall tap [1, 0.2, 0.02] (low/mid = 5): anchored at the low
-/// band, 1/r = 0.2 at 800 Hz, and a monotone slope that keeps falling
-/// INSIDE the mid band (where shelves alone would stay flat).
+/// Through-wall tap [1, 0.2, 0.02] (low/mid = 5): the low band at 1,
+/// 0.2 at 800 Hz, and a monotone slope that keeps falling INSIDE the mid
+/// band.
 #[test]
 fn through_wall_tap_is_a_continuous_lowpass() {
     let g: Vec<f32> = PROBES.iter().map(|&f| tap_gain([1.0, 0.2, 0.02], f)).collect();
@@ -114,11 +110,6 @@ fn through_wall_tap_is_a_continuous_lowpass() {
     assert!(at(400.0) / at(2000.0) > 3.0, "mid band must slope, not sit flat: {g:?}");
     assert!(at(6000.0) < 0.05, "treble dies: {}", at(6000.0));
 
-    // contrast: same mid level via the shelf path (low/mid ≤ 2) keeps the
-    // mid band nearly flat — the reason the LP branch exists
-    let s4 = tap_gain([0.4, 0.2, 0.2], 400.0);
-    let s2k = tap_gain([0.4, 0.2, 0.2], 2000.0);
-    assert!(s4 / s2k < 1.5, "shelf path mid band: {s4} vs {s2k}");
 }
 
 /// The raw filter primitives: one-pole −3 dB at its cutoff, unity DC;
@@ -143,3 +134,27 @@ fn filter_primitives() {
     }
 }
 
+
+/// Every band centre plays its band's gain: within 2 dB for steps up to
+/// 20 dB between neighbouring bands; a wall's whole span (bass 28 dB over
+/// the mids, treble 20 under) within 4.5 dB (measured −2.1 / −2.6 / +4.3:
+/// the shelves not quite turned by the next centre). The fitted low-pass
+/// before left that wall's treble 28 dB high.
+#[test]
+fn band_centres_play_their_band_gains() {
+    let mut worst = 0.0f32;
+    for (g, bound) in [
+        ([1.0f32, 0.2, 0.02], 2.0),
+        ([1.0, 0.5, 0.25], 2.0),
+        ([0.1, 1.0, 0.1], 2.0),
+        ([0.02, 0.2, 1.0], 2.0),
+        ([1.0, 0.04, 0.0004], 4.5),
+    ] {
+        for (k, f) in [125.0f32, 790.0, 5600.0].into_iter().enumerate() {
+            let d = db(tap_gain(g, f)) - db(g[k]);
+            worst = worst.max(d.abs());
+            assert!(d.abs() < bound, "gains {g:?}, {f} Hz: {d:+.1} dB off");
+        }
+    }
+    println!("worst band centre: {worst:.1} dB");
+}

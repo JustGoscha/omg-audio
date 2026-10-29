@@ -25,7 +25,7 @@ use crate::ambi::{encode_gains, rotate_z, HeadRotation, NCH};
 use crate::bands::BandSplit;
 use crate::delay::{DelayLine, READ_SLACK};
 use crate::fdn::{Fdn, NLINES};
-use crate::filter::{OnePoleLp, TapEq};
+use crate::filter::{ShelfEdges, Shelves};
 use crate::hrtf::{HrirGrid, PointConv};
 use crate::playlog::PlayLog;
 use crate::smooth::{PathDelay, Smoothed};
@@ -98,7 +98,9 @@ const TAIL_SAMPLES: u32 = 240;
 /// Angular spread of the remote-reverb lines around the doorway (±~30°).
 const REMOTE_SPREAD_RAD: [f32; NLINES] =
     [-0.55, -0.38, -0.22, -0.08, 0.08, 0.22, 0.38, 0.55];
-const LOW_SHELF_HZ: f32 = 250.0;
+/// Samples between two updates of a path's shelves to its gliding band
+/// gains (a few tenths of a millisecond against glides of 8 ms and more).
+const SHELF_STEP: usize = 16;
 /// Most samples one `process_block` / `process_log_block` call renders.
 pub const BLOCK: usize = 128;
 /// A block of the SH bus, channel-major (`bus[k][i]`: channel k, sample
@@ -107,7 +109,6 @@ pub type BusBlock = [[f32; BLOCK]; NCH];
 /// Head-pose HRIR re-selection period (samples).
 const RESELECT_EVERY: u32 = 128;
 const _: () = assert!(BLOCK <= READ_SLACK);
-const HIGH_SHELF_HZ: f32 = 2500.0;
 
 struct TapState {
     key: Option<u32>,
@@ -121,9 +122,7 @@ struct TapState {
     g_low: Smoothed,      // low/mid amplitude ratio
     g_high: Smoothed,     // high/mid amplitude ratio
     g_sh: [Smoothed; NCH], // anchor gain × SH encoding, per channel
-    lp_coef: Smoothed,     // through-wall lowpass (≈1 = bypass)
-    lp: OnePoleLp,
-    eq: TapEq,
+    eq: Shelves,
     conv: PointConv,
     /// A releasing slot fades on its normal one-pole (complementary to
     /// the path fading in, so a crossfade keeps its level) until it is
@@ -195,7 +194,6 @@ impl TapState {
         let c = coefs[rate as usize];
         self.g_low.set_coef(c);
         self.g_high.set_coef(c);
-        self.lp_coef.set_coef(c);
         for g in &mut self.g_sh {
             g.set_coef(c);
         }
@@ -232,38 +230,22 @@ struct TapTargets {
     g_low: f32,
     g_high: f32,
     g_sh: [f32; NCH],
-    /// One-pole lowpass coefficient; ~1.0 = bypass. Transmission-shaped
-    /// taps (lows ≫ mids, i.e. through-wall) get a true continuous LP
-    /// slope — band-relative shelves alone leave the mid band internally
-    /// flat, which made walls sound like "quieter", not "muffled".
-    lp_coef: f32,
 }
 
+/// A path's band gains as the renderer plays them: the mid as its
+/// broadband gain (in the SH encoding), the low and high bands over it
+/// (`Shelves`). A mid far under the others (bass through a wall) is
+/// floored 80 dB under the loudest band, so the ratios stay finite.
 fn targets_of(t: &omg_core::params::Tap, sample_rate: f32) -> TapTargets {
-    let g_mid = t.gains[1];
-    let g_low_raw = if g_mid > 1e-9 { t.gains[0] / g_mid } else { 1.0 };
+    let top = t.gains.iter().fold(0.0f32, |a, &b| a.max(b));
+    let mid = t.gains[1].max(top * 1e-4);
+    let ratio = |x: f32| if mid > 0.0 { x / mid } else { 1.0 };
     let enc = encode_gains(t.dir);
-    let safe_ratio = |x: f32| if g_mid > 1e-9 { (x / g_mid).clamp(0.0, 4.0) } else { 1.0 };
-
-    if g_low_raw > 2.0 && t.gains[0] > 1e-9 {
-        // Transmission character: anchor at the LOW band and fit a one-pole
-        // lowpass through the band gains: |H(800)| = 1/r → fc = 800/√(r²−1).
-        let fc = (800.0 / (g_low_raw * g_low_raw - 1.0).sqrt()).clamp(60.0, 2000.0);
-        TapTargets {
-            delay: t.delay_s as f64 * sample_rate as f64,
-            g_low: 1.0,
-            g_high: 1.0,
-            g_sh: core::array::from_fn(|k| t.gains[0] * enc[k]),
-            lp_coef: OnePoleLp::coef(fc, sample_rate),
-        }
-    } else {
-        TapTargets {
-            delay: t.delay_s as f64 * sample_rate as f64,
-            g_low: safe_ratio(t.gains[0]),
-            g_high: safe_ratio(t.gains[2]),
-            g_sh: core::array::from_fn(|k| g_mid * enc[k]),
-            lp_coef: 1.0, // bypass
-        }
+    TapTargets {
+        delay: t.delay_s as f64 * sample_rate as f64,
+        g_low: ratio(t.gains[0]),
+        g_high: ratio(t.gains[2]),
+        g_sh: core::array::from_fn(|i| mid * enc[i]),
     }
 }
 
@@ -326,8 +308,7 @@ struct GroupCx<'a, 'b> {
     /// `pw` per rate (`GLIDE`, `APPEAR`, `RETARGET`).
     pw: &'a [[f32; BLOCK]; 3],
     grid: Option<&'a HrirGrid>,
-    c_low: f32,
-    c_high: f32,
+    shelf: ShelfEdges,
     src: &'a Src<'b>,
     off: usize,
     m: usize,
@@ -402,19 +383,25 @@ fn tap_group<const L: usize>(taps: &mut [TapState], group: &[u16], cx: &mut Grou
         let g = f(&taps[idx[l]]);
         (g.target_val(), g.current() - g.target_val())
     };
-    let lpc: [(f32, f32); L] = core::array::from_fn(|l| tg(l, |t| &t.lp_coef));
     let glo: [(f32, f32); L] = core::array::from_fn(|l| tg(l, |t| &t.g_low));
     let ghi: [(f32, f32); L] = core::array::from_fn(|l| tg(l, |t| &t.g_high));
-    let mut lp: [OnePoleLp; L] = core::array::from_fn(|l| taps[idx[l]].lp);
-    let mut eq: [TapEq; L] = core::array::from_fn(|l| taps[idx[l]].eq);
+    let mut eq: [Shelves; L] = core::array::from_fn(|l| taps[idx[l]].eq);
     let shaped = &mut shsh[..m];
+    let shaped_len = m;
     let s = &ss;
-    let (c_low, c_high) = (cx.c_low, cx.c_high);
+    let k = cx.shelf;
     for (i, sh) in shaped.iter_mut().enumerate() {
+        if i % SHELF_STEP == 0 {
+            // the shelves follow the gliding gains, at the middle of the
+            // next few samples
+            let j = (i + SHELF_STEP / 2).min(shaped_len - 1);
+            for l in 0..L {
+                let p = pws[l][j];
+                eq[l].set(glo[l].0 + glo[l].1 * p, ghi[l].0 + ghi[l].1 * p, &k);
+            }
+        }
         for l in 0..L {
-            let p = pws[l][i];
-            let x = lp[l].tick(s[l][i], lpc[l].0 + lpc[l].1 * p);
-            sh[l] = eq[l].tick(x, glo[l].0 + glo[l].1 * p, ghi[l].0 + ghi[l].1 * p, c_low, c_high);
+            sh[l] = eq[l].tick(s[l][i]);
         }
     }
 
@@ -426,9 +413,7 @@ fn tap_group<const L: usize>(taps: &mut [TapState], group: &[u16], cx: &mut Grou
         if e > 0 {
             let pe = pw[e - 1];
             if loud[l] {
-                tap.lp = lp[l];
                 tap.eq = eq[l];
-                tap.lp_coef.advance(pe);
                 let mono = &mut mono[..e];
                 for (v, sh) in mono.iter_mut().zip(shaped.iter()) {
                     *v = sh[l];
@@ -670,8 +655,7 @@ pub struct Renderer {
     /// point — a mono-summed FDN combs audibly ("metallic").
     remote_spread: [[f32; NCH]; NLINES],
     fdn_dirs: [[f32; NCH]; NLINES],
-    c_low: f32,
-    c_high: f32,
+    shelf: ShelfEdges,
     /// `pw[i]` = coefⁱ⁺¹ of the per-tap parameter smoothers (all share one
     /// time constant): block rendering evaluates them in closed form,
     /// `target + (cur − target)·pw[i]` — the same one-pole curve, without
@@ -739,9 +723,7 @@ impl Renderer {
                     g_low: Smoothed::new(1.0, TAP_TAU_S, sample_rate),
                     g_high: Smoothed::new(1.0, TAP_TAU_S, sample_rate),
                     g_sh: [Smoothed::new(0.0, TAP_TAU_S, sample_rate); NCH],
-                    lp_coef: Smoothed::new(1.0, TAP_TAU_S, sample_rate),
-                    lp: OnePoleLp::default(),
-                    eq: TapEq::default(),
+                    eq: Shelves::default(),
                     conv: PointConv::new(conv_taps, sample_rate),
                     release_floor: 0.0,
                     tail: 0,
@@ -775,8 +757,7 @@ impl Renderer {
             remote_sh: [Smoothed::new(0.0, FDN_TAU_S, sample_rate); NCH],
             remote_spread: [[0.0; NCH]; NLINES],
             fdn_dirs: core::array::from_fn(|i| encode_gains(corner_dirs[i])),
-            c_low: OnePoleLp::coef(LOW_SHELF_HZ, sample_rate),
-            c_high: OnePoleLp::coef(HIGH_SHELF_HZ, sample_rate),
+            shelf: ShelfEdges::new(sample_rate),
             pw: coefs.map(|c| core::array::from_fn(|i| (c as f64).powi(i as i32 + 1) as f32)),
             coefs,
             sample_rate,
@@ -930,7 +911,6 @@ impl Renderer {
             slot.delay.snap(slot.delay.target_val());
             slot.g_low.snap(slot.g_low.target_val());
             slot.g_high.snap(slot.g_high.target_val());
-            slot.lp_coef.snap(slot.lp_coef.target_val());
             for g in &mut slot.g_sh {
                 g.snap(g.target_val());
             }
@@ -1071,7 +1051,6 @@ impl Renderer {
                         slot.delay.snap(tg.delay);
                         slot.g_low.snap(tg.g_low);
                         slot.g_high.snap(tg.g_high);
-                        slot.lp_coef.snap(tg.lp_coef);
                         for k in 0..NCH {
                             slot.g_sh[k].snap(tg.g_sh[k]);
                         }
@@ -1081,7 +1060,6 @@ impl Renderer {
                         }
                         slot.g_low.set(tg.g_low);
                         slot.g_high.set(tg.g_high);
-                        slot.lp_coef.set(tg.lp_coef);
                         for k in 0..NCH {
                             slot.g_sh[k].set(tg.g_sh[k]);
                         }
@@ -1123,9 +1101,7 @@ impl Renderer {
                 }
                 slot.g_low.snap(tg.g_low);
                 slot.g_high.snap(tg.g_high);
-                slot.lp_coef.snap(tg.lp_coef);
-                slot.lp = OnePoleLp::default();
-                slot.eq = TapEq::default();
+                slot.eq = Shelves::default();
                 if want_point {
                     if let Some(g) = &self.grid {
                         let rot = HeadRotation::new(
@@ -1435,8 +1411,8 @@ impl Renderer {
     /// The early paths over samples `off..off + m`, in groups of 8 (4 for
     /// a short tail) rendered side by side (see `tap_group`).
     fn taps_block(&mut self, src: &Src, off: usize, m: usize, bus: &mut BusBlock, pl: &mut [f32], pr: &mut [f32]) {
-        let Renderer { taps, active, pw, grid, c_low, c_high, .. } = self;
-        let mut cx = GroupCx { pw, grid: grid.as_deref(), c_low: *c_low, c_high: *c_high, src, off, m, bus, pl, pr };
+        let Renderer { taps, active, pw, grid, shelf, .. } = self;
+        let mut cx = GroupCx { pw, grid: grid.as_deref(), shelf: *shelf, src, off, m, bus, pl, pr };
         let mut freed = false;
         let mut a0 = 0;
         while a0 < active.len() {
@@ -1513,8 +1489,8 @@ impl Renderer {
                 continue;
             }
             let s = read(d.max(1.0));
-            let shaped = tap.lp.tick(s, tap.lp_coef.tick());
-            let toned = tap.eq.tick(shaped, gl, gh, self.c_low, self.c_high);
+            tap.eq.set(gl, gh, &self.shelf);
+            let toned = tap.eq.tick(s);
             if tap.point {
                 if let Some(grid) = &self.grid {
                     // g[0] is the broadband mid gain (W of SN3D SH = 1).
