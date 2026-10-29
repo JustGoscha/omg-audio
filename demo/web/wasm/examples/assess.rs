@@ -1059,7 +1059,7 @@ fn doorswing() {
         at(shut_at + 3.2) - shut_db,
         at(shut_at + 5.2) - shut_db
     );
-    let course: Vec<String> = (0..=24).map(|k| format!("{:.0}", at(shut_at - 0.1 + k as f32 * 0.05))).collect();
+    let course: Vec<String> = (0..=60).map(|k| format!("{:.0}", at(shut_at - 0.1 + k as f32 * 0.05))).collect();
     println!("   level every 50 ms from {:.1} s: {}", shut_at - 0.1, course.join(" "));
     println!("   artifacts (output above 3 kHz, under the tone): {}", artifact_line("swing", &artifacts(&rig, shut_at, shut_at + 1.2)));
 }

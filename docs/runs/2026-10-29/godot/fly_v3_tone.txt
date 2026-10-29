@@ -1,12 +1,12 @@
-/private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/runs_v6c/fly_v3_tone: 6.8 s at 44100 Hz
+docs/runs/2026-10-29/godot/fly_v3_tone: 6.8 s at 44100 Hz
   artifacts (above 3 kHz, under the whole; a pure tone's output has none):
-    outside   464 windows: median  -62.7 dB, worst  -48.0 dB, over −40 dB   0, over −30 dB   0
-    crossing   63 windows: median  -62.0 dB, worst  -44.0 dB, over −40 dB   0, over −30 dB   0
-    inside    817 windows: median  -62.6 dB, worst  -39.9 dB, over −40 dB   1, over −30 dB   0
+    outside   466 windows: median  -62.7 dB, worst  -53.4 dB, over −40 dB   0, over −30 dB   0
+    crossing   61 windows: median  -60.9 dB, worst  -41.8 dB, over −40 dB   0, over −30 dB   0
+    inside    817 windows: median  -62.6 dB, worst  -38.7 dB, over −40 dB   2, over −30 dB   0
   level jumps (10 ms off its 90 ms course):
-    outside   233 windows: >2 dB  64, >4 dB  24
-    crossing   32 windows: >2 dB   9, >4 dB   4
-    inside    403 windows: >2 dB  41, >4 dB  16
-  audio thread: 582 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 8 µs; spacing median 11.6 ms, max 11.7 ms
-  quality: rung 1 at the start; 0.1s → 2, 2.1s → 3
-  engine: tick 1.0–14.3 ms, load up to 0.12, budget changes 0 (taps 480 → 480), late frames 0
+    outside   234 windows: >2 dB  63, >4 dB  29
+    crossing   31 windows: >2 dB  10, >4 dB   4
+    inside    403 windows: >2 dB  25, >4 dB  16
+  audio thread: 582 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 3 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 2 at the start; 0.7s → 3, 6.3s → 4
+  engine: tick 1.2–16.5 ms, load up to 0.12, budget changes 0 (taps 480 → 480), late frames 0

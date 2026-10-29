@@ -1,13 +1,13 @@
-/private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/runs_v6c/car_v6: 10.8 s at 44100 Hz
+docs/runs/2026-10-29/godot/car_v6: 10.8 s at 44100 Hz
   artifacts (above 3 kHz, under the whole; a pure tone's output has none):
-    approach  759 windows: median  -40.7 dB, worst  -26.9 dB, over −40 dB 344, over −30 dB  19
-    pass      218 windows: median  -39.2 dB, worst  -26.1 dB, over −40 dB 122, over −30 dB  10
-    away     1177 windows: median  -34.2 dB, worst  -15.8 dB, over −40 dB 926, over −30 dB 431
-    loudest: 9.818s -16dB (away), 9.823s -16dB (away), 9.828s -17dB (away), 9.833s -17dB (away), 9.808s -17dB (away), 9.813s -17dB (away), 9.748s -17dB (away), 10.571s -18dB (away)
+    approach  760 windows: median  -17.3 dB, worst   -7.4 dB, over −40 dB 760, over −30 dB 760
+    pass      217 windows: median  -16.5 dB, worst   -6.6 dB, over −40 dB 217, over −30 dB 217
+    away     1177 windows: median  -21.1 dB, worst   -7.8 dB, over −40 dB 1177, over −30 dB 1169
+    loudest: 4.290s -7dB (pass), 4.330s -7dB (pass), 3.392s -7dB (approach), 4.415s -7dB (pass), 5.168s -8dB (away), 4.709s -8dB (pass), 4.889s -8dB (pass), 4.245s -8dB (pass)
   level jumps (10 ms off its 90 ms course):
-    approach  381 windows: >2 dB 151, >4 dB  52
-    pass      108 windows: >2 dB  47, >4 dB  17
-    away      583 windows: >2 dB 157, >4 dB  50
-  audio thread: 930 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 10 µs; spacing median 11.6 ms, max 11.7 ms
-  quality: rung 2 at the start; 0.5s → 3, 2.5s → 4, 4.5s → 5, 6.5s → 6, 8.6s → 7
-  engine: tick 1.0–13.7 ms, load up to 0.24, budget changes 0 (taps 480 → 480), late frames 0
+    approach  381 windows: >2 dB 160, >4 dB  55
+    pass      108 windows: >2 dB  38, >4 dB   8
+    away      583 windows: >2 dB  85, >4 dB  15
+  audio thread: 930 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 7 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 2 at the start; 0.6s → 3, 2.7s → 4, 4.7s → 5, 6.7s → 6, 8.7s → 7, 10.7s → 8
+  engine: tick 1.0–7.6 ms, load up to 0.25, budget changes 0 (taps 480 → 480), late frames 0

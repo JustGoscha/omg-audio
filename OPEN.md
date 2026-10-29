@@ -136,6 +136,14 @@ the shut, its late treble against settled: +13.9 dB with the default
 seed, −12.9 … +0.3 dB with seeds 1–4 — the same heavy tail (the treble
 has the fewest paths through a heavy door), not a bug of its own.
 
+### The car's closest pass: a one-sample step
+The Godot car scenario (tone) shows a single-sample step as the car
+passes 4 m away, in v3 and v6 alike: −38 … −45 dB above 3 kHz under the
+tone on an idle machine, −35 dB in a run recorded while the machine was
+busy (`docs/runs/2026-10-29/godot/`). The direct path's direction swings
+~7 rad/s there; a guess is an HRTF direction switching without enough
+crossfade at that rate. Not yet looked into.
+
 ### A distinct echo found by chance
 A car passing the field (`assess cartone`): with seeds 1 and 3 a facade
 echo 726 ms late, 12 dB under the direct sound, plays as its own tap
