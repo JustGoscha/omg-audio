@@ -382,6 +382,11 @@ impl Event {
     }
 }
 
+/// v6.2 with an external walker: the ticks after a door's leaf last moved
+/// that still walk on the CPU (`Tracer::doors_moving`) — past the restart
+/// where the door comes to rest (`prepare`).
+const DOOR_CPU_TICKS: u32 = 3;
+
 /// v6.2: entries of paths kept (`SourceState::paths`), each of
 /// `PATHS_KEEP` paths at most.
 const PATHS_TICKS: usize = 6;
@@ -2092,6 +2097,10 @@ pub struct Tracer {
     /// Bumped on every such drop; an external walk launched before it
     /// (its result arrives a tick late) is discarded.
     pub(crate) epoch: u32,
+    /// v6.2 with an external walker: the apertures' leaves as they were
+    /// last tick, and the ticks left that walk on the CPU (`doors_moving`).
+    door_sig: u64,
+    door_ticks: u32,
     /// Diffraction edges of the last mesh traced (rebuilt if it changes).
     edges: Option<EdgeSet>,
     tick: u64,
@@ -2426,6 +2435,8 @@ impl Tracer {
             sky_at: None,
             last_listener: None,
             epoch: 0,
+            door_sig: 0,
+            door_ticks: 0,
             edges: None,
             tick: 0,
             ear_vis: None,
@@ -2732,6 +2743,33 @@ impl Tracer {
         Some(core::array::from_fn(|part| core::array::from_fn(|b| now[part][b] / st.priced[part][b].max(1e-9))))
     }
 
+    /// v6.2 with an external walker (a GPU's): whether this tick walks on
+    /// the CPU instead — a door's leaf moved within the last
+    /// `DOOR_CPU_TICKS`. The walker records no door paths and doesn't
+    /// split at a leaf (`Aperture`): the averages start over as a door
+    /// starts moving and again where it stops (`prepare`), so the swing's
+    /// whole estimate comes from walks that price the door. Back on the
+    /// walker, the walk it still has in flight (launched before the door
+    /// moved) is dropped.
+    pub fn doors_moving(&mut self, world: &World) -> bool {
+        if !self.v62 || world.apertures.is_empty() {
+            return false;
+        }
+        let ids: Vec<u32> = world.apertures.iter().map(|a| a.id).collect();
+        let sig = apertures_sig(&ids, world.apertures);
+        if sig != self.door_sig {
+            self.door_sig = sig;
+            // the first tick sees every door "move": the walker's from the start
+            self.door_ticks = if self.state.is_empty() { 0 } else { DOOR_CPU_TICKS };
+        } else if self.door_ticks > 0 {
+            self.door_ticks -= 1;
+            if self.door_ticks == 0 {
+                self.epoch = self.epoch.wrapping_add(1);
+            }
+        }
+        self.door_ticks > 0
+    }
+
     /// v6.2: each source's threshold for recording its paths that meet
     /// apertures (`Acc::record`), and their draws' seed.
     fn pre_record(&self, accs: &mut [Acc], sources: &[Source]) {
@@ -2819,6 +2857,7 @@ impl Tracer {
             t_free: &t_free,
             debug: self.debug,
             v4: self.v4,
+            virtuals: self.rest < DOOR_CPU_TICKS,
         };
         for (fi, (dirs, lo, hi, segments, nee)) in fams.into_iter().enumerate() {
             if dirs.is_empty() || lo > hi {
@@ -3719,6 +3758,10 @@ struct WalkCtx<'a> {
     t_free: &'a [f32],
     debug: bool,
     v4: bool,
+    /// v6.2: walk the reflections a leaf might give (`VIRTUAL_P`) — only
+    /// while the world is changing: they price a door on its way; standing,
+    /// a door's paths are what they were walked as.
+    virtuals: bool,
 }
 
 /// One family of rays (`walk_rays`): the reflection orders it counts,
@@ -3902,7 +3945,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         };
         let t_seg = edge.map_or(t_hit, |(te, _, _, _)| te);
 
-        if !virt && !aps.is_empty() {
+        if !virt && cx.virtuals && !aps.is_empty() {
             // where this segment passes an aperture's open part (on to a
             // bend, a surface or the open sky), the leaf might have stood:
             // walk its reflection there too, for the pricing (`VIRTUAL_P`)

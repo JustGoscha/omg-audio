@@ -5,6 +5,7 @@
 //! the swings and over a still door.
 //!
 //!     cargo run --release -p omg-web --example door_ms -- v6.1 v6.2
+//!     COMPUTE=gpu cargo run --release -p omg-web --features gpu --example door_ms
 use omg_audio::{Compute, Config, Quality, Simulation};
 use omg_web::town::Town;
 use std::time::Instant;
@@ -13,9 +14,12 @@ use std::time::Instant;
 const CLUB_DOOR: usize = 4;
 
 fn run(mode: &str) {
+    // COMPUTE=gpu: the walk on the GPU, as the Godot host runs it (build
+    // with --features gpu)
+    let gpu = std::env::var("COMPUTE").as_deref() == Ok("gpu");
     let cfg = Config {
         quality: Quality::High,
-        compute: Compute::Cpu,
+        compute: if gpu { Compute::Gpu } else { Compute::Cpu },
         v4: false,
         v5: false,
         v6: mode.starts_with("v6"),

@@ -318,15 +318,30 @@ long — what the swing should sound like at every instant):
   +11 dB over where they settle → −5 / −3 dB. Walking out of the hall and
   flying through the cathedral's wall: unchanged.
 - Cost (the town, every source sounding, the ears by the club door,
-  `examples/door_ms`): a tick 15.4 → 17.8 ms standing (the split at
-  leaves and the paths' records), 18.8 → 23.1 ms while the door moves; a
-  frame between ticks 0.18 → 0.38 ms while it moves.
+  `examples/door_ms`): a tick 15.4 → 16.8 ms standing (the split at
+  leaves and the paths' records; the virtual reflections are walked only
+  while the world changes), 18.9 → 23.1 ms while the door moves; a frame
+  between ticks 0.18 → 0.38 ms while it moves.
+- **On the GPU walk** (Godot's default) the kernel records no door paths
+  and doesn't split at a leaf (a paced early ray can't carry a split
+  branch through its passes). While a door's leaf moves, and for
+  `DOOR_CPU_TICKS` after, the tick walks on the CPU instead
+  (`Tracer::doors_moving`; the averages start over as the door starts
+  and where it stops, so the swing's whole estimate is priced); back on
+  the GPU, the walk still in flight is dropped. Headless on the GPU
+  (`COMPUTE=gpu`, three seeds): v6.1 12.0 dB rms against the door
+  standing (its walk a tick late on top of the averaging: the door heard
+  where it was, +10 dB on average), v6.2 3.6 dB. The cost: a tick 0.5 →
+  2.5 ms standing (the CPU's late rays split at the leaf), 4.8 → 22.8 ms
+  for the second the door moves. Godot (`docs/runs/2026-10-29/door`):
+  0.7 s after the shut command v6.2 at −19 dB where v6.1 holds at −11.
+  Isolated (`gpu::a_door_swinging_shut_is_heard_where_it_is_on_the_gpu`,
+  feature `gpu`): v6.1 12.5 dB rms, v6.2 3.5 dB.
 
 Left: a door seen at a slant through a centimetre-wide gap is still a
 heavy-tailed estimate (one position of the four: v6.1 2.2, v6.2 2.7 dB);
-the GPU's walk records no door paths and doesn't split at leaves (with
-the walk on the GPU — Godot's default — only the CPU's late family, the
-reverb, is priced); a path meeting apertures more than six
+on the GPU walk a standing door's early part doesn't split at the leaf
+(its heavy tail as v6.1's), and a moving door costs a CPU tick; a path meeting apertures more than six
 times is left to the averages; the virtual reflections are first order;
 where a door comes to rest the averages still start over (young).
 

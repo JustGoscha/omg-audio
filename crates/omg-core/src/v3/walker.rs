@@ -50,7 +50,8 @@ pub fn trace_with(
     cpu_budget: Budget,
     walker: Option<&mut dyn V3Walker>,
 ) -> Vec<SourceField> {
-    if let Some(w) = walker {
+    // v6.2: while a door moves the CPU walks (`Tracer::doors_moving`)
+    if let Some(w) = walker.filter(|_| !tracer.doors_moving(world)) {
         // the late family at the CPU's own count when the walker leaves it
         let cpu_late = (!w.walks_late()).then_some(cpu_budget.late_rays);
         if let Some(fields) = tracer.trace_walked(world, listener, sources, budget, cpu_late, &mut |job| w.walk(job)) {
