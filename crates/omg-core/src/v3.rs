@@ -895,19 +895,17 @@ struct SourceState {
     /// v4: where listener and source were last tick; v6: where they
     /// stood when the current still spell began.
     at: Option<(Vec3, Vec3)>,
-    /// v6: ticks neither has moved (`fold`: standing still, the averages
-    /// become a running mean).
-    still: u32,
     /// v4: the world changed since the last tick (a door moved): the
     /// response follows as when moving — the tests say what changed.
     /// v6: its averages start over (`fold`).
     restart: bool,
-    /// v6: ticks averaged since the world last changed (`fold`: a
-    /// running mean from the change on, until it is as steady as the EMA).
-    since: u32,
     /// v6: the world moved this tick (a door on its way): a moving tick
-    /// for the averages — no still spell, the EMA follows.
+    /// for the averages, the late one as quick as the early (`fold`).
     world_moving: bool,
+    /// v6: how many ticks' worth the early and the late average hold —
+    /// 1/Σw² of their (normalized) weights: n after n ticks of a running
+    /// mean, (2 − α)/α in an EMA's steady state, 0 empty (`fold`).
+    held: [f32; 2],
 }
 
 /// The diffuse field's mid-band energy in one echo slot at `rel`: the
@@ -937,42 +935,41 @@ impl SourceState {
         source: Vec3,
     ) {
         let first = self.echo.is_none();
-        // v6: standing still — neither end moved more than `STILL_M` from
-        // where the spell began (a slow drift adds up and ends it) —
-        // nothing the trace estimates is changing: each still tick joins
-        // a running mean (the n-th weighs 1/(n₀ + n), n₀ the EMA's own
-        // count), so the estimate keeps converging instead of holding the
-        // EMA's noise (down to `STILL_ALPHA_FLOOR`: ~10 s of memory, should
-        // something change that no test sees). Moving, the EMA as before
+        let (mut alpha_early, mut alpha_late) = (if first { 1.0 } else { budget.ema.clamp(0.0, 1.0) }, budget.late_ema.clamp(0.0, 1.0));
         if v6 {
+            // the world changed after a rest (a door started moving:
+            // `Tracer::prepare`) — nothing averaged before describes this
+            // world: the averages start over, the sound follows at once
+            // (and the change's burst traces more rays for the first ticks)
+            if std::mem::take(&mut self.restart) {
+                self.held = [0.0; 2];
+            }
+            // each tick weighs what the next tick of a running mean of
+            // what the average holds would: 1/(n + 1). Moving — the
+            // listener or the source, or the world on its way — at least
+            // the EMA's weight, so it follows; the late average as quick
+            // as the early one while the world moves (a door changes every
+            // order of the field at once, not the slow drift of the tail
+            // as a listener walks). Standing still — neither end moved
+            // `STILL_M` from where the spell began, the world at rest —
+            // the running mean goes on converging (down to
+            // `STILL_ALPHA_FLOOR`: ~10 s of memory, should something
+            // change that no test sees)
             let world_moved = std::mem::take(&mut self.world_moving);
             let moved = world_moved || self.at.is_none_or(|(l, s)| (l - listener).length() > STILL_M || (s - source).length() > STILL_M);
             if moved {
                 self.at = Some((listener, source));
-                self.still = 0;
-            } else {
-                self.still = self.still.saturating_add(1);
             }
-        }
-        let still = |ema: f32| -> f32 {
-            if !v6 || self.still == 0 || ema <= 0.0 {
-                return ema;
+            let emas = [budget.ema, if world_moved { budget.ema } else { budget.late_ema }];
+            let mut alphas = [0.0f32; 2];
+            for ((a, n), ema) in alphas.iter_mut().zip(self.held.iter_mut()).zip(emas) {
+                let mean = 1.0 / (*n + 1.0);
+                *a = if moved { mean.max(ema.clamp(0.0, 1.0)) } else { mean.max(STILL_ALPHA_FLOOR) };
+                let w2 = if *n > 0.0 { 1.0 / *n } else { 0.0 };
+                *n = 1.0 / ((1.0 - *a) * (1.0 - *a) * w2 + *a * *a);
             }
-            let n0 = (2.0 - ema) / ema;
-            (1.0 / (n0 + self.still as f32)).clamp(STILL_ALPHA_FLOOR.min(ema), ema)
-        };
-        // v6: the world changed (a door started moving: `Tracer::prepare`)
-        // — nothing averaged before it describes this world: the averages
-        // start over from this tick, a running mean (the n-th tick weighs
-        // 1/n) until it is as steady as the EMA, which takes over. The
-        // sound follows a door at once, as steady as n ticks allow (and
-        // the world change's burst traces more rays for the first of them)
-        if v6 && std::mem::take(&mut self.restart) {
-            self.since = 0;
+            [alpha_early, alpha_late] = alphas;
         }
-        self.since = self.since.saturating_add(1);
-        let fresh = if v6 { 1.0 / self.since as f32 } else { 0.0 };
-        let alpha_early = if first { 1.0 } else { still(budget.ema.clamp(0.0, 1.0)).max(fresh) };
         // solved chains are exact, not noisy: averaged like the early bins
         // only so a chain that just validated fades in rather than pops
         let alpha_echo = alpha_early;
@@ -998,7 +995,7 @@ impl SourceState {
         self.early.retain(|_, b| b.e.iter().any(|&e| e > 1e-12));
         // late echogram: a slower statistic, a slower average
         match &mut self.echo {
-            Some(e) => e.ema(&echo, still(budget.late_ema.clamp(0.0, 1.0)).max(fresh)),
+            Some(e) => e.ema(&echo, alpha_late),
             None => self.echo = Some(echo),
         }
         // discrete echoes: the salient solved chains (with hysteresis),
@@ -1574,8 +1571,12 @@ pub struct Tracer {
     /// v4: a signature of the world's movable parts (panels) last tick: a
     /// door closing ends every source's settled average.
     world_sig: u64,
-    /// Ticks in a row the world changed (v6: a door on its way).
-    changing: u32,
+    /// Ticks since the world last changed (v6: under the early average's
+    /// memory, a door is still on its way).
+    rest: u32,
+    /// Ticks the world changed in its current motion (v6: one that went
+    /// on for more than a tick restarts again where it stops).
+    moved_for: u32,
     /// Capture the strongest paths of each tick for the debug view.
     pub debug: bool,
     /// Last tick's strongest sampled paths (the walk's reflections):
@@ -1807,7 +1808,8 @@ impl Tracer {
             late_pool: std::collections::VecDeque::new(),
             late_pool_sig: 0,
             world_sig: 0,
-            changing: 0,
+            rest: u32::MAX,
+            moved_for: 0,
             debug: false,
             debug_paths: Vec::new(),
             exact: Vec::new(),
@@ -2579,18 +2581,26 @@ impl Tracer {
             self.sky_world = true;
         }
         // v6: the averages restart (and trace the burst) when the world
-        // starts changing — a door slammed in one tick is all of it; a
-        // door swinging shut over a second goes on changing, and on its
-        // way every tick is a moving tick (the EMA follows, as a listener
-        // walking), at rest the still spell's running mean takes it on.
-        // Restarting at every tick of the swing played each tick's own
-        // heavy-tailed estimate: the club's tone through its closing door
-        // dipped 25 dB under the shut level and burst back, clicks 9 dB
-        // under the tone (`assess doorswing`); restarting again where it
-        // stopped traded an estimate near the shut level for a young one
-        // 20–25 dB under it
-        let restart = if self.v6 { changed && self.changing == 0 } else { changed };
-        self.changing = if changed { self.changing.saturating_add(1) } else { 0 };
+        // starts changing after a rest, and when it comes to rest after
+        // changing on: a door slammed in one tick restarts once; a door
+        // swinging shut over a second restarts as it starts, goes on as
+        // moving ticks while on its way (`SourceState::fold`), and starts
+        // over where it stops — nothing averaged on the way describes the
+        // shut door (a leaf a few millimetres ajar leaks ~14 dB more).
+        // A change after a pause shorter than the early average's memory
+        // ((2 − α)/α ticks) is the same motion going on: a leaf easing
+        // into its frame moves under the millimetre the signature sees
+        // for a tick or two before it closes. Restarting at every tick of
+        // the swing played each tick's own heavy-tailed estimate (55–110
+        // dB of climbing back, clicks; `assess doorswing EAR=0`); not
+        // restarting where it stops kept the swing's field in the averages
+        // for seconds (Godot: +9…+11 dB 3 s after the shut command, now
+        // 0…+5)
+        let memory = ((2.0 - budget.ema.max(0.05)) / budget.ema.max(0.05)).ceil() as u32;
+        let settled = !changed && self.rest == 0 && self.moved_for >= 2;
+        let restart = if self.v6 { (changed && self.rest >= memory) || settled } else { changed };
+        self.moved_for = if changed { if self.rest < memory { self.moved_for + 1 } else { 1 } } else if self.rest >= memory { 0 } else { self.moved_for };
+        self.rest = if changed { 0 } else { self.rest.saturating_add(1) };
         if restart || (self.v6 && changed) {
             for st in self.state.values_mut() {
                 st.restart |= restart;

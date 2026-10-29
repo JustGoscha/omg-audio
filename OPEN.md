@@ -131,9 +131,10 @@ club (the 2 % draw), and bounces 0.3–0.5 m under a speaker (on its
 cabinet) bring 1/r². Splitting v6's rays at their first partition (as
 v4 does) did not help: from the square the split mostly goes into some
 other building, the club's late spread 5.1/4.2/3.5 → 6.7/6.1/7.3 dB.
-Headless, `assess door` (instant shut, PACE=0): the late treble +13.9 dB
-50 ms after the shut (ENGINE_V6.md measured ±3 dB earlier; the click's
-treble tail — not yet looked into).
+Headless, `assess door` (instant shut, PACE=0): the click 50 ms after
+the shut, its late treble against settled: +13.9 dB with the default
+seed, −12.9 … +0.3 dB with seeds 1–4 — the same heavy tail (the treble
+has the fewest paths through a heavy door), not a bug of its own.
 
 ### A distinct echo found by chance
 A car passing the field (`assess cartone`): with seeds 1 and 3 a facade

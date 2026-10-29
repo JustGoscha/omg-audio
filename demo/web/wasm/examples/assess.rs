@@ -997,7 +997,14 @@ fn doorswing() {
     // REF=1: the door shut all along (the shut level, converged)
     let reference = env("REF").is_some();
     rig.town.set_door(&mut rig.sim, CLUB_DOOR, if reference { 0.0 } else { 1.0 });
-    rig.pos = [21.0, 30.2, 1.6];
+    // LIS=x,y,z: elsewhere (the Godot demo's spot, 1 m before the door:
+    // LIS=21,31,1.6 — a speaker in sight through the doorway)
+    rig.pos = env("LIS")
+        .and_then(|v| {
+            let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+            (p.len() == 3).then(|| [p[0], p[1], p[2]])
+        })
+        .unwrap_or([21.0, 30.2, 1.6]);
     let f0 = 500.0f32;
     let cycle = (SR / f0).round() as usize;
     let tone: Vec<f32> = (0..cycle * 10).map(|k| 0.5 * (std::f32::consts::TAU * (k % cycle) as f32 / cycle as f32).sin()).collect();
