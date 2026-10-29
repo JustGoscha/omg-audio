@@ -64,6 +64,9 @@ struct SimHost {
     state: Vec<f32>,
     rays_out: Vec<f32>,
     debug: bool,
+    /// The page's times (s, the worker's clock): when the pose and the
+    /// dynamic slots it posted were current, and now (`sim_set_times`).
+    times: Option<(f64, f64)>,
 }
 
 static mut SIM: Option<&'static mut SimHost> = None;
@@ -156,6 +159,7 @@ pub extern "C" fn sim_setup(sample_rate: f32) {
         state: vec![0.0; ENV_OFF + omg_dsp::env::ENV_FLAT_LEN],
         rays_out: Vec::new(),
         debug: false,
+        times: None,
     };
     unsafe { *(&raw mut SIM) = Some(leak(host)) };
     self::sim().reconfigure();
@@ -285,6 +289,37 @@ pub extern "C" fn sim_set_debug(on: u32) {
     h.sim.set_debug_paths(h.debug);
 }
 
+/// The times for the next tick or exact frame (s, one steady clock): when
+/// the page's pose and dynamic slots were current, and now. The listener
+/// and the moving sources are stamped with the first, the simulation's
+/// clock is the second — where each was when is what Doppler and far
+/// paths are timed by (without, the simulation counts 50 ms a tick,
+/// however late the worker's timer fired).
+#[no_mangle]
+pub extern "C" fn sim_set_times(pose: f64, now: f64) {
+    sim().times = Some((pose, now.max(pose)));
+}
+
+/// The page's dynamic slots and listener into the simulation, stamped
+/// with the pose's time when the page gave one.
+fn place(h: &mut SimHost, x: f32, y: f32, z: f32, yaw: f32) {
+    if let Some((pose, _)) = h.times {
+        h.sim.set_time(pose);
+    }
+    for s in 0..DYN {
+        let d = &h.dynamic[s * 4..s * 4 + 4];
+        let at = (d[3] > 0.0).then(|| ([d[0], d[1], d[2]], d[3]));
+        h.town.set_dynamic(&mut h.sim, s, at);
+    }
+    match h.times {
+        Some((pose, now)) => {
+            h.sim.set_listener_at([x, y, z], yaw, 0.0, 0.0, pose);
+            h.sim.set_time(now);
+        }
+        None => h.sim.set_listener([x, y, z], yaw, 0.0, 0.0),
+    }
+}
+
 /// One tick from the listener at (x, y, z), z up, yaw about +z.
 #[no_mangle]
 pub extern "C" fn sim_tick(x: f32, y: f32, z: f32, yaw: f32) {
@@ -294,12 +329,7 @@ pub extern "C" fn sim_tick(x: f32, y: f32, z: f32, yaw: f32) {
             h.town.set_door(&mut h.sim, i, h.doors[i]);
         }
     }
-    for s in 0..DYN {
-        let d = &h.dynamic[s * 4..s * 4 + 4];
-        let at = (d[3] > 0.0).then(|| ([d[0], d[1], d[2]], d[3]));
-        h.town.set_dynamic(&mut h.sim, s, at);
-    }
-    h.sim.set_listener([x, y, z], yaw, 0.0, 0.0);
+    place(h, x, y, z, yaw);
     let frame = h.sim.tick();
     frame.write_flat(&mut h.frame);
     // kernels new since the last tick (by their Arc), and those gone
@@ -354,12 +384,7 @@ pub extern "C" fn sim_tick(x: f32, y: f32, z: f32, yaw: f32) {
 #[no_mangle]
 pub extern "C" fn sim_tick_exact(x: f32, y: f32, z: f32, yaw: f32) -> u32 {
     let h = sim();
-    for s in 0..DYN {
-        let d = &h.dynamic[s * 4..s * 4 + 4];
-        let at = (d[3] > 0.0).then(|| ([d[0], d[1], d[2]], d[3]));
-        h.town.set_dynamic(&mut h.sim, s, at);
-    }
-    h.sim.set_listener([x, y, z], yaw, 0.0, 0.0);
+    place(h, x, y, z, yaw);
     match h.sim.tick_exact() {
         Some(f) => {
             f.write_flat(&mut h.frame);

@@ -2585,6 +2585,9 @@ async function startAudio() {
     }
     worker.postMessage({
       type: 'pose',
+      // when this pose and the moving sources were here (the worker's
+      // sim stamps them with it: Doppler by real time, not tick counts)
+      t: performance.timeOrigin + performance.now(),
       x: px,
       y: py,
       z: EYE + (state.pose.z || 0) + (state.airZ || 0) + f.dy - 0.7 * (state.crouch || 0),

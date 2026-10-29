@@ -101,9 +101,18 @@ function writeDynamic() {
   });
 }
 
+// the page's pose time and now, on one clock (s since this worker
+// started): the sim stamps the listener and the moving sources with when
+// they were where the page said (sim_set_times)
+const T0 = performance.timeOrigin + performance.now();
+function setTimes() {
+  if (pose.t != null) w.sim_set_times((pose.t - T0) / 1000, (performance.timeOrigin + performance.now() - T0) / 1000);
+}
+
 function exact() {
   if (!w) return;
   writeDynamic();
+  setTimes();
   if (!w.sim_tick_exact(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw || 0)) return;
   const frame = new Float32Array(w.memory.buffer, w.sim_frame_ptr(), w.sim_frame_len()).slice().buffer;
   postMessage({ type: 'exact', frame }, [frame]);
@@ -116,6 +125,7 @@ function tick() {
   doors.fill(-1);
   (pose.doors || []).forEach((v, i) => { if (i < 16) doors[i] = v; });
   writeDynamic();
+  setTimes();
   const t0 = performance.now();
   w.sim_tick(pose.x, pose.y, pose.z == null ? 1.6 : pose.z, pose.yaw || 0);
   const tickMs = performance.now() - t0;
