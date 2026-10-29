@@ -64,11 +64,13 @@ impl Quality {
     /// The tracer budget of this tier on the CPU (`gpu = false`) or GPU
     /// (8× the early rays; the late rays are the CPU's either way).
     pub fn budget(self, gpu: bool) -> Budget {
-        let (rays, bounces, late) = match self {
-            Quality::Low => (512, 3, 48),
-            Quality::Medium => (768, 4, 96),
-            Quality::High => (1024, 6, 128),
-            Quality::Ultra => (2048, 8, 256),
+        // next-event connections per bounce step down with the rays: each
+        // tier costs about what the one above saves
+        let (rays, bounces, late, nee) = match self {
+            Quality::Low => (512, 3, 48, 3),
+            Quality::Medium => (768, 4, 96, 3),
+            Quality::High => (1024, 6, 128, 4),
+            Quality::Ultra => (2048, 8, 256, 4),
             Quality::Custom(b) => return b,
         };
         let rays = if gpu { (rays * 8).min(65536) } else { rays };
@@ -77,7 +79,7 @@ impl Quality {
             bounces,
             k: 0.06,
             ema: 0.35,
-            nee: 4,
+            nee,
             late_rays: late,
             late_ema: 0.1,
             late_nee: 1,

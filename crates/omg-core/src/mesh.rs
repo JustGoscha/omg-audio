@@ -449,22 +449,24 @@ impl Mesh {
     /// Slab test returning the entry distance (0 if starting inside).
     #[inline(always)]
     fn ray_aabb(bmin: Vec3, bmax: Vec3, o: Vec3, inv_d: Vec3, tmax: f32) -> Option<f32> {
-        let mut t0 = 0.0f32;
-        let mut t1 = tmax;
-        for axis in 0..3 {
-            let inv = inv_d.get(axis);
-            let mut ta = (bmin.get(axis) - o.get(axis)) * inv;
-            let mut tb = (bmax.get(axis) - o.get(axis)) * inv;
-            if ta > tb {
-                core::mem::swap(&mut ta, &mut tb);
-            }
-            t0 = t0.max(ta);
-            t1 = t1.min(tb);
-            if t0 > t1 {
-                return None;
+        // slabs without branches: entry and exit per axis (a NaN, 0·∞ on a
+        // face the ray runs in, is no bound: f32::max/min skip it), the
+        // test once at the end — t0 only rises and t1 only falls
+        #[inline(always)]
+        fn slab(lo: f32, hi: f32, o: f32, inv: f32) -> (f32, f32) {
+            let (a, b) = ((lo - o) * inv, (hi - o) * inv);
+            if a > b {
+                (b, a)
+            } else {
+                (a, b)
             }
         }
-        Some(t0)
+        let (ax, bx) = slab(bmin.x, bmax.x, o.x, inv_d.x);
+        let (ay, by) = slab(bmin.y, bmax.y, o.y, inv_d.y);
+        let (az, bz) = slab(bmin.z, bmax.z, o.z, inv_d.z);
+        let t0 = 0.0f32.max(ax).max(ay).max(az);
+        let t1 = tmax.min(bx).min(by).min(bz);
+        (t0 <= t1).then_some(t0)
     }
 
     /// Möller–Trumbore, both faces. Returns t. (Brute-force reference for

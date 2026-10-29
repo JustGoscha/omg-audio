@@ -21,9 +21,13 @@
 //!   moving   a car clicks 4 times a second driving past at 100 km/h,
 //!            300 m away: each click's arrival against when it physically
 //!            arrives (emitted where the car was)
+//!   crowd    the club clicks every 3 s while the town's other sources
+//!            click around it (CROWD=0: alone): the club's own channel
+//!            per click (SPOT=square|north|entrance|inside|field)
 //!
 //!     MODE=v3|v4|v5  RUNG=0..4 (unset: governed)  QUALITY=0..3  EAR=0
-//!     PACE=0  WAV=dir (write the output)  SEED=n
+//!     PACE=0  WAV=dir (write the output)  SEED=n  NEE=n (next-event
+//!     connections a bounce; 0: every source)
 //!
 //!     cargo run --release -p omg-web --example assess -- door
 use omg_audio::governor::Governor;
@@ -118,6 +122,11 @@ struct Rig {
     /// A dynamic slot that follows the listener (0.3 m ahead, chest high).
     hands: Option<usize>,
     bands: Option<[Vec<[f32; 3]>; 2]>,
+    /// Engine sources whose own channel energy is read per block (the
+    /// mixer's per-source meter, before the ear): `watched`.
+    watch: Vec<SourceId>,
+    watched: Vec<f64>,
+    meters: Vec<(SourceId, omg_audio::Meter)>,
 }
 
 impl Rig {
@@ -128,6 +137,16 @@ impl Rig {
             Some("1") => Quality::Medium,
             Some("3") => Quality::Ultra,
             _ => Quality::High,
+        };
+        // NEE=n: next-event connections per bounce (0: every source)
+        let quality = match env("NEE").and_then(|n| n.parse::<usize>().ok()) {
+            Some(n) => {
+                let mut b = quality.budget(false);
+                b.nee = n;
+                b.late_nee = n;
+                Quality::Custom(b)
+            }
+            None => quality,
         };
         let pace = env("PACE").as_deref() != Some("0");
         let mut cfg = Config {
@@ -178,6 +197,9 @@ impl Rig {
             walk: None,
             hands: None,
             bands: None,
+            watch: Vec::new(),
+            watched: Vec::new(),
+            meters: Vec::new(),
         };
         rig.levels();
         rig
@@ -300,6 +322,11 @@ impl Rig {
                     let m: Vec<String> = ms.iter().filter(|(_, m)| m.rms > 0.0).map(|(id, m)| format!("{}:{:.0}", id.0, 20.0 * m.rms.log10())).collect();
                     eprintln!("t {t:.4} render: {n} sources, {live} live paths, {pts} hrtf; block energy {:.1} dB; meters {}", 10.0 * e.max(1e-30).log10(), m.join(" "));
                 }
+            }
+            if !self.watch.is_empty() {
+                self.mix.take_meters(&mut self.meters);
+                let e: f64 = self.meters.iter().filter(|(id, _)| self.watch.contains(id)).map(|(_, m)| (m.rms as f64).powi(2) * BLOCK as f64).sum();
+                self.watched.push(e);
             }
             self.l.extend_from_slice(&l);
             self.r.extend_from_slice(&r);
@@ -478,6 +505,79 @@ fn still() {
             .collect();
         println!("   {name:5} spread  low {}  mid {}  high {}", s[0], s[1], s[2]);
     }
+}
+
+/// The club clicks every 3 s while every other source in the town clicks
+/// around it (CROWD=0: the club alone): the club's own channel energy per
+/// click (the mixer's meter), so what the mix-wide budgets take from it
+/// shows against the club alone.
+fn crowd() {
+    let mut rig = Rig::new();
+    let crowd = env("CROWD").as_deref() != Some("0");
+    let others = [0usize, 1, 3, 4, 5, 6, 7, 14];
+    let mut keep = vec![CLUB];
+    if crowd {
+        keep.extend_from_slice(&others);
+    }
+    rig.only(&keep);
+    let spot = env("SPOT").unwrap_or_else(|| "square".into());
+    rig.pos = match spot.as_str() {
+        "field" => [20.0, 60.0, 1.6],
+        "entrance" => [21.0, 30.2, 1.6],
+        "north" => [27.0, 48.0, 1.6],
+        "inside" => [27.0, 36.0, 1.6],
+        _ => [15.0, 32.0, 1.6],
+    };
+    rig.watch = rig.ids[CLUB].clone();
+    let n: usize = env("N").and_then(|n| n.parse().ok()).unwrap_or(10);
+    let period = 3.0f32;
+    // the others click every 0.5 s, each at its own offset
+    let step = 0.05f32;
+    let per = (period / step).round() as usize;
+    let mut tick = 0usize;
+    let mut round = |rig: &mut Rig, clickit: bool| {
+        for k in 0..per {
+            if clickit && k == 0 {
+                rig.click(CLUB, 1.0);
+            }
+            if crowd {
+                for (j, &o) in others.iter().enumerate() {
+                    if (tick + 3 * j) % 10 == 0 {
+                        rig.click(o, 1.0);
+                    }
+                }
+            }
+            tick += 1;
+            rig.run(step);
+        }
+    };
+    round(&mut rig, false);
+    let starts: Vec<usize> = (0..n)
+        .map(|_| {
+            let b = rig.blocks;
+            round(&mut rig, true);
+            b
+        })
+        .collect();
+    println!("crowd ({}): the club at {spot}, {n} clicks every {period} s, {}; its own channel, dB", mode(), if crowd { "the town clicking around it" } else { "alone" });
+    let len = rig.watched.len();
+    let mut d = Vec::new();
+    for (k, &b) in starts.iter().enumerate() {
+        let e = |a: f32, z: f32| -> f64 {
+            let (i, j) = (b + (a * SR / BLOCK as f32) as usize, (b + (z * SR / BLOCK as f32) as usize).min(len));
+            rig.watched[i..j].iter().sum()
+        };
+        let (early, late) = (e(0.0, 0.25), e(0.25, period - 0.05));
+        println!("   click {k:2}  first 0.25 s {:6.1}  after {:6.1}", db(early), db(late));
+        d.push((db(early), db(late)));
+    }
+    let stats = |v: Vec<f32>| -> (f32, f32) {
+        let m = v.iter().sum::<f32>() / v.len() as f32;
+        (m, (v.iter().map(|x| (x - m) * (x - m)).sum::<f32>() / v.len() as f32).sqrt())
+    };
+    let (me, se) = stats(d.iter().map(|x| x.0).collect());
+    let (ml, sl) = stats(d.iter().map(|x| x.1).collect());
+    println!("   mean  first {me:6.1} (sd {se:4.2})  after {ml:6.1} (sd {sl:4.2})");
 }
 
 /// A clap (click) in the hall, then the listener walks out of the hall's
@@ -675,6 +775,7 @@ fn main() {
         "moving" => moving(),
         "teleport" => teleport(),
         "ringout" => ringout(),
+        "crowd" => crowd(),
         s => panic!("unknown scene {s}"),
     }
 }

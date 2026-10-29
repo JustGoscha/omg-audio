@@ -44,6 +44,7 @@ const clapKind = eng.eng_fx();
 
 const t0 = performance.now();
 sim.sim_setup(FS);
+if (process.env.SMOKE_TIER) sim.sim_set_quality(Number(process.env.SMOKE_TIER));
 console.log(`sim setup ${(performance.now() - t0).toFixed(0)} ms`);
 
 const f32 = (mem, ptr, len) => new Float32Array(mem.buffer, ptr, len).slice();

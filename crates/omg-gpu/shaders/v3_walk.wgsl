@@ -6,7 +6,8 @@
 // (paths with 0..=bounces reflections). Per segment: the nearest exposed
 // edge within 3 m bends the ray (uncertainty-relation spread, per-band
 // unbiased weights, Keller's cone); per hit: next-event estimation to
-// the sources (importance-sampled when there are more than `nee`),
+// the sources (more than `nee` facing it: each at most once, by
+// importance — v3.rs `pick_systematic`),
 // segment transmission priced through the real mesh (paired faces →
 // thickness), panel boxes and the earth; specular (or bent) chains count
 // hits on distance-scaled source spheres; transmission branch with
@@ -1166,43 +1167,65 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
         let keep = max(vec3<f32>(1.0) - hit.absorption - t2, vec3<f32>(0.0));
 
         // 2. next-event estimation: the diffuse share of this surface,
-        // lit by the sources it can reach (all, or `nee` importance draws)
+        // lit by the sources it faces — all, or (more than `nee`) each at
+        // most once with π = min(1, c/τ), Σπ = nee, weighted 1/π (v3.rs
+        // `pick_systematic`)
         if (hit.scattering > 0.0 && refl + 1u >= lo && refl + 1u <= hi) {
             let off = p + normal * EPS;
-            let all_src = nee == 0u || n_src <= nee;
-            var sum = 0.0;
-            if (!all_src) {
-                for (var si = 0u; si < n_src; si++) {
-                    let dv = src_pos(si) - off;
-                    sum += max(src_weight(si), 1e-12) / (dot(dv, dv) + 1.0);
-                    cum[si] = sum;
-                }
-            }
-            let picks = select(nee, n_src, all_src);
-            for (var m = 0u; m < picks; m++) {
-                var si = m;
-                var pw = 1.0;
-                if (!all_src) {
-                    // partition_point(|c| c < u): the first cum ≥ u
-                    let u = rand_f32() * sum;
-                    var lo_i = 0u;
-                    var hi_i = n_src;
-                    while (lo_i < hi_i) {
-                        let mid = (lo_i + hi_i) / 2u;
-                        if (cum[mid] < u) { lo_i = mid + 1u; } else { hi_i = mid; }
+            // what each would bring here with nothing in the way
+            var total = 0.0;
+            var faced = 0u;
+            for (var si = 0u; si < n_src; si++) {
+                let to = src_pos(si) - off;
+                let r = length(to);
+                var c = 0.0;
+                if (r >= 1e-4) {
+                    let cos_in = dot(to, normal) / r;
+                    if (cos_in > 0.0) {
+                        let rr = max(r, MIN_DIST);
+                        c = max(src_weight(si), 1e-12) * cos_in / (rr * rr);
+                        faced += 1u;
                     }
-                    si = min(lo_i, n_src - 1u);
-                    var prev = 0.0;
-                    if (si > 0u) { prev = cum[si - 1u]; }
-                    let pi = (cum[si] - prev) / sum;
-                    pw = 1.0 / (f32(nee) * max(pi, 1e-12));
+                }
+                cum[si] = c;
+                total += c;
+            }
+            let sample = nee != 0u && faced > nee;
+            var tau = 0.0;
+            var at = 0.0;
+            if (sample) {
+                // the sure ones (c ≥ τ) take one connection each, the rest
+                // share the others; τ only falls
+                tau = total / f32(nee);
+                for (var it = 0u; it < nee; it++) {
+                    var sure = 0.0;
+                    var k = 0u;
+                    for (var si = 0u; si < n_src; si++) {
+                        if (cum[si] > 0.0 && cum[si] >= tau) { sure += cum[si]; k += 1u; }
+                    }
+                    if (k >= nee) { break; }
+                    let next = (total - sure) / f32(nee - k);
+                    if (!(next < tau)) { break; }
+                    tau = next;
+                }
+                at = rand_f32();
+            }
+            var run = 0.0;
+            for (var si = 0u; si < n_src; si++) {
+                let c = cum[si];
+                if (c <= 0.0) { continue; }
+                var pw = 1.0;
+                if (sample) {
+                    let pi = min(c / tau, 1.0);
+                    run += pi;
+                    if (at >= run) { continue; }
+                    at += 1.0;
+                    pw = 1.0 / pi;
                 }
                 let sp = src_pos(si);
                 let to = sp - off;
                 let r = length(to);
-                if (r < 1e-4) { continue; }
                 let cos_in = dot(to, normal) / r;
-                if (cos_in <= 0.0) { continue; }
                 let t = seg_transmission(off, sp);
                 let rr = max(r, MIN_DIST);
                 let a = air(length_m + r);

@@ -1,0 +1,5 @@
+web (low) v5                 23.8 ms/tick
+web (medium) v4              35.3 ms/tick
+web (medium) v5              35.3 ms/tick
+native (high, CPU) v4        55.7 ms/tick
+native (high, CPU) v5        56.1 ms/tick

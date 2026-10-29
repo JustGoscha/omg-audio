@@ -27,6 +27,7 @@ fn run(name: &str, cfg: Config) {
 fn main() {
     let web = Config { quality: Quality::Medium, compute: Compute::Cpu, kernel_thread: false, max_kernels: 8, max_kernel_s: 2.5, kernel_step_samples: 65536, ..Config::default() };
     let native = Config { quality: Quality::High, compute: Compute::Cpu, ..Config::default() };
+    run("web (low) v5", Config { quality: Quality::Low, v5: true, ..web });
     run("web (medium) v4", web);
     run("web (medium) v5", Config { v5: true, ..web });
     run("native (high, CPU) v4", native);

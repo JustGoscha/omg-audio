@@ -70,6 +70,22 @@ changed — so the dense estimate needs no statistical guesses about them:
   exact weights — so a closed room's field is estimated from every ray
   that meets its walls (+1 ms a town tick).
 - A mirror chain that solves stays cached while it does.
+- Every bounce connects to the sources its surface faces. With more
+  than `nee` of them, each is connected at most once, with probability
+  ∝ what it would bring there with nothing in the way — capped at 1, so
+  the near loud ones are connected for sure — and weighted 1/π
+  (`pick_systematic`, CPU and GPU alike). Draws with replacement
+  weighted a rare far source by the sum of all: the club seen through
+  its door from beside the fountain came in hundreds of times over, one
+  sample lifting its level 5 dB for seconds; sources behind the surface
+  wasted a quarter of the draws. Now no connection weighs more than the
+  share of the sources not connected for sure. Against a many-ray
+  reference, every audible source in the town after 2 s: early-response
+  errors over 6 dB in 3 % of cases (was 10.5 %), the tail's 1–1.6 dB
+  closer. High keeps 4 connections a bounce (they reach farther
+  sources: +13 ms; a branch-free box test in the BVH gives 6 ms back —
+  56 ms a town tick native); Low and Medium take 3, as many as the old
+  draws traced, at the old cost.
 
 ## Diffraction around buildings
 

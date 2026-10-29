@@ -1,0 +1,6 @@
+early low   mean  2.79 dB  median  1.56 dB  >3 dB 29.9 %  >6 dB 11.7 %  (264 cases)
+early mid   mean  1.53 dB  median  0.73 dB  >3 dB 11.2 %  >6 dB  3.3 %  (152 cases)
+early high  mean  4.35 dB  median  1.61 dB  >3 dB 31.9 %  >6 dB 21.5 %  (144 cases)
+late low    mean  4.30 dB  median  1.91 dB  >3 dB 41.2 %  >6 dB 23.1 %  (160 cases)
+late mid    mean  4.69 dB  median  2.30 dB  >3 dB 43.8 %  >6 dB 24.2 %  (128 cases)
+late high   mean  5.26 dB  median  2.57 dB  >3 dB 47.3 %  >6 dB 32.1 %  (112 cases)

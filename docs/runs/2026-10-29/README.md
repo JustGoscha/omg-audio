@@ -149,7 +149,75 @@ ghosts inherit their place's response; a pathless reverb is heard.
   takes seconds to land, still clicks spread 3–7 dB.
 - The ear (when on) ducks a club-loud place and lifts it back over ~4 s
   after the door shuts — by design for places above 80 dB SPL.
-- Rare strong next-event samples (bounces right by a source) slow the
-  running mean's convergence after a restart (~1–2 dB for ~1 s).
+- A loud room heard through its walls: its tail converges slowly (see
+  the next-event section below; OPEN.md).
 - Town tick ~48 ms native High with every source traced (+5 ms tonight:
-  two-edge paths and splits).
+  two-edge paths and splits; 56 ms after the next-event draws below).
+
+## Later the same night: next-event draws
+
+Every bounce connects to sources (next-event estimation). With more
+sources than a tier's `nee`, each bounce used to draw `nee` of them
+with replacement, ∝ loudness / distance², and weight each draw by
+1/(nee·p). Two faults, measured with the club clicking while the town's
+other sources click around it (`assess crowd`, its own channel, `RUNG=4`
+so the mixer's budgets take nothing):
+
+- A rare draw weighed the sum of all the sources: beside the fountain,
+  the club seen through its door came in hundreds of times over. At
+  the street north, the third click came back +5 dB and stayed raised
+  for 20 s while the running mean diluted it.
+- Sources behind the surface were drawn and then skipped: a quarter of
+  the connections were wasted.
+
+Now each source the surface faces is connected at most once, with
+probability π ∝ what it would bring there with nothing in the way
+(capped at 1: the near loud ones for sure), weighted 1/π (`v3.rs`
+`pick_systematic`, the GPU walk alike). Unbiased; no connection weighs
+more than the share of the sources not connected for sure. Raw outputs
+in `nee/`.
+
+Crowd, ten identical clicks (mid band, dB):
+
+| | before: first 0.25 s | before: after | **after: first 0.25 s** | **after: after** |
+|---|---|---|---|---|
+| street north | −34.9, sd 1.78 (a +5 dB jump) | −43.4, sd 0.56 | −36.9, sd 0.56 | −40.9, sd 1.33 |
+| square | −39.9, sd 1.15 | −42.7, sd 1.52 | −37.7, sd 0.51 | −41.1, sd 1.90 |
+
+Every source in the town at five places, 2 s after a standing start
+(40 ticks, 8 seeds), against a reference of 8× the rays, 16× the late
+rays, every source connected, 100 ticks (`examples/nee_ab.rs`); the
+sources within 20 dB of the loudest at each place (`audible_*.txt`;
+all within 60 dB: `all_*.txt`):
+
+| error vs reference | before: mean / >6 dB | **after (High, nee 4)**: mean / >6 dB | after at nee 3 (Low, Medium) |
+|---|---|---|---|
+| early low | 3.27 dB / 15.9 % | 2.79 dB / 11.7 % | 3.17 dB / 12.9 % |
+| early mid | 2.50 dB / 10.5 % | 1.53 dB / 3.3 % | 2.51 dB / 13.2 % |
+| early high | 4.57 dB / 23.6 % | 4.35 dB / 21.5 % | 5.20 dB / 25.0 % |
+| late low | 5.30 dB / 26.9 % | 4.30 dB / 23.1 % | 4.13 dB / 21.2 % |
+| late mid | 6.28 dB / 41.4 % | 4.69 dB / 24.2 % | 4.92 dB / 31.2 % |
+| late high | 6.60 dB / 41.1 % | 5.26 dB / 32.1 % | 5.71 dB / 33.0 % |
+
+Nee 3 traces as many connections as the old nee 4 did (2.32 a bounce
+against 2.31): the tiers below High keep their cost, High spends more
+on correctness. The connections now reach farther sources (more wall
+crossings to trace); a branch-free slab test in the BVH (exactly the
+old one, NaN cases included) gives 6 ms of it back. Tick
+(`examples/tick_ms.rs`, the town, every source traced):
+
+| | before | after |
+|---|---|---|
+| native Low | 24.1 ms | 23.8 ms |
+| native Medium | 35.9 ms | 35.3 ms |
+| native High | 49.4 ms | 56.1 ms |
+| web worker (wasm), Low | 32.4 ms | 33.4 ms |
+| web worker (wasm), Medium | 47.7 ms | 51.6 ms |
+
+(The web page's governor sheds a tier above 40 ms: the web runs Low.)
+
+Not fixed: the tail of a loud room heard through its walls still
+converges slowly (above, "after" sd 1.3–1.9 dB; the club's tail at the
+square lands within ±2 dB of the reference only after ~20 s; the same
+click's tail differs by up to 8 dB between seeds) — see OPEN.md, "A
+loud room's field through its walls".

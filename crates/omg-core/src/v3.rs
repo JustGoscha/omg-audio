@@ -436,10 +436,12 @@ pub struct Budget {
     pub k: f32,
     /// EMA weight of a fresh tick (1 = no smoothing).
     pub ema: f32,
-    /// Next-event connections per bounce. With more sources than this,
-    /// each bounce samples this many by importance (loudness reaching
-    /// the hit point) and reweights — cost per bounce stays flat as the
-    /// source count grows. 0 = connect to every source.
+    /// Next-event connections per bounce. With more sources facing the
+    /// surface than this, each bounce connects this many — each source at
+    /// most once, by what it would bring there with nothing in the way,
+    /// the nearest loud ones for sure (`pick_systematic`) — and reweights:
+    /// cost per bounce stays flat as the source count grows. 0 = connect
+    /// to every source.
     pub nee: usize,
     /// LATE family: rays that keep bouncing until the path is MAX_TIME
     /// long or has lost 60 dB, counting only paths with MORE than
@@ -1841,8 +1843,7 @@ impl Tracer {
         // 2. rays: stratified (Fibonacci) and randomly rotated per tick
         let rot = random_rotation(&mut self.rng);
         let primary = if early { fibonacci_sphere(n as usize) } else { Vec::new() };
-        let mut picks: Vec<(usize, f32)> = Vec::new();
-        let mut imp: Vec<f32> = Vec::new();
+        let mut picks: Vec<Pick> = Vec::new();
         // Three estimators, disjoint per path, so every path is counted
         // exactly once: EARLY rays count paths with 1..=bounces
         // reflections, LATE rays (fewer, long) everything beyond — except
@@ -2065,41 +2066,36 @@ impl Tracer {
                 // surface, lit by every source it can reach
                 if mat.scattering > 0.0 && counts(refl + 1) {
                     let off = p + normal * EPS;
-                    // which sources, and with what weight: all of them, or
-                    // `nee` draws ∝ weight / distance² (unbiased: 1/(m·p))
+                    // the sources this surface faces, each with what it
+                    // would bring here with nothing in the way — where it
+                    // emitted what this connection brings now
                     picks.clear();
-                    if nee == 0 || sources.len() <= nee {
-                        picks.extend((0..sources.len()).map(|i| (i, 1.0f32)));
-                    } else {
-                        imp.clear();
-                        let mut sum = 0.0f32;
-                        for s in sources {
-                            let d2 = (s.pos - off).dot(s.pos - off) + 1.0;
-                            let w = s.weight.max(1e-12) / d2;
-                            sum += w;
-                            imp.push(sum);
+                    for (si, s) in sources.iter().enumerate() {
+                        let Some(sp) = self.motion.emit(si, s.pos, off, length) else { continue };
+                        let to = sp - off;
+                        let along = to.dot(normal);
+                        if along <= 0.0 {
+                            continue; // source behind this surface
                         }
-                        let m = nee;
-                        for _ in 0..m {
-                            let u = self.rng.next_f32() * sum;
-                            let i = imp.partition_point(|&c| c < u).min(sources.len() - 1);
-                            let pi = (imp[i] - if i > 0 { imp[i - 1] } else { 0.0 }) / sum;
-                            picks.push((i, 1.0 / (m as f32 * pi.max(1e-12))));
+                        let r2 = to.dot(to);
+                        if r2 < 1e-8 {
+                            continue;
                         }
+                        // w · cos / max(r, MIN_DIST)²
+                        let c = s.weight.max(1e-12) * along / (r2.sqrt() * r2.max(MIN_DIST * MIN_DIST));
+                        picks.push(Pick { si: si as u32, c, pw: 1.0 });
                     }
-                    for &(si, pw) in picks.iter() {
+                    // more than `nee`: each at most once, by importance
+                    if nee > 0 && picks.len() > nee {
+                        pick_systematic(&mut picks, nee, self.rng.next_f32());
+                    }
+                    for &Pick { si, pw, .. } in picks.iter() {
+                        let si = si as usize;
                         let s = &sources[si];
-                        // where it emitted what this connection brings now
                         let Some(sp) = self.motion.emit(si, s.pos, off, length) else { continue };
                         let to = sp - off;
                         let r = to.length();
-                        if r < 1e-4 {
-                            continue;
-                        }
                         let cos_in = to.dot(normal) / r;
-                        if cos_in <= 0.0 {
-                            continue; // source behind this surface
-                        }
                         let t = world.transmission(off, sp, &mut self.hits);
                         let rr = r.max(MIN_DIST);
                         let air = air_attenuation(length + r);
@@ -3647,6 +3643,65 @@ fn rotate_about(d: Vec3, u: Vec3, eps: f32) -> Vec3 {
     (d * c + u.cross(d) * s + u * (u.dot(d) * (1.0 - c))).normalize()
 }
 
+/// A next-event candidate: a source a surface point faces, what it would
+/// bring there with nothing in the way (`c`, up to the factors all
+/// share), and the weight its connection carries (`pw`, 1/π when
+/// sampled).
+#[derive(Clone, Copy)]
+struct Pick {
+    si: u32,
+    c: f32,
+    pw: f32,
+}
+
+/// Keep `m` of `picks` on average, each at most once with probability
+/// π = min(1, c/τ) — τ such that Σπ = m: the sources that would bring
+/// the most here are connected for sure, the rest share what is left in
+/// proportion to what they would bring — and weight each kept one 1/π
+/// (unbiased). Systematic: one uniform `u`, thresholds u, u+1, … over
+/// the running sum of π (⌊Σπ⌋ or ⌈Σπ⌉ kept).
+///
+/// Draws with replacement ∝ c (what this was) weight a rare pick by the
+/// sum of every source's c: on a surface by a near source, a far one
+/// seen through an open door came in hundreds of times over — one such
+/// sample moved a club's level by 5 dB for seconds. Here no pick weighs
+/// more than τ, the share of the sources not connected for sure.
+fn pick_systematic(picks: &mut Vec<Pick>, m: usize, u: f32) {
+    let total: f32 = picks.iter().map(|p| p.c).sum();
+    let mut tau = total / m as f32;
+    // the sure ones (c ≥ τ) take one connection each, the rest share the
+    // others; τ only falls, settling within m rounds
+    for _ in 0..m {
+        let (mut sure, mut k) = (0.0f32, 0usize);
+        for p in picks.iter() {
+            if p.c >= tau {
+                sure += p.c;
+                k += 1;
+            }
+        }
+        if k >= m {
+            break;
+        }
+        let next = (total - sure) / (m - k) as f32;
+        if !(next < tau) {
+            break;
+        }
+        tau = next;
+    }
+    let (mut run, mut at) = (0.0f32, u);
+    picks.retain_mut(|p| {
+        let pi = (p.c / tau).min(1.0);
+        run += pi;
+        if at < run {
+            at += 1.0;
+            p.pw = 1.0 / pi;
+            true
+        } else {
+            false
+        }
+    });
+}
+
 /// `n` nearly uniform unit vectors (golden-angle spiral).
 pub fn fibonacci_sphere(n: usize) -> Vec<Vec3> {
     let golden = core::f32::consts::PI * (3.0 - 5f32.sqrt());
@@ -3679,4 +3734,48 @@ fn rot_apply(m: &[[f32; 3]; 3], v: Vec3) -> Vec3 {
         m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z,
         m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The next-event draw: each source kept with probability π, the near
+    /// loud one always, `m` kept every time, the estimate unbiased for any
+    /// transmission, and no kept source weighed above τ (the share of the
+    /// ones not connected for sure).
+    #[test]
+    fn systematic_picks_are_unbiased_and_bounded() {
+        let c = [100.0f32, 5.0, 3.0, 1.0, 0.5, 0.2];
+        // what each connection would find (its transmission, any value)
+        let t = [0.3f32, 1.0, 0.01, 0.7, 1.0, 0.05];
+        let m = 2;
+        let tau = (c.iter().sum::<f32>() - c[0]) / (m - 1) as f32;
+        let n = 20_000;
+        let (mut kept, mut est) = ([0usize; 6], 0.0f64);
+        for k in 0..n {
+            let mut picks: Vec<Pick> = c
+                .iter()
+                .enumerate()
+                .map(|(si, &c)| Pick { si: si as u32, c, pw: 1.0 })
+                .collect();
+            pick_systematic(&mut picks, m, (k as f32 + 0.5) / n as f32);
+            assert_eq!(picks.len(), m, "Σπ = m: m kept every time");
+            for p in &picks {
+                let i = p.si as usize;
+                kept[i] += 1;
+                assert!(p.pw * p.c <= c[i].max(tau) * 1.0001, "weight bounded by τ");
+                est += (p.pw * p.c * t[i]) as f64;
+            }
+        }
+        assert_eq!(kept[0], n, "the near loud source is connected for sure");
+        for i in 1..6 {
+            let pi = (c[i] / tau).min(1.0) as f64;
+            let f = kept[i] as f64 / n as f64;
+            assert!((f - pi).abs() < 1e-3, "source {i}: kept {f:.4}, π {pi:.4}");
+        }
+        let truth: f64 = c.iter().zip(&t).map(|(&c, &t)| (c * t) as f64).sum();
+        let mean = est / n as f64;
+        assert!((mean / truth - 1.0).abs() < 1e-3, "unbiased: {mean} against {truth}");
+    }
 }

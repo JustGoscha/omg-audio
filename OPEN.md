@@ -25,13 +25,24 @@ land (+20…+37 dB 50 ms after the shut, +2…+26 dB at 1.6 s), identical
 clicks standing still spread 3–7 dB sd. v5.5 is the default; v3 stays as
 the legacy comparison.
 
-### Rare strong next-event samples
-A bounce right by a source (a speaker on a club wall) connects with a
-1/r² weight hundreds of times the typical: the running mean converges
-over ~1 s after a restart (a door, a step into another space) with
-±1–2 dB on the way. Fix: combine next-event and the walk's own hits by
-multiple importance sampling, or connect the source's own first bounce
-exactly.
+### A loud room's field through its walls converges slowly
+The club heard from the square: its tail (past 0.25 s) lands within
+±2 dB of a many-ray reference only after ~20 s standing still, single
+ticks bring samples ~1000× the typical (the bass +10 dB, diluting over
+15 s), and the late level of the same click differs by up to 8 dB
+between seeds after 30 s (`docs/runs/2026-10-29/nee/`,
+`examples/dense_track.rs`, `assess crowd`). A listener's ray reaches the
+club's inside rarely: its one split goes to the first partition it meets
+(usually another building), so it enters through the 2 % transmission
+draw carrying 50× — into a room ~60 dB louder than outside. Raising the
+draw's floor makes it worse (the reflected rays' 1/(1−p) compounds over
+a late ray's ~100 partition bounces). Also near-source bounces (1/r² up
+to `MIN_DIST`) are rare and strong. Fix: paths from the sources too —
+a first bounce from each source stored on its room's surfaces and
+connected through walls from the listener's vertices, weighted against
+the walk's own paths by multiple importance sampling (bidirectional) —
+or split at partitions by a learnt value of what lies beyond (path
+guiding). Large.
 
 ### Moving sources on the GPU walk
 The GPU walk connects to where a source emitted its direct sound; its
@@ -45,11 +56,14 @@ convolution. Fold dropped paths' energy into the dense response, or give
 the simulation the budget so it does.
 
 ### Tick cost
-The town with every source traced: ~48 ms per tick native High on the
-CPU (50 ms budget at 20 Hz), the web's worker ~48 ms (+5 ms tonight:
-two-edge paths, splits). The tier governors shed quality; a lighter
-two-edge search (cache the string per listener cell) and fewer chain
-solves at exact frames would buy it back.
+The town with every source traced: ~56 ms per tick native High on the
+CPU (50 ms budget at 20 Hz; 49 ms before the next-event draws reached
+farther sources, a faster BVH box test gave 6 ms back), the web
+worker's wasm 52 ms at Medium, 33 ms at Low (its governor sheds a tier
+over 40 ms). The tier governors shed quality; a lighter two-edge search
+(cache the string per listener cell), fewer chain solves at exact
+frames, and a cheaper transmission query (half the tick: every hit
+along a segment, sorted) would buy it back.
 
 ### Linear interpolation on moving paths
 A path's delay read with linear interpolation: a full-band click's
