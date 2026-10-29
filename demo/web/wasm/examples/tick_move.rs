@@ -6,6 +6,7 @@
 //! no time for the exact frames between ticks: paths then move in steps.
 //!
 //!   MODE=v3|v5|v6  SPEED=8  QUALITY=0..3 | LEVEL=0..10  SECS=10  THREADS=n
+//!   GEOMETRY=<file> (a dumped level, e.g. the Godot demo's)
 //!   cargo run --release -p omg-web --example tick_move
 use omg_audio::{Compute, Config, Quality, Simulation};
 use omg_web::town::Town;
@@ -54,6 +55,11 @@ fn main() {
     eprintln!("walk threads: {}", cfg.walk_threads);
     let mut sim = Simulation::new(cfg);
     let _town = Town::new(&mut sim);
+    // GEOMETRY=<file>: a host's level instead of the town's (the Godot
+    // demo's: OMG_DUMP_GEOMETRY), the town's sources where they are
+    if let Ok(path) = std::env::var("GEOMETRY") {
+        sim.set_geometry(omg_audio::Geometry::load(&path).expect("GEOMETRY: a dumped geometry"));
+    }
     let speed: f32 = env("SPEED").and_then(|v| v.parse().ok()).unwrap_or(8.0);
     let secs: f32 = env("SECS").and_then(|v| v.parse().ok()).unwrap_or(10.0);
     let (x0, x1, y) = (2.0f32, 14.0f32, 60.0f32);

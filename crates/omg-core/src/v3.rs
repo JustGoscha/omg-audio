@@ -124,7 +124,8 @@ const TRAIN_REGROW_TICKS: u64 = 40;
 /// A still chain (neither end moved) is re-solved this often all the same.
 const CHAIN_RESOLVE_TICKS: u64 = 10;
 /// A rejected chain (no exact path, or too weak to keep) is not tried
-/// again for this many ticks.
+/// again for this many ticks — one with no exact path only while neither
+/// end moves (`Tracer::held`).
 const CHAIN_REJECT_TICKS: u64 = 40;
 /// Chain-finder rays per tick: a sixteenth of the early budget (chains
 /// stay cached; the finders only have to come across each one once).
@@ -1545,9 +1546,14 @@ pub struct Tracer {
     /// Mirror chains past `bounces`, per (source id, plane-sequence
     /// hash): found by coherent rays, solved exactly every tick.
     chains: HashMap<(u32, u64), MirrorChain>,
+    /// The mesh's flat faces as mirrors (`mirror_faces`), built once per
+    /// mesh (keyed by it): first-order chains are named from them.
+    faces: Option<(usize, Vec<MirrorFace>)>,
     /// Chains that failed to validate (or lost to stronger ones), by the
-    /// tick they did: not named or grown again for `CHAIN_REJECT_TICKS`.
-    rejected: HashMap<(u32, u64), u64>,
+    /// tick they did — and, for one with no exact path, where the listener
+    /// and its source were then: not named or grown again for
+    /// `CHAIN_REJECT_TICKS` (see `held`).
+    rejected: HashMap<(u32, u64), Rejection>,
     /// Engine v4: keep the whole traced response (see `RESPONSE_MAX_S`):
     /// every SourceField carries `dense`, coherent arrivals are taps.
     pub v4: bool,
@@ -1652,6 +1658,61 @@ fn planes_hash(planes: &[(Vec3, f32)]) -> u64 {
         }
     }
     h
+}
+
+/// When a chain was rejected, and — one with no exact path — where the
+/// listener and its source were then (`Tracer::held`).
+type Rejection = (u64, Option<(Vec3, Vec3)>);
+
+/// A flat face of the world — its coplanar triangles together, or a
+/// panel's side — as a mirror: its plane as chains key it, and the box
+/// around it.
+#[derive(Clone, Copy)]
+struct MirrorFace {
+    plane: (Vec3, f32),
+    lo: Vec3,
+    hi: Vec3,
+}
+
+/// The mesh's flat faces (`MirrorFace`): its triangles grouped by plane.
+fn mirror_faces(mesh: &Mesh) -> Vec<MirrorFace> {
+    let mut by_plane: HashMap<u64, usize> = HashMap::default();
+    let mut faces: Vec<MirrorFace> = Vec::new();
+    for t in &mesh.indices {
+        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+        let n = (b - a).cross(c - a);
+        if n.length() < 1e-9 {
+            continue;
+        }
+        let plane = plane_of(n.normalize(), a);
+        let i = *by_plane.entry(planes_hash(&[plane])).or_insert_with(|| {
+            faces.push(MirrorFace { plane, lo: a, hi: a });
+            faces.len() - 1
+        });
+        let f = &mut faces[i];
+        for p in [a, b, c] {
+            f.lo = f.lo.min(p);
+            f.hi = f.hi.max(p);
+        }
+    }
+    faces
+}
+
+/// A panel's six sides as mirrors.
+fn panel_faces((lo, hi): (Vec3, Vec3)) -> [MirrorFace; 6] {
+    let axis = |k: usize| [Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 1.0)][k];
+    let get = |v: Vec3, k: usize| [v.x, v.y, v.z][k];
+    let side = |k: usize, at: Vec3| {
+        let c = get(at, k);
+        let (mut a, mut b) = (lo, hi);
+        match k {
+            0 => (a.x, b.x) = (c, c),
+            1 => (a.y, b.y) = (c, c),
+            _ => (a.z, b.z) = (c, c),
+        }
+        MirrorFace { plane: plane_of(axis(k), at), lo: a, hi: b }
+    };
+    [side(0, lo), side(0, hi), side(1, lo), side(1, hi), side(2, lo), side(2, hi)]
 }
 
 fn planes_eq(a: (Vec3, f32), b: (Vec3, f32)) -> bool {
@@ -1801,6 +1862,7 @@ impl Tracer {
             src_vis: HashMap::default(),
             chains: HashMap::default(),
             rejected: HashMap::default(),
+            faces: None,
             v4: false,
             v5: false,
             v6: false,
@@ -1840,10 +1902,20 @@ impl Tracer {
         };
         let tr = tr.clone();
         let now = self.motion.now;
+        // where it emitted what arrives along the chain now: the light
+        // cone to the listener from the chain's image of the source
+        // (fixed-point steps contract by v/c). Its length needs no valid
+        // path; only the place found is solved, legs and all. (Each step
+        // solved, starting from where the source is now, a facade's echo
+        // of a passing car went 8 m before the facade's end: the car's
+        // place now mirrored past it while the one it emitted from didn't.)
+        let image_len = |x: Vec3| {
+            let im = planes.iter().rev().fold(x, |im, &pl| mirror_point(im, pl));
+            (im - listener).length()
+        };
         let mut x = tr.at(now);
-        for _ in 0..2 {
-            let (_, delay, _) = solve_chain(world, planes, listener, x, &mut self.hits)?;
-            x = tr.at(now - delay as f64);
+        for _ in 0..4 {
+            x = tr.at(now - (image_len(x) / SPEED_OF_SOUND) as f64);
         }
         let r = solve_chain(world, planes, listener, x, &mut self.hits)?;
         let t = now - r.1 as f64;
@@ -2264,10 +2336,25 @@ impl Tracer {
         self.late_pool.truncate(LATE_POOL_TICKS);
     }
 
-    /// Cache (or refresh) the chain `planes` for source `id`.
-    fn name_chain(&mut self, id: u32, planes: &[(Vec3, f32)], cached: &mut HashMap<u32, usize>) {
+    /// Is the chain `key` held out, rejected lately? One with no exact
+    /// path only while the listener and its source (at `src`, `moving`
+    /// or not) stay where they were: an end that moved may have given it
+    /// one (a facade's echo of a passing car exists while the mirror
+    /// point is on the facade — ~1.8 s for a car 30 m off at 100 km/h, all
+    /// of it inside a hold begun as the car came up: the echo was never
+    /// heard). One that lost to stronger chains: for the whole hold.
+    fn held(&self, key: (u32, u64), listener: Vec3, src: Vec3, moving: bool) -> bool {
+        match self.rejected.get(&key) {
+            Some(&(t, at)) if self.tick < t + CHAIN_REJECT_TICKS => at.is_none_or(|(l, s)| !moving && l == listener && s == src),
+            _ => false,
+        }
+    }
+
+    /// Cache (or refresh) the chain `planes` for source `id` (at `src`,
+    /// `moving` or not; the listener at `listener`).
+    fn name_chain(&mut self, id: u32, planes: &[(Vec3, f32)], cached: &mut HashMap<u32, usize>, (listener, src, moving): (Vec3, Vec3, bool)) {
         let key = (id, planes_hash(planes));
-        if self.rejected.get(&key).is_some_and(|&t| self.tick < t + CHAIN_REJECT_TICKS) {
+        if self.held(key, listener, src, moving) {
             return;
         }
         if let Some(c) = self.chains.get_mut(&key) {
@@ -2292,6 +2379,7 @@ impl Tracer {
         // past the echo window of the farthest source, nothing is named
         let window = if self.v4 { RESPONSE_MAX_S } else { ECHO_S };
         let reach = (window + t_free.iter().copied().fold(0.0, f32::max)) * SPEED_OF_SOUND;
+        self.name_mirrors(world, listener, sources, budget, reach, &t_free, &mut cached);
         let mut planes: Vec<(Vec3, f32)> = Vec::new();
         for _ in 0..n {
             let mut dir = self.rng.unit_sphere();
@@ -2313,7 +2401,8 @@ impl Tracer {
                         let rel = l_s / SPEED_OF_SOUND - t_free[si];
                         let owns = self.v4 || refl > budget.bounces || rel >= EARLY_S;
                         if owns && (origin + dir * along - s.pos).length() <= CHAIN_FIND_K * l_s {
-                            self.name_chain(s.id, &planes, &mut cached);
+                            let moving = self.motion.moving(si);
+                            self.name_chain(s.id, &planes, &mut cached, (listener, s.pos, moving));
                         }
                     }
                 }
@@ -2337,6 +2426,65 @@ impl Tracer {
         }
     }
 
+    /// First-order chains are not left to the finders: every flat face
+    /// that mirrors a source to the listener — the mirror point of where
+    /// the source emitted what arrives that way inside the face's box —
+    /// is named every tick (the solve validates it, legs and all). A
+    /// facade 100 m off fills ~0.1 % of the finders' sphere, and its echo
+    /// of a passing car lives a second or two: the finders came across it
+    /// in some runs and not in others, and an echo unnamed is not heard at
+    /// all (the walk leaves the solver's paths to it).
+    #[allow(clippy::too_many_arguments)]
+    fn name_mirrors(
+        &mut self,
+        world: &World,
+        listener: Vec3,
+        sources: &[Source],
+        budget: Budget,
+        reach: f32,
+        t_free: &[f32],
+        cached: &mut HashMap<u32, usize>,
+    ) {
+        let mesh_id = world.mesh.positions.as_ptr() as usize ^ world.mesh.indices.len();
+        if self.faces.as_ref().is_none_or(|f| f.0 != mesh_id) {
+            self.faces = Some((mesh_id, mirror_faces(world.mesh)));
+        }
+        let (id, faces) = self.faces.take().expect("built above");
+        let panels: Vec<MirrorFace> = world.panels.iter().flat_map(|&(lo, hi, _)| panel_faces((lo, hi))).collect();
+        // (1 cm: a mirror point on the face's edge)
+        let pad = Vec3::new(0.01, 0.01, 0.01);
+        for f in faces.iter().chain(&panels) {
+            let (n, d) = f.plane;
+            let sl = n.dot(listener) - d;
+            if sl.abs() < 1e-3 {
+                continue;
+            }
+            let image = listener - n * (2.0 * sl);
+            for (si, s) in sources.iter().enumerate() {
+                // where it emitted what arrives off this mirror now
+                let Some(x) = self.motion.emit(si, s.pos, image, 0.0) else { continue };
+                let sx = n.dot(x) - d;
+                if sx * sl <= 0.0 || sx.abs() < 1e-3 {
+                    continue;
+                }
+                let len = (x - image).length();
+                let rel = len / SPEED_OF_SOUND - t_free[si];
+                // the solver's (`solver_owns`), within the echo window
+                if len > reach || !(self.v4 || 1 > budget.bounces || rel >= EARLY_S) {
+                    continue;
+                }
+                let q = x + (image - x) * (sx / (sx + sl));
+                let (lo, hi) = (f.lo - pad, f.hi + pad);
+                if q.x < lo.x || q.y < lo.y || q.z < lo.z || q.x > hi.x || q.y > hi.y || q.z > hi.z {
+                    continue;
+                }
+                let moving = self.motion.moving(si);
+                self.name_chain(s.id, &[f.plane], cached, (listener, s.pos, moving));
+            }
+        }
+        self.faces = Some((id, faces));
+    }
+
     /// The CPU's share of an externally walked tick: name chains with a
     /// few mirror rays, solve every cached one, and return what they
     /// deposit (per source) — merged into the walk's bins by the fold.
@@ -2358,7 +2506,9 @@ impl Tracer {
     fn solve_chains(&mut self, world: &World, listener: Vec3, sources: &[Source], budget: Budget, accs: &mut [Acc]) {
         self.grow_trains();
         let mut drop: Vec<(u32, u64)> = Vec::new();
-        let mut reject: Vec<(u32, u64)> = Vec::new();
+        // rejected: no exact path (where the listener and the source
+        // were), or short and early (the sphere estimate's, held)
+        let mut reject: Vec<((u32, u64), Option<(Vec3, Vec3)>)> = Vec::new();
         let mut mirrors: Vec<ExactPath> = Vec::new();
         let keys: Vec<(u32, u64)> = self.chains.keys().copied().collect();
         for key in keys {
@@ -2419,7 +2569,7 @@ impl Tracer {
                     }
                 }
                 // short and early: the sphere estimate's (see `solver_owns`)
-                Some((_, delay, _)) if !long && delay - accs[si].t_free < EARLY_S => reject.push(key),
+                Some((_, delay, _)) if !long && delay - accs[si].t_free < EARLY_S => reject.push((key, None)),
                 Some((e, delay, dir)) => {
                     self.chains.get_mut(&key).expect("listed above").energy = e[1];
                     // the echogram (and, inside the early window, the
@@ -2433,7 +2583,7 @@ impl Tracer {
                         b.last = rel;
                     }
                 }
-                None => reject.push(key),
+                None => reject.push((key, Some((listener, src)))),
             }
         }
         for k in drop {
@@ -2441,11 +2591,11 @@ impl Tracer {
         }
         self.exact_mirrors = mirrors;
         let tick = self.tick;
-        for k in reject {
+        for (k, at) in reject {
             self.chains.remove(&k);
-            self.rejected.insert(k, tick);
+            self.rejected.insert(k, (tick, at));
         }
-        self.rejected.retain(|_, t| tick < *t + CHAIN_REJECT_TICKS);
+        self.rejected.retain(|_, r| tick < r.0 + CHAIN_REJECT_TICKS);
         // over the cap (newly named ones get one solve to prove
         // themselves): keep each source's MAX_CHAINS that count — v3 the
         // strongest; v4 those standing out most of the scattered field
@@ -2473,7 +2623,7 @@ impl Tracer {
                 v.sort_by(|a, b| b.1.total_cmp(&a.1));
                 for (k, _) in &v[MAX_CHAINS..] {
                     self.chains.remove(k);
-                    self.rejected.insert(*k, tick);
+                    self.rejected.insert(*k, (tick, None));
                 }
             }
         }
@@ -2518,7 +2668,7 @@ impl Tracer {
                         (0..len).map(|i| if i < pre { p[i] } else if (i - pre) % 2 == 0 { first } else { second }).collect();
                     let k = (key.0, planes_hash(&planes));
                     let count = per_source.entry(key.0).or_default();
-                    let rejected = self.rejected.get(&k).is_some_and(|&t| tick < t + CHAIN_REJECT_TICKS);
+                    let rejected = self.rejected.get(&k).is_some_and(|r| tick < r.0 + CHAIN_REJECT_TICKS);
                 if *count >= 2 * MAX_CHAINS || rejected || self.chains.contains_key(&k) || new.iter().any(|(nk, _)| *nk == k) {
                         continue;
                     }

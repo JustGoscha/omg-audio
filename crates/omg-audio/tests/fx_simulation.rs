@@ -10,7 +10,9 @@
 //!   highs drop more than the lows;
 //! - a closed shoebox rings with a Sabine-like RT60;
 //! - under open sky the outdoor field is large, sealed in a box ~zero;
-//! - beyond `max_traced_sources`, sources take turns and all get traced.
+//! - beyond `max_traced_sources`, sources take turns and all get traced;
+//! - a facade's echo of a passing car plays while the facade mirrors it,
+//!   at every rung, at its image source's delay and level.
 
 use omg_audio::{Config, Frame, Geometry, Material, ParamBlock, PathKind, Quality, Simulation, SourceDesc, SPEED_OF_SOUND};
 use omg_core::material::air_attenuation;
@@ -371,4 +373,81 @@ fn exact_frames_follow_the_listener_between_ticks() {
     assert!(after.gains[1] > before.gains[1] * 1.5, "closer: louder (1/d)");
     let chains = f.block(src).unwrap().taps.iter().filter(|t| t.key >= 9_000_000).count();
     eprintln!("{chains} mirror chains re-solved in the exact frame");
+}
+
+/// A car passes 30 m off at 100 km/h (x = −130 from y = −50, 0.7 m up;
+/// the listener at (−100, 100, 1.6)) in a field with one facade: x = 0
+/// to 0.3, y = 50 to 80, 8 m tall (`assess cartone`'s pass and the town's
+/// west face). While the facade mirrors the car to the listener its echo
+/// plays as its own tap — ~0.45 s after the car, ~11 dB under it — at the
+/// image source's delay and level: every tick and exact frame of that
+/// stretch at the cheapest rung and a middle one. The finders' rays found
+/// it by chance (a facade 100 m off fills ~0.1 % of their sphere: at
+/// rung 4 the town's car was named twice in 10 s, both times outside its
+/// echo's 1.8 s), and a chain rejected as the car came up was held out
+/// for 2 s — all of it; first-order chains are named from the faces now.
+#[test]
+fn a_facades_echo_of_a_passing_car_plays_at_every_rung() {
+    let facade = Material::new([0.03; 3], 0.35, [0.0; 3]);
+    let lis = [-100.0f32, 100.0, 1.6];
+    let car = |t: f64| [-130.0f32, -50.0 + 27.78 * t as f32, 0.7];
+    let dist = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    let c = SPEED_OF_SOUND as f64;
+    // the light cone to a point (the listener or its image): where the
+    // car was when what arrives at `t` left it, and the path's length
+    let emitted = |t: f64, to: [f32; 3]| {
+        let mut te = t;
+        for _ in 0..8 {
+            te = t - dist(car(te), to) as f64 / c;
+        }
+        (car(te), dist(car(te), to))
+    };
+    let image = [-lis[0], lis[1], lis[2]];
+    for level in [0, 6] {
+        let mut g = Geometry::new();
+        let (grass, stone) = (g.material(Material::GRASS), g.material(facade));
+        g.add_box([0.0, 50.0, 0.0], [0.3, 80.0, 8.0], stone);
+        g.ground_plane(0.0, grass);
+        let mut sim = Simulation::new(Config { quality: Quality::Level(level), ..Config::default() });
+        sim.set_geometry(g);
+        let src = sim.add_source(SourceDesc::at(car(0.0)));
+        let (mut want, mut heard, mut worst_ms, mut worst_db) = (0, 0, 0.0f64, 0.0f32);
+        for k in 0..(5.0 * 120.0) as usize {
+            let t = k as f64 / 120.0;
+            sim.set_time(t);
+            sim.set_source(src, car(t), true);
+            sim.set_listener_at(lis, 0.0, 0.0, 0.0, t);
+            let f = if k % 6 == 0 { Some(sim.tick()) } else { sim.tick_exact() };
+            let Some(f) = f else { continue };
+            // the facade mirrors what arrives now: its mirror point on it
+            let (x, len) = emitted(t, image);
+            let s = -x[0] / (image[0] - x[0]); // where the leg crosses x = 0
+            let (qy, qz) = (x[1] + (image[1] - x[1]) * s, x[2] + (image[2] - x[2]) * s);
+            // (half a metre in from its edges: the solve's own margins)
+            if !(t > 1.0 && (50.5..79.5).contains(&qy) && (0.5..7.5).contains(&qz)) {
+                continue;
+            }
+            want += 1;
+            let pb = f.block(src).expect("the car");
+            // a mirror chain's tap past the early window (the ground's
+            // arrives with the car)
+            let direct = pb.taps.iter().find(|tp| tp.key == omg_core::v3::KEY_DIRECT).expect("direct path");
+            let late = direct.delay_s + omg_core::v3::EARLY_S;
+            let Some(echo) = pb.taps.iter().find(|tp| tp.key >= 9_000_000 && tp.delay_s > late) else { continue };
+            heard += 1;
+            let (_, d) = emitted(t, lis);
+            // the image source: the facade's mirror share, spreading, air
+            let thr: f32 = (1.0 - 0.03) * (1.0 - 0.35);
+            let air = air_attenuation(len)[1] / air_attenuation(d)[1];
+            let want_db = 10.0 * thr.log10() + 20.0 * (air * d / len).log10();
+            let got_db = 20.0 * (echo.gains[1] / direct.gains[1]).log10();
+            worst_ms = worst_ms.max(((echo.delay_s as f64 - len as f64 / c) * 1e3).abs());
+            worst_db = worst_db.max((got_db - want_db).abs());
+        }
+        eprintln!("level {level}: the echo in {heard} of {want} frames; delay off by ≤ {worst_ms:.2} ms, level by ≤ {worst_db:.2} dB");
+        assert!(want > 100, "the facade mirrors the car for a while: {want} frames");
+        assert!(heard as f32 >= 0.95 * want as f32, "level {level}: the echo plays in {heard} of {want} frames");
+        assert!(worst_ms < 1.0, "level {level}: the echo's delay off by {worst_ms:.2} ms");
+        assert!(worst_db < 1.0, "level {level}: the echo's level off by {worst_db:.2} dB");
+    }
 }
