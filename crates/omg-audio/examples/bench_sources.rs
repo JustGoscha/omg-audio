@@ -123,8 +123,8 @@ fn main() {
             }
         }
         let (rtf, rendering) = bench_mixer(n, &frames, &hrir);
-        println!("{n:>4} sources  mixer    {rtf:7.1}× real time  ({rendering} rendering under the default budget)");
+        println!("{n:>4} sources  mixer    {rtf:7.2}× real time  ({rendering} rendering under the default budget)");
         let (rtf, rendering) = bench_mixer(n, &frames, &Hrir::none());
-        println!("{n:>4} sources  mixer    {rtf:7.1}× real time  (no HRIR, {rendering} rendering)");
+        println!("{n:>4} sources  mixer    {rtf:7.2}× real time  (no HRIR, {rendering} rendering)");
     }
 }

@@ -78,8 +78,15 @@ between neighbouring bands, but a wall's whole span (bass 28 dB over the
 mids, treble 20 under) only within 2–4.3 dB — the shelves haven't
 finished turning by the next centre, and no gains of two second-order
 shelves fit all three (the solve diverges). The kernel's Linkwitz–Riley
-split gets 1.2 dB at nine sections a sample; steeper shelves (4th order)
-at four would close it.
+split gets 1.2 dB at nine sections a sample. Steeper shelves would hit
+the centres but step between them: against a curve through the three
+centres, straight in dB over log frequency (between the bands a wall's
+response is smooth — the mass law slopes), symmetric Butterworth shelves
+of order 2 (as now) / 4 are off by rms 0.6 / 2.0 dB (max 1.3 / 4.4) for a
+wall (0, −14, −34 dB) and 1.5 / 2.6 dB (max 4.4 / 5.3) for the whole
+span — order 4 fits only the centres (0.2 dB). Kept: second order (Oct
+29; the magnitudes computed in closed form). A fit for the extreme span
+would move the corners too.
 
 ### Tick cost
 Measured flying through the cathedral with all 19 town sources traced
