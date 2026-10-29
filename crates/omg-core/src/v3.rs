@@ -885,6 +885,9 @@ struct SourceState {
     /// v6: ticks averaged since the world last changed (`fold`: a
     /// running mean from the change on, until it is as steady as the EMA).
     since: u32,
+    /// v6: the world moved this tick (a door on its way): a moving tick
+    /// for the averages — no still spell, the EMA follows.
+    world_moving: bool,
 }
 
 /// The diffuse field's mid-band energy in one echo slot at `rel`: the
@@ -922,7 +925,8 @@ impl SourceState {
         // EMA's noise (down to `STILL_ALPHA_FLOOR`: ~10 s of memory, should
         // something change that no test sees). Moving, the EMA as before
         if v6 {
-            let moved = self.at.is_none_or(|(l, s)| (l - listener).length() > STILL_M || (s - source).length() > STILL_M);
+            let world_moved = std::mem::take(&mut self.world_moving);
+            let moved = world_moved || self.at.is_none_or(|(l, s)| (l - listener).length() > STILL_M || (s - source).length() > STILL_M);
             if moved {
                 self.at = Some((listener, source));
                 self.still = 0;
@@ -937,12 +941,12 @@ impl SourceState {
             let n0 = (2.0 - ema) / ema;
             (1.0 / (n0 + self.still as f32)).clamp(STILL_ALPHA_FLOOR.min(ema), ema)
         };
-        // v6: the world changed (a door moved) — nothing averaged before
-        // it describes this world: the averages start over from this
-        // tick, a running mean (the n-th tick weighs 1/n) until it is as
-        // steady as the EMA, which takes over. The sound follows a door at
-        // once, as steady as n ticks allow (and the world change's burst
-        // traces more rays for the first of them)
+        // v6: the world changed (a door started moving: `Tracer::prepare`)
+        // — nothing averaged before it describes this world: the averages
+        // start over from this tick, a running mean (the n-th tick weighs
+        // 1/n) until it is as steady as the EMA, which takes over. The
+        // sound follows a door at once, as steady as n ticks allow (and
+        // the world change's burst traces more rays for the first of them)
         if v6 && std::mem::take(&mut self.restart) {
             self.since = 0;
         }
@@ -1550,6 +1554,8 @@ pub struct Tracer {
     /// v4: a signature of the world's movable parts (panels) last tick: a
     /// door closing ends every source's settled average.
     world_sig: u64,
+    /// Ticks in a row the world changed (v6: a door on its way).
+    changing: u32,
     /// Capture the strongest paths of each tick for the debug view.
     pub debug: bool,
     /// Last tick's strongest sampled paths (the walk's reflections):
@@ -1781,6 +1787,7 @@ impl Tracer {
             late_pool: std::collections::VecDeque::new(),
             late_pool_sig: 0,
             world_sig: 0,
+            changing: 0,
             debug: false,
             debug_paths: Vec::new(),
             exact: Vec::new(),
@@ -2539,7 +2546,8 @@ impl Tracer {
         // a door swinging shut must not make every tick a fresh, noisy
         // estimate)
         let sig = panels_sig(world.panels);
-        if sig != self.world_sig {
+        let changed = sig != self.world_sig;
+        if changed {
             self.world_sig = sig;
             for c in self.chains.values_mut() {
                 c.solved = None;
@@ -2549,9 +2557,27 @@ impl Tracer {
             self.src_vis.clear();
             self.ear_vis = None;
             self.sky_world = true;
+        }
+        // v6: the averages restart (and trace the burst) when the world
+        // starts changing — a door slammed in one tick is all of it; a
+        // door swinging shut over a second goes on changing, and on its
+        // way every tick is a moving tick (the EMA follows, as a listener
+        // walking), at rest the still spell's running mean takes it on.
+        // Restarting at every tick of the swing played each tick's own
+        // heavy-tailed estimate: the club's tone through its closing door
+        // dipped 25 dB under the shut level and burst back, clicks 9 dB
+        // under the tone (`assess doorswing`); restarting again where it
+        // stopped traded an estimate near the shut level for a young one
+        // 20–25 dB under it
+        let restart = if self.v6 { changed && self.changing == 0 } else { changed };
+        self.changing = if changed { self.changing.saturating_add(1) } else { 0 };
+        if restart || (self.v6 && changed) {
             for st in self.state.values_mut() {
-                st.restart = true;
+                st.restart |= restart;
+                st.world_moving |= self.v6 && changed;
             }
+        }
+        if restart {
             self.burst = if self.v6 { V6_BURST_TICKS } else { BURST_TICKS };
         }
         self.exact.clear();

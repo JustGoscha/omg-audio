@@ -31,6 +31,10 @@
 //!            the flute, clicking every 50 ms: pops (periods off course)
 //!   cartone  a car passes 30 m off at 100 km/h playing a steady tone:
 //!            its pitch and level, demodulated, and how they jitter
+//!   doorswing the club plays a steady tone; its door swings shut at 4 s
+//!            as the Godot demo eases it (~1 s): the level through the
+//!            closing door — dips under the shut level, rises against
+//!            the closing, how near the shut level it lands
 //!
 //!     MODE=v3|v4|v5|v6  RUNG=0..4 (unset: governed)  QUALITY=0..3 | LEVEL=0..10  EAR=0
 //!     PACE=0  WAV=dir (write the output)  SEED=n  NEE=n (next-event
@@ -981,6 +985,78 @@ fn cartone() {
     }
 }
 
+/// The club plays a steady 500 Hz tone; its door, open, swings shut at
+/// 4 s as the Godot demo eases a leaf (openness × e^(−7 t), there below
+/// 0.001), moved every frame. Narrowing the opening only takes paths
+/// away: the level falls to the shut level and should neither dip under
+/// it nor climb back on the way.
+fn doorswing() {
+    let mut rig = Rig::new();
+    rig.only(&[CLUB]);
+    rig.town.set_door(&mut rig.sim, 3, 1.0);
+    // REF=1: the door shut all along (the shut level, converged)
+    let reference = env("REF").is_some();
+    rig.town.set_door(&mut rig.sim, CLUB_DOOR, if reference { 0.0 } else { 1.0 });
+    rig.pos = [21.0, 30.2, 1.6];
+    let f0 = 500.0f32;
+    let cycle = (SR / f0).round() as usize;
+    let tone: Vec<f32> = (0..cycle * 10).map(|k| 0.5 * (std::f32::consts::TAU * (k % cycle) as f32 / cycle as f32).sin()).collect();
+    let tone = clip(&tone);
+    for &id in &rig.ids[CLUB].clone() {
+        rig.mix.play(id, &tone, Play::LOOP);
+    }
+    let (shut_at, total) = (4.0f32, 12.0f32);
+    rig.run(shut_at);
+    let mut open = if reference { 0.0f32 } else { 1.0 };
+    let frame = BLOCK as f32 / SR;
+    while rig.t() < total {
+        open *= (-7.0 * frame).exp();
+        if open < 0.001 {
+            open = 0.0;
+        }
+        rig.town.set_door(&mut rig.sim, CLUB_DOOR, open);
+        rig.run(frame);
+    }
+    rig.wav(&format!("doorswing_{}", mode()));
+    // the level per 10 ms
+    let w = (0.01 * SR) as usize;
+    let lev: Vec<f32> = rig
+        .l
+        .chunks(w)
+        .zip(rig.r.chunks(w))
+        .map(|(a, b)| {
+            let e: f32 = a.iter().zip(b).map(|(x, y)| 0.5 * (x * x + y * y)).sum::<f32>() / a.len() as f32;
+            10.0 * e.max(1e-20).log10()
+        })
+        .collect();
+    let at = |t: f32| lev[((t / 0.01) as usize).min(lev.len() - 1)];
+    let mean = |a: f32, b: f32| {
+        let v = &lev[(a / 0.01) as usize..(b / 0.01) as usize];
+        10.0 * (v.iter().map(|d| 10f32.powf(d / 10.0)).sum::<f32>() / v.len() as f32).log10()
+    };
+    let (open_db, shut_db) = (mean(3.0, 4.0), mean(10.0, 12.0));
+    let swing = ((shut_at / 0.01) as usize, ((shut_at + 1.2) / 0.01) as usize);
+    let (mut lowest, mut rise) = (f32::MAX, 0.0f32);
+    for k in swing.0..swing.1 {
+        lowest = lowest.min(lev[k]);
+        rise += (lev[k] - lev[k - 1]).max(0.0);
+    }
+    println!("doorswing ({}): the club's tone through its door swinging shut at {shut_at} s (~1 s)", mode());
+    println!("   open {open_db:.1} dB, shut {shut_db:.1} dB (10–12 s)");
+    println!("   during the swing: lowest {:+.1} dB from shut, climbing back {rise:.1} dB in all (10 ms steps)", lowest - shut_db);
+    println!(
+        "   after: +0.1 s {:+.1}  +0.3 s {:+.1}  +1 s {:+.1}  +2 s {:+.1}  +4 s {:+.1} dB from shut",
+        at(shut_at + 1.3) - shut_db,
+        at(shut_at + 1.5) - shut_db,
+        at(shut_at + 2.2) - shut_db,
+        at(shut_at + 3.2) - shut_db,
+        at(shut_at + 5.2) - shut_db
+    );
+    let course: Vec<String> = (0..=24).map(|k| format!("{:.0}", at(shut_at - 0.1 + k as f32 * 0.05))).collect();
+    println!("   level every 50 ms from {:.1} s: {}", shut_at - 0.1, course.join(" "));
+    println!("   artifacts (output above 3 kHz, under the tone): {}", artifact_line("swing", &artifacts(&rig, shut_at, shut_at + 1.2)));
+}
+
 /// A clap (click) in the hall, then the listener walks out of the hall's
 /// door while it rings: the tail's 10 ms envelope, its steps.
 fn walkout() {
@@ -1179,6 +1255,7 @@ fn main() {
         "crowd" => crowd(),
         "fly" => fly(),
         "cartone" => cartone(),
+        "doorswing" => doorswing(),
         s => panic!("unknown scene {s}"),
     }
 }

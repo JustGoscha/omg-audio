@@ -61,9 +61,20 @@ ms → 1.2–18 ms; auto holds rung 3–4 in the furnished cathedral.
 v3 averaged the open door's field into the shut one: 50 ms after the
 club door shut its click still sounded +19 / +28 / +37 dB (low / mid /
 high, early) above where it settles, +4 / +15 / +23 dB after 0.8 s. v6,
-when a door or pane moves (by a millimetre or more), restarts every
-source's averages as a running mean — the n-th tick after the change
-weighs 1/n — until it is as steady as the EMA, which takes over. The
+when a door or pane starts moving (by a millimetre or more), restarts
+every source's averages as a running mean — the n-th tick after the
+change weighs 1/n — until it is as steady as the EMA, which takes over.
+A door still on its way (a leaf easing shut over a second) makes every
+further tick a moving tick, as a listener walking: the EMA follows, and
+at rest the still spell's running mean takes it on. Restarting at every
+tick of the swing had played each tick's own heavy-tailed estimate: the
+club's tone through its closing door dipped 23–28 dB under the shut
+level and climbed back 67–84 dB on the way, with clicks 9 dB under the
+tone; now the dips are 3–10 dB, the climbing 5–10 dB, the treble 42–50
+dB under it (`assess doorswing`, three seeds;
+`a_door_swinging_shut_takes_the_level_down_without_bursts_v6`). In
+Godot the level now falls smoothly while the leaf swings (no window
+over −49 dB) and drops as the last gap closes. The
 next 5 ticks trace 4× the late rays (≈ the 19 ticks' worth the late EMA
 holds) and the first 3 twice the early rays: a mean of a few ticks of a
 heavy-tailed estimate otherwise sits under the truth and steps up as the

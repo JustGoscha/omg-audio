@@ -257,6 +257,78 @@ fn a_door_shut_between_sounds_is_shut_for_the_next_one_v6() {
     door_shut_between_sounds(sim, 4.0);
 }
 
+/// The club plays a steady tone and its door swings shut over a second,
+/// moved every frame as the Godot demo eases a leaf (openness ×
+/// e^(−7 t), there below 0.001). Narrowing the opening only takes paths
+/// away: the level goes down to the shut level without climbing back on
+/// the way, without dipping far under it, without clicks. v6 restarted
+/// its averages at every tick of the swing and played each tick's own
+/// heavy-tailed estimate: 67–84 dB of climbing back, dips 23–28 dB under
+/// the shut level, clicks 9 dB under the tone (`assess doorswing`).
+#[test]
+fn a_door_swinging_shut_takes_the_level_down_without_bursts_v6() {
+    let mut sim = Simulation::new(Config { quality: Quality::Level(3), compute: Compute::Cpu, v6: true, kernel_thread: false, kernel_step_samples: 1 << 24, ..Config::default() });
+    let mut town = Town::new(&mut sim);
+    let club = 2;
+    only(&mut town, &mut sim, club);
+    town.set_door(&mut sim, 3, 1.0);
+    town.set_door(&mut sim, 4, 1.0);
+    let mut mix = Mixer::with_capacity(SR, Hrir::builtin(), 32);
+    mix.set_ear(false);
+    let cycle = (SR / 500.0) as usize;
+    let tone = clip(&(0..cycle * 10).map(|k| 0.5 * (std::f32::consts::TAU * (k % cycle) as f32 / cycle as f32).sin()).collect::<Vec<f32>>());
+    for &id in &town.sources[club] {
+        mix.play(id, &tone, Play::LOOP);
+    }
+    let lis = [21.0f32, 30.2, 1.6];
+    let block = 400usize;
+    let (mut l, mut r) = (Vec::new(), Vec::new());
+    let mut open = 1.0f32;
+    for b in 0..(8.0 * SR) as usize / block {
+        let t = (b * block) as f32 / SR;
+        if t >= 4.0 {
+            open *= (-7.0 * block as f32 / SR).exp();
+            if open < 0.001 {
+                open = 0.0;
+            }
+            town.set_door(&mut sim, 4, open);
+        }
+        sim.set_listener(lis, 0.0, 0.0, 0.0);
+        if b % 6 == 0 {
+            mix.apply(&sim.tick());
+        } else if let Some(f) = sim.tick_exact() {
+            mix.apply(&f);
+        }
+        let (mut bl, mut br) = (vec![0.0; block], vec![0.0; block]);
+        mix.render(&mut bl, &mut br);
+        l.extend(bl);
+        r.extend(br);
+    }
+    // the level per 10 ms; the treble per 5 ms (a triple difference: the
+    // tone 54 dB under what it passes at 4 kHz) under the tone
+    let w = (0.01 * SR) as usize;
+    let lev: Vec<f32> = l.chunks(w).zip(r.chunks(w)).map(|(a, b)| db(a.iter().zip(b).map(|(x, y)| 0.5 * (x * x + y * y)).sum::<f32>() / w as f32)).collect();
+    let shut = db(lev[650..800].iter().map(|d| 10f32.powf(d / 10.0)).sum::<f32>() / 150.0);
+    let (mut lowest, mut climb) = (f32::MAX, 0.0f32);
+    for k in 400..520 {
+        lowest = lowest.min(lev[k]);
+        climb += (lev[k] - lev[k - 1]).max(0.0);
+    }
+    let mut clicks = f32::MIN;
+    let m: Vec<f32> = l.iter().zip(&r).map(|(a, b)| 0.5 * (a + b)).collect();
+    let h = (0.005 * SR) as usize;
+    for k in (4.0 * SR) as usize / h..(5.2 * SR) as usize / h {
+        let (a, b) = (k * h, (k + 1) * h);
+        let hf: f32 = (a..b).map(|i| (m[i] - 3.0 * m[i - 1] + 3.0 * m[i - 2] - m[i - 3]).powi(2)).sum();
+        let all: f32 = (a..b).map(|i| m[i] * m[i]).sum();
+        clicks = clicks.max(db(hf / all.max(1e-30)));
+    }
+    eprintln!("open {:.1} dB, shut {shut:.1} dB; the swing: lowest {:+.1} dB from shut, climbing back {climb:.1} dB, treble at worst {clicks:.1} dB under the tone", lev[350], lowest - shut);
+    assert!(climb < 20.0, "the level climbed back {climb:.1} dB while the door closed");
+    assert!(lowest > shut - 15.0, "the level dipped {:.1} dB under the shut level", shut - lowest);
+    assert!(clicks < -45.0, "clicks {clicks:.1} dB under the tone");
+}
+
 fn door_shut_between_sounds(mut sim: Simulation, within_db: f32) {
     let mut town = Town::new(&mut sim);
     let club = 2;

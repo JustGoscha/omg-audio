@@ -116,6 +116,15 @@ phase above 3 kHz: worst −28.0 → −46.2 dB, windows over −40 dB 8 → 0
 (approach −39.3 → −49.9 dB). Headless `assess` loads no bed: why the
 replay in the demo's own level never burst.
 
+### A door shut: the young estimate sits low, then steps up
+After the Godot demo's club door closes (`record.gd --scenario=door
+--tone`), the tone sits ~20 dB under where it settles for ~0.5 s, then
+steps up within 30 ms as a rare strong path through the door arrives —
+the heavy tail of "a loud room's field through its walls" above, heard.
+Headless, `assess door` (instant shut, PACE=0): the late treble +13.9 dB
+50 ms after the shut (ENGINE_V6.md measured ±3 dB earlier; the click's
+treble tail — not yet looked into).
+
 ### A distinct echo found by chance
 A car passing the field (`assess cartone`): with seeds 1 and 3 a facade
 echo 726 ms late, 12 dB under the direct sound, plays as its own tap
