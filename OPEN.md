@@ -84,7 +84,13 @@ worker's wasm 52 ms at Medium, 33 ms at Low (its governor sheds a tier
 over 40 ms). The tier governors shed quality; a lighter two-edge search
 (cache the string per listener cell), fewer chain solves at exact
 frames, and a cheaper transmission query (half the tick: every hit
-along a segment, sorted) would buy it back.
+along a segment, sorted) would buy it back. Full ticks and the exact
+frames between them share one thread: a tick over the period (native
+High on the CPU) leaves no room for exact frames at all. A walk spread
+over threads (rays are independent: per-thread random streams, deposits
+replayed in a fixed order so the result doesn't depend on the core
+count) would cut it several-fold on desktops; wasm workers have no
+threads.
 
 ### Interpolation on moving paths
 Paths read with a cubic (Hermite): a 10 kHz tone on a sliding delay
