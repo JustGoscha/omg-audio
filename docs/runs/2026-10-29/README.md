@@ -364,3 +364,18 @@ The bell across the open field — its direct sound's treble carrying
 Render cost: web 19.2 → 20.1 % of real time; Godot's 480-path rung
 7.3–7.6× → 6.4× real time.
 
+## Moving paths: no warble
+
+A path reads its source at a fractional delay. Read linearly, the
+treble falls by how far between two samples the read lands (at 10 kHz
+−2 dB at half a sample, none on one), so a path whose delay slides —
+every path while you walk — had its treble modulated as the fraction
+cycled: at a walk ~200 times a second, a 10 kHz tone's level swinging
+2.2 dB (`fx_moving_treble`: five-cycle windows). The play log and the
+live delay line now read with a cubic (Hermite, through two samples
+either side; exact on whole samples): 0.96 dB at a walk, 0.47 dB at a
+car's 30 m/s. A one-shot's interpolation reaches two samples before its
+start and one past its end. The car at 100 km/h still arrives within
+0.4 ms. Render cost: web 20.1 → 20.5 % of real time, Godot's 480-path
+rung 6.4 → 5.8×.
+

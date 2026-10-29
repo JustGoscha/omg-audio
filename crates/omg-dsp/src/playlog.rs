@@ -47,9 +47,10 @@ struct Shot {
 }
 
 impl Shot {
-    /// First emission time after its last sample.
+    /// First emission time after anything of it can be read (its last
+    /// sample, and the one after it the interpolation still reaches).
     fn end(&self) -> f64 {
-        (self.start + self.clip.len() as f64 / self.rate as f64).min(self.stop)
+        (self.start + (self.clip.len() + 1) as f64 / self.rate as f64).min(self.stop)
     }
 }
 
@@ -215,8 +216,8 @@ impl PlayLog {
         self.shots.iter().filter(|s| t >= s.start && t < s.end()).count()
     }
 
-    /// The source's emitted signal at emission time `t` (linear
-    /// interpolation between samples; exact on whole samples).
+    /// The source's emitted signal at emission time `t` (cubic
+    /// interpolation between samples, `hermite`; exact on whole samples).
     #[inline]
     pub fn at(&self, t: f64) -> f32 {
         if t < self.since || t >= self.until {
@@ -237,9 +238,9 @@ impl PlayLog {
             } * seg.gain;
         }
         for s in &self.shots {
-            // (a read up to one sample before the start interpolates into
+            // (a read up to two samples before the start interpolates into
             // the first sample from the silence before it)
-            if t > s.start - 1.0 / s.rate as f64 && t < s.stop {
+            if t > s.start - SUPPORT_BEFORE / s.rate as f64 && t < s.stop {
                 x += clip_sample(&s.clip, (t - s.start) * s.rate as f64) * s.gain;
             }
         }
@@ -307,7 +308,7 @@ impl PlayLog {
         }
         for s in &self.shots {
             let rate = s.rate as f64;
-            let from = s.start - 1.0 / rate;
+            let from = s.start - SUPPORT_BEFORE / rate;
             if hi <= from || lo >= s.end() {
                 continue;
             }
@@ -342,6 +343,38 @@ impl PlayLog {
     }
 }
 
+/// How far before its first sample a clip's interpolation reaches (the
+/// cubic's support: two samples).
+const SUPPORT_BEFORE: f64 = 2.0;
+
+/// Between samples y1 and y2 at fraction `f`, from y0 … y3: the cubic
+/// Hermite (Catmull–Rom) through them — exact on whole samples, and flat
+/// far higher than a line between two: at half a sample −0.5 dB at
+/// 10 kHz (a line: −2 dB), so a path whose delay slides keeps its treble
+/// (linear reads modulated it by 2 dB at a walk: a warble).
+#[inline(always)]
+fn hermite(y0: f32, y1: f32, y2: f32, y3: f32, f: f32) -> f32 {
+    let c1 = 0.5 * (y2 - y0);
+    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+    ((c3 * f + c2) * f + c1) * f + y1
+}
+
+/// A looped clip's sample at fractional position `p` (wrapped).
+#[inline(always)]
+fn loop_at(c: &[f32], i: usize, f: f32) -> f32 {
+    let n = c.len();
+    if f == 0.0 {
+        return c[i];
+    }
+    if i >= 1 && i + 2 < n {
+        return hermite(c[i - 1], c[i], c[i + 1], c[i + 2], f);
+    }
+    let at = |k: isize| c[k.rem_euclid(n as isize) as usize];
+    let i = i as isize;
+    hermite(at(i - 1), at(i), at(i + 1), at(i + 2), f)
+}
+
 fn loop_sample(c: &[f32], p: f64) -> f32 {
     let n = c.len();
     if n == 0 {
@@ -353,11 +386,7 @@ fn loop_sample(c: &[f32], p: f64) -> f32 {
     let p = p - (p / nf).floor() * nf;
     let i = (p as usize).min(n - 1);
     let f = (p - i as f64) as f32;
-    let a = c[i];
-    if f == 0.0 {
-        return a;
-    }
-    a + (c[(i + 1) % n] - a) * f
+    loop_at(c, i, f)
 }
 
 /// `out[i] = loop_sample(c, (t[i] − origin)·rate) · seg_gain · gain[i]`,
@@ -384,30 +413,35 @@ fn loop_block(c: &[f32], t: &[f64], origin: f64, rate: f64, seg_gain: f32, gain:
         }
         let i = (p as usize).min(n - 1);
         let f = (p - i as f64) as f32;
-        let a = c[i];
-        let b = c[if i + 1 == n { 0 } else { i + 1 }];
-        *o = (a + (b - a) * f) * seg_gain * g;
+        *o = loop_at(c, i, f) * seg_gain * g;
     }
 }
 
-/// A clip's sample at fractional position `p`, linear between samples and
-/// from the silence on either side: a read within a sample before its
-/// start ramps into the first sample (a fractional delay must not lose
-/// the onset — a click read at a phase of 0.9 kept 1 % of its energy).
+/// A clip's sample at fractional position `p`, cubic between samples
+/// (`hermite`) and from the silence on either side: a read up to two
+/// samples before its start rises into the first sample, one up to a
+/// sample past its end falls out of the last (a fractional delay must not
+/// lose an onset — a click read at a phase of 0.9 kept 1 % of its energy).
 fn clip_sample(c: &[f32], p: f64) -> f32 {
-    if p < 0.0 {
-        return if p > -1.0 { c.first().copied().unwrap_or(0.0) * (1.0 + p) as f32 } else { 0.0 };
-    }
-    let i = p as usize;
-    if i >= c.len() {
+    let n = c.len() as isize;
+    if p <= -SUPPORT_BEFORE {
         return 0.0;
     }
-    let f = (p - i as f64) as f32;
-    let a = c[i];
-    if f == 0.0 {
-        return a;
+    let fl = p.floor();
+    let i = fl as isize;
+    if i > n {
+        return 0.0;
     }
-    a + (c.get(i + 1).copied().unwrap_or(0.0) - a) * f
+    let f = (p - fl) as f32;
+    if f == 0.0 && i >= 0 && i < n {
+        return c[i as usize];
+    }
+    if i >= 1 && i + 2 < n {
+        let i = i as usize;
+        return hermite(c[i - 1], c[i], c[i + 1], c[i + 2], f);
+    }
+    let at = |k: isize| if k >= 0 && k < n { c[k as usize] } else { 0.0 };
+    hermite(at(i - 1), at(i), at(i + 1), at(i + 2), f)
 }
 
 #[cfg(test)]
@@ -424,7 +458,8 @@ mod tests {
         log.play(0, clip(&[1.0, 2.0, 3.0]), 100.0, 0.5, 1.0);
         assert_eq!(log.at(99.0), 0.0);
         assert_eq!(log.at(100.0), 0.5);
-        assert_eq!(log.at(101.5), 1.25);
+        // the cubic through 1, 2, 3 and the silence after: 2.75 midway
+        assert_eq!(log.at(101.5), 1.375);
         assert_eq!(log.at(102.0), 1.5);
         assert_eq!(log.at(103.0), 0.0);
     }
@@ -479,16 +514,18 @@ mod tests {
         assert_eq!(log.at(10.0), 0.0);
         assert_eq!(log.sounds_until(), 10.0);
         log.play(0, clip(&[1.0; 5]), 20.0, 1.0, 1.0);
-        assert_eq!(log.sounds_until(), 25.0);
+        // five samples, and the one after that the interpolation reaches
+        assert_eq!(log.sounds_until(), 26.0);
     }
 
     #[test]
     fn forgets_only_what_nobody_can_hear() {
         let mut log = PlayLog::new();
         log.play(0, clip(&[1.0; 10]), 0.0, 1.0, 1.0);
-        log.forget_before(9.5);
+        // ten samples, read up to one past the last (the interpolation)
+        log.forget_before(10.5);
         assert_eq!(log.shots(), 1);
-        log.forget_before(10.0);
+        log.forget_before(11.0);
         assert_eq!(log.shots(), 0);
         for _ in 0..MAX_SHOTS + 3 {
             log.play(0, clip(&[1.0]), 0.0, 1.0, 1.0);

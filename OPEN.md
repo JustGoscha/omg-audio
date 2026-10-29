@@ -76,11 +76,10 @@ over 40 ms). The tier governors shed quality; a lighter two-edge search
 frames, and a cheaper transmission query (half the tick: every hit
 along a segment, sorted) would buy it back.
 
-### Linear interpolation on moving paths
-A path's delay read with linear interpolation: a full-band click's
-energy depends on the fractional delay (±1–1.5 dB), and moving sources'
-treble is modulated with it. A 4-point interpolator (Hermite) costs ~2×
-per path read.
+### Interpolation on moving paths
+Paths read with a cubic (Hermite): a 10 kHz tone on a sliding delay
+swings 0.96 dB at a walk, 0.47 dB at 30 m/s (was 2.2 dB with lines). A
+windowed-sinc read would flatten it further at ~4× the cost.
 
 ### The club too quiet far away (5–13 dB in the bass)
 Measured before this session against a building-acoustics estimate

@@ -104,16 +104,25 @@ impl DelayLine {
     /// read inside the written past for any `back` < `READ_SLACK`, so
     /// `read_back(d, 0)` per sample and `read_back(d, back)` after a
     /// block write agree exactly.
+    ///
+    /// Cubic between samples (Hermite through the two either side): a
+    /// path whose delay slides keeps its treble (`playlog::hermite`).
     #[inline]
     pub fn read_back(&self, delay: f32, back: usize) -> f32 {
         let len = self.buf.len();
-        let delay = delay.clamp(1.0, (len - 2 - READ_SLACK) as f32);
+        let delay = delay.clamp(1.0, (len - 3 - READ_SLACK) as f32);
         let i = delay as usize;
-        let frac = delay - i as f32;
+        let f = delay - i as f32;
         let p = self.write + len - back - i;
-        let a = self.buf[p & self.mask];
-        let b = self.buf[(p - 1) & self.mask];
-        a + frac * (b - a)
+        let y1 = self.buf[p & self.mask];
+        if f == 0.0 {
+            return y1;
+        }
+        let (y0, y2, y3) = (self.buf[(p + 1) & self.mask], self.buf[(p - 1) & self.mask], self.buf[(p - 2) & self.mask]);
+        let c1 = 0.5 * (y2 - y0);
+        let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+        let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+        ((c3 * f + c2) * f + c1) * f + y1
     }
 }
 

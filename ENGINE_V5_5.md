@@ -35,6 +35,9 @@ follows from how those points move. Static sources skip the solve.
   because it stopped.
 - A one-shot read within a sample before its start ramps into its first
   sample (a fractional delay used to lose a click's onset).
+- Paths read their source with a cubic (Hermite) instead of a line: a
+  sliding delay no longer modulates the treble (a 10 kHz tone swung
+  2.2 dB at a walk, now under 1 dB).
 
 ## Changes heard at once, without holes
 
