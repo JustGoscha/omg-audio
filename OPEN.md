@@ -19,13 +19,18 @@ did so for the bells), then retire the legacy engine and its tests
 tracer) — "consolidate duplicated code". `world::tests::shadow_
 boundaries_are_continuous` (legacy) still fails.
 
-### v3 mode is slow and noisy
-Exponential averages (EMA 0.35 / 0.1): the club door takes seconds to
-land (+20…+37 dB 50 ms after the shut, +2…+26 dB at 1.6 s), identical
-clicks standing still spread 3–7 dB sd. v5.5 is the default; v3 stays as
-the legacy comparison.
+### v3 mode is slow and noisy — v6 answers both
+Exponential averages (EMA 0.35 / 0.1): the club door took seconds to
+land (+19…+37 dB 50 ms after the shut), identical clicks standing still
+spread up to 10 dB sd from the square. v6 (ENGINE_V6.md, the demos'
+default) restarts the averages at a world change and makes a still spell
+one running mean: within ±4.5 dB 50 ms after the shut; the square's
+club 3–4 dB sd. v3 stays as the comparison.
 
 ### A loud room's field through its walls converges slowly
+(v6 standing still averages it as one running mean — 3–4 dB sd click to
+click at rung 3 instead of 9–10 — but each tick's estimate is still
+this heavy-tailed: the cure below is what makes it cheap and quick.)
 The club heard from the square: its tail (past 0.25 s) lands within
 ±2 dB of a many-ray reference only after ~20 s standing still, single
 ticks bring samples ~1000× the typical (the bass +10 dB, diluting over
