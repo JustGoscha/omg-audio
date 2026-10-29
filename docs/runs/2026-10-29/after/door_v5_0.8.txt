@@ -1,0 +1,8 @@
+assess door: mode v5 rung gov quality 2 pace 1
+wrote /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/wav/after/door_v5_0.8.wav
+door (v5): club door shut at 6 s, clicked 0.8 s later; energy dB low/mid/high
+   open        early   -3.4    0.6    6.2  late   -0.8    1.4    4.4
+   shut+0.8    early  -31.5  -33.6  -35.3  late  -24.7  -27.2  -30.8
+   settled     early  -29.1  -31.6  -33.7  late  -24.8  -27.4  -30.5
+   shut+0.8 − settled: early  -2.4  -2.0  -1.5  late  +0.1  +0.2  -0.3
+   settled − open:     early -25.7 -32.2 -40.0  late -24.1 -28.8 -34.9

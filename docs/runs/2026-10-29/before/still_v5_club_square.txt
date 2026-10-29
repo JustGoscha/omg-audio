@@ -1,0 +1,15 @@
+assess still: mode v5 rung gov quality 2 pace 1
+wrote /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/wav/before/still_club_square_v5.wav
+still (v5): club at square, 10 clicks every 3 s; dB low/mid/high
+   click  0  early  -56.2  -58.9  -58.5  late  -54.9  -57.6  -58.2
+   click  1  early  -53.8  -55.8  -54.2  late  -54.3  -55.4  -57.0
+   click  2  early  -52.9  -54.9  -56.3  late  -47.7  -50.8  -53.7
+   click  3  early  -56.5  -57.6  -51.0  late  -54.0  -56.5  -57.0
+   click  4  early  -54.6  -57.2  -58.0  late  -41.3  -45.2  -49.2
+   click  5  early  -50.1  -52.5  -52.1  late  -46.8  -50.6  -53.1
+   click  6  early  -50.7  -53.2  -53.7  late  -47.8  -51.2  -54.4
+   click  7  early  -46.0  -47.1  -48.2  late  -48.1  -51.6  -53.5
+   click  8  early  -53.4  -56.6  -56.9  late  -50.2  -53.3  -55.9
+   click  9  early  -50.3  -53.1  -54.7  late  -51.7  -52.3  -52.3
+   early spread  low sd 3.05 span 10.6  mid sd 3.23 span 11.8  high sd 3.09 span 10.3
+   late  spread  low sd 4.02 span 13.7  mid sd 3.36 span 12.4  high sd 2.54 span  9.0

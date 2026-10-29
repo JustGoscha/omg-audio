@@ -1,0 +1,7 @@
+assess teleport: mode v5 rung gov quality 2 pace 1
+sources after the jump: 19
+wrote /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/wav/after/teleport_v5.wav
+teleport (v5): a click from 100 m west in flight while the source jumps 4 m north
+   click 1 (west, due 3.292 s): L -28.3 dB  R -42.2 dB  (L−R +13.9); before it -300.0 dB
+   click 2 (north, due 3.212 s): L -4.7 dB  R -7.1 dB  (L−R +2.4)
+   click 1 − click 2: -25.4 dB (spreading alone: -28.0 dB)

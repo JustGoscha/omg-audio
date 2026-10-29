@@ -1,0 +1,15 @@
+assess still: mode v3 rung gov quality 2 pace 1
+wrote /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/wav/after/still_club_north_v3.wav
+still (v3): club at north, 10 clicks every 3 s; dB low/mid/high
+   click  0  early  -42.9  -53.3  -57.0  late  -52.1  -57.5  -67.7
+   click  1  early  -44.3  -51.5  -51.8  late  -64.7  -69.6  -70.6
+   click  2  early  -44.4  -52.3  -55.9  late  -48.4  -50.9  -55.4
+   click  3  early  -42.8  -52.9  -58.9  late  -67.5  -74.1  -79.6
+   click  4  early  -43.2  -52.0  -59.2  late  -51.1  -54.7  -61.1
+   click  5  early  -44.2  -53.2  -59.4  late  -61.4  -65.6  -71.8
+   click  6  early  -42.9  -49.6  -48.6  late  -55.5  -64.1  -71.1
+   click  7  early  -42.2  -51.6  -55.1  late  -62.9  -70.0  -73.6
+   click  8  early  -44.1  -52.5  -58.6  late  -52.4  -54.8  -60.8
+   click  9  early  -44.2  -53.6  -61.7  late  -61.6  -67.4  -76.0
+   early spread  low sd 0.76 span  2.2  mid sd 1.11 span  4.0  high sd 3.73 span 13.1
+   late  spread  low sd 6.28 span 19.0  mid sd 7.45 span 23.2  high sd 7.17 span 24.2

@@ -5,6 +5,15 @@ Desktop: WASD + mouse, Space throws a whistling, exploding ball. Android
 Chrome: on-screen joystick, turn your body to look around (device
 orientation drives the binaural rendering).
 
+> **The engine today is v5.5** — rays from the listener, every connection
+> reaching each source where it was when it emitted, the traced response
+> rendered as traced: [ENGINE_V3.md](ENGINE_V3.md) (the tracer),
+> [ENGINE_V4.md](ENGINE_V4.md) (the response rendered as traced),
+> [ENGINE_V5_5.md](ENGINE_V5_5.md) (what v5.5 changed), measured in
+> [docs/runs/](docs/runs/), tested per [TESTS.md](TESTS.md), open items in
+> [OPEN.md](OPEN.md). Parts of the overview below describe the earlier
+> engine (portals, image sources) that the offline renderer still uses.
+
 A real-time path-traced sound propagation engine in Rust, compiled to both
 native (reference build) and wasm (Web Worker + AudioWorklet). One scene —
 a small city square with a house playing music, a great hall with a

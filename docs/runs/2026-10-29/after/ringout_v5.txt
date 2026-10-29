@@ -1,0 +1,5 @@
+assess ringout: mode v5 rung gov quality 2 pace 1
+wrote /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/wav/after/ringout_v5.wav
+ringout (v5): a click from 100 m; the source switched off 0.05 s after the second
+   direct: on -34.4 dB, switched off in flight -34.4 dB
+   after it (1 s): on -64.0 dB, switched off -63.0 dB

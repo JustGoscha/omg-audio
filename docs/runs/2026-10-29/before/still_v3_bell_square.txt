@@ -1,0 +1,15 @@
+assess still: mode v3 rung gov quality 2 pace 1
+wrote /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/wav/before/still_bell_square_v3.wav
+still (v3): bell at square, 10 clicks every 3 s; dB low/mid/high
+   click  0  early  -62.3  -59.2  -55.2  late  -73.9  -70.9  -67.9
+   click  1  early  -60.9  -58.7  -54.5  late  -80.7  -77.4  -73.8
+   click  2  early  -48.0  -45.8  -42.6  late  -76.6  -75.5  -72.7
+   click  3  early  -61.6  -58.6  -54.5  late  -76.1  -76.5  -75.0
+   click  4  early  -61.5  -58.5  -54.3  late  -76.9  -73.8  -70.3
+   click  5  early  -62.8  -59.7  -55.4  late  -79.5  -77.9  -75.4
+   click  6  early  -52.1  -56.4  -53.7  late  -79.9  -77.0  -73.8
+   click  7  early  -61.1  -57.8  -54.5  late  -81.3  -79.5  -76.5
+   click  8  early  -47.9  -45.8  -43.1  late  -61.4  -60.0  -58.1
+   click  9  early  -43.0  -46.3  -44.9  late  -71.9  -74.5  -75.1
+   early spread  low sd 7.16 span 19.9  mid sd 5.76 span 13.9  high sd 5.10 span 12.8
+   late  spread  low sd 5.61 span 19.9  mid sd 5.29 span 19.5  high sd 5.21 span 18.5
