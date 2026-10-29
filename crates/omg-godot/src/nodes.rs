@@ -33,8 +33,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use godot::classes::native::AudioFrame;
 use godot::classes::{
-    AudioServer, AudioStream, AudioStreamPlayback, AudioStreamPlayer, IAudioStream, IAudioStreamPlayback, INode3D,
-    Mesh, MeshInstance3D, Node, Node3D,
+    AudioServer, AudioStream, AudioStreamPlayback, AudioStreamPlayer, Engine as GdEngine, IAudioStream,
+    IAudioStreamPlayback, INode3D, Mesh, MeshInstance3D, Node, Node3D,
 };
 use godot::meta::conv::RawPtr;
 use godot::prelude::*;
@@ -536,6 +536,14 @@ pub struct OmgWorld {
     rain_clip: Option<(usize, bool)>,
     scratch: Vec<(f32, f32)>,
     head: (f32, f32, f32),
+    /// Physics step 0's time on the engine's clock (NaN: not yet seen):
+    /// step k was current at `steps_at + k·dt` (see `physics_time`).
+    #[init(val = f64::NAN)]
+    steps_at: f64,
+    /// The last stamp sent: stamps never go back (one by hand is the
+    /// call's own time, ahead of the physics step's).
+    #[init(val = f64::NEG_INFINITY)]
+    stamped: f64,
     base: Base<Node3D>,
 }
 
@@ -546,7 +554,7 @@ impl INode3D for OmgWorld {
     }
 
     fn process(&mut self, _dt: f64) {
-        self.update_now();
+        self.update(false);
     }
 
     fn exit_tree(&mut self) {
@@ -669,18 +677,55 @@ impl OmgWorld {
     }
 
     /// Push listener, sources and doors to the engine now (done every
-    /// frame in _process; call it when driving the engine by hand).
+    /// frame in _process; call it when driving the engine by hand: then
+    /// they are stamped with the time of the call).
     #[func]
     fn update_now(&mut self) {
+        self.update(true);
+    }
+
+    /// Every frame (`by_hand`: from `update_now`). A frame shows the game
+    /// as its last physics step left it — the player and the moving
+    /// sources move on physics steps — so its poses and places are
+    /// stamped with that step's time: the simulation traces the world at
+    /// that instant, and a frame without a new step repeats it (nothing
+    /// new; sent again with the frame's own time, the ears stood still
+    /// for a frame and moved twice as fast the next: a walk's Doppler
+    /// fluttered at the frame rate).
+    fn update(&mut self, by_hand: bool) {
         if !self.started {
             return;
         }
+        let now = {
+            let g = host();
+            let Some(h) = g.as_ref() else { return };
+            h.engine.now()
+        };
+        let stamp = if by_hand { now } else { self.physics_time(now) }.max(self.stamped);
+        self.stamped = stamp;
         self.frame += 1;
-        self.sync_listener();
-        self.sync_sources();
+        self.sync_listener(stamp);
+        self.sync_sources(stamp);
         self.sync_doors();
         self.govern_tier();
         self.sync_mix();
+    }
+
+    /// When the last physics step was current, on the engine's clock (`now`
+    /// is that clock's reading in this frame): game time — step k at
+    /// `steps_at + k·dt`, steps exactly dt apart however frames fall —
+    /// anchored to the clock where the step is seen (`now` less the
+    /// fraction of a step since), again whenever game time drifts from
+    /// it by more than a step (a hitch the physics did not catch up).
+    fn physics_time(&mut self, now: f64) -> f64 {
+        let e = GdEngine::singleton();
+        let k = e.get_physics_frames() as f64;
+        let dt = 1.0 / e.get_physics_ticks_per_second().max(1) as f64;
+        let seen = now - e.get_physics_interpolation_fraction() * dt;
+        if self.steps_at.is_nan() || (self.steps_at + k * dt - seen).abs() > dt {
+            self.steps_at = seen - k * dt;
+        }
+        self.steps_at + k * dt
     }
 
     /// Quality auto: one report per finished simulation tick.
@@ -947,7 +992,7 @@ impl OmgWorld {
         }
     }
 
-    fn sync_listener(&mut self) {
+    fn sync_listener(&mut self, stamp: f64) {
         let base = self.base().clone();
         let tree = base.get_tree();
         let node = tree
@@ -964,14 +1009,14 @@ impl OmgWorld {
         let roll = (-r[2]).clamp(-1.0, 1.0).asin();
         let mut g = host();
         let Some(h) = g.as_mut() else { return };
-        h.engine.set_listener(p, yaw, pitch, roll);
+        h.engine.set_listener_at(p, yaw, pitch, roll, stamp);
         if (yaw, pitch, roll) != self.head {
             self.head = (yaw, pitch, roll);
             h.set_head(yaw, pitch, roll);
         }
     }
 
-    fn sync_sources(&mut self) {
+    fn sync_sources(&mut self, stamp: f64) {
         let tree = self.base().get_tree();
         let sr = engine_rate();
         let frame = self.frame;
@@ -1009,7 +1054,7 @@ impl OmgWorld {
             let Some(h) = g.as_mut() else { return };
             let rec = self.sources.get_mut(&key).unwrap();
             rec.seen = frame;
-            h.engine.set_source(rec.id, pos, on);
+            h.engine.set_source_at(rec.id, pos, on, stamp);
             if level_db != rec.level_db {
                 rec.level_db = level_db;
                 h.engine.set_source_loudness(rec.id, db(level_db - 90.0));

@@ -1,8 +1,10 @@
 // Simulation worker: the engine's Simulation (omg-audio in wasm — the same
-// engine the Godot demo runs) with the demo town, ticked at 20 Hz from the
-// latest listener pose the page posts. Each tick posts the frame (flat),
-// the convolution kernels built that tick, the sources whose kernel went,
-// the page's state and (debug) the traced paths.
+// engine the Godot demo runs) with the demo town. The page posts the
+// listener's pose and the moving sources for every frame it renders,
+// stamped with that frame's time; each pose becomes one simulation frame:
+// a whole tick at 20 Hz (the frame (flat), the convolution kernels built
+// that tick, the sources whose kernel went, the page's state and (debug)
+// the traced paths), the exact paths for where everything is between.
 let w = null;
 let gpu = null;
 let gpuOn = false;
@@ -19,6 +21,7 @@ let preInit = [];
 function handle(m) {
   if (m.type === 'pose') {
     pose = m;
+    step();
   } else if (m.type === 'quality') {
     // the page's tiers: 0 high, 1 med, 2 low; −1 auto (the engine's
     // level governor walks the quality ladder by what a tick costs)
@@ -76,9 +79,6 @@ onmessage = async (e) => {
     const q = preInit;
     preInit = null;
     q.forEach(handle);
-    setInterval(tick, 50);
-    // between the ticks: the exact paths where everything is now
-    setInterval(exact, EXACT_MS);
   } else if (preInit) {
     preInit.push(m);
   } else {
@@ -86,10 +86,26 @@ onmessage = async (e) => {
   }
 };
 
-// exact frames between the ticks (the direct paths, bends and mirror
-// chains for where the listener and the sources are now): moving sounds
-// follow at this rate, the reverb at the tick's
-const EXACT_MS = 8;
+// A frame for each new pose: the whole tick when one is due (every
+// TICK_MS of the page's time), between them the exact paths (the direct
+// paths, bends and mirror chains for where the listener and the sources
+// are): moving sounds follow at the page's frame rate, the reverb at the
+// tick's. One frame per instant, and only forward in time (a frame
+// rendered after a stall can carry an earlier time than the pose posted
+// for the stall).
+const TICK_MS = 50;
+let lastT = -Infinity;
+let lastTick = -Infinity;
+function step() {
+  if (!w || pose.t == null || pose.t <= lastT) return;
+  lastT = pose.t;
+  if (pose.t - lastTick >= TICK_MS) {
+    lastTick = pose.t;
+    tick();
+  } else {
+    exact();
+  }
+}
 
 // the page's dynamic slots into the sim's buffer
 function writeDynamic() {
@@ -101,12 +117,14 @@ function writeDynamic() {
   });
 }
 
-// the page's pose time and now, on one clock (s since this worker
-// started): the sim stamps the listener and the moving sources with when
-// they were where the page said (sim_set_times)
+// the pose's time (s since this worker started): the listener and the
+// moving sources were there then, and the simulation's clock is that
+// instant too — each frame is the world at one time, the time it carries
+// (sim_set_times)
 const T0 = performance.timeOrigin + performance.now();
 function setTimes() {
-  if (pose.t != null) w.sim_set_times((pose.t - T0) / 1000, (performance.timeOrigin + performance.now() - T0) / 1000);
+  const t = (pose.t - T0) / 1000;
+  w.sim_set_times(t, t);
 }
 
 function exact() {

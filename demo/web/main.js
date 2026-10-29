@@ -2567,7 +2567,12 @@ async function startAudio() {
 
   state.fx = (src, kind, action = 'play', gain, rate) =>
     node.port.postMessage({ type: 'fx', src, kind, action, gain, rate });
-  setInterval(() => {
+  // the pose and the moving sources, posted for every rendered frame,
+  // stamped with that frame's time (`t`, the rAF clock: when they were
+  // there): the worker makes one simulation frame of each, the world at
+  // that instant, and the mixer moves every path over the time between
+  state.postPose = (t) => {
+    state.postedAt = performance.now();
     // face-tracked head translation: a small world-space offset of the
     // listening position (lean left → ears move left). A lean must never
     // put the ears through geometry — crossing a jamb wall would slam
@@ -2585,9 +2590,7 @@ async function startAudio() {
     }
     worker.postMessage({
       type: 'pose',
-      // when this pose and the moving sources were here (the worker's
-      // sim stamps them with it: Doppler by real time, not tick counts)
-      t: performance.timeOrigin + performance.now(),
+      t: performance.timeOrigin + t,
       x: px,
       y: py,
       z: EYE + (state.pose.z || 0) + (state.airZ || 0) + f.dy - 0.7 * (state.crouch || 0),
@@ -2608,6 +2611,11 @@ async function startAudio() {
           : [5, state.pose.x, state.pose.y, Math.max(0.2, (state.pose.z || 0) + 0.2), 1],
       ],
     });
+  };
+  // no frames rendered (a hidden tab, a long stall): nothing moves either,
+  // so the pose is current now — the simulation goes on at this pace
+  setInterval(() => {
+    if (performance.now() - (state.postedAt || 0) > 250) state.postPose(performance.now());
   }, 50);
   setInterval(() => {
     node.port.postMessage({
@@ -3177,6 +3185,8 @@ function frame(t) {
       camera.near = near;
       camera.updateProjectionMatrix();
     }
+    // where everything was in this frame, to the simulation
+    if (state.postPose) state.postPose(t);
   }
 
   const tt = t / 1000;

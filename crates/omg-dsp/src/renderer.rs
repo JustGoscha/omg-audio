@@ -630,9 +630,11 @@ pub struct Renderer {
     /// the interval path delays plan their constant-rate motion over.
     update_interval: f64,
     /// The shared update clock every path delay is timed on: how many
-    /// samples after its arrival the current update's window starts (one
-    /// motion after the previous window, pulled gently toward arrivals).
+    /// samples after its arrival the current update's window starts (where
+    /// the previous window ends, pulled gently toward arrivals).
     window_lead: f64,
+    /// The previous fresh update's motion (samples): its window's length.
+    last_motion: f64,
     /// Version of the last FRESH block (re-applied blocks — budget
     /// changes — must not restart the delay motion).
     last_version: u64,
@@ -748,6 +750,7 @@ impl Renderer {
             since_params: 0,
             update_interval: 0.05 * sample_rate as f64,
             window_lead: 0.0,
+            last_motion: 0.0,
             last_version: u64::MAX,
             updates_seen: 0,
             fdn: Fdn::new(sample_rate),
@@ -962,6 +965,7 @@ impl Renderer {
     /// that time instead of over the average update interval — exact
     /// Doppler when the simulation samples the motion irregularly (game
     /// physics steps, simulation ticks that run long or get superseded).
+    /// `Some(0.0)`: the previous block's instant, traced again.
     pub fn set_params_after(&mut self, pb: &ParamBlock, motion: Option<f64>) {
         if pb.version == self.version_seen {
             return;
@@ -974,7 +978,11 @@ impl Renderer {
             RETARGET_FRACTION_OF_TICK
                 * (self.since_params as f64).max(self.update_interval).max(motion.unwrap_or(0.0)),
         );
-        let fresh = pb.version != self.last_version;
+        // a block for the instant the last one was for (`motion` 0: the
+        // same moment traced again): its paths glide on as they were — no
+        // time passed, so nothing moved; new paths join their timeline
+        let same_instant = motion == Some(0.0);
+        let fresh = pb.version != self.last_version && !same_instant;
         let arrived_after = self.since_params as f64;
         if fresh {
             if !self.first_params {
@@ -994,16 +1002,24 @@ impl Renderer {
         // nothing about this update's motion
         let motion = motion.filter(|m| *m >= 0.25 * interval && *m <= 4.0 * interval).unwrap_or(interval);
         // where this update's window starts on the shared clock (as the
-        // samples already into it): every path alive now and every path
-        // born later moves on the same timeline, whenever updates arrive
+        // samples already into it): where the previous one ends, its
+        // motion after it began (each window glides from the previous
+        // target to this one over this update's motion) — every path alive
+        // now and every path born later moves on the same timeline,
+        // whenever updates arrive. (Begun this update's motion after the
+        // previous window instead, unequal steps — frames 8 and 17 ms
+        // apart — tore the timeline by the difference at every update.)
         let age = if fresh && !self.first_params {
-            let lead = self.window_lead + motion - arrived_after;
+            let lead = self.window_lead + self.last_motion - arrived_after;
             // a stall or a pause: start over at the arrivals
             self.window_lead = if lead.abs() > 2.0 * interval { 0.0 } else { lead * (1.0 - CLOCK_PULL) };
             -self.window_lead
         } else {
             0.0
         };
+        if fresh {
+            self.last_motion = motion;
+        }
 
         // CPU ceiling: keep only the strongest incoming taps (see
         // `DEFAULT_TAP_CEILING`; the load governor lowers it live).

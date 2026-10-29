@@ -175,3 +175,128 @@ fn a_running_source_sounds_a_steady_doppler_under_game_timing() {
         assert!(worst(&p) < limit, "v={v} m/s: pitch wobbles {:.2} % (limit {:.2} %)", worst(&p) * 100.0, limit * 100.0);
     }
 }
+
+/// Who runs in `run_threaded`.
+#[derive(Clone, Copy, PartialEq)]
+enum Runner {
+    /// The source runs at the still listener.
+    Source,
+    /// The listener runs at the still source, its pose stamped with the
+    /// physics step that moved it (`Engine::set_listener_at`).
+    Listener,
+    /// `Listener`, its pose stamped with each frame's own time instead
+    /// (`Engine::set_listener`).
+    ListenerEachFrame,
+}
+
+/// The threaded engine's timing, as the Godot demo feeds it: the game
+/// renders at 120 Hz and moves the runner on 60 Hz physics steps, sending
+/// the listener's pose and the source's place every frame (a source's
+/// place stamped when first sent, `Engine::set_source`; the still
+/// listener with each frame's time, `Engine::set_listener`); the
+/// simulation thread traces exact frames at 120 Hz on its own phase
+/// between 20 Hz ticks, with the commands that arrived by then; the audio
+/// thread takes the newest frame at each 512-sample callback. The pitch
+/// of every 20 ms window after the first second, relative to the Doppler
+/// prediction.
+fn run_threaded(v: f32, secs: f32, runner: Runner) -> Vec<f32> {
+    const FRAME_HZ: f64 = 120.0;
+    const PHYSICS_HZ: f64 = 60.0;
+    let mut sim = Simulation::new(Config::default());
+    let x0 = v * (secs + 1.0) + 30.0;
+    let src_at = if runner == Runner::Source { x0 } else { 0.0 };
+    let src = sim.add_source(SourceDesc::at([src_at, 0.0, 1.6]));
+    let mut m = Mixer::new(SR, Hrir::none());
+    let tone: Vec<f32> = (0..4800).map(|k| (std::f32::consts::TAU * F0 * k as f32 / SR).sin() * 0.5).collect();
+    // the game's frame f at time f/FRAME_HZ: the runner where the last
+    // physics step left it (two frames a step), and that step's time
+    let state = |f: u64| -> (f64, f32, f64) {
+        let step = (f / 2) as f64 / PHYSICS_HZ;
+        (f as f64 / FRAME_HZ, v * step as f32, step)
+    };
+    let (mut frame, mut placed) = (0u64, (f32::NAN, 0.0f64));
+    let (mut exact_k, mut tick_k) = (0u64, 0u64);
+    let mut published: Option<Frame> = None;
+    let n = (secs * SR) as usize;
+    let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+    let (mut b, mut started) = (0usize, false);
+    while b < n {
+        let cb = b as f64 / SR as f64;
+        // the simulation thread up to this callback: its exact frames and
+        // ticks in time order, each after the game's commands sent by then
+        loop {
+            let te = 0.0031 + exact_k as f64 / FRAME_HZ;
+            // (each tick just after a frame without a physics step)
+            let tt = 0.0091 + tick_k as f64 / 20.0;
+            let at = te.min(tt);
+            if at > cb {
+                break;
+            }
+            while (frame as f64 / FRAME_HZ) <= at {
+                let (t, run, step) = state(frame);
+                match runner {
+                    Runner::Source => {
+                        let x = x0 - run;
+                        let stamp = if x == placed.0 { placed.1 } else { t };
+                        placed = (x, stamp);
+                        sim.set_listener_at([0.0, 0.0, 1.6], 0.0, 0.0, 0.0, t);
+                        sim.set_source_at(src, [x, 0.0, 1.6], true, stamp);
+                    }
+                    Runner::Listener => sim.set_listener_at([-x0 + run, 0.0, 1.6], 0.0, 0.0, 0.0, step),
+                    Runner::ListenerEachFrame => sim.set_listener_at([-x0 + run, 0.0, 1.6], 0.0, 0.0, 0.0, t),
+                }
+                frame += 1;
+            }
+            if tt <= te {
+                published = Some(sim.tick());
+                tick_k += 1;
+            } else {
+                if let Some(f) = sim.tick_exact() {
+                    published = Some(f);
+                }
+                exact_k += 1;
+            }
+        }
+        if let Some(f) = published.take() {
+            m.apply(&f);
+            if !started {
+                m.play(src, &clip(&tone), Play::LOOP);
+                started = true;
+            }
+        }
+        let e = (b + 512).min(n);
+        m.render(&mut l[b..e], &mut r[b..e]);
+        b = e;
+    }
+    let want = if runner == Runner::Source { F0 / (1.0 - v / SPEED_OF_SOUND) } else { F0 * (1.0 + v / SPEED_OF_SOUND) };
+    (SR as usize..n - 960).step_by(960).map(|w| zc_freq(&l[w..w + 960]) / want - 1.0).collect()
+}
+
+/// A frame is the world at the simulation's clock (`Frame::time`). Under
+/// the threaded engine's timing a source running past a still listener
+/// keeps a steady Doppler: before, frames carried the still listener's
+/// first stamp, no time passed between any two of them, and the mixer
+/// divided each frame's motion by the average interval between arrivals
+/// — a car's pitch in the Godot demo jittered 9.0 Hz rms on a 500 Hz
+/// tone (0.3 since, as headless: `record.gd` carfar). A listener running
+/// on physics steps keeps it too when its pose is stamped with the step
+/// (`Engine::set_listener_at`, as the Godot node does): sent again with
+/// each frame's time, a tick after a frame without a step traced it
+/// standing still and the next frame ran twice as fast (the demo's walk
+/// 1.1 Hz rms, 0.06 stamped). (The mixer's update windows also had to
+/// begin where the previous one ends: unequal steps tore the timeline.)
+#[test]
+fn doppler_stays_steady_under_the_threaded_engines_timing() {
+    let worst = |p: &[f32]| p.iter().map(|x| x.abs()).fold(0.0, f32::max);
+    for v in [10.0f32, 27.0] {
+        let limit = 0.004 + 0.02 * v / SPEED_OF_SOUND;
+        for runner in [Runner::Source, Runner::Listener] {
+            let p = run_threaded(v, 4.0, runner);
+            let mean = p.iter().sum::<f32>() / p.len() as f32;
+            let each = if runner == Runner::Listener { format!(" (each frame stamped: {:.3} %)", worst(&run_threaded(v, 4.0, Runner::ListenerEachFrame)) * 100.0) } else { String::new() };
+            let who = if runner == Runner::Source { "source" } else { "listener" };
+            eprintln!("{who} at {v} m/s: mean {:+.3} %, worst 20 ms deviation {:.3} %{each}", mean * 100.0, worst(&p) * 100.0);
+            assert!(worst(&p) < limit, "{who} at {v} m/s: pitch wobbles {:.2} % (limit {:.2} %)", worst(&p) * 100.0, limit * 100.0);
+        }
+    }
+}

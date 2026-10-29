@@ -134,8 +134,9 @@ enum SimCmd {
     ObjectMaterial(ObjectId, Material),
     ObjectEnabled(ObjectId, bool),
     RemoveObject(ObjectId),
-    /// The listener's pose, when it was current, and the time now.
-    Listener([f32; 3], f32, f32, f32, f64, f64),
+    /// The listener's pose and when it was current (the simulation's
+    /// clock goes to it).
+    Listener([f32; 3], f32, f32, f32, f64),
     Config(Config),
     DebugPaths(bool),
 }
@@ -202,10 +203,8 @@ pub struct Engine {
     next_source: u32,
     next_object: u32,
     next_voice: u32,
-    /// The listener stamp clock, and the last position sent with the time
-    /// it was first sent (see `set_listener`).
+    /// The clock poses and places are stamped on (`now`).
     clock: Instant,
-    pose: Option<([f32; 3], f64)>,
     /// Each source's last position sent with the time it was first sent
     /// (see `set_source`).
     placed: std::collections::HashMap<SourceId, ([f32; 3], f64)>,
@@ -261,7 +260,6 @@ impl Engine {
             next_object: 0,
             next_voice: 1 << 31, // disjoint from ids the Mixer hands out itself
             clock: Instant::now(),
-            pose: None,
             placed: std::collections::HashMap::new(),
             powered: std::collections::HashMap::new(),
             sample_rate,
@@ -325,6 +323,21 @@ impl Engine {
         self.sim(SimCmd::SetSource(id, position, active, t, now));
     }
 
+    /// `set_source` stamped with when the place was current (the
+    /// engine's clock, `now`): e.g. the physics step that moved it. The
+    /// simulation's clock goes to it — stamp everything of one game state
+    /// with one time (`set_listener_at`).
+    pub fn set_source_at(&mut self, id: SourceId, position: [f32; 3], active: bool, time: f64) {
+        self.placed.insert(id, (position, time));
+        self.sim(SimCmd::SetSource(id, position, active, time, time));
+    }
+
+    /// The engine's clock (s since it started), the one `set_listener_at`
+    /// and `set_source_at` take their stamps on.
+    pub fn now(&self) -> f64 {
+        self.clock.elapsed().as_secs_f64()
+    }
+
     /// Acoustic loudness (see `SourceDesc::gain`).
     pub fn set_source_loudness(&mut self, id: SourceId, gain: f32) {
         self.sim(SimCmd::SourceGain(id, gain));
@@ -358,27 +371,29 @@ impl Engine {
         self.sim(SimCmd::RemoveObject(id));
     }
 
-    /// Listener pose for the simulation; the head orientation reaches
-    /// the mixer with the next frame (or call `set_head` for audio-rate
-    /// head tracking). Call it every frame: the pose is stamped with the
-    /// time it was first sent at this position — a game that renders
-    /// faster than its physics moves the listener sends the same position
-    /// a few times, and it has been there since the physics step (see
-    /// `Simulation::set_listener_at`; Doppler depends on it).
+    /// Listener pose for the simulation, current now; the head
+    /// orientation reaches the mixer with the next frame (or call
+    /// `set_head` for audio-rate head tracking). Call it every frame. A
+    /// game whose physics moves the listener at a lower rate than it
+    /// renders should stamp the pose with the physics step's time instead
+    /// (`set_listener_at`), and its moving sources with the same time
+    /// (`set_source_at`): sent again unstamped between the steps, the
+    /// pose stood still for a frame and moved twice as fast the next — a
+    /// walk's Doppler flutters at the frame rate.
     pub fn set_listener(&mut self, position: [f32; 3], yaw: f32, pitch: f32, roll: f32) {
-        let time = match self.pose {
-            Some((p, t)) if p == position => t,
-            _ => self.clock.elapsed().as_secs_f64(),
-        };
-        self.set_listener_at(position, yaw, pitch, roll, time);
+        let now = self.now();
+        self.set_listener_at(position, yaw, pitch, roll, now);
     }
 
-    /// `set_listener` with your own time stamp (seconds, a steady clock:
-    /// when the pose was current, e.g. your physics step's time).
+    /// `set_listener` stamped with when the pose was current (the
+    /// engine's clock, `now`: e.g. the physics step that moved it). The
+    /// simulation's clock goes to it: a frame traced then is the world at
+    /// that instant (`Frame::time`), and the mixer moves every path over
+    /// the time between two instants. Stamp everything of one game state
+    /// with one time; a state sent again (a frame without a physics step)
+    /// keeps its stamp.
     pub fn set_listener_at(&mut self, position: [f32; 3], yaw: f32, pitch: f32, roll: f32, time: f64) {
-        self.pose = Some((position, time));
-        let now = self.clock.elapsed().as_secs_f64().max(time);
-        self.sim(SimCmd::Listener(position, yaw, pitch, roll, time, now));
+        self.sim(SimCmd::Listener(position, yaw, pitch, roll, time));
     }
 
     fn voice(&mut self) -> VoiceId {
@@ -480,10 +495,7 @@ fn handle(sim: &mut Simulation, c: SimCmd) {
         SimCmd::ObjectMaterial(id, m) => sim.set_object_material(id, m),
         SimCmd::ObjectEnabled(id, e) => sim.set_object_enabled(id, e),
         SimCmd::RemoveObject(id) => sim.remove_object(id),
-        SimCmd::Listener(p, y, pi, r, t, now) => {
-            sim.set_listener_at(p, y, pi, r, t);
-            sim.set_time(now);
-        }
+        SimCmd::Listener(p, y, pi, r, t) => sim.set_listener_at(p, y, pi, r, t),
         SimCmd::Config(c) => sim.set_config(c),
         SimCmd::DebugPaths(on) => sim.set_debug_paths(on),
     }

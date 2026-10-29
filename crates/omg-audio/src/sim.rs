@@ -346,9 +346,10 @@ pub struct Simulation {
     sources: Vec<Src>,
     objects: Vec<Obj>,
     listener: Listener,
-    listener_time: Option<f64>,
     /// The simulation's clock (s): the host's time (`set_time`,
     /// `set_listener_at`), or a tick period per tick when it gives none.
+    /// A frame is the world at this instant (`Frame::time`): the paths
+    /// reach every moving source where it emitted what arrives now.
     clock: f64,
     clock_given: bool,
     /// Ghosts made since the last frame (ghost, parent), and the next
@@ -360,10 +361,10 @@ pub struct Simulation {
     /// versions.
     frame_no: u64,
     /// The last full tick's sky and environment (exact frames resend
-    /// them), and where everything was at the last frame.
+    /// them), and where everything was at the last frame, and when.
     last_sky: Vec<SkyCell>,
     last_env: omg_dsp::env::Environment,
-    exact_at: Option<(Vec3, Vec<Vec3>, u64)>,
+    exact_at: Option<(Vec3, Vec<Vec3>, u64, f64)>,
     next_source: u32,
     next_object: u32,
     panels: Vec<(Vec3, Vec3, Material)>,
@@ -528,7 +529,6 @@ impl Simulation {
             sources: Vec::new(),
             objects: Vec::new(),
             listener: Listener::default(),
-            listener_time: None,
             clock: 0.0,
             clock_given: false,
             new_ghosts: Vec::new(),
@@ -852,20 +852,20 @@ impl Simulation {
     /// Where the listener is and where they look (see `Listener`). The
     /// sim traces from the position; the orientation travels in the frame
     /// to the mixer, which turns the sound field (between frames, call
-    /// `Mixer::set_head` directly for the fastest response).
+    /// `Mixer::set_head` directly for the fastest response). The pose is
+    /// current at the clock as it stands (`set_time`).
     pub fn set_listener(&mut self, position: [f32; 3], yaw: f32, pitch: f32, roll: f32) {
         self.listener = Listener { position, yaw, pitch, roll };
-        self.listener_time = None;
     }
 
     /// `set_listener` with the time (seconds, any steady clock) at which
     /// the pose was current — for a game, the physics step that moved the
-    /// listener. Frames carry it, and the mixer moves every path's delay
-    /// over the time that really passed between two traced poses: steady
-    /// Doppler even though ticks sample the motion irregularly.
+    /// listener: the clock is set to it (`set_time`). Frames carry their
+    /// instant, and the mixer moves every path's delay over the time that
+    /// really passed between two traced instants: steady Doppler even
+    /// though ticks sample the motion irregularly.
     pub fn set_listener_at(&mut self, position: [f32; 3], yaw: f32, pitch: f32, roll: f32, time: f64) {
         self.listener = Listener { position, yaw, pitch, roll };
-        self.listener_time = Some(time);
         self.set_time(time);
     }
 
@@ -1093,7 +1093,7 @@ impl Simulation {
         self.frame_no += 1;
         let version = self.frame_no;
         let ear = v3(self.listener.position);
-        self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect(), self.objects_sig()));
+        self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect(), self.objects_sig(), self.clock));
 
         self.panels.clear();
         for o in self.objects.iter().filter(|o| o.enabled) {
@@ -1227,7 +1227,7 @@ impl Simulation {
         Frame {
             version,
             listener: self.listener,
-            time: self.listener_time,
+            time: self.clock_given.then_some(self.clock),
             blocks: self.sources.iter().map(|s| (s.id, s.block.clone())).collect(),
             kernels: self.sources.iter().filter_map(|s| s.kernel.as_ref().map(|k| (s.id, k.0.clone()))).collect(),
             sky,
@@ -1254,15 +1254,17 @@ impl Simulation {
         let landed = self.collect_kernels();
         // something moved: the listener, a source, or an object (a door
         // shutting is heard at the next exact frame, not the next tick) —
-        // or a source moved lately: what arrives now left it along its
-        // track, so its paths go on moving after it stopped
+        // or time passed since a source moved lately: what arrives now
+        // left it along its track, so its paths go on moving after it
+        // stopped (the same instant again: nothing new to trace)
         let moved = match &self.exact_at {
-            Some((l, ps, o)) => {
+            Some((l, ps, o, t)) => {
                 (*l - ear).length() > 1e-4
                     || *o != sig
                     || ps.len() != self.sources.len()
                     || self.sources.iter().zip(ps).any(|(s, p)| (s.pos - *p).length() > 1e-4)
-                    || self.sources.iter().any(|s| s.track.len() > 1 && s.track.back().is_some_and(|b| b.0 > now - RECENT_MOVE_S))
+                    || (now > *t
+                        && self.sources.iter().any(|s| s.track.len() > 1 && s.track.back().is_some_and(|b| b.0 > now - RECENT_MOVE_S)))
             }
             None => true,
         };
@@ -1271,7 +1273,7 @@ impl Simulation {
         if (!moved && !landed) || self.frame_no == 0 || !self.new_ghosts.is_empty() {
             return None;
         }
-        self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect(), sig));
+        self.exact_at = Some((ear, self.sources.iter().map(|s| s.pos).collect(), sig, now));
         self.panels.clear();
         for o in self.objects.iter().filter(|o| o.enabled) {
             self.panels.push((o.min, o.max, o.material));
@@ -1316,7 +1318,7 @@ impl Simulation {
         Some(Frame {
             version,
             listener: self.listener,
-            time: self.listener_time,
+            time: self.clock_given.then_some(self.clock),
             blocks: self.sources.iter().map(|s| (s.id, s.block.clone())).collect(),
             kernels: self.sources.iter().filter_map(|s| s.kernel.as_ref().map(|k| (s.id, k.0.clone()))).collect(),
             sky: self.last_sky.clone(),

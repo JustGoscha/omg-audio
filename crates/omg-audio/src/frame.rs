@@ -41,9 +41,13 @@ pub struct Frame {
     /// Tick number (increases by one per `Simulation::tick`).
     pub version: u64,
     pub listener: Listener,
-    /// When the listener pose this frame was traced from was current, in
-    /// seconds on the host's clock (`Simulation::set_listener_at`); None
-    /// when the host gave no time. The mixer times path motion by it.
+    /// The instant this frame's paths are for, in seconds on the host's
+    /// clock (the simulation's clock when it was traced: `Simulation::
+    /// set_time`, `set_listener_at`); None when the host gave no time.
+    /// The mixer moves every path's delay over the time between two
+    /// frames' instants; a frame of the instant the last one was for (a
+    /// whole tick traced after an exact frame, nothing new between) is
+    /// that moment traced again — no time passed, nothing moved.
     pub time: Option<f64>,
     /// Every source's acoustic paths (world frame; the mixer applies the
     /// head orientation). A block keeps its `version` while it is not
