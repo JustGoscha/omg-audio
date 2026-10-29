@@ -75,7 +75,10 @@ follows from how those points move. Static sources skip the solve.
   its glides and fades jump to their targets, so a door shut between two
   sounds is shut for the next one.
 - The audible window times a pathless channel's scattered field from its
-  free-field arrival (a ghost, a source behind walls rings on).
+  free-field arrival (a ghost, a source behind walls rings on). A source
+  back in the window starts at full level — its fader, its paths: it
+  wasn't heard, so nothing fades in from it (a click landing just after
+  its source came back played 5 dB down).
 
 ## Steady when nothing changes, fresh when something does
 
