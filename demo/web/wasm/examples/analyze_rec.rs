@@ -1,9 +1,11 @@
 //! Reads a recording of what Godot played (`demo/godot/demo/record.gd`:
 //! the WAV, its audio callbacks `.wav.csv`, the game frames
-//! `.frames.csv`) and reports, by where the ears were (outside, crossing
-//! the wall, inside — the fly scenario's y):
+//! `.frames.csv`) and reports, by the scenario's phase (its `phase`
+//! column: outside / crossing / inside flying, approach / pass / away for
+//! the car, closed / opening / open / shutting / shut at the door; older
+//! fly recordings by the ears' y):
 //!
-//!  - artifacts: with `--tone` the flute played a pure 500 Hz alone, so
+//!  - artifacts: with `--tone` the source played a pure 500 Hz alone, so
 //!    the output above 3 kHz (4th-order high-pass) is what the engine
 //!    made — pops, clicks, crackle — per 5 ms window, under the whole;
 //!  - jumps: the 10 ms level off its own course (median of nine) by
@@ -79,21 +81,38 @@ fn main() {
     let sr = sr as f64;
     let calls = csv(&format!("{base}.wav.csv"));
     let frames = csv(&format!("{base}.frames.csv"));
+    // each frame's phase label, when the recording has them
+    let text = fs::read_to_string(format!("{base}.frames.csv")).unwrap_or_default();
+    let labelled = text.lines().next().is_some_and(|h| h.ends_with(",phase"));
+    let labels: Vec<String> = if labelled { text.lines().skip(1).map(|l| l.rsplit(',').next().unwrap_or("").to_string()).collect() } else { Vec::new() };
+    let mut names: Vec<String> = Vec::new();
+    for l in &labels {
+        if !names.contains(l) {
+            names.push(l.clone());
+        }
+    }
+    if names.is_empty() {
+        names = ["outside", "crossing", "inside"].map(String::from).to_vec();
+    }
+    let frame_at = |t: f64| -> usize { frames.partition_point(|f| f[0] < t * 1000.0).min(frames.len().saturating_sub(1)) };
     // the ears' y at a time (s), from the game frames
-    let y_at = |t: f64| -> f64 {
-        let ms = t * 1000.0;
-        let k = frames.partition_point(|f| f[0] < ms).min(frames.len().saturating_sub(1));
-        frames.get(k).map_or(0.0, |f| f[2])
-    };
+    let y_at = |t: f64| -> f64 { frames.get(frame_at(t)).map_or(0.0, |f| f[2]) };
     let wall = 52.0;
-    let phase = |y: f64| if y < wall - 1.0 { 0 } else if y < wall + 1.5 { 1 } else { 2 };
-    let names = ["outside", "crossing", "inside"];
+    let phase_at = |t: f64| -> usize {
+        if labelled {
+            let l = &labels[frame_at(t).min(labels.len() - 1)];
+            names.iter().position(|n| n == l).unwrap_or(0)
+        } else {
+            let y = y_at(t);
+            if y < wall - 1.0 { 0 } else if y < wall + 1.5 { 1 } else { 2 }
+        }
+    };
     println!("{base}: {:.1} s at {} Hz", l.len() as f64 / sr, sr);
 
     // artifacts: above 3 kHz, 5 ms windows
     let (mut h1, mut h2, mut h3, mut h4) = (Biq::hp(3000.0, sr), Biq::hp(3000.0, sr), Biq::hp(3000.0, sr), Biq::hp(3000.0, sr));
     let w = (0.005 * sr) as usize;
-    let mut art: [Vec<(f64, f64)>; 3] = Default::default();
+    let mut art: Vec<Vec<(f64, f64)>> = vec![Vec::new(); names.len()];
     let (mut eh, mut et) = (0.0f64, 0.0f64);
     for i in 0..l.len() {
         let (a, b) = (l[i] as f64, r[i] as f64);
@@ -110,7 +129,11 @@ fn main() {
         if (i + 1) % w == 0 {
             let t = i as f64 / sr;
             if t > 0.05 {
-                art[phase(y_at(t))].push((t, db(eh / et.max(1e-30))));
+                // a silent window (the source not in the audible window
+                // yet) holds no artifact
+                if et > 1e-20 {
+                    art[phase_at(t)].push((t, db(eh / et)));
+                }
             }
             eh = 0.0;
             et = 0.0;
@@ -129,7 +152,7 @@ fn main() {
     let mut worst: Vec<(f64, f64)> = art.iter().flatten().copied().filter(|x| x.1 > -30.0).collect();
     worst.sort_by(|a, b| b.1.total_cmp(&a.1));
     if !worst.is_empty() {
-        let w: Vec<String> = worst.iter().take(8).map(|(t, d)| format!("{t:.3}s {d:.0}dB (y {:.1})", y_at(*t))).collect();
+        let w: Vec<String> = worst.iter().take(8).map(|(t, d)| format!("{t:.3}s {d:.0}dB ({})", names[phase_at(*t)])).collect();
         println!("    loudest: {}", w.join(", "));
     }
 
@@ -141,18 +164,18 @@ fn main() {
         .enumerate()
         .map(|(k, (a, b))| ((k * w) as f64 / sr, db(a.iter().zip(b).map(|(x, y)| (x * x + y * y) as f64).sum::<f64>() / w as f64)))
         .collect();
-    let mut jumps = [[0usize; 3]; 3];
+    let mut jumps = vec![[0usize; 3]; names.len()];
     for k in 4..lv.len().saturating_sub(4) {
         let mut m: Vec<f64> = lv[k - 4..=k + 4].iter().map(|x| x.1).collect();
         m.sort_by(|a, b| a.total_cmp(b));
         let d = (lv[k].1 - m[4]).abs();
-        let p = phase(y_at(lv[k].0));
+        let p = phase_at(lv[k].0);
         jumps[p][0] += 1;
         jumps[p][1] += (d > 2.0) as usize;
         jumps[p][2] += (d > 4.0) as usize;
     }
     println!("  level jumps (10 ms off its 90 ms course):");
-    for p in 0..3 {
+    for p in 0..names.len() {
         if jumps[p][0] > 0 {
             println!("    {:8} {:4} windows: >2 dB {:3}, >4 dB {:3}", names[p], jumps[p][0], jumps[p][1], jumps[p][2]);
         }
@@ -183,6 +206,15 @@ fn main() {
         let tmax = tick.iter().cloned().fold(0.0, f64::max);
         let lmax = load.iter().cloned().fold(0.0, f64::max);
         let changes = taps.windows(2).filter(|w| w[0] != w[1]).count();
+        // the quality ladder's rung (recordings since Oct 29)
+        let levels = frames.iter().filter_map(|f| f.get(10).copied()).collect::<Vec<f64>>();
+        if !levels.is_empty() {
+            let mut moves = Vec::new();
+            for w in levels.windows(2).enumerate().filter(|(_, w)| w[0] != w[1]) {
+                moves.push(format!("{:.1}s → {:.0}", frames[w.0 + 1][0] / 1000.0, w.1[1]));
+            }
+            println!("  quality: rung {:.0} at the start; {}", levels[0], if moves.is_empty() { "no moves".into() } else { moves.join(", ") });
+        }
         println!(
             "  engine: tick {:.1}–{:.1} ms, load up to {:.2}, budget changes {} (taps {:.0} → {:.0}), late frames {:.0}",
             tick.iter().cloned().fold(f64::MAX, f64::min),

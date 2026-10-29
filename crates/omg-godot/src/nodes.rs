@@ -717,6 +717,7 @@ impl OmgWorld {
             d.set("rt60", s.rt60);
             d.set("enclosure", s.enclosure);
             d.set("tick_ms", s.tick_ms);
+            d.set("tick_parts", &PackedFloat32Array::from(&s.tick_parts[..]));
             d.set("gpu_ms", s.gpu_ms);
             d.set("ticks", s.ticks as i64);
             d.set("gpu", h.gpu);

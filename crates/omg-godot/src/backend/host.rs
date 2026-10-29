@@ -217,6 +217,9 @@ impl Out {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stats {
     pub tick_ms: f32,
+    /// The last tick by part (ms): direct, one-edge, two-edge, early,
+    /// late, chains, fold.
+    pub tick_parts: [f32; 7],
     /// The last GPU walk, submit to read-back (ms; 0 on the CPU).
     pub gpu_ms: f32,
     pub ticks: u32,
@@ -359,6 +362,7 @@ impl Host {
         let f = |a: &AtomicU32| f32::from_bits(a.load(Ordering::Relaxed));
         Stats {
             tick_ms,
+            tick_parts: self.engine.tick_parts(),
             gpu_ms: self.engine.gpu_walk_ms(),
             ticks,
             load: f(&self.sh.load),

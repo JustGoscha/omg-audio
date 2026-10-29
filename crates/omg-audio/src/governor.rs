@@ -119,14 +119,18 @@ impl Governor {
 /// frame — the tick shares the machine with it): starts at the lowest
 /// level and earns its way up, one level after `CALM_TICKS` ticks under
 /// `CLIMB` of the target with the audio thread under `LOAD`; sheds at
-/// once when a tick runs over the target — as many levels as the overrun
-/// asks, each about `sim::LEVEL_STEP`× the one below — and one level
-/// after `HOT_TICKS` ticks with the audio thread over `LOAD`.
+/// once when two ticks in a row run over the target — as many levels as
+/// the lesser overrun asks, each about `sim::LEVEL_STEP`× the one below
+/// (one tick alone over it is the machine's hiccup, not the level's
+/// cost) — and one level after `HOT_TICKS` ticks with the audio thread
+/// over `LOAD`.
 pub struct LevelGovernor {
     level: usize,
     top: usize,
     calm: u32,
     hot: u32,
+    /// The last tick's cost (ms).
+    last: f32,
 }
 
 const CLIMB: f32 = 0.6;
@@ -137,7 +141,7 @@ const HOT_TICKS: u32 = 20;
 impl LevelGovernor {
     /// Levels 0 (lowest) … `top`.
     pub fn new(top: usize) -> Self {
-        Self { level: 0, top, calm: 0, hot: 0 }
+        Self { level: 0, top, calm: 0, hot: 0, last: 0.0 }
     }
 
     pub fn level(&self) -> usize {
@@ -147,8 +151,13 @@ impl LevelGovernor {
     /// One tick took `tick_ms` against `target_ms`, with the audio thread
     /// at `load` (render time over audio time): the new level if it moves.
     pub fn report(&mut self, tick_ms: f32, target_ms: f32, load: f32) -> Option<usize> {
-        if tick_ms > target_ms && self.level > 0 {
-            let over = ((tick_ms / target_ms).ln() / crate::sim::LEVEL_STEP.ln()).ceil().max(1.0) as usize;
+        let both = tick_ms.min(self.last);
+        self.last = tick_ms;
+        if tick_ms > target_ms {
+            self.calm = 0;
+        }
+        if both > target_ms && self.level > 0 {
+            let over = ((both / target_ms).ln() / crate::sim::LEVEL_STEP.ln()).ceil().max(1.0) as usize;
             self.level = self.level.saturating_sub(over);
             self.calm = 0;
             self.hot = 0;
@@ -192,9 +201,14 @@ mod tests {
             }
             assert_eq!(g.report(5.0, 16.0, 0.2), Some(l));
         }
-        // a tick just over the target: one level down, now
+        // one tick over the target alone: a hiccup
+        assert_eq!(g.report(40.0, 16.0, 0.2), None);
+        assert_eq!(g.report(5.0, 16.0, 0.2), None);
+        // two in a row just over it: one level down, now
+        assert_eq!(g.report(17.0, 16.0, 0.2), None);
         assert_eq!(g.report(17.0, 16.0, 0.2), Some(3));
-        // three times over: as many levels as that takes
+        // three times over, twice: as many levels as that takes
+        assert_eq!(g.report(48.0, 16.0, 0.2), Some(2));
         assert_eq!(g.report(48.0, 16.0, 0.2), Some(0));
         // the audio thread pressed for a second of ticks: no climb, and
         // at the floor nothing to shed

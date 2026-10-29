@@ -188,6 +188,23 @@ pub struct Config {
     /// The host's tick period (s). `Compute::Gpu` sizes its walk to land
     /// every tick within `gpu_budget`.
     pub tick_s: f32,
+    /// Threads the CPU ray walk is spread over each tick (the tick's own
+    /// counts; wasm walks on one). The result is the same for any count.
+    /// Default: half the machine's hardware threads, at most 4 — the game
+    /// keeps the rest.
+    pub walk_threads: usize,
+}
+
+/// `Config::walk_threads`' default for this machine.
+pub fn default_walk_threads() -> usize {
+    #[cfg(target_arch = "wasm32")]
+    {
+        1
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 4))
+    }
 }
 
 impl Config {
@@ -220,6 +237,7 @@ impl Default for Config {
             kernel_every_ticks: 1,
             gpu_budget: 0.2,
             tick_s: 0.05,
+            walk_threads: default_walk_threads(),
         }
     }
 }
@@ -499,6 +517,7 @@ impl Simulation {
                 t.v4 = cfg.v4;
                 t.v5 = cfg.v5;
                 t.v6 = cfg.v6;
+                t.threads = cfg.walk_threads;
                 t
             },
             walker: None,
@@ -547,6 +566,7 @@ impl Simulation {
         self.tracer.v4 = cfg.v4;
         self.tracer.v5 = cfg.v5;
         self.tracer.v6 = cfg.v6;
+        self.tracer.threads = cfg.walk_threads;
         if rebuild {
             self.make_walker();
         }
@@ -563,6 +583,7 @@ impl Simulation {
         self.tracer.v4 = self.cfg.v4;
         self.tracer.v5 = self.cfg.v5;
         self.tracer.v6 = self.cfg.v6;
+        self.tracer.threads = self.cfg.walk_threads;
         self.tracer.debug = self.debug_paths;
         for s in &mut self.sources {
             s.traced = None;

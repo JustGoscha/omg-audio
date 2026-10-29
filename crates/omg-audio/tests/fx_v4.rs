@@ -47,13 +47,19 @@ fn clap_in(g: Geometry, lis: [f32; 3], src: [f32; 3], secs: f32) -> (Vec<f32>, f
     sim.set_geometry(g);
     let id = sim.add_source(SourceDesc::at(src));
     sim.set_listener(lis, 0.0, 0.0, 0.0);
+    // as a host does: every frame applied (a kernel lands in whichever
+    // tick it was finished in)
+    let mut m = Mixer::new(SR, Hrir::none());
+    let mut kernels = 0;
     for _ in 0..40 {
-        sim.tick();
+        let f = sim.tick();
+        kernels += f.kernels.len();
+        m.apply(&f);
     }
     sim.flush_kernels();
     let frame = sim.tick();
-    assert!(!frame.kernels.is_empty(), "a dense kernel was built");
-    let mut m = Mixer::new(SR, Hrir::none());
+    kernels += frame.kernels.len();
+    assert!(kernels > 0, "a dense kernel was built");
     m.apply(&frame);
     m.play(id, &clip(&clap()), Play::ONCE);
     let t0 = std::time::Instant::now();

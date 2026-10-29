@@ -296,7 +296,9 @@ fn v3_thick_wall_pays_the_mass_law_on_both() {
     let Some(mut g) = gpu(&mesh, "v3_thick_wall") else { return };
     let w = World::new(&mesh, &[]);
     let (lis, src) = (v(0.0, 0.0, 1.6), v(10.0, 0.0, 1.6));
-    let (c, gg) = median_reflected(&mut g, &w, lis, &one(0, src), shot(16_384, 2, 0, 0), 7);
+    // a tick scatters ~2.8 dB here: the median of 21 is within ~0.6 dB
+    // (of 7 it was ~1 dB — as wide as the tolerance)
+    let (c, gg) = median_reflected(&mut g, &w, lis, &one(0, src), shot(16_384, 2, 0, 0), 21);
     for band in 0..3 {
         let d = db_e(gg[0][band]) - db_e(c[0][band]);
         eprintln!("thick wall band {band}: cpu {:.2} dB gpu {:.2} dB", db_e(c[0][band]), db_e(gg[0][band]));
@@ -334,9 +336,12 @@ fn v3_panel_over_a_doorway_matches_cpu() {
     // behind the leaf the field is bimodal: a steady base (NEE through
     // the leaf) plus rare heavy rays that transmitted on the importance-
     // floored branch — its median flips between the modes from tick to
-    // tick, its lower quartile is stable
-    let (co, go) = median_reflected(&mut g, &open, lis, &one(0, src), b, 9);
-    let (cs, gs) = quantile_reflected(&mut g, &shut, lis, &one(0, src), b, 21, 0.25);
+    // tick. Only ~28 % of ticks sit in the base (200 seeds, CPU: 57 and
+    // 58 of 200 before and after the per-ray random streams): the lower
+    // quartile sits on the edge between the modes and flips with any
+    // draw; the lowest decile is inside the base
+    let (co, go) = median_reflected(&mut g, &open, lis, &one(0, src), b, 21);
+    let (cs, gs) = quantile_reflected(&mut g, &shut, lis, &one(0, src), b, 61, 0.1);
     eprintln!(
         "doorway: open cpu {:.2} gpu {:.2} dB; leaf cpu {:.2} gpu {:.2} dB",
         db_e(co[0][1]),

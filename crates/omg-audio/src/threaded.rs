@@ -180,6 +180,9 @@ struct Stats {
     tick_us: AtomicU32,
     ticks: AtomicU32,
     walk_us: AtomicU32,
+    /// The last tick by part (µs): direct, one-edge, two-edge, early,
+    /// late, chains, fold (`TickCosts`).
+    parts_us: [AtomicU32; 7],
 }
 
 /// The game-thread handle: geometry, sources, objects, listener, and
@@ -410,6 +413,12 @@ impl Engine {
         (self.stats.tick_us.load(Ordering::Relaxed) as f32 / 1000.0, self.stats.ticks.load(Ordering::Relaxed))
     }
 
+    /// The last tick by part (ms): direct, one-edge, two-edge, early,
+    /// late, chains, fold.
+    pub fn tick_parts(&self) -> [f32; 7] {
+        core::array::from_fn(|i| self.stats.parts_us[i].load(Ordering::Relaxed) as f32 / 1000.0)
+    }
+
     /// Wall-clock of the last finished GPU walk (ms; 0 on the CPU).
     pub fn gpu_walk_ms(&self) -> f32 {
         self.stats.walk_us.load(Ordering::Relaxed) as f32 / 1000.0
@@ -469,6 +478,10 @@ fn sim_loop(
         stats.tick_us.store(t0.elapsed().as_micros().min(u32::MAX as u128) as u32, Ordering::Relaxed);
         stats.ticks.fetch_add(1, Ordering::Relaxed);
         stats.walk_us.store((sim.gpu_walk_ms() * 1000.0) as u32, Ordering::Relaxed);
+        let c = sim.tick_costs();
+        for (a, ms) in stats.parts_us.iter().zip([c.direct, c.edges - c.edges2, c.edges2, c.early, c.late, c.chains, c.fold]) {
+            a.store((ms.max(0.0) * 1000.0) as u32, Ordering::Relaxed);
+        }
         if sim.debug_paths_enabled() {
             *paths.lock().unwrap() = sim.debug_paths();
         }

@@ -5,7 +5,7 @@
 //! wall-clock. A tick over the 50 ms period leaves the simulation thread
 //! no time for the exact frames between ticks: paths then move in steps.
 //!
-//!   MODE=v3|v5|v6  SPEED=8  QUALITY=0..3 | LEVEL=0..10  SECS=10
+//!   MODE=v3|v5|v6  SPEED=8  QUALITY=0..3 | LEVEL=0..10  SECS=10  THREADS=n
 //!   cargo run --release -p omg-web --example tick_move
 use omg_audio::{Compute, Config, Quality, Simulation};
 use omg_web::town::Town;
@@ -46,13 +46,25 @@ fn main() {
         }
         Quality::Custom(b)
     };
-    let cfg = Config { quality, compute: Compute::Cpu, v4: mode == "v4" || mode == "v5", v5: mode == "v5", v6: mode == "v6", ..Config::default() };
+    let mut cfg = Config { quality, compute: Compute::Cpu, v4: mode == "v4" || mode == "v5", v5: mode == "v5", v6: mode == "v6", ..Config::default() };
+    // THREADS=n: the walk's threads (default: the machine's default)
+    if let Some(n) = env("THREADS").and_then(|v| v.parse().ok()) {
+        cfg.walk_threads = n;
+    }
+    eprintln!("walk threads: {}", cfg.walk_threads);
     let mut sim = Simulation::new(cfg);
     let _town = Town::new(&mut sim);
     let speed: f32 = env("SPEED").and_then(|v| v.parse().ok()).unwrap_or(8.0);
     let secs: f32 = env("SECS").and_then(|v| v.parse().ok()).unwrap_or(10.0);
     let (x0, x1, y) = (2.0f32, 14.0f32, 60.0f32);
-    let pos = |t: f32| -> [f32; 3] {
+    // ROUTE=fly: from the field north through the cathedral's south wall
+    // (y 52) to the flute and on (Godot's recorded scenario), every tick
+    // over 1.5× the median printed by part
+    let fly = env("ROUTE").as_deref() == Some("fly");
+    let pos = move |t: f32| -> [f32; 3] {
+        if fly {
+            return [4.0, (40.0 + t * speed).min(62.0), 2.0];
+        }
         // back and forth between x0 and x1
         let span = x1 - x0;
         let d = (t * speed) % (2.0 * span);
@@ -70,6 +82,13 @@ fn main() {
             sim.tick();
             let total = t0.elapsed().as_secs_f64() * 1e3;
             ms.push(total);
+            if fly && moving {
+                let c = sim.tick_costs();
+                println!(
+                    "  t {t:5.2} y {:5.1}: {total:5.1} ms (direct {:.1} edges {:.1} 2-edge {:.1} early {:.1} late {:.1} chains {:.1} fold {:.1})",
+                    p[1], c.direct, c.edges - c.edges2, c.edges2, c.early, c.late, c.chains, c.fold
+                );
+            }
             if k >= 10 {
                 let c = sim.tick_costs();
                 let v = [c.direct, c.edges - c.edges2, c.edges2, c.early, c.late, c.chains, c.fold];

@@ -13,7 +13,10 @@
 //! amplitude 1/d). All energies are per band. Taps come out in WORLD
 //! frame, unit source gain; the caller rotates and scales.
 
-use std::collections::HashMap;
+/// The tracer's maps hash with fixed keys: what is summed while walking
+/// one comes out in the same order every run — same seed, same inputs,
+/// the same field to the last bit.
+type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>>;
 
 use crate::material::{air_attenuation, Material};
 use crate::mesh::{Mesh, SegHit};
@@ -1344,7 +1347,7 @@ struct Acc {
 
 impl Acc {
     fn new(t_free: f32, v4: bool) -> Self {
-        Self { early: HashMap::new(), echo: Echogram::new(), t_free, total: [0.0; NBANDS], dense: Vec::new(), v4, sq_scale: 1.0 }
+        Self { early: HashMap::default(), echo: Echogram::new(), t_free, total: [0.0; NBANDS], dense: Vec::new(), v4, sq_scale: 1.0 }
     }
 
     /// Every contribution × `f` (an estimate's weight: its samples' share
@@ -1482,6 +1485,11 @@ pub struct Tracer {
     pub v6: bool,
     /// The last tick's cost by part.
     pub costs: TickCosts,
+    /// Threads the ray walk is spread over (1: the tick's own; wasm walks
+    /// on one whatever this says). The result doesn't depend on it.
+    pub threads: usize,
+    /// Each walking thread's buffers, kept across ticks.
+    scratch: Vec<WalkScratch>,
     late_pool: std::collections::VecDeque<PoolTick>,
     /// The world signature the pool was walked in (a door moved: gone).
     late_pool_sig: u64,
@@ -1686,7 +1694,7 @@ impl Tracer {
         Self {
             rng: Rng::new(seed),
             cells: fibonacci_sphere(N_CELLS),
-            state: HashMap::new(),
+            state: HashMap::default(),
             hits: Vec::new(),
             sky: vec![([0.0; NBANDS], Vec3::new(0.0, 0.0, 0.0)); N_CELLS],
             sky_primed: false,
@@ -1701,11 +1709,13 @@ impl Tracer {
             edges: None,
             tick: 0,
             ear_vis: None,
-            edge_cache: HashMap::new(),
-            heard: HashMap::new(),
-            src_vis: HashMap::new(),
-            chains: HashMap::new(),
-            rejected: HashMap::new(),
+            edge_cache: HashMap::default(),
+            heard: HashMap::default(),
+            threads: 1,
+            scratch: Vec::new(),
+            src_vis: HashMap::default(),
+            chains: HashMap::default(),
+            rejected: HashMap::default(),
             v4: false,
             v5: false,
             v6: false,
@@ -1982,12 +1992,13 @@ impl Tracer {
         dbg: &mut Vec<(u32, f32, Vec<Vec3>)>,
     ) -> Vec<([f32; NBANDS], Vec3)> {
         let n = budget.rays.max(1);
-        let debug = self.debug;
-        let mut verts: Vec<Vec3> = Vec::new();
-        // 2. rays: stratified (Fibonacci) and randomly rotated per tick
+        // 2. rays: stratified (Fibonacci) and randomly rotated per tick;
+        // each draws its own random numbers, seeded from the tick's, its
+        // family and its index — the walk is the same however many threads
+        // share it (`walk_chunks`)
         let rot = random_rotation(&mut self.rng);
+        let seed = self.rng.next_u64();
         let primary = if early { fibonacci_sphere(n as usize) } else { Vec::new() };
-        let mut picks: Vec<Pick> = Vec::new();
         // Three estimators, disjoint per path, so every path is counted
         // exactly once: EARLY rays count paths with 1..=bounces
         // reflections, LATE rays (fewer, long) everything beyond — except
@@ -2001,17 +2012,6 @@ impl Tracer {
             (&primary, 0, budget.bounces, budget.bounces + 1 + MAX_BENDS, budget.nee),
             (&late_primary, budget.bounces + 1, u32::MAX, LATE_MAX_SEGMENTS + MAX_BENDS, budget.late_nee),
         ];
-        // the exact solver's paths (both families evaluate it
-        // identically): coherent, loud chains within the cap that have
-        // more than `bounces` reflections or arrive after the early window
-        let bounces = budget.bounces;
-        let v4 = self.v4;
-        // v4: every coherent chain is the solver's — an exact image-source
-        // path, whenever it arrives; v3: only the long and the late ones
-        let solver_owns = |refl: u32, coherent: bool, loud: bool, rel: f32| {
-            coherent && loud && refl >= 1 && refl <= MAX_COHERENT_REFL && (v4 || refl > bounces || rel >= EARLY_S)
-        };
-        let mut branches: Vec<Branch> = Vec::new();
         // v5: the late family walks into estimates of its own — the rays
         // that bounced diffusely first (A: what follows doesn't depend on
         // where the listener stood) and the rest (B) — and the pool's
@@ -2023,372 +2023,68 @@ impl Tracer {
             (Vec::new(), Vec::new())
         };
         let mut records: Vec<LateRecord> = Vec::new();
-        let mut ray_deps: Vec<(usize, [f32; NBANDS], f32, f32)> = Vec::new();
         let mut late_rays = 0usize;
-        let mut fam_clock: Option<(Stopwatch, bool)> = None;
-        for (dirs, lo, hi, segments, nee) in fams {
-        if let Some((c, late)) = fam_clock.replace((Stopwatch::start(), lo > 0)) {
-            *if late { &mut self.costs.late } else { &mut self.costs.early } += c.ms();
+        let t_free: Vec<f32> = accs.iter().map(|a| a.t_free).collect();
+        let threads = self.threads.max(1);
+        if self.scratch.len() < threads {
+            self.scratch.resize_with(threads, WalkScratch::default);
         }
-        if dirs.is_empty() || lo > hi {
-            continue;
-        }
-        let inv_n = 1.0 / dirs.len() as f32;
-        let counts = |order: u32| order >= lo && order <= hi;
-        let pooled = pooling && lo > 0;
-        if pooled {
-            late_rays = dirs.len();
-        }
-        for &d0 in dirs {
-            let first = rot_apply(&rot, d0);
-            branches.clear();
-            branches.push(Branch::start(listener, first));
-            // v5: this ray's first bounce (diffuse, nothing on the way
-            // there: A) and what it deposits
-            let mut first_bounce: Option<(Vec3, Vec3, f32, f32)> = None;
-            let mut reusable = pooled;
-            ray_deps.clear();
-            while let Some(br) = branches.pop() {
-            let Branch {
-                mut origin,
-                mut dir,
-                mut thr,
-                mut length,
-                mut refl,
-                mut specular,
-                mut coherent,
-                mut loud,
-                mut mirror_thr,
-                mut bent,
-                mut bends,
-                mut bend_from,
-                mut last_edge,
-                seg0,
-                mut split,
-            } = br;
-            if debug {
-                verts.clear();
-                verts.push(listener);
-                if seg0 > 0 {
-                    verts.push(origin);
-                }
+        let edges = self.edges.take();
+        let cx = WalkCtx {
+            world,
+            listener,
+            sources,
+            budget,
+            vis,
+            rot,
+            cells: &self.cells,
+            motion: &self.motion,
+            edges: edges.as_ref(),
+            t_free: &t_free,
+            debug: self.debug,
+            v4: self.v4,
+        };
+        for (fi, (dirs, lo, hi, segments, nee)) in fams.into_iter().enumerate() {
+            if dirs.is_empty() || lo > hi {
+                continue;
             }
-            for seg in seg0..segments {
-                if world.in_earth(origin) {
-                    break; // transmitted into solid ground: gone
-                }
-                let hit = world.raycast(origin, dir);
-                let t_hit = hit.as_ref().map_or(f32::MAX, |h| h.t);
-                // diffraction: the edge this segment passes closest to
-                let edge = if budget.diffraction && bends < MAX_BENDS {
-                    let reach = if t_hit.is_finite() { t_hit } else { 400.0 };
-                    self.edges.as_mut().and_then(|es| es.nearest(origin, dir, reach, last_edge))
-                } else {
-                    None
-                };
-                let t_seg = edge.map_or(t_hit, |(te, _, _, _)| te);
-
-                // 3. specular chains into a source sphere, priced from the
-                // source's REAL position — except the exact solver's own
-                if (specular || bent) && counts(refl) {
-                    for (si, s) in sources.iter().enumerate() {
-                        // where it emitted what this path brings now
-                        let Some(sp) = self.motion.emit(si, s.pos, origin, length) else { continue };
-                        let to = sp - origin;
-                        let along = to.dot(dir);
-                        if along <= 0.0 || along >= t_seg {
-                            continue;
-                        }
-                        let seg = to.length();
-                        let l_s = (length + seg).max(MIN_DIST);
-                        let r = budget.k * l_s;
-                        let closest = (origin + dir * along - sp).length();
-                        if closest > r {
-                            continue;
-                        }
-                        if solver_owns(refl, coherent && !bent, loud, l_s / SPEED_OF_SOUND - accs[si].t_free) {
-                            continue; // the exact solver counts this one
-                        }
-                        let t = world.transmission(origin, sp, &mut self.hits);
-                        let air = air_attenuation(l_s);
-                        let w = 4.0 * inv_n / (budget.k * budget.k * l_s * l_s);
-                        // a bent path with no reflection is the DIRECT
-                        // field around an edge: only what the straight
-                        // ray doesn't already carry
-                        // one or two edges, no reflection: the edge
-                        // next-event paths, already counted exactly
-                        if refl == 0 && bends <= 2 && !specular {
-                            continue;
-                        }
-                        // a bent path only carries what the straight
-                        // line from where it bent doesn't (lit side:
-                        // nothing — that wave is already counted)
-                        let gate: [f32; NBANDS] = match bend_from {
-                            Some(_) if refl == 0 => core::array::from_fn(|b| 1.0 - vis[si][b]),
-                            Some(f) => {
-                                let tv = world.transmission(f, sp, &mut self.hits);
-                                core::array::from_fn(|b| (1.0 - tv[b]).clamp(0.0, 1.0))
-                            }
-                            None => [1.0; NBANDS],
-                        };
-                        let e: [f32; NBANDS] = core::array::from_fn(|b| {
-                            thr[b] * t[b] * t[b] * air[b] * air[b] * w * gate[b]
-                        });
-                        if debug {
-                            keep_path(dbg, s.id, e[1], &verts, sp);
-                        }
-                        // a sphere hit only knows the path to within the
-                        // sphere: its arrival is spread over r/c each way
-                        if pooled {
-                            ray_deps.push((si, e, l_s / SPEED_OF_SOUND, r / SPEED_OF_SOUND));
-                        } else {
-                            deposit_spread(&mut accs[si], &self.cells, e, l_s / SPEED_OF_SOUND, first, r / SPEED_OF_SOUND);
-                        }
-                    }
-                }
-
-                if let Some((te, a, u, ei)) = edge {
-                    if seg == 0 {
-                        reusable = false;
-                    }
-                    last_edge = Some(ei);
-                    // bend around the edge at the closest approach
-                    if bend_from.is_none() {
-                        bend_from = Some(origin);
-                    }
-                    let (eps, w) = sample_bend(&mut self.rng, a);
-                    origin = origin + dir * te;
-                    length += te;
-                    if debug {
-                        verts.push(origin);
-                    }
-                    dir = rotate_about(dir, u, eps);
-                    for b in 0..NBANDS {
-                        thr[b] *= w[b];
-                    }
-                    bent = true;
-                    bends += 1;
-                    coherent = false;
-                    continue;
-                }
-
-                let Some(hit) = hit else {
-                    // escaped to open sky: the outdoor field reaches the
-                    // listener along this ray's first direction. Escapes
-                    // split by reflection count like every other path
-                    // (early family ≤ bounces, late family beyond).
-                    let mine = if lo == 0 { refl <= hi } else { refl >= lo };
-                    if mine && !world.escapes_into_earth(origin, dir) {
-                        let mut best = 0usize;
-                        let mut bd = f32::MIN;
-                        for (ci, c) in self.cells.iter().enumerate() {
-                            let d = c.dot(first);
-                            if d > bd {
-                                bd = d;
-                                best = ci;
-                            }
-                        }
-                        let cell = &mut sky_acc[best];
-                        for b in 0..NBANDS {
-                            cell.0[b] += thr[b] * inv_n;
-                        }
-                        cell.1 = cell.1 + first * (thr[1] * inv_n);
-                    }
-                    break;
-                };
-                let p = origin + dir * t_hit;
-                if debug {
-                    verts.push(p);
-                }
-                length += t_hit;
-                if length / SPEED_OF_SOUND > if v4 { RESPONSE_MAX_S } else { MAX_TIME } {
-                    break;
-                }
-                let mat = hit.material;
-                let normal = hit.normal; // against the incoming ray
-                let keep: [f32; NBANDS] = core::array::from_fn(|b| {
-                    (1.0 - mat.absorption[b] - mat.transmission[b] * mat.transmission[b]).max(0.0)
-                });
-
-                // 2. next-event estimation: the diffuse share of this
-                // surface, lit by every source it can reach
-                if mat.scattering > 0.0 && counts(refl + 1) {
-                    let off = p + normal * EPS;
-                    // the sources this surface faces, each with what it
-                    // would bring here with nothing in the way — where it
-                    // emitted what this connection brings now
-                    picks.clear();
-                    for (si, s) in sources.iter().enumerate() {
-                        let Some(sp) = self.motion.emit(si, s.pos, off, length) else { continue };
-                        let to = sp - off;
-                        let along = to.dot(normal);
-                        if along <= 0.0 {
-                            continue; // source behind this surface
-                        }
-                        let r2 = to.dot(to);
-                        if r2 < 1e-8 {
-                            continue;
-                        }
-                        // w · cos / max(r, MIN_DIST)²
-                        let c = s.weight.max(1e-12) * along / (r2.sqrt() * r2.max(MIN_DIST * MIN_DIST));
-                        picks.push(Pick { si: si as u32, c, pw: 1.0 });
-                    }
-                    // more than `nee`: each at most once, by importance
-                    if nee > 0 && picks.len() > nee {
-                        pick_systematic(&mut picks, nee, self.rng.next_f32());
-                    }
-                    for &Pick { si, pw, .. } in picks.iter() {
-                        let si = si as usize;
-                        let s = &sources[si];
-                        let Some(sp) = self.motion.emit(si, s.pos, off, length) else { continue };
-                        let to = sp - off;
-                        let r = to.length();
-                        let cos_in = to.dot(normal) / r;
-                        let t = world.transmission(off, sp, &mut self.hits);
-                        let rr = r.max(MIN_DIST);
-                        let air = air_attenuation(length + r);
-                        let w = pw * mat.scattering * cos_in * 4.0 * inv_n / (rr * rr);
-                        let e: [f32; NBANDS] = core::array::from_fn(|b| {
-                            thr[b] * keep[b] * t[b] * t[b] * air[b] * air[b] * w
-                        });
-                        if debug {
-                            keep_path(dbg, s.id, e[1], &verts, sp);
-                        }
-                        if pooled {
-                            ray_deps.push((si, e, (length + r) / SPEED_OF_SOUND, 0.0));
-                        } else {
-                            deposit(&mut accs[si], &self.cells, e, (length + r) / SPEED_OF_SOUND, first);
-                        }
-                    }
-                }
-
-                // 4. continue: transmit (importance-floored) or reflect
-                let mut p_t = 0.0f32;
-                for b in 0..NBANDS {
-                    p_t = p_t.max(mat.transmission[b] * mat.transmission[b]);
-                }
-                // v4: a partition passing real energy (a door, glass, a
-                // light wall): the ray splits — the transmitted branch goes
-                // on with its exact weight, this one reflects with its own
-                // — once per ray; elsewhere the unbiased draw. (v3 keeps
-                // the draw: its echo selection, a salience test against
-                // the diffuse estimate, was calibrated on it.)
-                let split_here = v4 && !split && p_t >= SPLIT_T2;
-                if split_here && seg == 0 {
-                    reusable = false;
-                }
-                if split_here {
-                    split = true;
-                    // the wall as a whole: the same price a segment
-                    // through it pays (both faces, its thickness, once)
-                    let (t2, beyond) = world.through(p, dir, &mat, &mut self.hits);
-                    let t_thr: [f32; NBANDS] = core::array::from_fn(|b| thr[b] * t2[b]);
-                    let t_mirror = mirror_thr * t2[1];
-                    branches.push(Branch {
-                        origin: beyond,
-                        dir,
-                        thr: t_thr,
-                        length,
-                        refl,
-                        specular,
-                        coherent,
-                        loud: loud && t_mirror >= COHERENT_FLOOR,
-                        mirror_thr: t_mirror,
-                        bent,
-                        bends,
-                        bend_from,
-                        last_edge,
-                        seg0: seg + 1,
-                        split: true,
-                    });
-                }
-                let pt = if split_here {
-                    0.0
-                } else if p_t > 1e-5 {
-                    p_t.max(0.02).min(0.5)
-                } else {
-                    0.0
-                };
-                if pt > 0.0 && self.rng.next_f32() < pt {
-                    if seg == 0 {
-                        reusable = false;
-                    }
-                    let (t2, beyond) = world.through(p, dir, &mat, &mut self.hits);
-                    for b in 0..NBANDS {
-                        thr[b] *= t2[b] / pt;
-                    }
-                    mirror_thr *= t2[1];
-                    loud &= mirror_thr >= COHERENT_FLOOR;
-                    origin = beyond;
-                    continue; // straight on; `specular` unchanged
-                }
-                let before = thr.iter().fold(0.0f32, |a, &b| a.max(b));
-                for b in 0..NBANDS {
-                    thr[b] *= keep[b] / (1.0 - pt);
-                }
-                if v4 && hi == u32::MAX && length > EARLY_S * SPEED_OF_SOUND {
-                    // v4's late rays past the early window: Russian roulette ∝
-                    // amplitude — survive with √(what this bounce kept), the
-                    // survivor carries 1 / that. Unbiased; the rays alive (and
-                    // the work) fall with the amplitude, not with time, so a
-                    // ringing stone room no longer walks every ray to the
-                    // window's end. Inside the early window every ray goes on:
-                    // what the taps are estimated from keeps its samples
-                    let after = thr.iter().fold(0.0f32, |a, &b| a.max(b));
-                    let p = if before > 0.0 { (after / before).sqrt().min(1.0) } else { 0.0 };
-                    if self.rng.next_f32() >= p {
-                        break;
-                    }
-                    for t in &mut thr {
-                        *t /= p;
-                    }
-                }
-                if thr.iter().all(|&e| e < LATE_FLOOR) {
-                    break;
-                }
-                refl += 1;
-                bend_from = None;
-                mirror_thr *= keep[1] * (1.0 - mat.scattering);
-                loud &= mirror_thr >= COHERENT_FLOOR;
-                if self.rng.next_f32() < mat.scattering {
-                    if seg == 0 && reusable {
-                        first_bounce = Some((p, normal, length, -dir.dot(normal)));
-                    }
-                    dir = (normal + self.rng.unit_sphere()).normalize();
-                    if dir.dot(normal) < 1e-3 {
-                        dir = normal;
-                    }
-                    specular = false;
-                    bent = false;
-                    coherent = false;
-                } else {
-                    if seg == 0 {
-                        reusable = false;
-                    }
-                    dir = dir - normal * (2.0 * dir.dot(normal));
-                    specular = true;
-                }
-                origin = p + normal * EPS;
-            }
-            }
+            let clock = Stopwatch::start();
+            let pooled = pooling && lo > 0;
             if pooled {
-                let a = reusable && first_bounce.is_some();
-                let into = if a { &mut late_a } else { &mut late_b };
-                for &(si, e, delay, half) in &ray_deps {
-                    deposit_spread(&mut into[si], &self.cells, e, delay, first, half);
+                late_rays = dirs.len();
+            }
+            let fam = Fam { lo, hi, segments, nee, inv_n: 1.0 / dirs.len() as f32, pooled };
+            let walked = walk_chunks(&cx, &fam, &mut self.scratch[..threads], dirs, ray_seed(seed.wrapping_add(fi as u64)));
+            // what the rays left, in ray order
+            for out in walked {
+                for (id, e, verts, end) in &out.dbg {
+                    keep_path(dbg, *id, *e, verts, *end);
                 }
-                if let (true, Some((v1, n1, r1, cos1))) = (a, first_bounce) {
-                    if !ray_deps.is_empty() {
-                        let deps = ray_deps.iter().map(|&(si, e, d, h)| (sources[si].id, e, d, h)).collect();
-                        records.push(LateRecord { v1, n1, r1, cos1, deps });
+                for (cell, e, d) in out.sky {
+                    let c = &mut sky_acc[cell as usize];
+                    for b in 0..NBANDS {
+                        c.0[b] += e[b];
+                    }
+                    c.1 = c.1 + d;
+                }
+                if pooled {
+                    let mut deps = out.deps.into_iter();
+                    for (a, k, record) in out.rays {
+                        let into = if a { &mut late_a } else { &mut late_b };
+                        for (si, e, delay, half, first) in deps.by_ref().take(k as usize) {
+                            deposit_spread(&mut into[si as usize], cx.cells, e, delay, first, half);
+                        }
+                        records.extend(record);
+                    }
+                } else {
+                    for (si, e, delay, half, first) in out.deps {
+                        deposit_spread(&mut accs[si as usize], cx.cells, e, delay, first, half);
                     }
                 }
             }
+            *if lo > 0 { &mut self.costs.late } else { &mut self.costs.early } += clock.ms();
         }
-        }
-        if let Some((c, late)) = fam_clock.take() {
-            *if late { &mut self.costs.late } else { &mut self.costs.early } += c.ms();
-        }
+        self.edges = edges;
         if pooling && late_rays > 0 {
             self.reuse_late(world, listener, sources, late_rays as f32, records, &mut late_a);
             for (acc, (a, b)) in accs.iter_mut().zip(late_a.into_iter().zip(late_b)) {
@@ -2398,7 +2094,6 @@ impl Tracer {
         }
         sky_acc
     }
-
     /// v5: the late family's diffuse-first estimate (`fresh`: this tick's
     /// rays, × 1/rays) joined by the pool's paths, reconnected to where
     /// the listener is now — per source the average over this tick's rays
@@ -2488,7 +2183,7 @@ impl Tracer {
     /// owns (`solver_owns`) as they pass near a source. Directions only:
     /// no energy is counted here.
     fn find_chains(&mut self, world: &World, listener: Vec3, sources: &[Source], budget: Budget, n: usize) {
-        let mut cached: HashMap<u32, usize> = HashMap::new();
+        let mut cached: HashMap<u32, usize> = HashMap::default();
         for k in self.chains.keys() {
             *cached.entry(k.0).or_default() += 1;
         }
@@ -2668,7 +2363,7 @@ impl Tracer {
             });
             e[1] / around.max(1e-30)
         };
-        let mut by_source: HashMap<u32, Vec<((u32, u64), f32)>> = HashMap::new();
+        let mut by_source: HashMap<u32, Vec<((u32, u64), f32)>> = HashMap::default();
         for (k, c) in &self.chains {
             by_source.entry(k.0).or_default().push((*k, rank(k, c)));
         }
@@ -2688,7 +2383,7 @@ impl Tracer {
     /// number of round trips is a path too, as rare for a ray to find as
     /// this one was. Propose them all (the solve validates each).
     fn grow_trains(&mut self) {
-        let mut per_source: HashMap<u32, usize> = HashMap::new();
+        let mut per_source: HashMap<u32, usize> = HashMap::default();
         for k in self.chains.keys() {
             *per_source.entry(k.0).or_default() += 1;
         }
@@ -2954,6 +2649,7 @@ impl Tracer {
             cand.sort_by(|x, y| y.0.total_cmp(&x.0));
             let mut found: Vec<(f32, Vec3, usize)> = cand
                 .into_iter()
+                .take(EDGE_LOOKS)
                 .filter(|&(_, ei)| ear_sees(world, &es, ear_seen, ei, listener))
                 .take(EDGE_CANDIDATES)
                 .filter_map(|(_, ei)| price_one(world, &es, &mut self.hits, ei, listener, sp, vis[si]).map(|(p, tap)| (tap.gains[0] + tap.gains[1], p, ei)))
@@ -3104,6 +2800,485 @@ fn price_one(world: &World, es: &EdgeSet, hits: &mut Vec<SegHit>, ei: usize, lis
     Some((p, Tap { key: KEY_EDGE_BASE + ei as u32, delay_s: (d1 + d2) / SPEED_OF_SOUND, dir: [n1.x, n1.y, n1.z], gains }))
 }
 
+/// What a walk is walking: shared by its threads, read only.
+#[derive(Clone, Copy)]
+struct WalkCtx<'a> {
+    world: &'a World<'a>,
+    listener: Vec3,
+    sources: &'a [Source],
+    budget: Budget,
+    vis: &'a [[f32; NBANDS]],
+    /// This tick's rotation of the rays' Fibonacci directions.
+    rot: [[f32; 3]; 3],
+    cells: &'a [Vec3],
+    motion: &'a Motion,
+    edges: Option<&'a EdgeSet>,
+    /// Each source's free-field arrival (s).
+    t_free: &'a [f32],
+    debug: bool,
+    v4: bool,
+}
+
+/// One family of rays (`walk_rays`): the reflection orders it counts,
+/// how many segments its rays go, next-event connections a bounce, each
+/// ray's weight, and (v5) whether its paths are pooled across ticks.
+#[derive(Clone, Copy)]
+struct Fam {
+    lo: u32,
+    hi: u32,
+    segments: u32,
+    nee: usize,
+    inv_n: f32,
+    pooled: bool,
+}
+
+/// A walking thread's own buffers, kept across ticks.
+#[derive(Default)]
+struct WalkScratch {
+    hits: Vec<SegHit>,
+    marks: EdgeMarks,
+    picks: Vec<Pick>,
+    branches: Vec<Branch>,
+    verts: Vec<Vec3>,
+    ray_deps: Vec<(usize, [f32; NBANDS], f32, f32)>,
+}
+
+/// What a run of rays left, in the order they made it — replayed in ray
+/// order by `walk_rays`, so the result is the same however many threads
+/// walked them.
+#[derive(Default)]
+struct ChunkOut {
+    /// Deposits: (source, energy, delay, spread each way (0: a point),
+    /// the ray's first direction).
+    deps: Vec<(u32, [f32; NBANDS], f32, f32, Vec3)>,
+    /// Escapes to the sky: (direction cell, energy, its weighted
+    /// direction).
+    sky: Vec<(u32, [f32; NBANDS], Vec3)>,
+    /// v5's pooled family, per ray: whether it is reusable (A), how many
+    /// of `deps` are its, its record.
+    rays: Vec<(bool, u32, Option<LateRecord>)>,
+    /// Debug: the paths found (source id, mid energy, vertices, end).
+    dbg: Vec<(u32, f32, Vec<Vec3>, Vec3)>,
+}
+
+/// Chunks per walking thread (`walk_chunks`): long late rays balance
+/// out over a few each. How the rays are cut doesn't change the result.
+const WALK_CHUNKS_PER_THREAD: usize = 4;
+
+/// A ray's own random numbers: seeded from the tick's, its family and
+/// its index (splitmix64), the same on any thread.
+fn ray_seed(z: u64) -> u64 {
+    let z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Walk `dirs` in chunks on as many threads as `scratch` holds (one on
+/// wasm): every chunk's output, in ray order.
+fn walk_chunks(cx: &WalkCtx, fam: &Fam, scratch: &mut [WalkScratch], dirs: &[Vec3], seed: u64) -> Vec<ChunkOut> {
+    let chunk = dirs.len().div_ceil(scratch.len() * WALK_CHUNKS_PER_THREAD).max(1);
+    let n_chunks = dirs.len().div_ceil(chunk);
+    let walk = |sc: &mut WalkScratch, c: usize| -> ChunkOut {
+        let mut out = ChunkOut::default();
+        let end = ((c + 1) * chunk).min(dirs.len());
+        for (i, &d0) in dirs.iter().enumerate().take(end).skip(c * chunk) {
+            let mut rng = Rng::new(ray_seed(seed ^ i as u64));
+            walk_ray(cx, fam, sc, &mut rng, d0, &mut out);
+        }
+        out
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if scratch.len() > 1 && n_chunks > 1 {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let (walk, next) = (&walk, &next);
+        let mut done: Vec<(usize, ChunkOut)> = std::thread::scope(|s| {
+            let workers: Vec<_> = scratch
+                .iter_mut()
+                .take(n_chunks)
+                .map(|sc| {
+                    s.spawn(move || {
+                        let mut mine = Vec::new();
+                        loop {
+                            let c = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if c >= n_chunks {
+                                break;
+                            }
+                            mine.push((c, walk(sc, c)));
+                        }
+                        mine
+                    })
+                })
+                .collect();
+            workers.into_iter().flat_map(|w| w.join().expect("a walking thread panicked")).collect()
+        });
+        done.sort_by_key(|d| d.0);
+        return done.into_iter().map(|d| d.1).collect();
+    }
+    let sc = &mut scratch[0];
+    (0..n_chunks).map(|c| walk(sc, c)).collect()
+}
+
+/// One ray of a family, walked whole (`walk_rays` step 2): what it
+/// deposits, what escapes to the sky and (debug) the paths it found go
+/// to `out`, in the order it made them.
+fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Vec3, out: &mut ChunkOut) {
+    let WalkCtx { world, listener, sources, budget, vis, debug, v4, .. } = *cx;
+    let Fam { lo, hi, segments, nee, inv_n, pooled } = *fam;
+    let WalkScratch { hits, marks, picks, branches, verts, ray_deps } = sc;
+    let counts = |order: u32| order >= lo && order <= hi;
+    // the exact solver's paths (both families evaluate it identically):
+    // coherent, loud chains within the cap that have more than `bounces`
+    // reflections or arrive after the early window — v4: every coherent
+    // chain is the solver's, an exact image-source path, whenever it
+    // arrives; v3: only the long and the late ones
+    let bounces = budget.bounces;
+    let solver_owns = |refl: u32, coherent: bool, loud: bool, rel: f32| {
+        coherent && loud && refl >= 1 && refl <= MAX_COHERENT_REFL && (v4 || refl > bounces || rel >= EARLY_S)
+    };
+    let first = rot_apply(&cx.rot, d0);
+    branches.clear();
+    branches.push(Branch::start(listener, first));
+    // v5: this ray's first bounce (diffuse, nothing on the way
+    // there: A) and what it deposits
+    let mut first_bounce: Option<(Vec3, Vec3, f32, f32)> = None;
+    let mut reusable = pooled;
+    ray_deps.clear();
+    while let Some(br) = branches.pop() {
+    let Branch {
+        mut origin,
+        mut dir,
+        mut thr,
+        mut length,
+        mut refl,
+        mut specular,
+        mut coherent,
+        mut loud,
+        mut mirror_thr,
+        mut bent,
+        mut bends,
+        mut bend_from,
+        mut last_edge,
+        seg0,
+        mut split,
+    } = br;
+    if debug {
+        verts.clear();
+        verts.push(listener);
+        if seg0 > 0 {
+            verts.push(origin);
+        }
+    }
+    for seg in seg0..segments {
+        if world.in_earth(origin) {
+            break; // transmitted into solid ground: gone
+        }
+        let hit = world.raycast(origin, dir);
+        let t_hit = hit.as_ref().map_or(f32::MAX, |h| h.t);
+        // diffraction: the edge this segment passes closest to
+        let edge = if budget.diffraction && bends < MAX_BENDS {
+            let reach = if t_hit.is_finite() { t_hit } else { 400.0 };
+            cx.edges.and_then(|es| es.nearest_in(&mut *marks, origin, dir, reach, last_edge))
+        } else {
+            None
+        };
+        let t_seg = edge.map_or(t_hit, |(te, _, _, _)| te);
+
+        // 3. specular chains into a source sphere, priced from the
+        // source's REAL position — except the exact solver's own
+        if (specular || bent) && counts(refl) {
+            for (si, s) in sources.iter().enumerate() {
+                // where it emitted what this path brings now
+                let Some(sp) = cx.motion.emit(si, s.pos, origin, length) else { continue };
+                let to = sp - origin;
+                let along = to.dot(dir);
+                if along <= 0.0 || along >= t_seg {
+                    continue;
+                }
+                let seg = to.length();
+                let l_s = (length + seg).max(MIN_DIST);
+                let r = budget.k * l_s;
+                let closest = (origin + dir * along - sp).length();
+                if closest > r {
+                    continue;
+                }
+                if solver_owns(refl, coherent && !bent, loud, l_s / SPEED_OF_SOUND - cx.t_free[si]) {
+                    continue; // the exact solver counts this one
+                }
+                let t = world.transmission(origin, sp, &mut *hits);
+                let air = air_attenuation(l_s);
+                let w = 4.0 * inv_n / (budget.k * budget.k * l_s * l_s);
+                // a bent path with no reflection is the DIRECT
+                // field around an edge: only what the straight
+                // ray doesn't already carry
+                // one or two edges, no reflection: the edge
+                // next-event paths, already counted exactly
+                if refl == 0 && bends <= 2 && !specular {
+                    continue;
+                }
+                // a bent path only carries what the straight
+                // line from where it bent doesn't (lit side:
+                // nothing — that wave is already counted)
+                let gate: [f32; NBANDS] = match bend_from {
+                    Some(_) if refl == 0 => core::array::from_fn(|b| 1.0 - vis[si][b]),
+                    Some(f) => {
+                        let tv = world.transmission(f, sp, &mut *hits);
+                        core::array::from_fn(|b| (1.0 - tv[b]).clamp(0.0, 1.0))
+                    }
+                    None => [1.0; NBANDS],
+                };
+                let e: [f32; NBANDS] = core::array::from_fn(|b| {
+                    thr[b] * t[b] * t[b] * air[b] * air[b] * w * gate[b]
+                });
+                if debug {
+                    out.dbg.push((s.id, e[1], verts.clone(), sp));
+                }
+                // a sphere hit only knows the path to within the
+                // sphere: its arrival is spread over r/c each way
+                if pooled {
+                    ray_deps.push((si, e, l_s / SPEED_OF_SOUND, r / SPEED_OF_SOUND));
+                } else {
+                    out.deps.push((si as u32, e, l_s / SPEED_OF_SOUND, r / SPEED_OF_SOUND, first));
+                }
+            }
+        }
+
+        if let Some((te, a, u, ei)) = edge {
+            if seg == 0 {
+                reusable = false;
+            }
+            last_edge = Some(ei);
+            // bend around the edge at the closest approach
+            if bend_from.is_none() {
+                bend_from = Some(origin);
+            }
+            let (eps, w) = sample_bend(rng, a);
+            origin = origin + dir * te;
+            length += te;
+            if debug {
+                verts.push(origin);
+            }
+            dir = rotate_about(dir, u, eps);
+            for b in 0..NBANDS {
+                thr[b] *= w[b];
+            }
+            bent = true;
+            bends += 1;
+            coherent = false;
+            continue;
+        }
+
+        let Some(hit) = hit else {
+            // escaped to open sky: the outdoor field reaches the
+            // listener along this ray's first direction. Escapes
+            // split by reflection count like every other path
+            // (early family ≤ bounces, late family beyond).
+            let mine = if lo == 0 { refl <= hi } else { refl >= lo };
+            if mine && !world.escapes_into_earth(origin, dir) {
+                let mut best = 0usize;
+                let mut bd = f32::MIN;
+                for (ci, c) in cx.cells.iter().enumerate() {
+                    let d = c.dot(first);
+                    if d > bd {
+                        bd = d;
+                        best = ci;
+                    }
+                }
+                out.sky.push((best as u32, core::array::from_fn(|b| thr[b] * inv_n), first * (thr[1] * inv_n)));
+            }
+            break;
+        };
+        let p = origin + dir * t_hit;
+        if debug {
+            verts.push(p);
+        }
+        length += t_hit;
+        if length / SPEED_OF_SOUND > if v4 { RESPONSE_MAX_S } else { MAX_TIME } {
+            break;
+        }
+        let mat = hit.material;
+        let normal = hit.normal; // against the incoming ray
+        let keep: [f32; NBANDS] = core::array::from_fn(|b| {
+            (1.0 - mat.absorption[b] - mat.transmission[b] * mat.transmission[b]).max(0.0)
+        });
+
+        // 2. next-event estimation: the diffuse share of this
+        // surface, lit by every source it can reach
+        if mat.scattering > 0.0 && counts(refl + 1) {
+            let off = p + normal * EPS;
+            // the sources this surface faces, each with what it
+            // would bring here with nothing in the way — where it
+            // emitted what this connection brings now
+            picks.clear();
+            for (si, s) in sources.iter().enumerate() {
+                let Some(sp) = cx.motion.emit(si, s.pos, off, length) else { continue };
+                let to = sp - off;
+                let along = to.dot(normal);
+                if along <= 0.0 {
+                    continue; // source behind this surface
+                }
+                let r2 = to.dot(to);
+                if r2 < 1e-8 {
+                    continue;
+                }
+                // w · cos / max(r, MIN_DIST)²
+                let c = s.weight.max(1e-12) * along / (r2.sqrt() * r2.max(MIN_DIST * MIN_DIST));
+                picks.push(Pick { si: si as u32, c, pw: 1.0 });
+            }
+            // more than `nee`: each at most once, by importance
+            if nee > 0 && picks.len() > nee {
+                pick_systematic(picks, nee, rng.next_f32());
+            }
+            for &Pick { si, pw, .. } in picks.iter() {
+                let si = si as usize;
+                let s = &sources[si];
+                let Some(sp) = cx.motion.emit(si, s.pos, off, length) else { continue };
+                let to = sp - off;
+                let r = to.length();
+                let cos_in = to.dot(normal) / r;
+                let t = world.transmission(off, sp, &mut *hits);
+                let rr = r.max(MIN_DIST);
+                let air = air_attenuation(length + r);
+                let w = pw * mat.scattering * cos_in * 4.0 * inv_n / (rr * rr);
+                let e: [f32; NBANDS] = core::array::from_fn(|b| {
+                    thr[b] * keep[b] * t[b] * t[b] * air[b] * air[b] * w
+                });
+                if debug {
+                    out.dbg.push((s.id, e[1], verts.clone(), sp));
+                }
+                if pooled {
+                    ray_deps.push((si, e, (length + r) / SPEED_OF_SOUND, 0.0));
+                } else {
+                    out.deps.push((si as u32, e, (length + r) / SPEED_OF_SOUND, 0.0, first));
+                }
+            }
+        }
+
+        // 4. continue: transmit (importance-floored) or reflect
+        let mut p_t = 0.0f32;
+        for b in 0..NBANDS {
+            p_t = p_t.max(mat.transmission[b] * mat.transmission[b]);
+        }
+        // v4: a partition passing real energy (a door, glass, a
+        // light wall): the ray splits — the transmitted branch goes
+        // on with its exact weight, this one reflects with its own
+        // — once per ray; elsewhere the unbiased draw. (v3 keeps
+        // the draw: its echo selection, a salience test against
+        // the diffuse estimate, was calibrated on it.)
+        let split_here = v4 && !split && p_t >= SPLIT_T2;
+        if split_here && seg == 0 {
+            reusable = false;
+        }
+        if split_here {
+            split = true;
+            // the wall as a whole: the same price a segment
+            // through it pays (both faces, its thickness, once)
+            let (t2, beyond) = world.through(p, dir, &mat, &mut *hits);
+            let t_thr: [f32; NBANDS] = core::array::from_fn(|b| thr[b] * t2[b]);
+            let t_mirror = mirror_thr * t2[1];
+            branches.push(Branch {
+                origin: beyond,
+                dir,
+                thr: t_thr,
+                length,
+                refl,
+                specular,
+                coherent,
+                loud: loud && t_mirror >= COHERENT_FLOOR,
+                mirror_thr: t_mirror,
+                bent,
+                bends,
+                bend_from,
+                last_edge,
+                seg0: seg + 1,
+                split: true,
+            });
+        }
+        let pt = if split_here {
+            0.0
+        } else if p_t > 1e-5 {
+            p_t.max(0.02).min(0.5)
+        } else {
+            0.0
+        };
+        if pt > 0.0 && rng.next_f32() < pt {
+            if seg == 0 {
+                reusable = false;
+            }
+            let (t2, beyond) = world.through(p, dir, &mat, &mut *hits);
+            for b in 0..NBANDS {
+                thr[b] *= t2[b] / pt;
+            }
+            mirror_thr *= t2[1];
+            loud &= mirror_thr >= COHERENT_FLOOR;
+            origin = beyond;
+            continue; // straight on; `specular` unchanged
+        }
+        let before = thr.iter().fold(0.0f32, |a, &b| a.max(b));
+        for b in 0..NBANDS {
+            thr[b] *= keep[b] / (1.0 - pt);
+        }
+        if v4 && hi == u32::MAX && length > EARLY_S * SPEED_OF_SOUND {
+            // v4's late rays past the early window: Russian roulette ∝
+            // amplitude — survive with √(what this bounce kept), the
+            // survivor carries 1 / that. Unbiased; the rays alive (and
+            // the work) fall with the amplitude, not with time, so a
+            // ringing stone room no longer walks every ray to the
+            // window's end. Inside the early window every ray goes on:
+            // what the taps are estimated from keeps its samples
+            let after = thr.iter().fold(0.0f32, |a, &b| a.max(b));
+            let p = if before > 0.0 { (after / before).sqrt().min(1.0) } else { 0.0 };
+            if rng.next_f32() >= p {
+                break;
+            }
+            for t in &mut thr {
+                *t /= p;
+            }
+        }
+        if thr.iter().all(|&e| e < LATE_FLOOR) {
+            break;
+        }
+        refl += 1;
+        bend_from = None;
+        mirror_thr *= keep[1] * (1.0 - mat.scattering);
+        loud &= mirror_thr >= COHERENT_FLOOR;
+        if rng.next_f32() < mat.scattering {
+            if seg == 0 && reusable {
+                first_bounce = Some((p, normal, length, -dir.dot(normal)));
+            }
+            dir = (normal + rng.unit_sphere()).normalize();
+            if dir.dot(normal) < 1e-3 {
+                dir = normal;
+            }
+            specular = false;
+            bent = false;
+            coherent = false;
+        } else {
+            if seg == 0 {
+                reusable = false;
+            }
+            dir = dir - normal * (2.0 * dir.dot(normal));
+            specular = true;
+        }
+        origin = p + normal * EPS;
+    }
+    }
+    if pooled {
+        let a = reusable && first_bounce.is_some();
+        let record = match (a, first_bounce) {
+            (true, Some((v1, n1, r1, cos1))) if !ray_deps.is_empty() => {
+                let deps = ray_deps.iter().map(|&(si, e, d, h)| (sources[si].id, e, d, h)).collect();
+                Some(LateRecord { v1, n1, r1, cos1, deps })
+            }
+            _ => None,
+        };
+        for &(si, e, delay, half) in ray_deps.iter() {
+            out.deps.push((si as u32, e, delay, half, first));
+        }
+        out.rays.push((a, ray_deps.len() as u32, record));
+    }
+}
+
 /// An edge path's tap for where listener and source are now: its delay
 /// and arrival direction through the same bend points (its gains as
 /// found).
@@ -3211,9 +3386,12 @@ fn two_edge_paths(
     // a string starts at an edge the ear sees and ends at one the source
     // sees: the nearest of each (an edge near the line that neither sees —
     // the pews inside a closed church — starts nothing)
-    let first: Vec<&(f32, usize, Vec3)> = near.iter().filter(|e| ear_sees(world, es, ear_seen, e.1, listener)).take(TWO_EDGE_NEAR).collect();
+    // (each side looks at no more than `EDGE_LOOKS` edges: from inside
+    // a closed hall almost none of those near the line outside are seen)
+    let first: Vec<&(f32, usize, Vec3)> =
+        near.iter().take(EDGE_LOOKS).filter(|e| ear_sees(world, es, ear_seen, e.1, listener)).take(TWO_EDGE_NEAR).collect();
     let mut last: Vec<&(f32, usize, Vec3)> = Vec::new();
-    for e in &near {
+    for e in near.iter().take(EDGE_LOOKS) {
         if last.len() >= TWO_EDGE_NEAR {
             break;
         }
@@ -3603,9 +3781,36 @@ const EDGE_PATHS: usize = 3;
 /// Edges whose legs are checked per blocked source (best knife-edge
 /// bounds first — most near the blocked line are themselves blocked).
 const EDGE_CANDIDATES: usize = 40;
+/// Edges a search looks at, at most, for whether the listener (or the
+/// source) sees them — the best bounds (or the shortest detours) first.
+/// From inside a closed hall almost none of the edges near the line to a
+/// source outside are seen: looking down the whole list cost 5–11 ms a
+/// search in the Godot demo's cathedral, for the edges least likely to
+/// carry anything. Enough for the town's bell bent around the cathedral
+/// (its corners rank behind a few hundred hidden edges of the nave; 256
+/// missed them, 512 finds them).
+const EDGE_LOOKS: usize = 1024;
 /// Tap keys of edge paths: base + edge index (early bins sit below).
 const KEY_EDGE_BASE: u32 = 20_000;
 const EDGE_CELL: f32 = 4.0;
+
+/// Which edges one segment query has looked at already (`EdgeSet::
+/// nearest_in`): the query's stamp per edge.
+#[derive(Clone, Default)]
+struct EdgeMarks {
+    seen: Vec<u32>,
+    stamp: u32,
+}
+
+impl EdgeMarks {
+    /// One mark per edge of a set of `n`.
+    fn fit(&mut self, n: usize) {
+        if self.seen.len() != n {
+            self.seen = vec![0; n];
+            self.stamp = 0;
+        }
+    }
+}
 
 /// Diffracting edges of a mesh (sharp creases ≥ 30° and free borders),
 /// in a uniform grid for segment queries.
@@ -3613,8 +3818,9 @@ pub struct EdgeSet {
     pub edges: Vec<(Vec3, Vec3)>,
     grid: HashMap<(i32, i32, i32), Vec<u32>>,
     key: (usize, usize),
-    seen: Vec<u32>,
-    stamp: u32,
+    /// `nearest`'s own marks (a walk's threads each bring theirs:
+    /// `nearest_in`).
+    marks: EdgeMarks,
     /// Bounds of all edges, padded by EDGE_REACH: rays outside it skip
     /// the search entirely.
     lo: Vec3,
@@ -3643,7 +3849,7 @@ fn cell_key(p: Vec3) -> (i32, i32, i32) {
 
 impl EdgeSet {
     pub fn build(mesh: &Mesh) -> Self {
-        let mut by_edge: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        let mut by_edge: HashMap<(u32, u32), Vec<u32>> = HashMap::default();
         for (ti, idx) in mesh.indices.iter().enumerate() {
             for k in 0..3 {
                 let (i, j) = (idx[k], idx[(k + 1) % 3]);
@@ -3669,7 +3875,7 @@ impl EdgeSet {
                 edges.push((a, b));
             }
         }
-        let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+        let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::default();
         for (ei, (a, b)) in edges.iter().enumerate() {
             let lo = Vec3::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z)) - Vec3::new(EDGE_REACH, EDGE_REACH, EDGE_REACH);
             let hi = Vec3::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z)) + Vec3::new(EDGE_REACH, EDGE_REACH, EDGE_REACH);
@@ -3700,8 +3906,7 @@ impl EdgeSet {
             edges,
             grid,
             key: (mesh.indices.len(), mesh.positions.len()),
-            seen: vec![0; n],
-            stamp: 0,
+            marks: EdgeMarks { seen: vec![0; n], stamp: 0 },
             lo: lo - r,
             hi: hi + r,
             filled: vec![false; n],
@@ -3764,10 +3969,19 @@ impl EdgeSet {
     /// (within EDGE_REACH, alongside the edge's span): (t, distance, unit
     /// edge direction).
     fn nearest(&mut self, o: Vec3, d: Vec3, t_end: f32, skip: Option<usize>) -> Option<(f32, f32, Vec3, usize)> {
-        self.stamp = self.stamp.wrapping_add(1);
-        if self.stamp == 0 {
-            self.seen.iter_mut().for_each(|s| *s = 0);
-            self.stamp = 1;
+        let mut marks = core::mem::take(&mut self.marks);
+        let found = self.nearest_in(&mut marks, o, d, t_end, skip);
+        self.marks = marks;
+        found
+    }
+
+    /// `nearest`, marking the edges looked at in `marks` (one per thread).
+    fn nearest_in(&self, marks: &mut EdgeMarks, o: Vec3, d: Vec3, t_end: f32, skip: Option<usize>) -> Option<(f32, f32, Vec3, usize)> {
+        marks.fit(self.edges.len());
+        marks.stamp = marks.stamp.wrapping_add(1);
+        if marks.stamp == 0 {
+            marks.seen.iter_mut().for_each(|s| *s = 0);
+            marks.stamp = 1;
         }
         // only where edges are: clip to their padded bounds, and look no
         // further than EDGE_SEARCH along one segment
@@ -3787,10 +4001,10 @@ impl EdgeSet {
                 if let Some(list) = self.grid.get(&k) {
                     for &ei in list {
                         let ei = ei as usize;
-                        if self.seen[ei] == self.stamp || self.filled[ei] || skip == Some(ei) {
+                        if marks.seen[ei] == marks.stamp || self.filled[ei] || skip == Some(ei) {
                             continue;
                         }
-                        self.seen[ei] = self.stamp;
+                        marks.seen[ei] = marks.stamp;
                         let (a, b) = self.edges[ei];
                         let e = b - a;
                         let w0 = o - a;

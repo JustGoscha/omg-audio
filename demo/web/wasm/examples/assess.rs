@@ -16,7 +16,8 @@
 //!            settled closed one (DELTA=0.1 …)
 //!   still    a source clicks every 3 s, nothing moves: how much each
 //!            click's response differs from the others (SRC=club|bell|
-//!            hands, SPOT=square|field|hall|entrance|north)
+//!            hands, SPOT=square|field|hall|entrance|north|inside|
+//!            cathedral)
 //!   walkout  a clap (click) in the hall, then the listener walks out of
 //!            the hall's door while it rings: the tail's envelope steps
 //!   moving   a car clicks 4 times a second driving past at 100 km/h,
@@ -189,6 +190,11 @@ impl Rig {
             (_, Some("1")) => Quality::Medium,
             (_, Some("3")) => Quality::Ultra,
             _ => Quality::High,
+        };
+        // LATE=n: late rays a tick over the quality's
+        let quality = match env("LATE").and_then(|n| n.parse::<u32>().ok()) {
+            Some(n) => Quality::Custom(omg_audio::Budget { late_rays: n, ..quality.budget(false) }),
+            None => quality,
         };
         // NEE=n: next-event connections per bounce (0: every source)
         let quality = match env("NEE").and_then(|n| n.parse::<usize>().ok()) {
@@ -568,6 +574,7 @@ fn still() {
         "entrance" => [21.0, 30.2, 1.6],
         "north" => [27.0, 48.0, 1.6],
         "inside" => [27.0, 30.0, 1.6],
+        "cathedral" => [8.0, 60.0, 1.6],
         _ => [15.0, 32.0, 1.6],
     };
     if i == FEET {
