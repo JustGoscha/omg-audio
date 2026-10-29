@@ -111,3 +111,67 @@ fn a_running_listener_hears_a_steady_doppler_under_game_timing() {
         assert!(worst < limit, "v={v} m/s: pitch wobbles {:.2} % (limit {:.2} %)", worst * 100.0, limit * 100.0);
     }
 }
+
+/// A source running at `v` m/s straight at a still listener, its place
+/// moved on 60 Hz physics steps and sent every 120 Hz frame — each send
+/// stamped with when that place was first sent (`Engine::set_source`), or
+/// (`each`) with the send's own time, as before. The pitch of every 20 ms
+/// window after the first second, relative to the Doppler prediction.
+fn run_source(v: f32, secs: f32, each: bool) -> Vec<f32> {
+    const PHYSICS_HZ: f64 = 60.0;
+    const FRAME_HZ: f64 = 120.0;
+    let mut sim = Simulation::new(Config::default());
+    let x0 = v * (secs + 1.0) + 30.0;
+    let src = sim.add_source(SourceDesc::at([x0, 0.0, 1.6]));
+    sim.set_listener_at([0.0, 0.0, 1.6], 0.0, 0.0, 0.0, 0.0);
+    let mut m = Mixer::new(SR, Hrir::none());
+    let tone: Vec<f32> = (0..4800).map(|k| (std::f32::consts::TAU * F0 * k as f32 / SR).sin() * 0.5).collect();
+    let n = (secs * SR) as usize;
+    let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+    let (mut frame, mut placed, mut started) = (0u64, (f32::NAN, 0.0f64), false);
+    let mut b = 0usize;
+    while b < n {
+        let t = b as f64 / SR as f64;
+        // the frames up to now: each sends the place of the last physics step
+        while frame as f64 / FRAME_HZ <= t {
+            let tf = frame as f64 / FRAME_HZ;
+            let x = x0 - v * ((tf * PHYSICS_HZ).floor() / PHYSICS_HZ) as f32;
+            let stamp = if !each && x == placed.0 { placed.1 } else { tf };
+            placed = (x, stamp);
+            sim.set_time(tf);
+            sim.set_source_at(src, [x, 0.0, 1.6], true, stamp);
+            if frame % 6 == 0 {
+                m.apply(&sim.tick());
+                if !started {
+                    m.play(src, &clip(&tone), Play::LOOP);
+                    started = true;
+                }
+            }
+            frame += 1;
+        }
+        let e = (b + BLOCK).min(n);
+        m.render(&mut l[b..e], &mut r[b..e]);
+        b = e;
+    }
+    let want = F0 / (1.0 - v / SPEED_OF_SOUND);
+    (SR as usize..n - 960).step_by(960).map(|w| zc_freq(&l[w..w + 960]) / want - 1.0).collect()
+}
+
+/// A source moved by a game's physics at half its frame rate keeps a
+/// steady Doppler: a place sent again is stamped with when it was first
+/// sent there (`Engine::set_source`). Stamped with each send, its track
+/// stood still for a frame and jumped at twice its speed the next: the
+/// town's passing car's pitch jittered 16.5 Hz rms against 4.3 moving
+/// smoothly (`assess cartone PHYS=60 STAMP=each`).
+#[test]
+fn a_running_source_sounds_a_steady_doppler_under_game_timing() {
+    for v in [10.0f32, 27.0] {
+        let worst = |p: &[f32]| p.iter().map(|x| x.abs()).fold(0.0, f32::max);
+        let p = run_source(v, 4.0, false);
+        let mean = p.iter().sum::<f32>() / p.len() as f32;
+        let old = worst(&run_source(v, 4.0, true));
+        eprintln!("v {v} m/s: mean {:+.3} %, worst 20 ms deviation {:.3} % (each send stamped: {:.3} %)", mean * 100.0, worst(&p) * 100.0, old * 100.0);
+        let limit = 0.004 + 0.02 * v / SPEED_OF_SOUND;
+        assert!(worst(&p) < limit, "v={v} m/s: pitch wobbles {:.2} % (limit {:.2} %)", worst(&p) * 100.0, limit * 100.0);
+    }
+}

@@ -123,10 +123,10 @@ enum MixCmd {
 enum SimCmd {
     Geometry(Box<Geometry>),
     AddSource(SourceId, SourceDesc),
-    /// A source's position, active, and when it was there (the engine's
+    /// A source's position, active, when it was there (the engine's
     /// clock: where it was when is what lets far paths reach it where it
-    /// emitted).
-    SetSource(SourceId, [f32; 3], bool, f64),
+    /// emitted), and the time now.
+    SetSource(SourceId, [f32; 3], bool, f64, f64),
     SourceGain(SourceId, f32),
     RemoveSource(SourceId),
     AddObject(ObjectId, [f32; 3], [f32; 3], Material),
@@ -134,7 +134,8 @@ enum SimCmd {
     ObjectMaterial(ObjectId, Material),
     ObjectEnabled(ObjectId, bool),
     RemoveObject(ObjectId),
-    Listener([f32; 3], f32, f32, f32, f64),
+    /// The listener's pose, when it was current, and the time now.
+    Listener([f32; 3], f32, f32, f32, f64, f64),
     Config(Config),
     DebugPaths(bool),
 }
@@ -205,6 +206,9 @@ pub struct Engine {
     /// it was first sent (see `set_listener`).
     clock: Instant,
     pose: Option<([f32; 3], f64)>,
+    /// Each source's last position sent with the time it was first sent
+    /// (see `set_source`).
+    placed: std::collections::HashMap<SourceId, ([f32; 3], f64)>,
     /// Clips whose band powers went to the mixer (by address; the weak
     /// reference tells a freed clip from a new one at the same address).
     powered: std::collections::HashMap<usize, std::sync::Weak<[f32]>>,
@@ -258,6 +262,7 @@ impl Engine {
             next_voice: 1 << 31, // disjoint from ids the Mixer hands out itself
             clock: Instant::now(),
             pose: None,
+            placed: std::collections::HashMap::new(),
             powered: std::collections::HashMap::new(),
             sample_rate,
         };
@@ -303,9 +308,21 @@ impl Engine {
         id
     }
 
+    /// A source's place (and whether it sounds). Call it every frame: the
+    /// place is stamped with the time it was first sent there — a game
+    /// that renders faster than its physics moves a source sends the same
+    /// place a few times, and it has been there since the physics step
+    /// (stamped with each send, its track stood still between the steps
+    /// and jumped at twice its speed: a car's pitch jittered by the
+    /// frame rate).
     pub fn set_source(&mut self, id: SourceId, position: [f32; 3], active: bool) {
-        let t = self.clock.elapsed().as_secs_f64();
-        self.sim(SimCmd::SetSource(id, position, active, t));
+        let now = self.clock.elapsed().as_secs_f64();
+        let t = match self.placed.get(&id) {
+            Some(&(p, t)) if p == position => t,
+            _ => now,
+        };
+        self.placed.insert(id, (position, t));
+        self.sim(SimCmd::SetSource(id, position, active, t, now));
     }
 
     /// Acoustic loudness (see `SourceDesc::gain`).
@@ -314,6 +331,7 @@ impl Engine {
     }
 
     pub fn remove_source(&mut self, id: SourceId) {
+        self.placed.remove(&id);
         self.sim(SimCmd::RemoveSource(id));
     }
 
@@ -359,7 +377,8 @@ impl Engine {
     /// when the pose was current, e.g. your physics step's time).
     pub fn set_listener_at(&mut self, position: [f32; 3], yaw: f32, pitch: f32, roll: f32, time: f64) {
         self.pose = Some((position, time));
-        self.sim(SimCmd::Listener(position, yaw, pitch, roll, time));
+        let now = self.clock.elapsed().as_secs_f64().max(time);
+        self.sim(SimCmd::Listener(position, yaw, pitch, roll, time, now));
     }
 
     fn voice(&mut self) -> VoiceId {
@@ -448,9 +467,11 @@ fn handle(sim: &mut Simulation, c: SimCmd) {
     match c {
         SimCmd::Geometry(g) => sim.set_geometry(*g),
         SimCmd::AddSource(id, d) => sim.add_source_as(id, d),
-        SimCmd::SetSource(id, p, a, t) => {
-            sim.set_time(t);
-            sim.set_source(id, p, a)
+        // the clock is now; a place is recorded when it was current (a
+        // repeated one: when it was first sent)
+        SimCmd::SetSource(id, p, a, t, now) => {
+            sim.set_time(now);
+            sim.set_source_at(id, p, a, t)
         }
         SimCmd::SourceGain(id, g) => sim.set_source_gain(id, g),
         SimCmd::RemoveSource(id) => sim.remove_source(id),
@@ -459,7 +480,10 @@ fn handle(sim: &mut Simulation, c: SimCmd) {
         SimCmd::ObjectMaterial(id, m) => sim.set_object_material(id, m),
         SimCmd::ObjectEnabled(id, e) => sim.set_object_enabled(id, e),
         SimCmd::RemoveObject(id) => sim.remove_object(id),
-        SimCmd::Listener(p, y, pi, r, t) => sim.set_listener_at(p, y, pi, r, t),
+        SimCmd::Listener(p, y, pi, r, t, now) => {
+            sim.set_listener_at(p, y, pi, r, t);
+            sim.set_time(now);
+        }
         SimCmd::Config(c) => sim.set_config(c),
         SimCmd::DebugPaths(on) => sim.set_debug_paths(on),
     }
@@ -524,7 +548,7 @@ fn sim_loop(
                 Ok(c) => {
                     let wakes = match &c {
                         SimCmd::AddSource(_, d) => d.active,
-                        SimCmd::SetSource(id, _, on, _) => *on && !sim.is_active(*id),
+                        SimCmd::SetSource(id, _, on, _, _) => *on && !sim.is_active(*id),
                         _ => false,
                     };
                     held.push(c);

@@ -714,7 +714,16 @@ impl Simulation {
 
     /// Move a source and/or switch it on or off.
     pub fn set_source(&mut self, id: SourceId, position: [f32; 3], active: bool) {
-        let now = self.clock;
+        self.set_source_at(id, position, active, self.clock);
+    }
+
+    /// `set_source` at `time` (the clock `set_time` keeps): when the place
+    /// was current — a game whose physics moves a source at a lower rate
+    /// than it renders sends the same place a few times, and it has been
+    /// there since the physics step (`Engine::set_source` stamps a
+    /// repeated place with its first send). The clock itself stays.
+    pub fn set_source_at(&mut self, id: SourceId, position: [f32; 3], active: bool, time: f64) {
+        let now = time;
         let ear = v3(self.listener.position);
         let Some(i) = self.sources.iter().position(|s| s.id == id && s.ghost.is_none()) else { return };
         let p = v3(position);
@@ -756,8 +765,9 @@ impl Simulation {
         if active {
             s.off_at = None;
         } else if s.active || s.off_at.is_none() {
-            // (never traced while on: nothing of it is on its way)
-            s.off_at = Some(if s.traced.is_some() { now } else { f64::NEG_INFINITY });
+            // (never traced while on: nothing of it is on its way; off
+            // now, whenever it stood there since)
+            s.off_at = Some(if s.traced.is_some() { self.clock } else { f64::NEG_INFINITY });
         }
         s.active = active;
         record(&mut s.track, s.seen, now, s.pos);

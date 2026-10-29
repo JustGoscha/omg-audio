@@ -142,6 +142,15 @@ start_recording`, `demo/godot/demo/record.gd`, `tools/record_runs.sh`):
   after load, muted before it arrived, burst in at full level — its
   fader ticked only while a bed played, so it glided down from 1. A
   fader whose channel is silent now takes its value at once.
+- every moving source's pitch jittered at the frame rate: the demo
+  moves its cars on 60 Hz physics and sends their places every 120 Hz
+  frame, each send stamped with its own time — the track stood still for
+  a frame and jumped at twice the speed the next. A place sent again is
+  now stamped with when it was first sent there (as the listener's pose
+  already was), and the simulation's clock stays the present. The town's
+  passing car (`assess cartone PHYS=60`): pitch jitter 16.5 → 4.7 Hz rms
+  (4.3 moving smoothly); in Godot its treble artifacts −50.3 / −47.2 /
+  −50.6 → −53.5 / −54.5 / −57.4 dB (approach / pass / away).
 
 ## Still open (OPEN.md)
 

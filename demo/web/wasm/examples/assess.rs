@@ -38,7 +38,8 @@
 //!
 //!     MODE=v3|v4|v5|v6  RUNG=0..4 (unset: governed)  QUALITY=0..3 | LEVEL=0..10  EAR=0
 //!     PACE=0  WAV=dir (write the output)  SEED=n  NEE=n (next-event
-//!     connections a bounce; 0: every source)
+//!     connections a bounce; 0: every source)  PHYS=hz (movers move at a
+//!     game's physics rate, sent every frame)
 //!
 //!     cargo run --release -p omg-web --example assess -- door
 use omg_audio::governor::Governor;
@@ -172,6 +173,8 @@ struct Rig {
     /// Moving logical sources (dynamic slots): their position over time
     /// (None: switched off).
     movers: Vec<(usize, Box<dyn Fn(f32) -> Option<[f32; 3]>>)>,
+    /// Each mover's last place sent and when it was first sent there.
+    placed: Vec<Option<([f32; 3], f64)>>,
     /// The listener's own motion (None: still).
     walk: Option<Box<dyn Fn(f32) -> [f32; 3]>>,
     /// A dynamic slot that follows the listener (0.3 m ahead, chest high).
@@ -277,6 +280,7 @@ impl Rig {
             clicks: Vec::new(),
             track: Vec::new(),
             movers: Vec::new(),
+            placed: Vec::new(),
             walk: None,
             hands: None,
             bands: None,
@@ -363,9 +367,22 @@ impl Rig {
                 }
                 self.pos = p;
             }
+            // PHYS=hz: movers move at a game's physics rate, sent every
+            // frame (the Godot demo: 60 Hz physics, 120 Hz frames)
+            // — stamped as the engine stamps them (a repeated place with
+            // its first send; STAMP=each: every send now, as before Oct 29)
+            let tm = env("PHYS").and_then(|v| v.parse::<f32>().ok()).map_or(t, |hz| (t * hz).floor() / hz);
+            self.placed.resize(self.movers.len(), None);
             for k in 0..self.movers.len() {
-                let (i, p) = (self.movers[k].0, (self.movers[k].1)(t));
+                let (i, p) = (self.movers[k].0, (self.movers[k].1)(tm));
+                let stamp = match (self.placed[k], p) {
+                    (Some((q, t0)), Some(p)) if q == p && env("STAMP").as_deref() != Some("each") => t0,
+                    _ => t as f64,
+                };
+                self.placed[k] = p.map(|p| (p, stamp));
+                self.sim.set_time(stamp);
                 self.town.set_dynamic(&mut self.sim, i - base, p.map(|p| (p, 1.0)));
+                self.sim.set_time(t as f64);
             }
             if let Some(h) = self.hands {
                 let p = [self.pos[0] + 0.3 * self.yaw.cos(), self.pos[1] + 0.3 * self.yaw.sin(), 1.2];
