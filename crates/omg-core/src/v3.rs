@@ -1327,7 +1327,10 @@ pub struct Tracer {
     ear_vis: Option<(Vec3, u64, Vec<bool>)>,
     /// Per source id: (listener, source, tick, edge-path taps, the bend
     /// point of each).
-    edge_cache: HashMap<u32, (Vec3, Vec3, u64, Vec<Tap>, Vec<Vec3>)>,
+    edge_cache: HashMap<u32, (Vec3, Vec3, u64, Vec<Tap>, Vec<Vec<Vec3>>)>,
+    /// Per source id: where it stood, and which edges it sees (0 not yet
+    /// looked at, 1 seen, 2 hidden) — two-edge strings start from these.
+    src_vis: HashMap<u32, (Vec3, Vec<u8>)>,
     /// Mirror chains past `bounces`, per (source id, plane-sequence
     /// hash): found by coherent rays, solved exactly every tick.
     chains: HashMap<(u32, u64), MirrorChain>,
@@ -1494,8 +1497,9 @@ impl Tracer {
             // the bends, through the points the last search found
             if let Some((_, _, _, cached, points)) = self.edge_cache.get(&s.id) {
                 for (tap, p) in cached.iter().zip(points) {
-                    if let Some(bp) = self.motion.emit(si, s.pos, *p, (*p - listener).length()) {
-                        taps.push(retimed(tap, *p, listener, bp));
+                    let last = *p.last().expect("a bend has its points");
+                    if let Some(bp) = self.motion.emit(si, s.pos, last, polyline_len(listener, p)) {
+                        taps.push(retimed(tap, p, listener, bp));
                     }
                 }
             }
@@ -1550,6 +1554,7 @@ impl Tracer {
             tick: 0,
             ear_vis: None,
             edge_cache: HashMap::new(),
+            src_vis: HashMap::new(),
             chains: HashMap::new(),
             rejected: HashMap::new(),
             v4: false,
@@ -1905,9 +1910,9 @@ impl Tracer {
                         // a bent path with no reflection is the DIRECT
                         // field around an edge: only what the straight
                         // ray doesn't already carry
-                        // one edge, no reflection: that is the edge
-                        // next-event path, already counted exactly
-                        if refl == 0 && bends == 1 && !specular {
+                        // one or two edges, no reflection: the edge
+                        // next-event paths, already counted exactly
+                        if refl == 0 && bends <= 2 && !specular {
                             continue;
                         }
                         // a bent path only carries what the straight
@@ -2565,6 +2570,7 @@ impl Tracer {
             }
             self.rejected.clear();
             self.edge_cache.clear();
+            self.src_vis.clear();
             self.ear_vis = None;
             self.sky_world = true;
             for st in self.state.values_mut() {
@@ -2676,15 +2682,18 @@ impl Tracer {
                         // the same bends, re-timed for where both ends are
                         // now (as `exact_taps` does between ticks: a reused
                         // bend never jumps back to an old delay)
-                        edge_taps[si] = taps.iter().zip(bends).map(|(tap, p)| retimed(tap, *p, listener, sp)).collect();
+                        edge_taps[si] = taps.iter().zip(bends).map(|(tap, p)| retimed(tap, p, listener, sp)).collect();
                         if debug {
                             for (tap, p) in taps.iter().zip(bends) {
+                                let mut points = vec![listener];
+                                points.extend_from_slice(p);
+                                points.push(sp);
                                 self.exact.push(ExactPath {
                                     source: s.id,
                                     kind: 1,
                                     key: tap.key as u64,
                                     energy: tap.gains[1] * tap.gains[1],
-                                    points: vec![listener, *p, sp],
+                                    points,
                                 });
                             }
                         }
@@ -2781,7 +2790,31 @@ impl Tracer {
                     }
                     edge_taps[si].push(tap);
                 }
-                self.edge_cache.insert(s.id, (listener, s.pos, tick, edge_taps[si].clone(), kept));
+                let mut bends: Vec<Vec<Vec3>> = kept.iter().map(|p| vec![*p]).collect();
+                // two edges: the string over a thick building or around
+                // two corners, where no single bend carries the field
+                let sv = self.src_vis.entry(s.id).or_insert_with(|| (sp, vec![0; es.edges.len()]));
+                if (sv.0 - sp).length() > EDGE_REUSE_M || sv.1.len() != es.edges.len() {
+                    *sv = (sp, vec![0; es.edges.len()]);
+                }
+                let two = two_edge_paths(world, es, seen_from_ear, &mut sv.1, &mut self.hits, listener, sp, vis[si]);
+                for (pts, tap) in two {
+                    if kept.iter().any(|q| (*q - pts[0]).length() < 1.0 || (*q - pts[1]).length() < 1.0) {
+                        continue; // a single bend already carries it
+                    }
+                    if debug {
+                        self.exact.push(ExactPath {
+                            source: s.id,
+                            kind: 1,
+                            key: tap.key as u64,
+                            energy: tap.gains[1] * tap.gains[1],
+                            points: vec![listener, pts[0], pts[1], sp],
+                        });
+                    }
+                    edge_taps[si].push(tap);
+                    bends.push(pts.to_vec());
+                }
+                self.edge_cache.insert(s.id, (listener, s.pos, tick, edge_taps[si].clone(), bends));
             }
         }
 
@@ -2789,13 +2822,206 @@ impl Tracer {
     }
 }
 
-/// An edge bend's tap for where listener and source are now: its delay
-/// and arrival direction through the same bend point (its gains as found).
-fn retimed(tap: &Tap, bend: Vec3, listener: Vec3, source: Vec3) -> Tap {
-    let (a, b) = (bend - listener, source - bend);
+/// An edge path's tap for where listener and source are now: its delay
+/// and arrival direction through the same bend points (its gains as
+/// found).
+fn retimed(tap: &Tap, bends: &[Vec3], listener: Vec3, source: Vec3) -> Tap {
+    let first = bends[0];
+    let a = first - listener;
     let la = a.length().max(1e-6);
     let dir = a * (1.0 / la);
-    Tap { delay_s: (la + b.length()) / SPEED_OF_SOUND, dir: [dir.x, dir.y, dir.z], ..*tap }
+    let len = polyline_len(listener, bends) + (source - bends[bends.len() - 1]).length();
+    Tap { delay_s: len / SPEED_OF_SOUND, dir: [dir.x, dir.y, dir.z], ..*tap }
+}
+
+/// Length from `from` through `points` (to the last of them).
+fn polyline_len(from: Vec3, points: &[Vec3]) -> f32 {
+    let mut p = from;
+    let mut l = 0.0;
+    for &q in points {
+        l += (q - p).length();
+        p = q;
+    }
+    l
+}
+
+/// Two-edge strings searched per source at most this much longer than the
+/// straight line (m, and as a share of it): longer detours are other
+/// paths' business (reflections), and the search stays bounded.
+const TWO_EDGE_DETOUR_M: f32 = 40.0;
+const TWO_EDGE_DETOUR_SHARE: f32 = 0.3;
+/// Edges looked at per two-edge search (nearest the straight line first),
+/// pairs refined, and strings validated through the geometry.
+const TWO_EDGE_NEAR: usize = 256;
+const TWO_EDGE_REFINE: usize = 1024;
+const TWO_EDGE_VALIDATE: usize = 1024;
+/// Two-edge paths kept per source.
+const TWO_EDGE_PATHS: usize = 2;
+const KEY_EDGE2_BASE: u32 = 5_000_000;
+const KEY_EDGE2_SPAN: u32 = 3_000_000;
+
+/// Does `p` see edge `(a, b)` (a few points along it, pulled 5 cm toward
+/// `p`; not through the earth)?
+fn sees_edge(world: &World, p: Vec3, a: Vec3, b: Vec3) -> bool {
+    [0.1f32, 0.3, 0.5, 0.7, 0.9].iter().any(|f| {
+        let m = a + (b - a) * *f;
+        let to = m - p;
+        let l = to.length();
+        l > 0.2 && l < 2000.0 && {
+            let end = m - to * (0.05 / l);
+            world.mesh.raycast(p, to * (1.0 / l)).map_or(true, |(t, _)| t > l - 0.06) && !world.crosses_earth(p, end)
+        }
+    })
+}
+
+/// The exact paths over two edges between `listener` and `src` (whose
+/// straight line is blocked): the shortest string through a pair — an
+/// edge the ear sees, then one the source sees — each bend point where
+/// the string is shortest (alternating until it settles), every leg
+/// priced through whatever it crosses. Priced as a whole by its detour
+/// (ISO 9613-2's multi-edge barrier: thick buildings cost a little more
+/// than thin walls, not 5 dB per grazing corner), only the share the
+/// straight line doesn't carry. `src_seen` caches which edges the source
+/// sees (0 unknown, 1 yes, 2 no). Strongest first, at most
+/// `TWO_EDGE_PATHS`, as (bend points, tap).
+#[allow(clippy::too_many_arguments)]
+fn two_edge_paths(
+    world: &World,
+    es: &EdgeSet,
+    seen_from_ear: &[bool],
+    src_seen: &mut [u8],
+    hits: &mut Vec<SegHit>,
+    listener: Vec3,
+    src: Vec3,
+    vis: [f32; NBANDS],
+) -> Vec<([Vec3; 2], Tap)> {
+    let direct = (src - listener).length().max(MIN_DIST);
+    let limit = TWO_EDGE_DETOUR_M.min(TWO_EDGE_DETOUR_SHARE * direct).max(4.0);
+    // the edges near the straight line (an ellipse around it), each with
+    // its own bend point for the straight pair
+    let mut near: Vec<(f32, usize, Vec3)> = es
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(ei, _)| !es.filled[*ei])
+        .filter_map(|(ei, (a, b))| {
+            let c = crate::paths::bend_point(*a, *b, src, listener);
+            let l = (c - listener).length() + (src - c).length();
+            (l - direct <= limit && world.grade.is_none_or(|g| c.z > g + 0.3)).then_some((l, ei, c))
+        })
+        .collect();
+    near.sort_by(|x, y| x.0.total_cmp(&y.0));
+    // a string starts at an edge the ear sees and ends at one the source
+    // sees: the nearest of each (an edge near the line that neither sees —
+    // the pews inside a closed church — starts nothing)
+    let first: Vec<&(f32, usize, Vec3)> = near.iter().filter(|e| seen_from_ear[e.1]).take(TWO_EDGE_NEAR).collect();
+    let mut last: Vec<&(f32, usize, Vec3)> = Vec::new();
+    for e in &near {
+        if last.len() >= TWO_EDGE_NEAR {
+            break;
+        }
+        if src_seen[e.1] == 0 {
+            let (a, b) = es.edges[e.1];
+            src_seen[e.1] = if sees_edge(world, src, a, b) { 1 } else { 2 };
+        }
+        if src_seen[e.1] == 1 {
+            last.push(e);
+        }
+    }
+    // pairs by their straight-pair estimate, the shortest refined
+    let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
+    for e1 in &first {
+        for e2 in &last {
+            if e1.1 == e2.1 {
+                continue;
+            }
+            let l = (e1.2 - listener).length() + (e2.2 - e1.2).length() + (src - e2.2).length();
+            if l - direct <= limit {
+                pairs.push((l, e1.1, e2.1));
+            }
+        }
+    }
+    pairs.sort_by(|x, y| x.0.total_cmp(&y.0));
+    pairs.truncate(TWO_EDGE_REFINE);
+    let mut strings: Vec<(f32, usize, usize, Vec3, Vec3)> = pairs
+        .into_iter()
+        .map(|(_, e1, e2)| {
+            let ((a1, b1), (a2, b2)) = (es.edges[e1], es.edges[e2]);
+            let mut p2 = (a2 + b2) * 0.5;
+            let mut p1 = crate::paths::bend_point(a1, b1, p2, listener);
+            for _ in 0..4 {
+                p2 = crate::paths::bend_point(a2, b2, src, p1);
+                p1 = crate::paths::bend_point(a1, b1, p2, listener);
+            }
+            let l = (p1 - listener).length() + (p2 - p1).length() + (src - p2).length();
+            (l, e1, e2, p1, p2)
+        })
+        .collect();
+    strings.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut out: Vec<(f32, [Vec3; 2], Tap)> = Vec::new();
+    let mut clear = 0;
+    for (l, e1, e2, p1, p2) in strings.into_iter().take(TWO_EDGE_VALIDATE) {
+        // shortest first: two strings with open air all along end the search
+        if clear >= TWO_EDGE_PATHS {
+            break;
+        }
+        let z = l - direct;
+        if z > limit || z <= 0.0 || (p2 - p1).length() < 0.5 {
+            continue;
+        }
+        let na = (p1 - listener).normalize();
+        // legs meet 3 cm off each edge on the outside of the string — away
+        // from the straight line it goes around (a grazing edge, the
+        // string almost straight there, still has an outside)
+        let line = src - listener;
+        let off = |p: Vec3| -> Option<Vec3> {
+            let k = ((p - listener).dot(line) / line.dot(line)).clamp(0.0, 1.0);
+            let o = p - (listener + line * k);
+            (o.length() > 1e-4).then(|| p + o.normalize() * 0.03)
+        };
+        let (Some(q1), Some(q2)) = (off(p1), off(p2)) else { continue };
+        // a leg through the fixed geometry (a string through a church, not
+        // over it): one ray each, before pricing anything
+        let open = |a: Vec3, b: Vec3| {
+            let d = b - a;
+            let l = d.length();
+            l < 1e-3 || world.mesh.raycast(a, d * (1.0 / l)).is_none_or(|(t, _)| t >= l - 1e-3)
+        };
+        if !open(listener, q1) || !open(q1, q2) || !open(q2, src) {
+            continue;
+        }
+        let t1 = world.transmission(listener, q1, hits);
+        let t12 = world.transmission(q1, q2, hits);
+        let t2 = world.transmission(q2, src, hits);
+        if t1[0] * t12[0] * t2[0] < 1e-6 {
+            continue;
+        }
+        if t1[1] * t12[1] * t2[1] > 0.5 {
+            clear += 1;
+        }
+        let lateral = p1.z.max(p2.z) < listener.z.max(src.z) + 0.5;
+        let iso = crate::diffraction::iso9613_barrier_bands(z, 2, (p2 - p1).length(), (src - p2).length(), (p1 - listener).length(), direct, lateral);
+        let air = air_attenuation(l);
+        let gains: [f32; NBANDS] =
+            core::array::from_fn(|b| iso[b] * t1[b] * t12[b] * t2[b] * air[b] / l * (1.0 - vis[b]).clamp(0.0, 1.0).sqrt());
+        if gains.iter().all(|&g| g < 1e-7) {
+            continue;
+        }
+        let key = KEY_EDGE2_BASE + ((e1 as u64 * 7919 + e2 as u64) % KEY_EDGE2_SPAN as u64) as u32;
+        out.push((gains[0] + gains[1], [p1, p2], Tap { key, delay_s: l / SPEED_OF_SOUND, dir: [na.x, na.y, na.z], gains }));
+    }
+    out.sort_by(|x, y| y.0.total_cmp(&x.0));
+    let mut kept: Vec<([Vec3; 2], Tap)> = Vec::new();
+    for (_, pts, tap) in out {
+        if kept.len() >= TWO_EDGE_PATHS {
+            break;
+        }
+        if kept.iter().any(|(q, _)| (q[0] - pts[0]).length() < 1.0 && (q[1] - pts[1]).length() < 1.0) {
+            continue;
+        }
+        kept.push((pts, tap));
+    }
+    kept
 }
 
 fn cell_of(key: u32) -> usize {
@@ -3293,7 +3519,7 @@ fn seam(mesh: &Mesh, t: u32, a: Vec3, b: Vec3) -> bool {
 /// show up as free face borders. Probed geometrically: 16 directions in
 /// the plane across the edge, at three points along it.
 pub fn exposed(mesh: &Mesh, a: Vec3, b: Vec3) -> bool {
-    const N: usize = 16;
+    const N: usize = 32;
     const R: f32 = 0.5;
     let u = (b - a).normalize();
     let helper = if u.z.abs() < 0.9 { Vec3::new(0.0, 0.0, 1.0) } else { Vec3::new(1.0, 0.0, 0.0) };
@@ -3323,9 +3549,11 @@ pub fn exposed(mesh: &Mesh, a: Vec3, b: Vec3) -> bool {
         }
         best = best.max(longest);
     }
-    // > 225°: a wall standing on the ground measures ~200° (rays along
-    // its plane slip by), an outside corner or roof line ~270°+
-    best * 360 > 225 * N
+    // > 205°: a wall standing on the ground measures 180–200° (rays along
+    // its plane slip by), a gable's rake (wall under a 50° roof) ~220°, an
+    // outside corner or roof ridge ~270°+ — the strings over a building
+    // cross its gables, so they are edges too
+    best * 360 > 205 * N
 }
 
 /// Bend angle for a ray passing an edge at distance `a`: sampled from

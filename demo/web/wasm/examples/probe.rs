@@ -25,7 +25,14 @@ fn main() {
         town.set_door(&mut sim, i, 1.0);
     }
     let ids = town.sources[src].clone();
+    if std::env::var("ONLY").is_ok() {
+        for i in 0..town.defs.len() {
+            town.set_muted(&mut sim, i, i != src);
+        }
+    }
     sim.set_listener([at[0], at[1], at[2]], 0.0, 0.0, 0.0);
+    let debug = std::env::var("PATHS").is_ok();
+    sim.set_debug_paths(debug);
     println!(" tick   direct  bends  chains(n)   dense    reverb(lvl²)   total  [dB, mid band, all of the source's emitters]");
     let db = |x: f32| 10.0 * x.max(1e-30).log10();
     for t in 0..ticks {
@@ -59,5 +66,11 @@ fn main() {
         }
         let total = d + b + c + if mode == "v3" { rev } else { dense };
         println!("{t:5}  {:6.1} {:6.1} {:6.1}({nc:3}) {:7.1}   {:7.1}      {:7.1}   early dense {:7.1}", db(d), db(b), db(c), db(dense), db(rev), db(total), db(early_d));
+    }
+    if debug {
+        for p in sim.debug_paths().iter().filter(|p| ids.contains(&p.source) && p.kind != omg_audio::PathKind::Sampled) {
+            let pts: Vec<String> = p.points.iter().map(|q| format!("({:.1},{:.1},{:.1})", q[0], q[1], q[2])).collect();
+            println!("{:?} {:.1} dB: {}", p.kind, 10.0 * p.energy.max(1e-30).log10(), pts.join(" "));
+        }
     }
 }

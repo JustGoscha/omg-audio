@@ -660,7 +660,8 @@ impl Simulation {
         if active {
             s.off_at = None;
         } else if s.active || s.off_at.is_none() {
-            s.off_at = Some(now);
+            // (never traced while on: nothing of it is on its way)
+            s.off_at = Some(if s.traced.is_some() { now } else { f64::NEG_INFINITY });
         }
         s.active = active;
         record(&mut s.track, s.seen, now, s.pos);

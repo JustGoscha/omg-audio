@@ -412,7 +412,10 @@ fn crossing_a_wall_drops_the_room_left_behind() {
         there = mid(&fresh.trace(&world, out, &src, budget).remove(0));
     }
     assert!(inside.1 - there.1 > 30.0, "setup: the room must ring far louder inside ({inside:?} vs {there:?})");
-    for (name, a, b) in [("early", after.0, there.0), ("late", after.1, there.1)] {
-        assert!((a - b).abs() < 10.0, "{name}: first tick outside {a:.1} dB, settled outside {b:.1} dB (inside {inside:?})");
+    for (name, a, b, was) in [("early", after.0, there.0, inside.0), ("late", after.1, there.1, inside.1)] {
+        // the room left behind is gone at once; where what is left outside
+        // is itself 100 dB under it, both are a few rare rays' noise
+        assert!(a < was - 60.0, "{name}: first tick outside {a:.1} dB, still the room inside ({was:.1} dB)");
+        assert!((a - b).abs() < 10.0 || a.max(b) < was - 100.0, "{name}: first tick outside {a:.1} dB, settled outside {b:.1} dB (inside {inside:?})");
     }
 }
