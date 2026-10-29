@@ -379,3 +379,46 @@ start and one past its end. The car at 100 km/h still arrives within
 0.4 ms. Render cost: web 20.1 → 20.5 % of real time, Godot's 480-path
 rung 6.4 → 5.8×.
 
+## The final engine (everything above), recorded
+
+The same impulse set on the engine as committed at the end of the night
+(`final/`, real time as the Godot host runs it, measured in the
+Linkwitz–Riley bands — not comparable band for band with the one-pole
+tables at the top; deltas within a run are).
+
+Standing still, identical clicks (spread sd / span, dB; early, late; mid
+band, and the worst band where it differs):
+
+| source, listener | early | late |
+|---|---|---|
+| bell, open field | 0.00 / 0.0 | 0.00 / 0.0 |
+| bell, on the square | 0.41 / 1.4 | 0.42 / 1.4 (treble 1.33 / 3.6) |
+| club, from the square | 0.41 / 1.5 | 0.27 / 0.8 |
+| club, from the street north | 0.23 / 0.6 | 1.16 / 3.5 (bass 2.28 / 6.7) |
+| a clap in the hall | 0.01 / 0.0 | 0.02 / 0.0 |
+
+The club door shuts, the click δ later against settled (low / mid /
+high):
+
+| δ | early | late |
+|---|---|---|
+| 0.05 s | −2.2 / −3.1 / −6.8 | −6.0 / −4.6 / −8.3 |
+| 0.1 s | −3.5 / −5.0 / −8.6 | −5.2 / −4.9 / −10.5 |
+| 0.2 s | −2.2 / −3.5 / −8.2 | −4.6 / −4.5 / −10.0 |
+| 0.4 s | −2.7 / −2.4 / −5.3 | −0.8 / −0.3 / −3.4 |
+| 0.8 s | −1.7 / +3.7 / +0.3 | −0.2 / +4.4 / +1.5 |
+| 1.6 s | −1.1 / +1.6 / −1.7 | −0.6 / +2.5 / −0.4 |
+
+Not a regression of the paths — the shut door's paths are exact from
+the first frame — but of the scattered field through the door, a young
+estimate for its first ~0.3 s (OPEN.md: the burst that would fix it and
+why it waits for a multi-threaded walk). The rest: the car at 100 km/h
+on time within 0.4 ms; a clap's tail walking out of the hall smooth
+(0.85 s to −60 dB, no 10 ms window off its course by 4 dB); a click in
+flight while its source jumps still arrives from where it left; a
+switched-off source's click arrives and rings.
+
+Listening: `audio/*_final.m4a` — the final engine at the gain its
+`_before` / `_after` pair was raised by (lowered only where it would
+clip: `walkout`, −1 dB), so the three compare directly.
+

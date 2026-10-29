@@ -1,0 +1,5 @@
+assess walkout: mode v5 rung gov quality 2 pace 1
+wrote /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/wav/final/walkout_v5.wav
+walkout (v5): clap at 3 s in the hall, the listener walks out of its door 3.2–7.5 s
+   tail: 0.85 s to −60 dB; 10 ms windows more than 4 dB off its course: 0
+   envelope re peak every 0.1 s: 0.0s -9  0.1s -18  0.2s -20  0.3s -25  0.4s -28  0.5s -30  0.6s -33  0.7s -37  0.8s -40

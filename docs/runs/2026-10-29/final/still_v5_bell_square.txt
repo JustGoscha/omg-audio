@@ -1,0 +1,16 @@
+assess still: mode v5 rung gov quality 2 pace 1
+wrote /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/wav/final/still_bell_square_v5.wav
+still (v5): bell at square, 10 clicks every 3 s; dB low/mid/high
+   click  0  early  -39.1  -38.3  -38.4  late  -50.7  -49.7  -45.7
+   click  1  early  -39.3  -39.4  -38.8  late  -50.4  -48.3  -45.1
+   click  2  early  -39.6  -39.7  -39.0  late  -51.6  -49.6  -46.7
+   click  3  early  -39.6  -39.7  -39.0  late  -51.6  -49.6  -46.7
+   click  4  early  -39.6  -39.7  -39.0  late  -51.6  -49.6  -46.7
+   click  5  early  -39.6  -39.7  -39.4  late  -49.5  -49.0  -48.7
+   click  6  early  -39.6  -39.7  -39.4  late  -49.5  -49.0  -48.7
+   click  7  early  -39.6  -39.7  -39.4  late  -49.5  -49.0  -48.7
+   click  8  early  -39.6  -39.7  -39.4  late  -49.5  -49.0  -48.7
+   click  9  early  -39.6  -39.7  -39.4  late  -49.5  -49.0  -48.7
+   tail kurtosis (noise ≈ 3)  low   2.9  mid   3.4  high   3.7
+   early spread  low sd 0.15 span  0.5  mid sd 0.41 span  1.4  high sd 0.34 span  1.1
+   late  spread  low sd 0.92 span  2.1  mid sd 0.42 span  1.4  high sd 1.33 span  3.6

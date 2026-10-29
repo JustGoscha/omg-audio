@@ -1,0 +1,16 @@
+assess still: mode v5 rung gov quality 2 pace 1
+wrote /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/wav/final/still_bell_field_v5.wav
+still (v5): bell at field, 10 clicks every 3 s; dB low/mid/high
+   click  0  early  -26.6  -23.6  -18.8  late  -43.8  -37.9  -35.0
+   click  1  early  -26.6  -23.6  -18.8  late  -43.8  -37.9  -35.0
+   click  2  early  -26.6  -23.6  -18.8  late  -43.8  -37.9  -35.0
+   click  3  early  -26.6  -23.6  -18.8  late  -43.8  -37.9  -35.0
+   click  4  early  -26.6  -23.6  -18.8  late  -43.8  -37.9  -35.0
+   click  5  early  -26.6  -23.6  -18.8  late  -43.8  -37.9  -35.0
+   click  6  early  -26.6  -23.6  -18.8  late  -43.8  -37.9  -35.0
+   click  7  early  -26.6  -23.6  -18.8  late  -43.8  -37.9  -35.0
+   click  8  early  -26.6  -23.6  -18.8  late  -43.8  -37.9  -35.0
+   click  9  early  -26.6  -23.6  -18.8  late  -43.8  -37.9  -35.0
+   tail kurtosis (noise ≈ 3)  low   3.4  mid   5.5  high   5.4
+   early spread  low sd 0.00 span  0.0  mid sd 0.00 span  0.0  high sd 0.00 span  0.0
+   late  spread  low sd 0.00 span  0.0  mid sd 0.00 span  0.0  high sd 0.00 span  0.0

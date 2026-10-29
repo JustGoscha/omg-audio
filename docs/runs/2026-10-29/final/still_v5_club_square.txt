@@ -1,0 +1,16 @@
+assess still: mode v5 rung gov quality 2 pace 1
+wrote /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/wav/final/still_club_square_v5.wav
+still (v5): club at square, 10 clicks every 3 s; dB low/mid/high
+   click  0  early  -46.5  -54.0  -55.5  late  -45.1  -53.6  -58.3
+   click  1  early  -46.3  -54.6  -55.2  late  -45.2  -53.9  -59.2
+   click  2  early  -46.7  -55.1  -54.9  late  -45.8  -54.0  -58.0
+   click  3  early  -47.1  -55.5  -55.1  late  -45.1  -53.5  -58.0
+   click  4  early  -46.9  -55.4  -55.2  late  -45.3  -53.6  -58.2
+   click  5  early  -46.9  -55.1  -54.3  late  -45.5  -53.9  -58.5
+   click  6  early  -47.0  -55.2  -53.4  late  -45.1  -53.2  -57.7
+   click  7  early  -47.0  -55.2  -53.4  late  -45.1  -53.3  -57.7
+   click  8  early  -46.4  -54.9  -53.7  late  -44.9  -53.3  -57.8
+   click  9  early  -46.4  -54.9  -53.7  late  -44.9  -53.3  -57.8
+   tail kurtosis (noise ≈ 3)  low   2.7  mid   3.2  high   3.2
+   early spread  low sd 0.26 span  0.7  mid sd 0.41 span  1.5  high sd 0.79 span  2.1
+   late  spread  low sd 0.25 span  0.9  mid sd 0.27 span  0.8  high sd 0.42 span  1.4

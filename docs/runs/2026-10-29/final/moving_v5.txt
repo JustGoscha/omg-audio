@@ -1,0 +1,6 @@
+assess moving: mode v5 rung gov quality 2 pace 1
+wrote /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/wav/final/moving_v5.wav
+moving (v5): a car at 100 km/h, 300 m off; click arrival − physical arrival (ms)
+   +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 +0 -0 -0 -0 -0 -0 -0 -0 -0 -0 -0 -0 -0
+   direct dB: -51 -52 -51 -52 -52 -52 -52 -52 -52 -51 -51 -52 -51 -52 -52 -51 -52 -51 -52 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51 -51
+   worst 0.4 ms
