@@ -470,6 +470,38 @@ chain being v5's solver's, early ones too. The many-source bench (v6.2,
 a ground plane): 64 sources 16.0 → 17.2 ms, 256 17.9 → 18.3 — the
 twins solved, 23–82 a tick, almost all of them real paths.
 
+## A reflection bent at an edge keeps its energy (every engine)
+
+A wall's echo on the square read ~1.8 dB under its image sources, and
+the shoebox's first 80 ms 0.6–1.3 dB under — not the near-surface bias
+(the sphere-clearance branch moved the echo 0.3 dB). One mirror wall and
+nothing else (`examples/wall_echo`): the echo reads 0 dB at k 0.02, −1.5
+at the default 0.06, −2.4 at 0.12, and −0.1 at every k with diffraction
+off. Every segment passing within 3 m of an edge bends at its closest
+approach (a bend of ~1° at 1 kHz 1.3 m off it). A sphere hit on a leg
+bent since its last bounce was gated by what the straight line from that
+bounce to the source doesn't carry — zero wherever the source is in
+view, the straight wave being "counted already". It is, for the direct
+sound (exact) and for a chain the solver owns (solved exactly). Any other
+path has no other rays near the edge: every ray there bends. Here the
+rays aimed below the sphere's middle pass the wall's bottom edge just
+after leaving it — 37 % of the echo's hits dropped; a larger sphere
+takes in more of them. Now a ray keeps whether its chain was all mirrors
+(bends aside), and the gate applies only where that chain is the
+solver's — the CPU walk and the GPU kernel alike (flag bit 64).
+
+`fx_simulation::a_walls_echo_passing_its_edge_keeps_its_energy`: with
+the bends −1.5 → +0.45 dB, without +0.06. The shoebox's first 80 ms (the
+image sources): −0.6 / −0.8 / −1.3 → +0.2 / +0.1 / −0.1 dB; a corner
+source −1.4 … −1.8 → −0.4 … −0.6; scattering 0.5 −0.6 … −0.7 → +0.1 …
++0.3; the late part as it was. In the town (`assess still`, v6.2, nine
+places): most within 0.3 dB; where edges stand near the paths more
+plays — a clap in the hall +1.3 dB early, the bell heard from the north
++1.7 … +2.3 early and +1.1 … +2.8 late. The club's levels around the town
+(v4): +0.05 dB on average, +0.6 at most. In motion (three seeds): the
+door swing climbing back 21.4 → 21.0 dB, windows over −40 dB 4 → 3; the
+car's tone and the flight as before; cost within the noise.
+
 ## The GPU walk through a crossing (every engine)
 
 Recorded in Godot (its walk on the GPU), flying into the cathedral with

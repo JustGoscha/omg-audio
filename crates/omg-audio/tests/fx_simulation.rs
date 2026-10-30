@@ -650,6 +650,58 @@ fn a_streets_flutter_off_a_passing_car_plays_with_its_ground_twins() {
     }
 }
 
+/// A mirror wall standing on nothing (50 m long, 10 m tall: its bottom
+/// edge free), a source and the ears as on the town's square: the wall's
+/// echo, the energy within 2 ms of its image source's delay, plays as
+/// loud with the edge bends on as with them off, and off as its image
+/// source says. The rays aimed below the sphere's middle pass the wall's
+/// bottom edge just after leaving it and bend there; a sphere hit on a
+/// bent leg was dropped wherever the straight line from the last bounce
+/// reaches the source — right for the direct sound and for a chain the
+/// solver owns, whose straight wave is counted exactly elsewhere, but
+/// this echo has no other rays: 1.5 dB under (k 0.06; −2.4 dB at 0.12,
+/// none with the bends off). Now +0.45 with the bends, +0.06 without.
+/// Three seeds, 4096 rays.
+#[test]
+fn a_walls_echo_passing_its_edge_keeps_its_energy() {
+    let wall = Material::new([0.02; 3], 0.0, [0.0; 3]);
+    let (sp, lp) = ([5.0f32, 40.0, 1.2], [15.0f32, 32.0, 1.6]);
+    let d = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    // the wall's face at y = 24: the source's image across it
+    let image = [sp[0], 48.0 - sp[1], sp[2]];
+    let (dl, len) = (d(sp, lp), d(image, lp));
+    let at = len / SPEED_OF_SOUND;
+    let air = air_attenuation(len)[1] / air_attenuation(dl)[1];
+    let want = (1.0 - 0.02) * (air * dl / len).powi(2);
+    let echo = |diffraction: bool, seed: u64| -> f64 {
+        let mut g = Geometry::new();
+        let m = g.material(wall);
+        g.add_box([-10.0, 23.7, 0.0], [40.0, 24.0, 10.0], m);
+        let budget = omg_core::v3::Budget { rays: 4096, k: 0.06, diffraction, ..Quality::High.budget(false) };
+        let mut sim = Simulation::new(Config { quality: Quality::Custom(budget), v4: false, v5: false, v6: true, v61: true, v62: true, seed, kernel_thread: false, ..Config::default() });
+        sim.set_geometry(g);
+        let src = sim.add_source(SourceDesc::at(sp));
+        sim.set_listener(lp, 0.0, 0.0, 0.0);
+        let mut e = 0.0f64;
+        for k in 0..80 {
+            let f = sim.tick();
+            if k < 20 {
+                continue;
+            }
+            let pb = f.block(src).expect("the source");
+            let direct = pb.taps.iter().find(|t| t.key == omg_core::v3::KEY_DIRECT).expect("direct").gains[1] as f64;
+            e += pb.taps.iter().filter(|t| t.key != omg_core::v3::KEY_DIRECT && (t.delay_s - at).abs() <= 0.002).map(|t| (t.gains[1] as f64 / direct).powi(2)).sum::<f64>();
+        }
+        e / 60.0
+    };
+    let db = |x: f64| 10.0 * x.log10();
+    let mean = |diffraction: bool| (1..=3).map(|s| echo(diffraction, s)).sum::<f64>() / 3.0;
+    let (on, off) = (mean(true), mean(false));
+    eprintln!("a wall's echo, dB from its image source: bends on {:+.2}, off {:+.2}", db(on) - db(want as f64), db(off) - db(want as f64));
+    assert!((db(off) - db(want as f64)).abs() < 0.5, "the sphere estimate off its image source: {:+.2} dB", db(off) - db(want as f64));
+    assert!((db(on) - db(off)).abs() < 0.8, "the edge's bends take or add {:+.2} dB", db(on) - db(off));
+}
+
 /// A large closed hall (30×20×15 m, walls absorbing 6 %): the
 /// reverberation time and the reverberant level each engine plays,
 /// against Sabine's time and diffuse-field theory's level — both with
@@ -876,10 +928,12 @@ fn a_room_heard_through_its_walls_settles() {
 /// A 10 × 7 × 4 m shoebox (α 0.1 / 0.2 / 0.3) against its image sources
 /// (Allen & Berkley, `omg_core::ism`, to order 40: the exact sum of
 /// arrivals for mirror walls): the energy of the direct sound, the first
-/// 80 ms and the rest, per band. v6.2 within 1.5 dB early and 2.5 dB late
-/// (measured −0.6 … −1.3 / −0.6 … −1.8 dB, `examples/shoebox_ref`);
-/// v6.1, which played only the strongest 24 early bins, 5–8 dB short of
-/// the early energy (the dense early field, ENGINE_V6.md).
+/// 80 ms and the rest, per band. v6.2 within 1 dB early and 2.5 dB late
+/// (measured +0.2 … −0.1 / −0.6 … −1.8 dB, `examples/shoebox_ref`; early
+/// −0.6 … −1.3 dB while a sphere hit on a leg bent at one of the room's
+/// edges was dropped, OPEN.md); v6.1, which played only the strongest 24
+/// early bins, 3–7 dB short of v6.2's early energy (the dense early
+/// field, ENGINE_V6.md).
 #[test]
 fn a_shoebox_plays_its_image_sources_early_and_late() {
     use omg_core::vec3::Vec3;
@@ -936,8 +990,8 @@ fn a_shoebox_plays_its_image_sources_early_and_late() {
     eprintln!("shoebox against its image sources, dB: v6.2 direct {:?} early {:?} late {:?}; v6.1 early {:?}", off(&e62, 0), off(&e62, 1), off(&e62, 2), off(&e61, 1));
     for b in 0..3 {
         assert!(off(&e62, 0)[b].abs() < 0.1, "the direct sound is exact");
-        assert!(off(&e62, 1)[b].abs() < 1.5, "v6.2 early {:?}", off(&e62, 1));
+        assert!(off(&e62, 1)[b].abs() < 1.0, "v6.2 early {:?}", off(&e62, 1));
         assert!(off(&e62, 2)[b].abs() < 2.5, "v6.2 late {:?}", off(&e62, 2));
-        assert!(off(&e61, 1)[b] < -4.0, "v6.1 played the early part whole? {:?}", off(&e61, 1));
+        assert!(off(&e61, 1)[b] < off(&e62, 1)[b] - 3.0, "v6.1 played the early part whole? {:?}", off(&e61, 1));
     }
 }

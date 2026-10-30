@@ -264,35 +264,26 @@ count it twice. Knowing which cut-away parts are solid is the missing
 piece — or an estimator for mirror paths that needn't find the
 source's sphere (bidirectional) takes the bias and the jitter at once.
 
-### A reflection whose last leg passes an edge was dropped — fix on a branch
-A wall's early echo on the square read ~1.8 dB under the image sources
-(`demo/web/wasm/examples/echo_check` TAPS=1 against `echo_ref`/`echo_ref2`);
-the sphere-clearance branch moved it 0.3 dB, so not that bias. Isolated
-(`examples/wall_echo`: one wall, the ground, source and ears as on the
-square; mid band, three seeds, 8192 rays): a pure mirror wall 10 m tall,
-no ground, reads 0 dB at k 0.02, −0.8 at 0.04, −1.5 at 0.06 (the
-default), −2.1 at 0.09, −2.4 at 0.12 — and −0.1 at every k with
-diffraction off. Cause: every segment passing within `EDGE_REACH` (3 m)
-of an edge bends at its closest approach, and a sphere hit on a bent
-last leg was gated by what the straight line from the last bounce to the
-source doesn't carry (`1 − transmission`): zero wherever the source is in
-view. That is right for the direct sound (exact elsewhere) and for a
-chain the solver owns; any other path has no straight wave elsewhere —
-near an edge its bent rays are all there is of it. Here the rays aimed
-at the lower half of the sphere pass the wall's bottom edge just after
-leaving it (with a 3.1 m wall, the upper half its top edge); a larger
-sphere takes in more of them. Measured: 37 % of the echo's hits gated.
-The fix (branch `edge-gate`, CPU walk and GPU kernel alike: a ray keeps
-whether its chain was all mirrors, bends aside, and the gate applies
-only where that chain is the solver's): with the ground, the 3.1 m
-wall's echo −0.63 → −0.15 dB at k 0.06 (−2.8 → −1.5 at 0.12: what is
-left is the near-surface bias above; the 10 m wall −0.36 both). Without
-ground it now overshoots at small k (+1.3 dB at 0.02): bends are taken
-only where a segment's closest approach lies inside it (not at a ray's
-own launch from the wall), so deflected rays flow into the directions
-that don't bend. GPU parity and tests pass; the suite, the town and the
-motion A/B are not run yet (held: the laptop ran hot). The late field
-changes too wherever a ray's last leg passes an edge.
+### A reflection whose last leg passes an edge was dropped — solved Oct 30
+A wall's early echo on the square read ~1.8 dB under the image sources;
+the sphere-clearance branch moved it 0.3 dB, so not that bias. A mirror
+wall alone (`examples/wall_echo`) read 0 dB at k 0.02, −1.5 at 0.06 (the
+default), −2.4 at 0.12 — and −0.1 at every k with diffraction off. Every
+segment passing within `EDGE_REACH` of an edge bends at its closest
+approach, and a sphere hit on a bent last leg was gated by what the
+straight line from the last bounce to the source doesn't carry: zero
+wherever the source is in view. Right for the direct sound and for a
+chain the solver owns, whose straight wave is counted exactly elsewhere;
+any other path's bent rays are all there is of it near an edge. Now a
+ray keeps whether its chain was all mirrors, bends aside, and the gate
+applies only where that chain is the solver's (CPU walk and GPU kernel).
+`fx_simulation::a_walls_echo_passing_its_edge_keeps_its_energy`: the echo
+with the bends −1.5 → +0.45 dB (without +0.06). The shoebox's first 80
+ms −0.6 / −0.8 / −1.3 → +0.2 / +0.1 / −0.1 dB; a corner source −1.4 …
+−1.8 → −0.4 … −0.6; the late part unchanged. Left: without ground the
+echo now reads +1.3 dB at k 0.02 — a ray bends only where its closest
+approach lies inside the segment, not at its launch from the wall, so
+deflected rays flow into the directions that don't bend.
 
 ### The GPU walk fell silent through pillars — solved Oct 30
 Flying through the cathedral on the GPU walk (Godot's default), the
