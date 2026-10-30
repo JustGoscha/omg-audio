@@ -234,12 +234,16 @@ the floor). Sphere hits weight a ray passing within k·l of the source as
 if the whole sphere were crossable. Tried (Oct 30, not committed): the
 weight over the sphere's reachable share from 64 directions' free
 distances — overshot by about as much (+0.7 … +2.3 dB): mirrored rays
-cross part of a clipped sphere after all. Also to separate: the exact
-solver claims loud mirror chains up to 24 reflections whether or not it
-has named them (`solver_owns`). A test with the solver's claim off, and
-one plane at a time, would tell the two apart. The outdoor case (a car
-over the road, its sphere half underground on long paths) is the same
-question.
+cross part of a clipped sphere after all (beyond a wall the sphere's cap
+overlaps the sphere around the source's image there, and the reflected
+rays crossing it are counted for that image's path). Not the exact
+solver's claim on loud mirror chains it never named (`solver_owns`):
+with the claim off (spheres count every mirror path, the solver
+nothing) the numbers barely move — uncorrected late −2.0 … −1.0 dB,
+corrected +1.6 … +2.2 dB (Oct 30). A fix models that overlap — the
+share of the sphere no image's sphere covers — rather than splitting
+the difference. The outdoor case (a car over the road, its sphere half
+underground on long paths) is the same question.
 
 ### The GPU walk fell silent through pillars — solved Oct 30
 Flying through the cathedral on the GPU walk (Godot's default), the
