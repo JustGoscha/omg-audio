@@ -1,17 +1,17 @@
 /Users/justgoscha/dev/omg-audio/docs/runs/2026-10-30/final/door_v6.2: 9.0 s at 44100 Hz
   artifacts (above 3 kHz, under the whole; a pure tone's output has none):
-    closed    390 windows: median  -38.3 dB, worst  -15.0 dB, over −40 dB 236, over −30 dB  49
-    opening   201 windows: median  -23.4 dB, worst   -8.0 dB, over −40 dB 193, over −30 dB 162
-    open      601 windows: median  -19.2 dB, worst   -4.3 dB, over −40 dB 601, over −30 dB 575
-    shutting  200 windows: median  -19.8 dB, worst   -5.4 dB, over −40 dB 200, over −30 dB 190
-    shut      403 windows: median  -29.2 dB, worst   -7.0 dB, over −40 dB 357, over −30 dB 217
-    loudest: 3.332s -4dB (open), 4.031s -5dB (open), 3.302s -5dB (open), 6.934s -5dB (shutting), 3.347s -6dB (open), 3.048s -6dB (open), 6.430s -6dB (shutting), 3.033s -6dB (open)
+    closed    389 windows: median  -43.1 dB, worst  -22.9 dB, over −40 dB 113, over −30 dB  10
+    opening   202 windows: median  -24.3 dB, worst   -7.6 dB, over −40 dB 197, over −30 dB 146
+    open      601 windows: median  -18.5 dB, worst   -4.5 dB, over −40 dB 601, over −30 dB 579
+    shutting  201 windows: median  -20.3 dB, worst   -5.5 dB, over −40 dB 201, over −30 dB 175
+    shut      402 windows: median  -26.2 dB, worst   -7.1 dB, over −40 dB 388, over −30 dB 282
+    loudest: 3.243s -5dB (open), 3.273s -5dB (open), 6.625s -5dB (shutting), 6.874s -6dB (shutting), 4.959s -6dB (open), 6.859s -6dB (shutting), 5.931s -6dB (open), 4.939s -6dB (open)
   level jumps (10 ms off its 90 ms course):
-    closed    196 windows: >2 dB  78, >4 dB  18
-    opening   100 windows: >2 dB  24, >4 dB   5
-    open      300 windows: >2 dB 115, >4 dB  29
-    shutting  100 windows: >2 dB  36, >4 dB  10
-    shut      197 windows: >2 dB  75, >4 dB  27
+    closed    196 windows: >2 dB  70, >4 dB  21
+    opening   100 windows: >2 dB  37, >4 dB  10
+    open      300 windows: >2 dB 109, >4 dB  19
+    shutting  100 windows: >2 dB  35, >4 dB  10
+    shut      197 windows: >2 dB  62, >4 dB  21
   audio thread: 776 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 3 µs; spacing median 11.6 ms, max 11.7 ms
-  quality: rung 1 at the start; 0.4s → 2
-  engine: tick 5.9–20.3 ms, load up to 0.28, budget changes 0 (taps 480 → 480), late frames 0
+  quality: rung 2 at the start; 0.7s → 3
+  engine: tick 6.5–28.4 ms, load up to 0.29, budget changes 0 (taps 480 → 480), late frames 0

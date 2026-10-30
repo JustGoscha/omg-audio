@@ -1,9 +1,9 @@
 /Users/justgoscha/dev/omg-audio/docs/runs/2026-10-30/final/bunker_v6.1: 8.0 s at 44100 Hz
   artifacts (above 3 kHz, under the whole; a pure tone's output has none):
-    bunker   1593 windows: median  -24.1 dB, worst   -8.1 dB, over −40 dB 1593, over −30 dB 1442
-    loudest: 4.485s -8dB (bunker), 4.495s -9dB (bunker), 7.239s -9dB (bunker), 6.740s -10dB (bunker), 4.944s -10dB (bunker), 7.283s -11dB (bunker), 4.435s -12dB (bunker), 7.308s -12dB (bunker)
+    bunker   1595 windows: median  -24.3 dB, worst  -10.7 dB, over −40 dB 1595, over −30 dB 1397
+    loudest: 6.720s -11dB (bunker), 4.435s -11dB (bunker), 7.548s -12dB (bunker), 7.239s -12dB (bunker), 4.944s -13dB (bunker), 5.148s -13dB (bunker), 7.538s -14dB (bunker), 5.133s -14dB (bunker)
   level jumps (10 ms off its 90 ms course):
-    bunker    792 windows: >2 dB 136, >4 dB  17
-  audio thread: 689 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 3 µs; spacing median 11.6 ms, max 11.7 ms
+    bunker    794 windows: >2 dB 148, >4 dB  21
+  audio thread: 690 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 16 µs; spacing median 11.6 ms, max 11.7 ms
   quality: rung 2 at the start; no moves
-  engine: tick 5.9–14.5 ms, load up to 0.12, budget changes 0 (taps 480 → 480), late frames 0
+  engine: tick 6.0–14.7 ms, load up to 0.12, budget changes 0 (taps 480 → 480), late frames 0

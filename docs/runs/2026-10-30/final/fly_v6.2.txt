@@ -1,13 +1,13 @@
 /Users/justgoscha/dev/omg-audio/docs/runs/2026-10-30/final/fly_v6.2: 6.8 s at 44100 Hz
   artifacts (above 3 kHz, under the whole; a pure tone's output has none):
-    outside   462 windows: median  -50.5 dB, worst  -19.0 dB, over −40 dB  40, over −30 dB   8
-    crossing   64 windows: median  -33.3 dB, worst  -24.7 dB, over −40 dB  55, over −30 dB   9
-    inside    818 windows: median  -35.5 dB, worst  -25.8 dB, over −40 dB 670, over −30 dB  45
-    loudest: 0.624s -19dB (outside), 2.105s -25dB (outside), 2.594s -25dB (crossing), 0.609s -25dB (outside), 0.619s -25dB (outside), 3.033s -26dB (inside), 2.609s -27dB (crossing), 0.599s -27dB (outside)
+    outside   465 windows: median  -54.7 dB, worst  -28.1 dB, over −40 dB  32, over −30 dB   2
+    crossing   60 windows: median  -40.0 dB, worst  -29.1 dB, over −40 dB  30, over −30 dB   4
+    inside    819 windows: median  -36.3 dB, worst  -25.0 dB, over −40 dB 658, over −30 dB  71
+    loudest: 6.490s -25dB (inside), 2.799s -26dB (inside), 6.480s -26dB (inside), 6.475s -26dB (inside), 2.873s -26dB (inside), 2.804s -27dB (inside), 6.485s -27dB (inside), 2.983s -27dB (inside)
   level jumps (10 ms off its 90 ms course):
-    outside   232 windows: >2 dB  70, >4 dB  22
-    crossing   32 windows: >2 dB   7, >4 dB   1
-    inside    404 windows: >2 dB  60, >4 dB  13
-  audio thread: 582 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 3 µs; spacing median 11.6 ms, max 11.7 ms
-  quality: rung 2 at the start; 0.7s → 3, 3.0s → 2
-  engine: tick 2.8–16.8 ms, load up to 0.25, budget changes 0 (taps 480 → 480), late frames 0
+    outside   234 windows: >2 dB  59, >4 dB  26
+    crossing   30 windows: >2 dB   2, >4 dB   1
+    inside    404 windows: >2 dB  53, >4 dB  12
+  audio thread: 582 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 4 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 2 at the start; 0.6s → 3, 3.0s → 2, 3.3s → 1, 5.8s → 0
+  engine: tick 2.8–26.9 ms, load up to 0.25, budget changes 0 (taps 480 → 480), late frames 0

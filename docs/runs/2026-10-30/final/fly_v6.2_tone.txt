@@ -1,12 +1,12 @@
 /Users/justgoscha/dev/omg-audio/docs/runs/2026-10-30/final/fly_v6.2_tone: 6.8 s at 44100 Hz
   artifacts (above 3 kHz, under the whole; a pure tone's output has none):
-    outside   464 windows: median  -74.0 dB, worst  -65.2 dB, over −40 dB   0, over −30 dB   0
-    crossing   63 windows: median  -73.8 dB, worst  -48.6 dB, over −40 dB   0, over −30 dB   0
-    inside    819 windows: median  -69.7 dB, worst  -52.7 dB, over −40 dB   0, over −30 dB   0
+    outside   462 windows: median  -62.4 dB, worst  -44.5 dB, over −40 dB   0, over −30 dB   0
+    crossing   64 windows: median  -61.7 dB, worst  -42.8 dB, over −40 dB   0, over −30 dB   0
+    inside    818 windows: median  -62.2 dB, worst  -35.2 dB, over −40 dB   3, over −30 dB   0
   level jumps (10 ms off its 90 ms course):
-    outside   233 windows: >2 dB  54, >4 dB  11
-    crossing   32 windows: >2 dB  11, >4 dB   3
-    inside    404 windows: >2 dB  81, >4 dB   5
-  audio thread: 583 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 3 µs; spacing median 11.6 ms, max 11.7 ms
-  quality: rung 2 at the start; 0.7s → 3, 2.9s → 2, 3.3s → 1
-  engine: tick 2.7–17.9 ms, load up to 0.13, budget changes 0 (taps 480 → 480), late frames 0
+    outside   232 windows: >2 dB  45, >4 dB  11
+    crossing   32 windows: >2 dB   5, >4 dB   1
+    inside    404 windows: >2 dB 113, >4 dB  43
+  audio thread: 582 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 2 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 2 at the start; 2.0s → 1, 3.4s → 0, 6.7s → 1
+  engine: tick 3.0–20.6 ms, load up to 0.16, budget changes 0 (taps 480 → 480), late frames 0

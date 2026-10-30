@@ -1,11 +1,11 @@
 /Users/justgoscha/dev/omg-audio/docs/runs/2026-10-30/final/curtains_v6.2_tone: 16.0 s at 44100 Hz
   artifacts (above 3 kHz, under the whole; a pure tone's output has none):
-    up       1190 windows: median  -30.6 dB, worst  -12.6 dB, over −40 dB 1108, over −30 dB 562
-    down     2009 windows: median  -28.3 dB, worst   -2.9 dB, over −40 dB 1933, over −30 dB 1186
-    loudest: 11.514s -3dB (down), 11.519s -4dB (down), 11.459s -4dB (down), 11.494s -4dB (down), 11.484s -5dB (down), 11.524s -5dB (down), 11.479s -5dB (down), 11.539s -5dB (down)
+    up       1190 windows: median  -30.2 dB, worst   -9.6 dB, over −40 dB 1190, over −30 dB 582
+    down     2009 windows: median  -26.8 dB, worst   -3.2 dB, over −40 dB 1858, over −30 dB 1277
+    loudest: 9.224s -3dB (down), 11.404s -3dB (down), 11.399s -4dB (down), 11.369s -4dB (down), 11.344s -5dB (down), 11.389s -5dB (down), 9.239s -5dB (down), 11.374s -5dB (down)
   level jumps (10 ms off its 90 ms course):
-    up        596 windows: >2 dB  64, >4 dB   3
-    down      998 windows: >2 dB 152, >4 dB  14
-  audio thread: 1379 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 14 µs; spacing median 11.6 ms, max 11.7 ms
-  quality: rung 0 at the start; 10.8s → 1, 12.8s → 2
-  engine: tick 4.1–18.8 ms, load up to 0.18, budget changes 0 (taps 480 → 480), late frames 0
+    up        596 windows: >2 dB  83, >4 dB   2
+    down      998 windows: >2 dB 173, >4 dB  14
+  audio thread: 1379 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 7 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 1 at the start; 13.5s → 2
+  engine: tick 5.0–20.6 ms, load up to 0.20, budget changes 0 (taps 480 → 480), late frames 0
