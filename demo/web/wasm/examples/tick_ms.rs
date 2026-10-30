@@ -1,5 +1,6 @@
 //! The simulation tick's cost in the town (every source of the
-//! walkthrough active), web settings and native ones, v4 against v5.
+//! walkthrough active), web settings and native ones, v4 against v5 and
+//! v6.2.
 //!
 //!     cargo run --release -p omg-web --example tick_ms
 use omg_audio::{Compute, Config, Quality, Simulation};
@@ -32,4 +33,7 @@ fn main() {
     run("web (medium) v5", Config { v5: true, ..web });
     run("native (high, CPU) v4", native);
     run("native (high, CPU) v5", Config { v5: true, ..native });
+    let v62 = |c: Config| Config { v4: false, v5: false, v6: true, v61: true, v62: true, ..c };
+    run("web (medium) v6.2", v62(web));
+    run("native (high, CPU) v6.2", v62(native));
 }

@@ -276,7 +276,7 @@ flight's tick max 29–33 ms on the Godot level); a crossing that leaves
 the room the same (a pillar) still drops everything — a test of which
 side a surface separates would keep the averages there.
 
-### A facade's echo found by chance — first order solved Oct 29
+### A facade's echo found by chance — first order solved Oct 29, third order and the twins Oct 30
 A car passing the field (`assess cartone`) played the town's facade
 echoes at some rungs and runs and not others. The reference
 (`examples/echo_ref`: every triangle a mirror, the mirror point inside
@@ -302,8 +302,16 @@ the ground on the car's side, 0.03 ms later at the grass's mirror share
 street's facades, an inside corner) is named from pairs of faces now (Oct
 30: ENGINE_V6.md, "Echoes between two faces"; an inside corner 100 m off
 a passing car 226 of 226 frames, 0 before), with its ground twins (third
-order: 226 of 226, 0 before). Open: third order and beyond between three
-walls, second order off small faces.
+order: 226 of 226, 0 before). Third order (Oct 30): the finders name it
+at once — the town's two late wall-only echoes over −30 dB against
+`examples/echo_ref3` at 25 places, a street's flutter off a passing car
+in every frame; no sweep of its own. Missing were the twins off the
+ground: of every chain the finders name, and of every chain at all where
+the ground is the level's own faces (both demos pass no ground plane).
+Named now, off the face under the listener and the source; and v6's
+exact frames play a merged tap whole (ENGINE_V6.md, "Third order, and
+every chain's twin off the ground"). Open: a twin off sloped ground, or
+off a floor under neither end (both on balconies over a street).
 
 ### Doppler in the hosts: one instant per frame — solved Oct 29
 Measured in the browser (headless Chrome, `tools/web_doppler.mjs`) and

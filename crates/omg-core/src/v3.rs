@@ -2402,6 +2402,43 @@ fn chain_points(planes: &[(Vec3, f32)], lis: Vec3, src: Vec3) -> Vec<Vec3> {
     pts
 }
 
+/// The floor under `p`: the plane of the level face straight below it,
+/// if that face lies flat (the ground plane's, a street, a room's floor).
+fn floor_under(world: &World, p: Vec3) -> Option<(Vec3, f32)> {
+    let down = Vec3::new(0.0, 0.0, -1.0);
+    let h = world.mesh.raycast_hit(p, down)?;
+    (h.normal.z.abs() > 0.999).then(|| plane_of(Vec3::new(0.0, 0.0, 1.0), p + down * h.t))
+}
+
+/// A chain's twin off the ground plane `g`: the ground put in the one
+/// place where every leg of the path from `lis` to `src` meets its mirror
+/// inside the leg (where the path, mirrored across the ground, crosses
+/// it); None if nowhere.
+fn ground_twin(planes: &[(Vec3, f32)], g: (Vec3, f32), lis: Vec3, src: Vec3) -> Option<Vec<(Vec3, f32)>> {
+    (0..=planes.len()).find_map(|j| {
+        let mut twin = planes.to_vec();
+        twin.insert(j, g);
+        let mut images = vec![src; twin.len() + 1];
+        for k in (0..twin.len()).rev() {
+            images[k] = mirror_point(images[k + 1], twin[k]);
+        }
+        let mut p = lis;
+        for (k, &(nrm, d)) in twin.iter().enumerate() {
+            let to = images[k] - p;
+            let denom = nrm.dot(to);
+            if denom.abs() < 1e-9 {
+                return None;
+            }
+            let t = (d - nrm.dot(p)) / denom;
+            if !(t > 1e-5 && t < 1.0) {
+                return None;
+            }
+            p = p + to * t;
+        }
+        Some(twin)
+    })
+}
+
 fn keep_path(list: &mut Vec<(u32, f32, Vec<Vec3>)>, id: u32, e: f32, verts: &[Vec3], end: Vec3) {
     let full = list.len() >= DEBUG_PATHS;
     if full && e <= list[0].1 {
@@ -2457,15 +2494,35 @@ impl Tracer {
             // the mirror chains, re-solved
             let chains: Vec<(u64, Vec<(Vec3, f32)>)> =
                 self.chains.iter().filter(|(k, _)| k.0 == s.id).map(|(k, c)| (k.1, c.planes.clone())).collect();
+            let mut solved: HashMap<u32, ([f32; NBANDS], f32, Vec3)> = HashMap::default();
             for (key, planes) in chains {
-                if let Some((e, delay, dir)) = self.solve_chain_at(world, &planes, listener, si, s.pos) {
-                    taps.push(Tap {
-                        key: KEY_CHAIN_BASE + (key % KEY_CHAIN_SPAN as u64) as u32,
-                        delay_s: delay,
-                        dir: [dir.x, dir.y, dir.z],
-                        gains: core::array::from_fn(|b| e[b].max(0.0).sqrt()),
-                    });
+                if let Some(r) = self.solve_chain_at(world, &planes, listener, si, s.pos) {
+                    solved.insert(KEY_CHAIN_BASE + (key % KEY_CHAIN_SPAN as u64) as u32, r);
                 }
+            }
+            // chains arriving together play as one tap as the full tick
+            // plays them (`SourceState::fold`, `ECHO_MERGE_S`): their
+            // energies summed at the lead's arrival (a chain's ground twin
+            // 0.05 ms after it — re-solved alone, the lead dropped the rest
+            // every exact frame, 1.4 dB)
+            let groups: Vec<Vec<u32>> = self.state.get(&s.id).map_or(Vec::new(), |st| st.echo_on.iter().filter(|g| g.len() > 1).cloned().collect());
+            for group in &groups {
+                let Some(&(_, delay, _)) = solved.get(&group[0]) else { continue };
+                let (mut e, mut d) = ([0.0f32; NBANDS], Vec3::new(0.0, 0.0, 0.0));
+                for k in group {
+                    if let Some((ek, _, dk)) = solved.remove(k) {
+                        for b in 0..NBANDS {
+                            e[b] += ek[b].max(0.0);
+                        }
+                        d = d + dk * ek[1];
+                    }
+                }
+                let dl = d.length();
+                let dir = if dl > 1e-9 { d * (1.0 / dl) } else { d };
+                taps.push(Tap { key: group[0], delay_s: delay, dir: [dir.x, dir.y, dir.z], gains: core::array::from_fn(|b| e[b].sqrt()) });
+            }
+            for (key, (e, delay, dir)) in solved {
+                taps.push(Tap { key, delay_s: delay, dir: [dir.x, dir.y, dir.z], gains: core::array::from_fn(|b| e[b].max(0.0).sqrt()) });
             }
             out.push(taps);
         }
@@ -3128,7 +3185,24 @@ impl Tracer {
         // past the echo window of the farthest source, nothing is named
         let window = if self.v4 { RESPONSE_MAX_S } else { ECHO_S };
         let reach = (window + t_free.iter().copied().fold(0.0, f32::max)) * SPEED_OF_SOUND;
-        self.name_mirrors(world, listener, sources, budget, reach, &t_free, &mut cached);
+        // the ground under each source's echoes: the level face straight
+        // below the listener and below the source (a ground plane's, a
+        // level's own floor or street), and the ground plane itself
+        let under_listener = floor_under(world, listener);
+        let grade = world.grade.map(|g| plane_of(Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, g)));
+        let floors: Vec<Vec<(Vec3, f32)>> = sources
+            .iter()
+            .map(|s| {
+                let mut v: Vec<(Vec3, f32)> = Vec::new();
+                for g in [grade, under_listener, floor_under(world, s.pos)].into_iter().flatten() {
+                    if !v.iter().any(|&h| planes_eq(h, g)) {
+                        v.push(g);
+                    }
+                }
+                v
+            })
+            .collect();
+        self.name_mirrors(world, listener, sources, budget, reach, &t_free, &floors, &mut cached);
         let mut planes: Vec<(Vec3, f32)> = Vec::new();
         for _ in 0..n {
             let mut dir = self.rng.unit_sphere();
@@ -3173,6 +3247,29 @@ impl Tracer {
                 origin = p + hit.normal * EPS;
             }
         }
+        // every chain that solves has its twin off the ground: the ground
+        // put where the chain's path, mirrored across it, crosses it. The
+        // faces name first- and second-order chains' twins with them
+        // (`name_mirrors`); a chain the finders named (third order and
+        // beyond, second off small faces) had none of its own, and the
+        // finders come across a twin as rarely (a street's flutter off a
+        // passing car, A → B → A, played without its twin until the echo
+        // came inside the early window)
+        let solved: Vec<(u32, Vec<(Vec3, f32)>)> = self.chains.iter().filter(|(_, c)| c.solved.is_some()).map(|(k, c)| (k.0, c.planes.clone())).collect();
+        for (id, chain) in solved {
+            let Some(si) = sources.iter().position(|s| s.id == id) else { continue };
+            let s = &sources[si];
+            for &g in floors[si].iter().filter(|&&g| !chain.iter().any(|&p| planes_eq(p, g))) {
+                // where it emitted what arrives that way now (the
+                // listener's image across the chain, then the ground)
+                let image = mirror_point(chain.iter().fold(listener, |p, &pl| mirror_point(p, pl)), g);
+                let Some(x) = self.motion.emit(si, s.pos, image, 0.0) else { continue };
+                if let Some(twin) = ground_twin(&chain, g, listener, x) {
+                    let moving = self.motion.moving(si);
+                    self.name_chain(id, &twin, &mut cached, (listener, s.pos, moving));
+                }
+            }
+        }
     }
 
     /// First-order chains are not left to the finders: every flat face
@@ -3192,6 +3289,7 @@ impl Tracer {
         budget: Budget,
         reach: f32,
         t_free: &[f32],
+        floors: &[Vec<(Vec3, f32)>],
         cached: &mut HashMap<u32, usize>,
     ) {
         let mesh_id = world.mesh.positions.as_ptr() as usize ^ world.mesh.indices.len();
@@ -3206,8 +3304,6 @@ impl Tracer {
             let (lo, hi) = (f.lo - pad, f.hi + pad);
             p.x >= lo.x && p.y >= lo.y && p.z >= lo.z && p.x <= hi.x && p.y <= hi.y && p.z <= hi.z
         };
-        // the ground, under every outdoor echo
-        let ground = world.grade.map(|g| plane_of(Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, g)));
         for f in faces.iter().chain(&panels) {
             let (n, d) = f.plane;
             let sl = n.dot(listener) - d;
@@ -3239,10 +3335,12 @@ impl Tracer {
                 // last (the direct sound's own twin is the ground's
                 // first-order chain) — the finders' rays come across them
                 // as rarely
-                let Some(g) = ground.filter(|&g| !planes_eq(f.plane, g)) else { continue };
-                for (twin, at) in [([g, f.plane], 2), ([f.plane, g], 1)] {
-                    if within(chain_points(&twin, listener, x)[at], f) {
-                        self.name_chain(s.id, &twin, cached, (listener, s.pos, moving));
+                for &g in floors[si].iter().filter(|&&g| !planes_eq(f.plane, g)) {
+                    for (twin, at) in [([g, f.plane], 2), ([f.plane, g], 1)] {
+                        // (a leg along its plane: no path, fewer points)
+                        if chain_points(&twin, listener, x).get(at).is_some_and(|&q| within(q, f)) {
+                            self.name_chain(s.id, &twin, cached, (listener, s.pos, moving));
+                        }
                     }
                 }
             }
@@ -3329,11 +3427,12 @@ impl Tracer {
                     // and its twins off the ground — before, between or
                     // after the two walls — as a first-order chain's are
                     // (third order; the ground's mirror share under it)
-                    let Some(g) = ground.filter(|&g| !planes_eq(f1.plane, g) && !planes_eq(f2.plane, g)) else { continue };
-                    for (twin, a1, a2) in [([g, f1.plane, f2.plane], 2, 3), ([f1.plane, f2.plane, g], 1, 2), ([f1.plane, g, f2.plane], 1, 3)] {
-                        let pts = chain_points(&twin, listener, x);
-                        if within(pts[a1], f1) && within(pts[a2], f2) {
-                            self.name_chain(s.id, &twin, cached, (listener, s.pos, moving));
+                    for &g in floors[si].iter().filter(|&&g| !planes_eq(f1.plane, g) && !planes_eq(f2.plane, g)) {
+                        for (twin, a1, a2) in [([g, f1.plane, f2.plane], 2, 3), ([f1.plane, f2.plane, g], 1, 2), ([f1.plane, g, f2.plane], 1, 3)] {
+                            let pts = chain_points(&twin, listener, x);
+                            if pts.len() == twin.len() + 2 && within(pts[a1], f1) && within(pts[a2], f2) {
+                                self.name_chain(s.id, &twin, cached, (listener, s.pos, moving));
+                            }
                         }
                     }
                 }

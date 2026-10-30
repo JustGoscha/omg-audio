@@ -561,6 +561,95 @@ fn an_inside_corners_echo_of_a_passing_car_plays() {
     }
 }
 
+/// A street between two facades 30 m apart (x = 0 and x = 30, 200 m long,
+/// 10 m tall) and a car driving down it at 100 km/h, 50–150 m off: its
+/// flutter of third order, A → B → A and B → A → B (the same length, from
+/// either side), plays at the triple image's delay, from each side with
+/// its twin off the grass — 0.05 ms later at the ground's mirror share —
+/// every frame while it arrives after the early window, at the cheapest
+/// rung and a middle one, in v5 (two taps a side) and v6.2 (one: chains
+/// within `ECHO_MERGE_S` are one arrival). The finders' rays name such
+/// chains (`Tracer::find_chains`); their twins they came across rarely,
+/// and unnamed a late chain plays nothing: before, each side played 1.4
+/// dB under the flutter and its twin in every late frame. Each chain that
+/// solves names its twin now — and v6.2's exact frames between full ticks
+/// (`Tracer::exact_taps`) play a merged tap whole: re-solved alone, its
+/// lead dropped the twin in 220 of the 264 frames.
+#[test]
+fn a_streets_flutter_off_a_passing_car_plays_with_its_ground_twins() {
+    let facade = Material::new([0.03; 3], 0.35, [0.0; 3]);
+    let lis = [5.0f32, 10.0, 1.6];
+    let car = |t: f64| [25.0f32, 60.0 + 27.78 * t as f32, 0.7];
+    let dist = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    let c = SPEED_OF_SOUND as f64;
+    let emitted = |t: f64, to: [f32; 3]| {
+        let mut te = t;
+        for _ in 0..8 {
+            te = t - dist(car(te), to) as f64 / c;
+        }
+        dist(car(te), to)
+    };
+    // the listener across x = 0, x = 30, x = 0 (B → A → B: across 30, 0,
+    // 30, as far on the other side); its twin across the ground too
+    let image = [-60.0 - lis[0], lis[1], lis[2]];
+    let twin_image = [image[0], image[1], -lis[2]];
+    let share: f32 = ((1.0 - 0.03) * (1.0 - 0.35f32)).powi(3);
+    let gm = Material::GRASS;
+    let gshare = (1.0 - gm.absorption[1] - gm.transmission[1] * gm.transmission[1]) * (1.0 - gm.scattering);
+    for (mode, level) in [("v5", 0), ("v5", 6), ("v6.2", 0), ("v6.2", 6)] {
+        let mut g = Geometry::new();
+        let (stone, grass) = (g.material(facade), g.material(Material::GRASS));
+        g.add_box([-0.3, 0.0, 0.0], [0.0, 200.0, 10.0], stone);
+        g.add_box([30.0, 0.0, 0.0], [30.3, 200.0, 10.0], stone);
+        g.ground_plane(0.0, grass);
+        let v6 = mode == "v6.2";
+        let mut sim = Simulation::new(Config { quality: Quality::Level(level), v4: !v6, v5: !v6, v6, v61: v6, v62: v6, ..Config::default() });
+        sim.set_geometry(g);
+        let src = sim.add_source(SourceDesc::at(car(0.0)));
+        let (mut want, mut heard, mut worst_ms, mut worst_db, mut alone_db) = (0, 0, 0.0f64, 0.0f32, f32::MAX);
+        for k in 0..(3.5 * 120.0) as usize {
+            let t = k as f64 / 120.0;
+            sim.set_time(t);
+            sim.set_source(src, car(t), true);
+            sim.set_listener_at(lis, 0.0, 0.0, 0.0, t);
+            let f = if k % 6 == 0 { Some(sim.tick()) } else { sim.tick_exact() };
+            let Some(f) = f else { continue };
+            let (len, len_g, d) = (emitted(t, image), emitted(t, twin_image), emitted(t, lis));
+            // after the early window, the solver's alone
+            if !(t > 0.5 && (len - d) as f64 / c >= omg_core::v3::EARLY_S as f64) {
+                continue;
+            }
+            want += 1;
+            let pb = f.block(src).expect("the car");
+            let direct = pb.taps.iter().find(|tp| tp.key == omg_core::v3::KEY_DIRECT).expect("direct path");
+            let at = len as f64 / c;
+            // the flutter and its twin, under the direct sound (energy)
+            let rel = |l: f32| (air_attenuation(l)[1] / air_attenuation(d)[1] * d / l).powi(2);
+            let (e_chain, e_twin) = (share * rel(len), share * gshare * rel(len_g));
+            // from either side: A → B → A arrives off x = 0, B → A → B off
+            // x = 30 — each the chain taps within 1.5 ms
+            let mut sides = 0;
+            for side in [-1.0f32, 1.0] {
+                let near: Vec<&omg_audio::Tap> = pb.taps.iter().filter(|tp| tp.key >= 9_000_000 && tp.dir[0] * side > 0.0 && (tp.delay_s as f64 - at).abs() < 1.5e-3).collect();
+                let Some(first) = near.iter().min_by(|a, b| a.delay_s.total_cmp(&b.delay_s)) else { continue };
+                let e: f32 = near.iter().map(|tp| (tp.gains[1] / direct.gains[1]).powi(2)).sum();
+                worst_ms = worst_ms.max(((first.delay_s as f64 - at) * 1e3).abs());
+                worst_db = worst_db.max((10.0 * (e / (e_chain + e_twin)).log10()).abs());
+                alone_db = alone_db.min((10.0 * (e / e_chain).log10()).abs());
+                sides += 1;
+            }
+            if sides == 2 {
+                heard += 1;
+            }
+        }
+        eprintln!("{mode} level {level}: the flutter from both sides in {heard} of {want} late frames; delay off by ≤ {worst_ms:.3} ms, level (with its twin) by ≤ {worst_db:.2} dB, ≥ {alone_db:.2} dB off the chain alone");
+        assert!(want > 200, "the flutter arrives late for a while: {want} frames");
+        assert!(heard as f32 >= 0.95 * want as f32, "{mode} level {level}: the flutter plays in {heard} of {want} frames");
+        assert!(worst_ms < 0.01, "{mode} level {level}: its delay off by {worst_ms:.3} ms");
+        assert!(worst_db < 0.3, "{mode} level {level}: the flutter with its twin off by {worst_db:.2} dB");
+    }
+}
+
 /// A large closed hall (30×20×15 m, walls absorbing 6 %): the
 /// reverberation time and the reverberant level each engine plays,
 /// against Sabine's time and diffuse-field theory's level — both with

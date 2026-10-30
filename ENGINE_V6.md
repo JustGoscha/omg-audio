@@ -420,6 +420,56 @@ test 226 of 226 frames, within 0.02 dB of the grass's mirror share (0
 before). Cost on the Godot level (375 such faces): chains 0.6 → 1.2 ms a
 tick.
 
+## Third order, and every chain's twin off the ground (every engine)
+
+Is a sweep over triples of faces needed, as pairs were? The reference
+(`examples/echo_ref3`: every triple of the town's triangles as three
+mirrors, every mirror point inside its triangle, every leg clear, the
+doors standing as the town has them) at six listener spots and 25 source
+places finds wall-only third-order echoes over −30 dB in two kinds. Early
+ones (inside 80 ms: the sphere estimate's, e.g. the kiosk's east face
+between the club's facades, +56 ms −10.2 dB, played as bins at −12.9:
+the near-surface bias, below). And two late ones on the square: a
+flutter between the hall's north face and the cathedral's south face
+(+182.8 ms, −20.3 dB) and kiosk → hall → cathedral (+97.4 ms, −13.7 dB).
+The engine names both from the finders' rays at the first tick and plays
+them at the reference's level (−20.6, −13.8). A street's flutter, A → B →
+A between facades 30 m apart, off a car passing 50–150 m away: every late
+frame. So no sweep of their own (one over triples of large faces, 60 000
+tests a tick, was tried: it found nothing more and is not kept). The
+"+169 ms flutter by the west road" that started this was the
+reference's own: its legs skipped the chain's triangles and ran through
+a mirror's wall. Other false echoes it had: legs through the cathedral's
+shut door, mirror points on a convex corner's edge.
+
+What was missing was their twins off the ground. First- and second-order
+chains named their twins with them, but only off a ground plane, and
+neither demo passes one: the town's ground and the Godot level's are
+faces of the level. A chain the finders named (third order and beyond,
+second order off small faces) had no twin at all, and the finders come
+across a twin as rarely. Now the ground is the flat face straight under
+the listener and under the source (and the ground plane, if there is
+one), and every chain that solves names its twin there: the ground put
+where the chain's path, mirrored across it, crosses it
+(`ground_twin`). The street's flutter
+(`fx_simulation::a_streets_flutter_off_a_passing_car_plays_with_its_ground_twins`):
+each side with its twin, 0.05 ms later at the grass's share, within 0.13
+dB in every late frame (264), v5 and v6.2, both rungs; before, 1.4 dB
+under in every one. The square's flutter: +182.9 ms −22.0 dB (the
+pavement's share under +182.8 ms −20.6), and +97.6 ms −15.3 dB.
+
+v6 plays chains arriving within 1.5 ms and ~25° of each other as one
+tap (`ECHO_MERGE_S`) — a chain and its twin always. The exact frames
+between full ticks re-solved each chain alone and kept the lead's: the
+merged energy dropped on five frames of six, 1.4 dB twenty times a
+second. They merge as the full tick does now (`Tracer::exact_taps`).
+
+Cost: the town's tick, v6.2 native 20.0 → 20.2 ms, web 12.2 → 12.8
+(`examples/tick_ms`); v5 +2 ms (11.4 → 13.5 web low), every coherent
+chain being v5's solver's, early ones too. The many-source bench (v6.2,
+a ground plane): 64 sources 16.0 → 17.2 ms, 256 17.9 → 18.3 — the
+twins solved, 23–82 a tick, almost all of them real paths.
+
 ## The GPU walk through a crossing (every engine)
 
 Recorded in Godot (its walk on the GPU), flying into the cathedral with
