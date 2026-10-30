@@ -381,7 +381,9 @@ fn raycast_world(o: vec3<f32>, d: vec3<f32>) -> Hit {
     }
     for (var i = 0u; i < job.n_panels; i++) {
         let pl = panel(i);
-        var t0 = 0.0;
+        // the entry over the whole line (behind the origin: a ray met
+        // from inside, v3.rs `WithPanels`)
+        var t0 = -T_MISS;
         var t1 = T_MISS;
         var axis = 3u;
         var miss = false;
@@ -397,8 +399,11 @@ fn raycast_world(o: vec3<f32>, d: vec3<f32>) -> Hit {
                 if (t0 > t1) { miss = true; break; }
             }
         }
-        if (!miss && t0 > 1e-4 && axis < 3u && t0 < h.t) {
-            h.t = t0;
+        // met ahead, or at once from inside the box (a bounce lifted off
+        // a surface at a pane's edge lands in the glass)
+        let tm = select(0.0, t0, t0 > 1e-4);
+        if (!miss && axis < 3u && t1 > 1e-4 && tm < h.t) {
+            h.t = tm;
             var n = vec3<f32>(0.0);
             n[axis] = select(1.0, -1.0, d[axis] > 0.0);
             h.normal = n;
@@ -598,6 +603,18 @@ fn through(p: vec3<f32>, dir: vec3<f32>, hit: Hit) -> vec3<f32> {
     if (h.t < MAX_WALL_M && all(h.absorption == hit.absorption) && h.scattering == hit.scattering
         && all(h.transmission == hit.transmission)) {
         far = inside + dir * h.t;
+    }
+    // inside an object box (a pane met from within): out its far side
+    for (var i = 0u; i < job.n_panels; i++) {
+        let pl = panel(i);
+        if (all(far > pl.pmin) && all(far < pl.pmax)) {
+            var te = T_MISS;
+            for (var a = 0u; a < 3u; a++) {
+                if (dir[a] > 1e-9) { te = min(te, (pl.pmax[a] - far[a]) / dir[a]); }
+                if (dir[a] < -1e-9) { te = min(te, (pl.pmin[a] - far[a]) / dir[a]); }
+            }
+            if (te < T_MISS) { far = far + dir * te; }
+        }
     }
     let t = seg_transmission(p - dir * EPS, far + dir * EPS);
     beyond = far + dir * (2.0 * EPS);

@@ -7,7 +7,10 @@
 //! per-band re-weighted, unbiased), so the measured echogram carries
 //! the through-wall wet. Gate: inside the Old House (across a 3 m
 //! street from the club, both vestibule doors SHUT) the club's wet bed
-//! is present and bass-dominant.
+//! is present and bass-dominant. (Its low band read 6.7e-3 while a ray
+//! starting inside a pane — lifted off a window's reveal into the glass
+//! — passed it unpriced; 2.8e-3 since it meets it: ENGINE_V6.md, "A ray
+//! met inside a pane meets the pane". The floor is presence, 1e-3.)
 
 use omg_scene::quality;
 use omg_scene::world::WorldSim;
@@ -33,7 +36,7 @@ fn club_wet_leaks_into_the_house_bass_first() {
         wet[0], wet[1], wet[2]
     );
     assert!(
-        wet[0] > 5e-3,
+        wet[0] > 1e-3,
         "the boom must come through the walls: {wet:?}"
     );
     assert!(

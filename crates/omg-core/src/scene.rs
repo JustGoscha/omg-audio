@@ -97,8 +97,9 @@ impl<G: AcousticGeometry> AcousticGeometry for WithPanels<'_, G> {
     fn raycast_hit(&self, p: Vec3, d: Vec3) -> Option<GeomHit> {
         let mut best = self.base.raycast_hit(p, d);
         for (mn, mx, m) in self.panels {
-            // slab entry test; track the axis we enter through
-            let (mut t0, mut t1) = (0.0f32, f32::MAX);
+            // slab entry test over the whole line (the entry may lie behind
+            // the origin); track the axis we enter through
+            let (mut t0, mut t1) = (f32::MIN, f32::MAX);
             let mut axis = 3usize;
             for a in 0..3 {
                 let (da, pa, lo, hi) = (d.get(a), p.get(a), mn.get(a), mx.get(a));
@@ -123,14 +124,20 @@ impl<G: AcousticGeometry> AcousticGeometry for WithPanels<'_, G> {
                     }
                 }
             }
-            if t0 > 1e-4
-                && t0 < f32::MAX
-                && axis < 3
-                && best.as_ref().map_or(true, |h| t0 < h.t)
-            {
-                let mut normal = Vec3::new(0.0, 0.0, 0.0);
-                normal.set(axis, if d.get(axis) > 0.0 { -1.0 } else { 1.0 });
-                best = Some(GeomHit { t: t0, normal, material: *m });
+            // met ahead — or at once from inside it: a bounce lifted off a
+            // surface right at a pane's edge (its reveal) lands in the
+            // glass, and met nowhere it passed the pane unpriced (a ray
+            // from the square into the club through a shut window at
+            // full weight, a pocket of loudness wherever it landed). Met
+            // at the face it last crossed, it is priced (`World::through`
+            // takes it out the far side) or reflected like any ray there
+            if t0 < f32::MAX && axis < 3 && t1 > 1e-4 {
+                let t = if t0 > 1e-4 { t0 } else { 0.0 };
+                if best.as_ref().map_or(true, |h| t < h.t) {
+                    let mut normal = Vec3::new(0.0, 0.0, 0.0);
+                    normal.set(axis, if d.get(axis) > 0.0 { -1.0 } else { 1.0 });
+                    best = Some(GeomHit { t, normal, material: *m });
+                }
             }
         }
         best

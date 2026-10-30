@@ -557,6 +557,31 @@ a scene is a display choice (the ear has no state before it), like an
 eye opening in HDR. `Mixer::settle_ear` skips it, for measuring what
 follows the start.
 
+## A ray met inside a pane meets the pane (every engine)
+
+"The club sometimes produces weird pockets of loudness outside." Mapped
+(`demo/web/wasm/examples/club_map`: the club alone, the Godot level, a
+fresh settled simulation every 2 m): mostly −40 … −55 dB around it, but
+points standing out of their neighbours — (38, 40) at −20.5 dB, 28 dB
+over them, and over ten seconds of averaging still −26 in that seed
+(−45 … −48 in others): one sample ~10⁴ times the typical, held by the
+running mean. Caught at its tick (`club_spike`): a ray from the square
+reached the club's east window, bounced off the opening's top face right
+where it meets the pane's outer face, and went on inside at full weight —
+1.5 after a dozen bounces in the club — next-event connections from 1.4 m
+off the speakers bringing −19 dB alone. The bounce's lift off the reveal
+(`EPS`) put its next start inside the pane's box, and a box was only met
+by a ray entering it ahead (`WithPanels`): the shut laminated window was
+an open one for it. Now a ray starting inside a pane meets it at once, at
+the face it last crossed, and going through it leaves by its far side
+(`World::through`): the glass paid once
+(`v3::tests::a_ray_starting_inside_a_pane_meets_the_pane`), the CPU walk
+and the GPU kernel alike. (38, 40): −45 dB, as its neighbours; the
+map's pockets 17 → 14, those left inside the club, in its walls and
+corners, or real — in front of the entrance's open door 5–8 dB over 2 m
+further on, every seed — or the field through openings' heavy tail
+(−50 … −65 dB by seed at one point; OPEN.md).
+
 ## The GPU walk through a crossing (every engine)
 
 Recorded in Godot (its walk on the GPU), flying into the cathedral with

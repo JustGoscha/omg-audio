@@ -567,6 +567,11 @@ impl<'a> World<'a> {
             Some(h) if h.material == *mat && h.t < MAX_WALL_M => inside + dir * h.t,
             _ => p,
         };
+        // inside an object box (a pane met from within): out its far side
+        let far = self.panels.iter().fold(far, |f, (mn, mx, _)| match box_exit(f, dir, *mn, *mx) {
+            Some(t) => f + dir * t,
+            None => f,
+        });
         let t = self.transmission(p - dir * EPS, far + dir * EPS, hits);
         (core::array::from_fn(|b| t[b] * t[b]), far + dir * (2.0 * EPS))
     }
@@ -603,6 +608,24 @@ impl<'a> World<'a> {
         }
         g
     }
+}
+
+/// How far along `dir` a point inside the box `mn`..`mx` leaves it (None:
+/// not inside).
+fn box_exit(p: Vec3, dir: Vec3, mn: Vec3, mx: Vec3) -> Option<f32> {
+    let mut t = f32::MAX;
+    for a in 0..3 {
+        let (pa, da, lo, hi) = (p.get(a), dir.get(a), mn.get(a), mx.get(a));
+        if pa <= lo || pa >= hi {
+            return None;
+        }
+        if da > 1e-9 {
+            t = t.min((hi - pa) / da);
+        } else if da < -1e-9 {
+            t = t.min((lo - pa) / da);
+        }
+    }
+    (t < f32::MAX).then_some(t)
 }
 
 /// Parameter interval [t0, t1] ⊂ [0, 1] of segment a→b inside the box.
@@ -5651,6 +5674,41 @@ fn rot_apply(m: &[[f32; 3]; 3], v: Vec3) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ray that starts just inside a pane — a bounce off a window's
+    /// reveal right at the glass, lifted `EPS` off the reveal — meets the
+    /// pane at once, at the face it last crossed, and going through it
+    /// comes out the far side priced once. It met nothing: from the square
+    /// rays entered the club through its shut laminated window at full
+    /// weight, a pocket 28 dB over its neighbours wherever one landed.
+    #[test]
+    fn a_ray_starting_inside_a_pane_meets_the_pane() {
+        use crate::mesh::MeshBuilder;
+        let mut mb = MeshBuilder::new();
+        let floor = mb.material(Material::CONCRETE);
+        let v = Vec3::new;
+        mb.tri(v(-10.0, -10.0, 0.0), v(10.0, -10.0, 0.0), v(10.0, 10.0, 0.0), floor);
+        let mesh = mb.build();
+        // a pane 8 cm thick across x = 0, y −1 … 1, z 0.8 … 2.2
+        let glass = Material { transmission: [0.05, 0.01, 0.003], ..Material::GLASS };
+        let panels = [(v(-0.04, -1.0, 0.8), v(0.04, 1.0, 2.2), glass)];
+        let world = World::new(&mesh, &panels);
+        // just inside its outer face and under its top, heading in (−x)
+        let o = v(0.0395, 0.3, 2.199);
+        let d = v(-0.8, -0.2, -0.3).normalize();
+        let h = world.raycast(o, d).expect("the pane");
+        assert!(h.t < 1e-3, "met at once: t {}", h.t);
+        assert_eq!(h.material, glass);
+        assert!(h.normal.x > 0.99, "at the face it crossed, against the ray: {:?}", h.normal);
+        // through it: out the far side, the glass paid once
+        let mut hits = Vec::new();
+        let (t2, beyond) = world.through(o + d * h.t, d, &glass, &mut hits);
+        assert!(beyond.x < -0.04, "out the far side: {beyond:?}");
+        let want = glass.transmission[1] * glass.transmission[1];
+        assert!((t2[1] / want - 1.0).abs() < 1e-3, "priced once: {} against {want}", t2[1]);
+        // and a ray leaving the pane's face outward meets nothing
+        assert!(world.raycast(v(0.041, 0.3, 1.5), v(1.0, 0.0, 0.0)).is_none());
+    }
 
     /// A bounce in a corner — on the floor a fraction of a millimetre
     /// from a wall — connects to a source behind that wall through the
