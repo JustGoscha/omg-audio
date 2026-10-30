@@ -1,9 +1,9 @@
 # The final build in Godot: v6.1 against v6.2 (Oct 30, night)
 
 Every scenario of the Godot demo recorded with the engine as committed
-(df90f4f: v6.2, edge leaks fixed, echoes between two faces and their
+(3310dca: v6.2, edge leaks fixed, echoes between two faces and their
 ground twins, the wall split into rooms, the GPU walk through a
-crossing). Godot's defaults: the walk on the GPU, quality auto, recorded
+crossing, the dense early field played). Godot's defaults: the walk on the GPU, quality auto, recorded
 from the audio thread (0 frames lost in all 20). `sh tools/record_runs.sh
 <dir> "v6.1 v6.2" "fly car door bunker curtains"`.
 
@@ -24,21 +24,24 @@ engine has nothing there); level jumps: 10 ms off the 90 ms course.
 
 | scenario | engine | worst window | over −40 dB | jumps > 4 dB | tick |
 |---|---|---|---|---|---|
-| fly | v6.1 | −37.5 dB | 2 | 34 | 2.2–15.9 ms |
-| fly | v6.2 | −36.9 dB | 2 | 32 | 2.8–17.4 ms |
-| car | v6.1 | −46.3 dB | 0 | 42 | 2.3–11.1 ms |
-| car | v6.2 | −44.3 dB | 0 | 54 | 2.4–8.7 ms |
-| door | v6.1 | −37.9 dB | 3 | 0 | 5.0–19.9 ms |
-| door | v6.2 | −35.0 dB | 4 | 0 | 6.7–25.5 ms |
+| fly | v6.1 | −38.2 dB | 1 | 23 | 2.1–17.3 ms |
+| fly | v6.2 | −48.6 dB | 0 | 19 | 2.7–17.9 ms |
+| car | v6.1 | −44.3 dB | 0 | 48 | 2.3–8.8 ms |
+| car | v6.2 | −48.8 dB | 0 | 44 | 2.5–12.1 ms |
+| door | v6.1 | −41.1 dB | 0 | 0 | 5.0–23.3 ms |
+| door | v6.2 | −44.1 dB | 0 | 0 | 6.8–26.4 ms |
 
-fly: v6.2's two windows are the wall crossing itself (2.57 s, where
-outside becomes inside at once), none inside the cathedral; v6.1's two
-are inside (2.89 s). car: both engines alike. door: the windows at
-7.10 s (both engines) come with the last fast drop as the leaf seals
-(v6.2: −27 → −34 dB within ~20 ms; v6.1: −36 → −41 dB).
+fly: v6.1's one window is the wall crossing (2.56 s, where outside
+becomes inside at once). car: both engines alike — the level jumps are
+a moving tone's own (the direct sound and its reflections sliding in
+and out of phase). door: no jumps either way, opening or shutting.
+(A take at df90f4f, before the dense early field, read alike: v6.2 at
+the wall −36.9 dB, two windows; the door's leaf sealing at 7.10 s
+−35.0 dB in v6.2, −37.9 dB in v6.1 — single windows that move from
+take to take.)
 
-bunker (walking along it): the tick 6.3–15.2 ms (v6.1), 6.1–16.5 ms
-(v6.2); curtains (rolled up 6 s, then down): 5.3–23.6 ms, 4.1–16.3 ms;
+bunker (walking along it): the tick 5.9–14.5 ms (v6.1), 7.7–15.7 ms
+(v6.2); curtains (rolled up 6 s, then down): 4.6–19.5 ms, 4.3–18.7 ms;
 no frame late.
 
 ## What the first take showed, and what came of it
