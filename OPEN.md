@@ -135,7 +135,7 @@ phase above 3 kHz: worst −28.0 → −46.2 dB, windows over −40 dB 8 → 0
 (approach −39.3 → −49.9 dB). Headless `assess` loads no bed: why the
 replay in the demo's own level never burst.
 
-### A door shut: the young estimate sits low, then steps up
+### A door shut: the young estimate sits low, then steps up (early taps: high where an eased door rests)
 After the Godot demo's club door closes (`record.gd --scenario=door
 --tone`), the tone sits ~20 dB under where it settles for ~0.5 s, then
 steps up within 30 ms as a rare strong path through the door arrives —
@@ -160,6 +160,19 @@ early −5.3 dB and late −2.6 dB in the treble from settled (v6.1 +8.0 /
 rays pass a leaf half the time: +12.4 / +13.5 / +13.4 → −0.3 / −1.2 /
 −0.2 dB, and the shut door no longer reads nearly open in the treble
 (−16 → −45 dB under open).
+Where an eased door comes to rest (Oct 30, `assess doorswing EAR=0`,
+three seeds, the field's own energies per tick against the door shut
+all along): from 0.25 s on the reverb is within ±1.8 dB, but the early
+taps read high — v6.2 −0.8 … +4.7 dB, v6.1 −0.2 … +6.5 dB, in two
+seeds still +3 … +4 dB 3 s on. Not the heavy tail's low reading: the
+field plays the strongest 24 of ~2000 early bins, and the strongest
+bins of a younger, noisier average carry more (a selection's bias). It
+shrinks as the average ages; playing the whole early field ("The dense
+early field isn't played", above) would remove it — the sum over all
+bins is unbiased at any age. (The tone through the shut door, 6 s on,
+2–4 dB over the door shut all along in all three seeds: the tone's
+level is its taps' phasor sum, and wanders by as much standing still;
+the field's energies there agree within 0.2 dB in two seeds.)
 
 ### The car's closest pass: a one-sample step — solved Oct 29
 The Godot car scenario showed a single-sample step as the car passed
