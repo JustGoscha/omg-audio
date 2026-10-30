@@ -519,6 +519,38 @@ the mixer 3.29 → 3.05× real time with 64 sources, 2.71 → 2.23× with
 256 (`bench_sources OMG_V62=1`, one thread). The web smoke test's
 level +0.9 dB.
 
+## Against the image sources (every engine)
+
+A shoebox has an exact answer: for mirror walls the image-source method
+sums every arrival (`omg_core::ism`, Allen & Berkley, here to order 40).
+`examples/shoebox_ref` holds each engine's traced energies to it — the
+direct sound, the first 80 ms, the rest, per band — in a 10 × 7 × 4 m
+room (α 0.1 / 0.2 / 0.3), the source 5.1 m from the ears:
+
+| engine | early (low / mid / high) | late |
+|---|---|---|
+| v6.1 (the strongest 24 early bins) | −7.7 / −6.0 / −4.9 dB | −1.8 / −0.9 / −0.6 dB |
+| v6.2 (the dense early field played) | −0.6 / −0.8 / −1.3 dB | −1.8 / −0.9 / −0.6 dB |
+| v5 (the traced response convolved) | +1.3 / +1.4 / +1.4 dB | −1.9 / −1.1 / −0.8 dB |
+
+So v6.2's early part is right within ~1 dB, and v5 is no yardstick
+there (the inside-the-club comparisons above measure against it). The
+late part reads low by an amount that grows with the walls' mirror
+share (scattering 1: +0.2 / 0.0 / −0.1 dB — the next-event connections
+exact; 0.7: −0.5 … −0.2; 0.3: −1.3 … −0.4; 0: −1.8 … −0.6) and with
+how near the source's surfaces are (α 0.1: −1.0 dB with the source in
+the middle, −2.0 at 1.5 m from the floor, −4.5 at 0.5 m). Mirror paths
+are counted by sphere hits (a ray passing within k·l of the source),
+weighted as if the whole sphere could be crossed; near a surface part
+of it can't. A correction by the reachable share (the mean over
+directions of min(free distance, r)², what an isotropic field of ray
+segments gives) overshot by about as much (+0.7 … +2.3 dB): mirrored
+rays cover part of a clipped sphere after all, and the exact solver's
+claim on loud mirror chains it never named may add to the deficit. Not
+committed; OPEN.md. Guarded: `fx_simulation::a_shoebox_plays_its_image_sources_early_and_late`
+(v6.2 within 1.5 dB early, 2.5 dB late; v6.1's early part 4 dB short or
+more).
+
 ## Still open (OPEN.md)
 
 A loud room heard through its walls is a heavy-tailed estimate: young
@@ -533,5 +565,5 @@ their ground twins are named from the faces); a moving door, and a
 crossing, on the GPU walk cost CPU ticks; the dense early field's
 envelope (an exponential from the first arrival: a field arriving late
 in the window spills past it — inside the club its treble 1.3 dB over
-v5's late), and inside the club its low band still 3.4 dB under the
-traced sum.
+v5's late), and inside the club its low band still 3.4 dB under v5's
+(itself 1.3 dB over a shoebox's image sources early).

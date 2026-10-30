@@ -783,3 +783,72 @@ fn a_room_heard_through_its_walls_settles() {
     assert!(sd62 < 1.0, "v6.2: steady second to second ({sd62:.2} dB)");
     assert!(sd62 < sd61, "v6.2 steadier than v6.1: {sd62:.2} vs {sd61:.2} dB");
 }
+
+/// A 10 × 7 × 4 m shoebox (α 0.1 / 0.2 / 0.3) against its image sources
+/// (Allen & Berkley, `omg_core::ism`, to order 40: the exact sum of
+/// arrivals for mirror walls): the energy of the direct sound, the first
+/// 80 ms and the rest, per band. v6.2 within 1.5 dB early and 2.5 dB late
+/// (measured −0.6 … −1.3 / −0.6 … −1.8 dB, `examples/shoebox_ref`);
+/// v6.1, which played only the strongest 24 early bins, 5–8 dB short of
+/// the early energy (the dense early field, ENGINE_V6.md).
+#[test]
+fn a_shoebox_plays_its_image_sources_early_and_late() {
+    use omg_core::vec3::Vec3;
+    let (size, alpha, sp, lp) = ([10.0f32, 7.0, 4.0], [0.1f32, 0.2, 0.3], [2.5f32, 2.0, 1.5], [7.0f32, 4.5, 1.6]);
+    let mat = Material::new(alpha, 0.0, [0.0; 3]);
+    let t_direct = ((sp[0] - lp[0]).powi(2) + (sp[1] - lp[1]).powi(2) + (sp[2] - lp[2]).powi(2)).sqrt() / omg_core::SPEED_OF_SOUND;
+    let room = omg_core::scene::Shoebox::new(Vec3::new(size[0], size[1], size[2]), [mat; 6]);
+    let mut taps = Vec::new();
+    omg_core::ism::image_source_taps(&room, Vec3::new(sp[0], sp[1], sp[2]), Vec3::new(lp[0], lp[1], lp[2]), 40, &mut taps);
+    let parts = |taps: &[omg_core::params::Tap], onset: f32| -> [[f64; 3]; 3] {
+        let mut p = [[0.0f64; 3]; 3];
+        for t in taps {
+            let k = if (t.delay_s - onset).abs() < 1e-5 { 0 } else if t.delay_s - onset < 0.08 { 1 } else { 2 };
+            for b in 0..3 {
+                p[k][b] += (t.gains[b] as f64).powi(2);
+            }
+        }
+        p
+    };
+    let ism = parts(&taps, t_direct);
+    let engine = |mode: &str| -> [[f64; 3]; 3] {
+        let mut g = Geometry::new();
+        let m = g.material(mat);
+        let t = 0.3;
+        let (lx, ly, lz) = (size[0], size[1], size[2]);
+        g.add_box([-t, -t, -t], [lx + t, ly + t, 0.0], m);
+        g.add_box([-t, -t, lz], [lx + t, ly + t, lz + t], m);
+        g.add_box([-t, -t, 0.0], [0.0, ly + t, lz], m);
+        g.add_box([lx, -t, 0.0], [lx + t, ly + t, lz], m);
+        g.add_box([0.0, -t, 0.0], [lx, 0.0, lz], m);
+        g.add_box([0.0, ly, 0.0], [lx, ly + t, lz], m);
+        let cfg = Config { quality: Quality::High, v6: true, v61: true, v62: mode == "v6.2", kernel_thread: false, ..Config::default() };
+        let mut sim = Simulation::new(cfg);
+        sim.set_geometry(g);
+        let src = sim.add_source(SourceDesc::at(sp));
+        sim.set_listener(lp, 0.0, 0.0, 0.0);
+        let f = settle(&mut sim, 60);
+        let pb = f.block(src).unwrap();
+        let mut p = [[0.0f64; 3]; 3];
+        for tp in &pb.taps {
+            let k = if tp.key == omg_core::v3::KEY_DIRECT { 0 } else if tp.delay_s - pb.onset_s < 0.08 { 1 } else { 2 };
+            for b in 0..3 {
+                p[k][b] += (tp.gains[b] as f64).powi(2);
+            }
+        }
+        for b in 0..3 {
+            p[1][b] += (pb.early.level[b] as f64).powi(2);
+            p[2][b] += (pb.reverb.level[b] as f64).powi(2) + pb.remote.map_or(0.0, |r| (r.send[b] as f64).powi(2));
+        }
+        p
+    };
+    let off = |p: &[[f64; 3]; 3], k: usize| -> [f64; 3] { core::array::from_fn(|b| 10.0 * (p[k][b] / ism[k][b]).log10()) };
+    let (e62, e61) = (engine("v6.2"), engine("v6.1"));
+    eprintln!("shoebox against its image sources, dB: v6.2 direct {:?} early {:?} late {:?}; v6.1 early {:?}", off(&e62, 0), off(&e62, 1), off(&e62, 2), off(&e61, 1));
+    for b in 0..3 {
+        assert!(off(&e62, 0)[b].abs() < 0.1, "the direct sound is exact");
+        assert!(off(&e62, 1)[b].abs() < 1.5, "v6.2 early {:?}", off(&e62, 1));
+        assert!(off(&e62, 2)[b].abs() < 2.5, "v6.2 late {:?}", off(&e62, 2));
+        assert!(off(&e61, 1)[b] < -4.0, "v6.1 played the early part whole? {:?}", off(&e61, 1));
+    }
+}

@@ -217,11 +217,29 @@ inside the club −3.4 / −1.3 / −1.1 dB early, the whole response −2.6 /
 exponential from the first arrival — a field gathered late in the
 window spills past 80 ms (inside the club the treble 1.3 dB over v5's
 late part); a second network, or an envelope built from the bins' own
-course, would follow its shape. Inside the club the low band is still
-3.4 dB under, and the network costs the mixer 7–18 %. Also seen:
+course, would follow its shape. Inside the club the low band still reads
+3.4 dB under v5's (which a shoebox finds 1.3 dB over its image sources
+early), and the network costs the mixer 7–18 %. Also seen:
 a clap in the cathedral's late part 3.7 / 2.9 / 1.0 dB over v5's in the
-first 3 s — which of the two is right is open (a shoebox against Sabine
-and the image sources would tell).
+first 3 s. A shoebox against its image sources (ENGINE_V6.md) finds v5
+1.4 dB over in the early part and both v5 and v6.2 within 1 dB of each
+other late: v5 isn't the yardstick; the cathedral itself is untested.
+
+### Mirror paths near a surface read low (every engine)
+Against a shoebox's image sources (`examples/shoebox_ref`, ENGINE_V6.md
+"Against the image sources") the late part reads low, more the larger
+the walls' mirror share (scattering 1: 0 dB; 0: −1.8 … −0.6 dB) and the
+nearer the source's surfaces (α 0.1: −1.0 dB mid-room, −4.5 dB 0.5 m off
+the floor). Sphere hits weight a ray passing within k·l of the source as
+if the whole sphere were crossable. Tried (Oct 30, not committed): the
+weight over the sphere's reachable share from 64 directions' free
+distances — overshot by about as much (+0.7 … +2.3 dB): mirrored rays
+cross part of a clipped sphere after all. Also to separate: the exact
+solver claims loud mirror chains up to 24 reflections whether or not it
+has named them (`solver_owns`). A test with the solver's claim off, and
+one plane at a time, would tell the two apart. The outdoor case (a car
+over the road, its sphere half underground on long paths) is the same
+question.
 
 ### The GPU walk fell silent through pillars — solved Oct 30
 Flying through the cathedral on the GPU walk (Godot's default), the
