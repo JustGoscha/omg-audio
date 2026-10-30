@@ -12,6 +12,8 @@ out="$1"
 engines="${2:-v3 v6}"
 scenarios="${3:-fly car door}"
 mkdir -p "$out"
+# absolute: Godot runs with demo/godot as its working directory
+out="$(cd "$out" && pwd)"
 export PATH="$HOME/.cargo/bin:$PATH"
 cargo build -q --release -p omg-web --example analyze_rec
 GODOT=/Applications/Godot.app/Contents/MacOS/Godot

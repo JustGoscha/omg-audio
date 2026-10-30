@@ -1,0 +1,9 @@
+web (low) v5                 11.5 ms/tick
+web (medium) v4              15.3 ms/tick
+web (medium) v5              15.3 ms/tick
+native (high, CPU) v4        19.4 ms/tick
+native (high, CPU) v5        19.7 ms/tick
+web (medium) v6.2            12.4 ms/tick
+native (high, CPU) v6.2      19.8 ms/tick
+  64 sources  sim CPU    16.27 ms/tick  (64 traced per tick)
+ 256 sources  sim CPU    17.99 ms/tick  (64 traced per tick)

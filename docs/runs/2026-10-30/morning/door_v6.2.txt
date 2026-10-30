@@ -1,0 +1,17 @@
+/Users/justgoscha/dev/omg-audio/docs/runs/2026-10-30/morning/door_v6.2: 9.0 s at 44100 Hz
+  artifacts (above 3 kHz, under the whole; a pure tone's output has none):
+    closed    390 windows: median  -38.7 dB, worst  -14.6 dB, over −40 dB 227, over −30 dB  50
+    opening   201 windows: median  -22.8 dB, worst   -6.5 dB, over −40 dB 189, over −30 dB 169
+    open      601 windows: median  -19.5 dB, worst   -4.4 dB, over −40 dB 601, over −30 dB 574
+    shutting  201 windows: median  -21.3 dB, worst   -7.4 dB, over −40 dB 201, over −30 dB 186
+    shut      402 windows: median  -26.9 dB, worst   -1.9 dB, over −40 dB 400, over −30 dB 283
+    loudest: 7.358s -2dB (shut), 7.348s -4dB (shut), 7.363s -4dB (shut), 3.332s -4dB (open), 7.353s -5dB (shut), 3.302s -5dB (open), 3.347s -5dB (open), 3.342s -6dB (open)
+  level jumps (10 ms off its 90 ms course):
+    closed    196 windows: >2 dB  74, >4 dB  20
+    opening   100 windows: >2 dB  26, >4 dB   6
+    open      300 windows: >2 dB 103, >4 dB  29
+    shutting  100 windows: >2 dB  32, >4 dB   5
+    shut      197 windows: >2 dB  68, >4 dB  25
+  audio thread: 776 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 8 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 1 at the start; 0.4s → 2
+  engine: tick 6.3–22.1 ms, load up to 0.28, budget changes 0 (taps 480 → 480), late frames 0

@@ -1,0 +1,102 @@
+echo_check (v6.2): source [5.0, 32.0, 1.2], ears [15.0, 32.0, 1.6], direct 10.0 m; mirror chains solved (≥ 3 reflections):
+   + 182.8 ms   -20.6 dB  3 refl  (13.9, 24.0, 1.6) → (10.0, 52.0, 1.4) → (6.1, 24.0, 1.2)
+   + 182.9 ms   -22.0 dB  4 refl  (13.9, 24.0, 1.3) → (10.0, 52.0, 0.2) → (9.3, 46.9, 0.0) → (6.1, 24.0, 0.9)
+   + 194.3 ms   -22.3 dB  4 refl  (14.7, 34.0, 1.6) → (13.4, 24.0, 1.5) → (9.7, 52.0, 1.4) → (6.1, 24.0, 1.2)
+   + 194.5 ms   -23.7 dB  5 refl  (14.7, 34.0, 1.5) → (13.4, 24.0, 1.2) → (9.7, 52.0, 0.1) → (9.3, 48.6, 0.0) → (6.1, 24.0, 0.9)
+   + 310.3 ms   -28.1 dB  5 refl  (14.8, 34.0, 1.6) → (14.0, 24.0, 1.6) → (11.6, 52.0, 1.5) → (9.1, 24.0, 1.4) → (6.7, 52.0, 1.3)
+   + 310.4 ms   -29.5 dB  6 refl  (14.8, 34.0, 1.6) → (14.0, 24.0, 1.3) → (11.6, 52.0, 0.6) → (9.3, 25.7, 0.0) → (9.1, 24.0, 0.0) → (6.7, 52.0, 0.7)
+   taps played (mid band, dB from the direct tap):
+      +   0.0 ms    +0.0 dB  key 0x1
+      +   1.0 ms    -2.1 dB  key 0x2610
+      +   1.0 ms   -21.0 dB  key 0x2b10
+      +   3.0 ms   -16.1 dB  key 0x2611
+      +   5.0 ms   -16.9 dB  key 0x2612
+      +   5.0 ms   -21.5 dB  key 0x2312
+      +   7.0 ms   -17.3 dB  key 0x2813
+      +   7.0 ms   -20.9 dB  key 0x2613
+      +   9.0 ms   -21.2 dB  key 0x2014
+      +  17.0 ms   -17.6 dB  key 0x2f18
+      +  25.0 ms    -8.0 dB  key 0x1c1c
+      +  25.0 ms    -8.6 dB  key 0x291c
+      +  27.0 ms    -8.3 dB  key 0x291d
+      +  27.0 ms   -17.0 dB  key 0x1c1d
+      +  29.0 ms    -4.3 dB  key 0x221e
+      +  29.0 ms   -15.3 dB  key 0x151e
+      +  31.0 ms   -11.7 dB  key 0x2a1f
+      +  31.0 ms   -14.8 dB  key 0x221f
+      +  31.0 ms   -18.3 dB  key 0x271f
+      +  31.0 ms   -18.9 dB  key 0x211f
+      +  31.0 ms   -19.9 dB  key 0x1d1f
+      +  33.0 ms   -18.5 dB  key 0x1820
+      +  41.0 ms   -15.3 dB  key 0x2224
+      +  47.0 ms   -21.1 dB  key 0x2727
+      +  51.0 ms   -20.6 dB  key 0x1d29
+      + 182.8 ms   -18.4 dB  key 0xdb7b7d
+      + 194.3 ms   -20.4 dB  key 0x9a0df5
+      + 310.3 ms   -26.2 dB  key 0x9a9aad
+
+echo_check (v6.2): source [5.0, 44.0, 1.2], ears [15.0, 32.0, 1.6], direct 15.6 m; mirror chains solved (≥ 3 reflections):
+   +  97.4 ms   -13.8 dB  3 refl  (14.6, 34.0, 1.6) → (12.5, 24.0, 1.5) → (6.7, 52.0, 1.3)
+   +  97.6 ms   -15.3 dB  4 refl  (14.6, 34.0, 1.5) → (12.5, 24.0, 0.9) → (9.3, 39.4, 0.0) → (6.7, 52.0, 0.7)
+   + 259.1 ms   -23.2 dB  5 refl  (14.8, 34.0, 1.6) → (13.8, 24.0, 1.6) → (11.2, 52.0, 1.4) → (8.5, 24.0, 1.3) → (5.8, 52.0, 1.2)
+   + 259.2 ms   -24.6 dB  6 refl  (14.8, 34.0, 1.5) → (13.8, 24.0, 1.3) → (11.2, 52.0, 0.5) → (9.3, 32.6, 0.0) → (8.5, 24.0, 0.2) → (5.8, 52.0, 1.0)
+   taps played (mid band, dB from the direct tap):
+      +   0.0 ms    +0.0 dB  key 0x1
+      +   1.0 ms    -2.6 dB  key 0x2310
+      +   1.0 ms   -12.6 dB  key 0x2810
+      +   1.0 ms   -14.3 dB  key 0x1b10
+      +   3.0 ms   -16.5 dB  key 0x2811
+      +   3.0 ms   -18.4 dB  key 0x2311
+      +   5.0 ms   -18.1 dB  key 0x2312
+      +  23.0 ms   -13.6 dB  key 0x1d1b
+      +  25.0 ms   -18.8 dB  key 0x1d1c
+      +  27.0 ms   -18.8 dB  key 0x2a1d
+      +  33.0 ms    -5.7 dB  key 0x1d20
+      +  33.0 ms   -14.1 dB  key 0x2520
+      +  35.0 ms   -16.0 dB  key 0x2521
+      +  35.0 ms   -17.4 dB  key 0x1521
+      +  35.0 ms   -18.6 dB  key 0x1021
+      +  41.0 ms    -5.2 dB  key 0x1c24
+      +  41.0 ms   -11.7 dB  key 0x1b24
+      +  41.0 ms   -15.5 dB  key 0x2324
+      +  41.0 ms   -15.6 dB  key 0x2824
+      +  41.0 ms   -16.7 dB  key 0x2924
+      +  43.0 ms   -17.3 dB  key 0x2425
+      +  51.0 ms   -16.7 dB  key 0x1d29
+      +  53.0 ms   -14.6 dB  key 0x282a
+      +  53.0 ms   -14.7 dB  key 0x1b2a
+      +  53.0 ms   -17.9 dB  key 0x2a2a
+      +  97.4 ms   -12.0 dB  key 0xd4ecad
+      + 259.1 ms   -21.3 dB  key 0x9a9aad
+
+echo_check (v6.2): source [5.0, 40.0, 1.2], ears [15.0, 32.0, 1.6], direct 12.8 m; mirror chains solved (≥ 3 reflections):
+   + 278.9 ms   -25.3 dB  5 refl  (14.8, 34.0, 1.6) → (13.9, 24.0, 1.6) → (11.3, 52.0, 1.5) → (8.7, 24.0, 1.3) → (6.1, 52.0, 1.2)
+   + 279.0 ms   -26.7 dB  6 refl  (14.8, 34.0, 1.5) → (13.9, 24.0, 1.3) → (11.3, 52.0, 0.6) → (9.3, 30.3, 0.0) → (8.7, 24.0, 0.2) → (6.1, 52.0, 0.9)
+   taps played (mid band, dB from the direct tap):
+      +   0.0 ms    +0.0 dB  key 0x1
+      +   1.0 ms    -2.9 dB  key 0x2310
+      +   1.0 ms   -10.6 dB  key 0x2b10
+      +   1.0 ms   -19.5 dB  key 0x2810
+      +   3.0 ms   -13.9 dB  key 0x2811
+      +   3.0 ms   -16.4 dB  key 0x2311
+      +   5.0 ms   -19.6 dB  key 0x2812
+      +   7.0 ms   -20.3 dB  key 0x2313
+      +  27.0 ms   -20.9 dB  key 0x221d
+      +  29.0 ms   -17.4 dB  key 0x221e
+      +  37.0 ms   -15.8 dB  key 0x1d22
+      +  39.0 ms    -7.0 dB  key 0x1c23
+      +  39.0 ms   -11.5 dB  key 0x2923
+      +  39.0 ms   -20.0 dB  key 0x2423
+      +  39.0 ms   -20.8 dB  key 0x1523
+      +  41.0 ms   -21.5 dB  key 0x2424
+      +  41.0 ms   -21.8 dB  key 0x1c24
+      +  45.0 ms   -19.8 dB  key 0x2126
+      +  51.0 ms   -17.2 dB  key 0x3529
+      +  53.0 ms   -20.6 dB  key 0x122a
+      +  57.0 ms   -14.5 dB  key 0x1d2c
+      +  57.0 ms   -17.9 dB  key 0x2a2c
+      +  61.0 ms   -13.6 dB  key 0x1b2e
+      +  61.0 ms   -18.4 dB  key 0x282e
+      +  61.0 ms   -21.2 dB  key 0x232e
+      + 278.9 ms   -23.4 dB  key 0x9a9aad
+

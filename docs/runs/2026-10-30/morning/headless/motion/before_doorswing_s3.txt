@@ -1,0 +1,7 @@
+assess doorswing: mode v6.2 rung 3 quality 2 pace 0
+doorswing (v6.2): the club's tone through its door swinging shut at 4 s (~1 s)
+   open -5.6 dB, shut -27.7 dB (10–12 s)
+   during the swing: lowest -18.8 dB from shut, climbing back 23.6 dB in all (10 ms steps)
+   after: +0.1 s -2.2  +0.3 s -3.4  +1 s +0.9  +2 s -0.6  +4 s -1.2 dB from shut
+   level every 50 ms from 3.9 s: -6 -6 -5 -7 -9 -10 -8 -7 -8 -9 -10 -12 -12 -9 -9 -10 -12 -14 -16 -18 -20 -21 -23 -26 -42 -33 -30 -29 -30 -31 -31 -30 -31 -31 -31 -31 -31 -31 -31 -32 -31 -30 -30 -30 -30 -27 -27 -27 -27 -27 -28 -28 -28 -28 -28 -27 -27 -27 -27 -28 -29
+   artifacts (output above 3 kHz, under the tone): swing     239 windows: median  -57.4 dB, worst  -39.5 dB, over −40 dB   1, over −30 dB   0

@@ -1,0 +1,12 @@
+/private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/flytakes/ee5/fly_v6.2_tone: 6.8 s at 44100 Hz
+  artifacts (above 3 kHz, under the whole; a pure tone's output has none):
+    outside   464 windows: median  -62.6 dB, worst  -47.0 dB, over −40 dB   0, over −30 dB   0
+    crossing   63 windows: median  -59.4 dB, worst  -37.5 dB, over −40 dB   4, over −30 dB   0
+    inside    819 windows: median  -62.3 dB, worst  -36.6 dB, over −40 dB   3, over −30 dB   0
+  level jumps (10 ms off its 90 ms course):
+    outside   233 windows: >2 dB  48, >4 dB  10
+    crossing   32 windows: >2 dB   1, >4 dB   1
+    inside    404 windows: >2 dB  58, >4 dB  19
+  audio thread: 583 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 7 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 2 at the start; 0.6s → 3, 2.6s → 2, 3.7s → 1, 6.3s → 2
+  engine: tick 2.7–17.9 ms, load up to 0.14, budget changes 0 (taps 480 → 480), late frames 0

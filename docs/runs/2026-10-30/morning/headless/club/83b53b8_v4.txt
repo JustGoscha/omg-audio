@@ -1,0 +1,85 @@
+engine v4 · club transfer per band (low / mid / high, dB re the dance floor; total in brackets: paths + reverb, dB re 1)
+— default (D3 open, D4 shut); church portal, seminar door shut
+  P0 dance floor                   +0.0 /   +0.0 /   +0.0 dB   (+14.2 / +12.9 / +9.4)   paths share -7 / -6 / -4 dB
+  P1 lobby                        -30.0 /  -47.0 /  -54.4 dB   (-15.8 / -34.1 / -45.0)   paths share -17 / -16 / -14 dB
+  P2 street at the lobby          -33.0 /  -49.4 /  -56.3 dB   (-18.8 / -36.5 / -46.9)   paths share -28 / -32 / -40 dB
+  P3 2 m E of the window          -35.1 /  -51.0 /  -56.2 dB   (-20.9 / -38.2 / -46.8)   paths share -12 / -11 / -9 dB
+  P4 20 m W                       -56.7 /  -73.2 /  -83.0 dB   (-42.5 / -60.4 / -73.6)   paths share -11 / -14 / -21 dB
+  P5 40 m W                       -61.1 /  -78.5 /  -89.3 dB   (-46.9 / -65.7 / -79.9)   paths share -7 / -8 / -14 dB
+  P6 20 m N                       -53.7 /  -67.6 /  -73.2 dB   (-39.5 / -54.8 / -63.8)   paths share -4 / -6 / -5 dB
+  P7 50 m N                       -56.1 /  -71.2 /  -77.4 dB   (-41.9 / -58.3 / -68.0)   paths share -8 / -9 / -10 dB
+  P8 100 m N                      -64.1 /  -81.9 /  -90.7 dB   (-49.9 / -69.0 / -81.3)   paths share -12 / -12 / -20 dB
+  P9 outside the portal           -48.4 /  -66.6 /  -79.5 dB   (-34.2 / -53.8 / -70.1)   paths share -14 / -13 / -15 dB
+  P10 church                      -81.1 / -117.1 / -148.1 dB   (-67.0 / -104.2 / -138.7)   paths share -9 / -7 / -2 dB
+  P11 outside the seminar door    -49.8 /  -68.8 /  -76.4 dB   (-35.6 / -56.0 / -67.0)   paths share -9 / -7 / -14 dB
+  P12 seminar room                -71.6 /  -81.8 / -109.5 dB   (-57.4 / -68.9 / -100.1)   paths share -30 / -58 / -62 dB
+— default (D3 open, D4 shut); church portal, seminar door open
+  P0 dance floor                   -0.0 /   -0.0 /   +0.0 dB   (+14.2 / +12.8 / +9.4)   paths share -7 / -6 / -4 dB
+  P1 lobby                        -30.1 /  -45.8 /  -52.5 dB   (-15.9 / -33.0 / -43.1)   paths share -17 / -17 / -16 dB
+  P2 street at the lobby          -32.6 /  -49.3 /  -56.3 dB   (-18.4 / -36.4 / -46.9)   paths share -28 / -32 / -40 dB
+  P3 2 m E of the window          -34.9 /  -50.7 /  -56.2 dB   (-20.7 / -37.8 / -46.8)   paths share -12 / -11 / -9 dB
+  P4 20 m W                       -58.7 /  -68.2 /  -86.4 dB   (-44.5 / -55.3 / -77.0)   paths share -9 / -19 / -18 dB
+  P5 40 m W                       -62.8 /  -79.0 /  -93.4 dB   (-48.6 / -66.1 / -84.0)   paths share -5 / -8 / -10 dB
+  P6 20 m N                       -52.5 /  -67.9 /  -75.4 dB   (-38.3 / -55.0 / -66.0)   paths share -5 / -5 / -2 dB
+  P7 50 m N                       -55.0 /  -68.9 /  -75.1 dB   (-40.8 / -56.0 / -65.7)   paths share -9 / -12 / -12 dB
+  P8 100 m N                      -60.2 /  -77.0 /  -83.8 dB   (-46.0 / -64.2 / -74.4)   paths share -16 / -17 / -27 dB
+  P9 outside the portal           -51.3 /  -66.5 /  -79.6 dB   (-37.1 / -53.7 / -70.2)   paths share -11 / -13 / -15 dB
+  P10 church                      -59.5 /  -76.3 /  -85.5 dB   (-45.3 / -63.5 / -76.1)   paths share -29 / -46 / -63 dB
+  P11 outside the seminar door    -55.2 /  -72.3 /  -85.9 dB   (-41.0 / -59.4 / -76.5)   paths share -4 / -4 / -4 dB
+  P12 seminar room                -63.1 /  -76.3 /  -89.2 dB   (-48.9 / -63.4 / -79.8)   paths share -38 / -63 / -81 dB
+— club open (D3, D4 open); church portal, seminar door shut
+  P0 dance floor                   -0.0 /   -0.1 /   +0.1 dB   (+14.2 / +12.7 / +9.5)   paths share -7 / -6 / -4 dB
+  P1 lobby                         -4.5 /   -5.3 /   -6.5 dB   (+9.7 / +7.5 / +2.9)   paths share -11 / -10 / -8 dB
+  P2 street at the lobby           -8.6 /   -9.5 /  -11.7 dB   (+5.6 / +3.3 / -2.3)   paths share -17 / -17 / -15 dB
+  P3 2 m E of the window          -33.8 /  -51.0 /  -56.2 dB   (-19.6 / -38.1 / -46.8)   paths share -13 / -11 / -9 dB
+  P4 20 m W                       -33.4 /  -33.1 /  -32.9 dB   (-19.2 / -20.3 / -23.5)   paths share -8 / -14 / -21 dB
+  P5 40 m W                       -37.3 /  -36.5 /  -36.4 dB   (-23.1 / -23.7 / -27.0)   paths share -9 / -16 / -24 dB
+  P6 20 m N                       -42.8 /  -47.8 /  -48.1 dB   (-28.6 / -35.0 / -38.7)   paths share -15 / -25 / -30 dB
+  P7 50 m N                       -49.8 /  -68.4 /  -73.6 dB   (-35.6 / -55.6 / -64.2)   paths share -15 / -12 / -14 dB
+  P8 100 m N                      -59.0 /  -74.1 /  -78.1 dB   (-44.8 / -61.3 / -68.7)   paths share -17 / -20 / -33 dB
+  P9 outside the portal           -38.4 /  -40.4 /  -41.2 dB   (-24.3 / -27.5 / -31.8)   paths share -7 / -13 / -16 dB
+  P10 church                      -78.5 /  -96.9 / -116.6 dB   (-64.3 / -84.1 / -107.2)   paths share -11 / -27 / -34 dB
+  P11 outside the seminar door    -28.3 /  -30.0 /  -34.5 dB   (-14.1 / -17.2 / -25.1)   paths share -9 / -11 / -11 dB
+  P12 seminar room                -79.4 /  -94.5 / -118.5 dB   (-65.2 / -81.6 / -109.1)   paths share -22 / -45 / -53 dB
+— club open (D3, D4 open); church portal, seminar door open
+  P0 dance floor                   -0.1 /   -0.1 /   +0.0 dB   (+14.1 / +12.7 / +9.4)   paths share -7 / -6 / -4 dB
+  P1 lobby                         -5.6 /   -6.5 /   -7.8 dB   (+8.6 / +6.3 / +1.6)   paths share -10 / -9 / -6 dB
+  P2 street at the lobby          -11.7 /  -12.0 /  -14.0 dB   (+2.5 / +0.8 / -4.6)   paths share -14 / -14 / -13 dB
+  P3 2 m E of the window          -35.1 /  -51.2 /  -56.6 dB   (-20.9 / -38.3 / -47.2)   paths share -12 / -11 / -8 dB
+  P4 20 m W                       -32.3 /  -29.3 /  -37.1 dB   (-18.1 / -16.4 / -27.7)   paths share -9 / -18 / -17 dB
+  P5 40 m W                       -35.6 /  -31.3 /  -36.1 dB   (-21.4 / -18.4 / -26.7)   paths share -11 / -21 / -24 dB
+  P6 20 m N                       -51.1 /  -67.2 /  -72.7 dB   (-36.9 / -54.3 / -63.3)   paths share -6 / -6 / -5 dB
+  P7 50 m N                       -54.4 /  -63.0 /  -65.3 dB   (-40.2 / -50.1 / -55.9)   paths share -10 / -17 / -22 dB
+  P8 100 m N                      -55.5 /  -55.6 /  -62.2 dB   (-41.4 / -42.7 / -52.8)   paths share -20 / -39 / -49 dB
+  P9 outside the portal           -35.2 /  -45.0 /  -51.4 dB   (-21.0 / -32.2 / -42.0)   paths share -10 / -9 / -5 dB
+  P10 church                      -45.8 /  -60.6 /  -69.6 dB   (-31.6 / -47.8 / -60.2)   paths share -40 / -45 / -55 dB
+  P11 outside the seminar door    -31.8 /  -31.9 /  -34.2 dB   (-17.6 / -19.0 / -24.8)   paths share -6 / -9 / -11 dB
+  P12 seminar room                -37.8 /  -37.0 /  -37.4 dB   (-23.6 / -24.2 / -28.0)   paths share -63 / -102 / -133 dB
+— club shut (D3, D4 shut); church portal, seminar door shut
+  P0 dance floor                   +0.2 /   -0.0 /   -0.0 dB   (+14.4 / +12.8 / +9.4)   paths share -8 / -6 / -4 dB
+  P1 lobby                        -27.8 /  -44.6 /  -54.5 dB   (-13.6 / -31.7 / -45.1)   paths share -19 / -19 / -14 dB
+  P2 street at the lobby          -54.9 /  -76.1 /  -95.7 dB   (-40.7 / -63.3 / -86.3)   paths share -10 / -12 / -13 dB
+  P3 2 m E of the window          -34.8 /  -50.9 /  -56.2 dB   (-20.6 / -38.0 / -46.8)   paths share -12 / -11 / -9 dB
+  P4 20 m W                       -59.8 /  -74.3 /  -88.3 dB   (-45.6 / -61.4 / -78.9)   paths share -8 / -14 / -16 dB
+  P5 40 m W                       -61.9 /  -77.6 /  -91.8 dB   (-47.7 / -64.7 / -82.4)   paths share -7 / -9 / -11 dB
+  P6 20 m N                       -52.0 /  -68.0 /  -75.1 dB   (-37.8 / -55.2 / -65.7)   paths share -5 / -5 / -3 dB
+  P7 50 m N                       -54.4 /  -70.9 /  -79.1 dB   (-40.2 / -58.0 / -69.7)   paths share -10 / -9 / -8 dB
+  P8 100 m N                      -61.8 /  -78.1 /  -85.6 dB   (-47.6 / -65.2 / -76.2)   paths share -14 / -16 / -25 dB
+  P9 outside the portal           -54.8 /  -69.0 /  -76.3 dB   (-40.7 / -56.2 / -66.9)   paths share -8 / -11 / -19 dB
+  P10 church                      -81.3 / -116.9 / -146.3 dB   (-67.1 / -104.0 / -136.9)   paths share -9 / -7 / -4 dB
+  P11 outside the seminar door    -53.6 /  -72.1 /  -87.8 dB   (-39.4 / -59.2 / -78.4)   paths share -6 / -5 / -3 dB
+  P12 seminar room                -91.4 / -122.4 / -139.2 dB   (-77.2 / -109.5 / -129.8)   paths share -12 / -19 / -35 dB
+— club shut (D3, D4 shut); church portal, seminar door open
+  P0 dance floor                   -0.1 /   -0.1 /   +0.0 dB   (+14.1 / +12.8 / +9.4)   paths share -7 / -6 / -4 dB
+  P1 lobby                        -28.4 /  -44.4 /  -54.3 dB   (-14.2 / -31.6 / -44.9)   paths share -19 / -19 / -14 dB
+  P2 street at the lobby          -49.2 /  -67.5 /  -92.5 dB   (-35.0 / -54.6 / -83.1)   paths share -15 / -20 / -17 dB
+  P3 2 m E of the window          -34.3 /  -50.5 /  -55.6 dB   (-20.1 / -37.6 / -46.2)   paths share -13 / -11 / -9 dB
+  P4 20 m W                       -61.0 /  -72.3 /  -85.2 dB   (-46.8 / -59.4 / -75.8)   paths share -7 / -16 / -19 dB
+  P5 40 m W                       -63.9 /  -80.4 /  -96.2 dB   (-49.7 / -67.5 / -86.8)   paths share -4 / -6 / -7 dB
+  P6 20 m N                       -53.9 /  -67.4 /  -75.8 dB   (-39.7 / -54.6 / -66.4)   paths share -4 / -6 / -2 dB
+  P7 50 m N                       -57.9 /  -72.9 /  -80.7 dB   (-43.7 / -60.1 / -71.3)   paths share -6 / -7 / -7 dB
+  P8 100 m N                      -61.7 /  -77.3 /  -84.8 dB   (-47.5 / -64.4 / -75.4)   paths share -14 / -17 / -26 dB
+  P9 outside the portal           -51.9 /  -69.6 /  -80.5 dB   (-37.7 / -56.7 / -71.1)   paths share -11 / -11 / -14 dB
+  P10 church                      -56.8 /  -75.0 /  -84.1 dB   (-42.6 / -62.1 / -74.7)   paths share -33 / -43 / -53 dB
+  P11 outside the seminar door    -56.4 /  -73.9 /  -88.9 dB   (-42.2 / -61.1 / -79.5)   paths share -3 / -3 / -2 dB
+  P12 seminar room                -64.7 /  -82.0 /  -98.1 dB   (-50.5 / -69.1 / -88.7)   paths share -38 / -59 / -75 dB

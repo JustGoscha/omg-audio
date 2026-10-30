@@ -1,0 +1,15 @@
+assess still: mode v6.2 rung gov quality 2 pace 0
+still (v6.2): bell at square, 10 clicks every 3 s; dB low/mid/high
+   click  0  early  -17.7  -18.4  -19.0  late  -32.5  -26.6  -29.0
+   click  1  early  -15.4  -16.8  -17.1  late  -30.2  -26.0  -28.1
+   click  2  early  -13.2  -15.8  -15.8  late  -30.4  -26.1  -27.7
+   click  3  early  -12.2  -15.1  -14.7  late  -30.0  -25.8  -27.2
+   click  4  early  -11.4  -14.0  -13.0  late  -30.2  -26.0  -27.2
+   click  5  early  -12.0  -14.4  -13.4  late  -24.5  -25.0  -26.7
+   click  6  early  -11.8  -14.7  -13.9  late  -25.9  -24.4  -26.8
+   click  7  early  -11.0  -14.0  -13.7  late  -27.1  -25.1  -26.0
+   click  8  early  -11.4  -13.9  -13.8  late  -26.4  -24.3  -26.5
+   click  9  early  -12.4  -14.0  -13.5  late  -26.9  -24.9  -27.6
+   tail kurtosis (noise ≈ 3)  low   2.7  mid   3.5  high   4.0
+   early spread  low sd 2.00 span  6.7  mid sd 1.40 span  4.4  high sd 1.83 span  6.0
+   late  spread  low sd 2.44 span  8.0  mid sd 0.75 span  2.3  high sd 0.83 span  3.0

@@ -1,0 +1,8 @@
+shoebox [10.0, 7.0, 4.0] m, α [0.1, 0.2, 0.3], scattering 0; source [2.5, 2.0, 1.5], ears [7.0, 4.5, 1.6] (5.1 m); 88641 image sources
+   images direct  -14.2  -14.3  -14.7   early   -1.3   -3.3   -6.3   late   -1.0   -8.0  -16.8
+   v6.2   direct  -14.2  -14.3  -14.7   early   -1.9   -4.1   -7.6   late   -2.8   -8.9  -17.4
+   v6.2   direct  +0.0  +0.0  +0.0   early  -0.6  -0.8  -1.3   late  -1.8  -0.9  -0.6   (dB from the image sources)
+   v6.1   direct  -14.2  -14.3  -14.7   early   -8.9   -9.3  -11.2   late   -2.8   -8.9  -17.4
+   v6.1   direct  +0.0  +0.0  +0.0   early  -7.7  -6.0  -4.9   late  -1.8  -0.9  -0.6   (dB from the image sources)
+   v5     direct  -14.2  -14.3  -14.7   early    0.0   -1.9   -5.0   late   -3.0   -9.1  -17.6
+   v5     direct  +0.0  +0.0  +0.0   early  +1.3  +1.4  +1.4   late  -1.9  -1.1  -0.8   (dB from the image sources)

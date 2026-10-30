@@ -1,0 +1,681 @@
+2879a2d Web module rebuilt on the edge gate
+     Running unittests src/main.rs (target/release/deps/omg_audio-31c7198396aba1b0)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/lib.rs (target/release/deps/omg_audio-4a72a353941cdd50)
+test governor::tests::the_level_climbs_when_calm_and_sheds_at_once ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_doppler_host.rs (target/release/deps/fx_doppler_host-c4663c80bbadc0a6)
+test a_running_listener_hears_a_steady_doppler_under_game_timing ... ok
+test a_running_source_sounds_a_steady_doppler_under_game_timing ... ok
+test doppler_stays_steady_under_the_threaded_engines_timing ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+     Running tests/fx_geometry_dump.rs (target/release/deps/fx_geometry_dump-0d448dc4ae1f3d82)
+test a_dumped_level_replays_the_same ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/fx_mixer.rs (target/release/deps/fx_mixer-e531e22b31b4a24d)
+test a_click_arrives_one_path_delay_later ... ok
+test stopping_a_loop_silences_it ... ok
+test a_clap_rings_out_in_the_window ... ok
+test bass_through_a_wall_stays_in_the_window ... ok
+test a_bed_muted_before_it_arrives_stays_muted ... ok
+test a_clap_on_a_silent_source_is_not_faded_in ... ok
+test only_the_voice_budget_renders_and_silence_is_free ... ok
+test a_loud_scene_drops_the_sounds_it_masks ... ok
+test the_ambience_rides_the_loudness_stage ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+     Running tests/fx_sh_decoder.rs (target/release/deps/fx_sh_decoder-169c4d86b7cba333)
+test a_plane_wave_decodes_as_its_hrtf ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/fx_simulation.rs (target/release/deps/fx_simulation-12eeff630153be5d)
+test a_wall_between_pays_its_transmission ... ok
+test a_closed_shoebox_rings_like_sabine ... ok
+test debug_paths_follow_the_geometry ... ok
+test an_inside_corners_echo_of_a_passing_car_plays ... ok
+test exact_frames_follow_the_listener_between_ticks ... ok
+test free_field_is_one_direct_path ... ok
+test many_sources_take_turns ... ok
+test frames_round_trip_through_flat_floats ... ok
+test a_facades_echo_of_a_passing_car_plays_at_every_rung ... ok
+test open_sky_versus_sealed_box ... ok
+test a_shoebox_plays_its_image_sources_early_and_late ... ok
+test a_walls_echo_passing_its_edge_keeps_its_energy ... ok
+test a_streets_flutter_off_a_passing_car_plays_with_its_ground_twins ... ok
+test closing_a_door_muffles ... ok
+test a_hall_rings_and_sounds_as_long_and_loud_as_theory_says ... ok
+test a_room_heard_through_its_walls_settles ... ok
+test a_door_swinging_shut_is_heard_where_it_is ... ok
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.01s
+     Running tests/fx_v4.rs (target/release/deps/fx_v4-961677b410a650f2)
+test a_clap_comes_back_from_the_canyon ... ok
+test a_flutter_train_runs_on ... ok
+test a_rooms_tail_decays_and_ends ... ok
+test a_flutter_train_runs_on_v62 ... ok
+test a_source_outside_the_convolution_budget_keeps_its_reverb ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+     Running tests/gpu.rs (target/release/deps/gpu-a565c936e6475ddf)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/threaded.rs (target/release/deps/threaded-3761bcf723befd84)
+test the_engine_renders_a_source_end_to_end ... ok
+test a_repeated_pose_keeps_the_time_it_was_first_sent ... ok
+test a_sound_on_a_source_just_switched_on_is_heard_from_its_start ... ok
+test debug_paths_reach_the_game_thread_while_enabled ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+     Running unittests src/lib.rs (target/release/deps/omg_core-0cb3f2b6ea0d9a00)
+test diffraction::tests::grazing_edge_is_5db ... ok
+test diffraction::tests::illuminated_side_recovers_to_unity ... ok
+test diffraction::tests::monotonic_in_detour ... ok
+test diffraction::tests::lows_bend_more_than_highs ... ok
+test mesh::tests::box_has_twelve_sharp_edges_and_budget_ranks ... ok
+test mesh::tests::segment_hits_counts_wall_crossings ... ok
+test paths::tests::clear_line_returns_only_direct ... ok
+test paths::tests::wall_thickness_is_emergent ... ok
+test tests::ism_direct_path_delay_matches_distance ... ok
+test tests::ism_order3_shoebox_has_63_images ... ok
+test tracer::tests::a_long_decay_reads_its_own_reverberation_time ... ok
+test mesh::tests::bvh_raycast_matches_brute_force ... ok
+test v3::fold::tests::job_tables_round_trip ... ok
+test v3::fold::tests::layout_constants ... ok
+test paths::tests::bent_paths_found_behind_a_building_no_authoring ... ok
+test v3::tests::a_bounce_in_a_corner_does_not_see_through_the_wall_beside_it ... ok
+test v3::fold::tests::a_walk_from_before_crossing_a_wall_is_discarded ... ok
+test v3::tests::systematic_picks_are_unbiased_and_bounded ... ok
+test tracer::tests::closed_room_late_field_is_diffuse ... ok
+test tests::rt60_tracks_absorption ... ok
+test tests::late_level_is_distance_independent ... ok
+test mesh::tests::box_mesh_traces_like_shoebox ... ok
+test tracer::tests::reverb_through_a_hole_reports_the_hole_direction ... ok
+test v3::walker::tests::after_a_crossing_the_cpu_walks_until_the_walker_catches_up ... ok
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+     Running tests/dense_rt60.rs (target/release/deps/dense_rt60-c00b4fca3e990b8f)
+test a_response_that_ended_has_its_own_decay ... ok
+test rt60_of_exponential_decays ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_air_absorption.rs (target/release/deps/fx_air_absorption-7df7c9b0dfec0296)
+test a_band_top_dies_first ... ok
+test late_field_high_band_decays_faster_from_air ... ignored, BUG: tracer::trace applies no air absorption along ray paths — late-field RT60 is frequency-flat in a flat-absorption hall
+test far_direct_tap_carries_the_air_tilt ... ok
+test highs_attenuate_more_than_lows ... ok
+test bands_match_the_standard_integrated ... ok
+test monotonic_in_distance ... ok
+test per_km_loss_is_in_the_iso_9613_ballpark ... ok
+test unity_at_zero_distance ... ok
+test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_distance_spreading.rs (target/release/deps/fx_distance_spreading-64b28ebbddc6f2df)
+test delay_is_distance_over_c_and_direction_points_at_source ... ok
+test direct_gain_is_exactly_air_over_r ... ok
+test pt_direct_record_obeys_the_same_law ... ok
+test near_field_clamp_keeps_gain_finite ... ok
+test minus_six_db_per_doubling ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_door_leaf_late.rs (target/release/deps/fx_door_leaf_late-985922c168903ebd)
+test open_door_couples_closed_opaque_leaf_seals ... ok
+test closing_the_door_keeps_energy_in_the_source_room ... ok
+test real_leaf_leaks_a_bass_heavy_fraction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+     Running tests/fx_early_wall_transmission.rs (target/release/deps/fx_early_wall_transmission-1e0475a94970a4a1)
+test door_hole_is_free ... ok
+test direct_through_party_wall_pays_exact_transmission ... ok
+test door_leaf_restores_its_own_transmission ... ok
+test opaque_wall_has_no_direct_record ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_furniture_seep.rs (target/release/deps/fx_furniture_seep-3780c83fcba5b33f)
+test bass_seeps_straight_through_at_exactly_air_over_r_times_t ... ok
+test blocked_reflection_carries_the_body_transmission ... ok
+test seep_beats_stone_in_the_bass_but_treble_still_bends ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_late_furniture.rs (target/release/deps/fx_late_furniture-914dd9a99d79d3f1)
+test panels_are_really_hit_by_rays ... ok
+test furniture_of_wall_material_barely_changes_rt60 ... ok
+test more_absorbent_furniture_is_deader ... ok
+test rt60_tracks_sabine_with_furniture ... ok
+test furniture_shortens_rt60_monotonically ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+     Running tests/fx_late_rt60.rs (target/release/deps/fx_late_rt60-c2d68b8cc1b0098e)
+test live_room_rt60_is_not_truncated ... ignored, BUG: 64-bounce cap in tracer::trace truncates live-room tails — α=0.04 8×6×3 room traces RT60 ≈1.1 s vs Eyring 3.2 s
+test flat_walls_give_flat_rt60 ... ok
+test rt60_scales_with_room_size ... ok
+test damped_rooms_match_diffuse_field_theory ... ok
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/fx_over_silhouette.rs (target/release/deps/fx_over_silhouette-ba99125fda8cd4c1)
+test buried_listener_pays_the_earth ... ok
+test string_clears_a_thin_parapet ... ok
+test listener_in_a_closed_room_pays_the_roof ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/fx_param_flat_transport.rs (target/release/deps/fx_param_flat_transport-7a435a50c6c404b0)
+test large_keys_stay_distinct_and_exact ... ok
+test realistic_engine_keys_survive ... ok
+test reused_buffer_does_not_leak_stale_data ... ok
+test roundtrip_empty_and_default_blocks ... ok
+test roundtrip_without_remote ... ok
+test roundtrip_with_taps_and_remote ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_v3_echoes.rs (target/release/deps/fx_v3_echoes-0512f4fa80618fa8)
+test bare_parallel_walls_flutter_with_their_period ... ignored, passes only before the estimates converge (80 ticks, a lucky seed): converged, v3 keeps its strongest chains (early ones via absorbing surfaces) and evicts the late flutter — v4 ranks them by how far they stand out (fx_v4 a_flutter_train_runs_on)
+test canyon_returns_a_ping_pong_echo_train ... ok
+test furnished_and_all_hard_rooms_keep_their_tails_as_reverb ... ok
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.74s
+     Running tests/fx_v3_tracer.rs (target/release/deps/fx_v3_tracer-edc3df64c1c6d5cd)
+test free_field_is_one_exact_direct_tap ... ok
+test direct_pays_the_wall_between ... ok
+test only_exposed_edges_diffract ... ok
+test earth_swallows_what_leaves_a_bunker ... ok
+test diffraction_never_adds_on_the_lit_side ... ok
+test knife_edge_shadow_follows_kurze_anderson ... ok
+test shadowed_listener_hears_a_lit_facade_behind_them ... ok
+test late_rt60_agrees_with_the_v2_tracer ... ok
+test live_room_tail_is_traced_to_the_end ... ok
+test crossing_a_wall_drops_the_room_left_behind ... ok
+test early_tap_delays_do_not_jitter_between_ticks ... ok
+test lambertian_floor_converges_to_one_over_two_h_squared ... ok
+test mirror_converges_to_the_image_source ... ok
+test sampled_connections_stay_unbiased ... ok
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.89s
+     Running tests/fx_walk_threads.rs (target/release/deps/fx_walk_threads-dbec8053540473d1)
+test the_walk_is_the_same_on_any_number_of_threads ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+     Running tests/fx_wall_transmission.rs (target/release/deps/fx_wall_transmission-c58e79fb330b848c)
+test higher_frequency_transmits_less ... ok
+test heavier_walls_transmit_less ... ok
+test transmission_at_follows_mass_law_thickness ... ok
+test shared_wall_geometry_is_closed ... ok
+test authored_thickness_overrides_the_geometry ... ok
+test opaque_party_wall_leaks_nothing ... ok
+test leaked_energy_scales_with_t_squared ... ok
+test transmission_drains_the_source_room ... ok
+test leak_through_wall_is_bass_heavy ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+     Running tests/pt_golden.rs (target/release/deps/pt_golden-09d0f39590642e7d)
+test golden::print_goldens ... ignored
+test pt_solver_rejects_impossible_chains ... ok
+test pt_matches_ism_in_empty_shoeboxes ... ok
+test golden::cpu_tracer_within_goldens ... ok
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     Running tests/pt_occluder.rs (target/release/deps/pt_occluder-d23c17b40264304a)
+test blocked_reflections_cease_and_clear_ones_survive ... ok
+test walking_through_the_shadow_never_steps ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/trace_golden.rs (target/release/deps/trace_golden-ac4400dddd8f6a38)
+test print_goldens ... ignored
+test cpu_tracer_within_goldens ... ok
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running unittests src/lib.rs (target/release/deps/omg_dsp-707ec0b4494b83c6)
+test ambi::tests::head_rotation_matches_encoded_directions ... ok
+test ambi::tests::pitch_and_roll_point_the_right_way ... ok
+test ambi::tests::yaw_only_matches_rotate_z ... ok
+test ambience::tests::no_environment_is_silent ... ok
+test dense::tests::a_ringing_tail_continues_at_its_own_decay ... ok
+test ambience::tests::route_swaps_never_click ... ok
+test bands::tests::band_centres_play_their_band_gains ... ok
+test bands::tests::unity_gains_keep_the_magnitude ... ok
+test env::tests::flat_round_trip_is_lossless ... ok
+test ambience::tests::seep_spectrum_follows_the_bands ... ok
+test fft::tests::real_fft_matches_the_dft_and_inverts ... ok
+test hrtf::tests::a_fast_turn_crossfades_every_hrir_change ... ok
+test hrtf::tests::convolve_ring_matches_naive ... ok
+test dense::tests::impulse_response_holds_the_energy_and_direction ... ok
+test level::tests::near_silence_is_not_amplified_into_noise ... ok
+test level::tests::recording_level_stops_mattering ... ok
+test level::tests::silence_padding_changes_nothing ... ok
+test near::tests::distance_is_clamped ... ok
+test near::tests::far_ear_delayed_by_itd ... ok
+test near::tests::far_ear_is_darker_by_the_700hz_shadow ... ok
+test near::tests::left_right_mirror_symmetry ... ok
+test near::tests::near_ear_louder_by_the_around_the_head_1_over_r_law ... ok
+test near::tests::onset_is_declicked ... ok
+test dense::tests::kernels_round_trip_through_flat_words ... ok
+test level::tests::hot_passages_are_flattened ... ok
+test dense::tests::a_kernel_built_in_steps_is_the_same_kernel ... ok
+test dense::tests::a_pause_plays_nothing_stale ... ok
+test dense::tests::a_dropped_kernel_fades_out_and_back ... ok
+test playlog::tests::a_shot_plays_its_clip_from_its_start ... ok
+test playlog::tests::far_past_is_read_exactly ... ok
+test playlog::tests::forgets_only_what_nobody_can_hear ... ok
+test playlog::tests::loops_have_always_played_and_hand_over ... ok
+test playlog::tests::loops_take_gain_rate_and_stop ... ok
+test playlog::tests::rate_and_stop ... ok
+test dense::tests::a_warm_convolver_keeps_the_input_it_had ... ok
+test rain::tests::dry_is_silent_and_free ... ok
+test output::tests::normal_levels_never_muffle ... ok
+test fdn::energy_tests::an_impulse_comes_out_with_unit_energy ... ok
+test rain::tests::materials_have_distinct_signatures ... ok
+test output::tests::reflex_releases_quickly_after_a_blast ... ok
+test output::tests::blast_rings_then_fades ... ok
+test rain::tests::drizzle_is_sparse_taps_not_hiss ... ok
+test output::tests::loud_exposure_muffles_highs_then_recovers ... ok
+test output::tests::the_ring_is_heard_after_the_noise_not_under_it ... ok
+test dense::tests::a_new_kernel_glides_in_without_a_step ... ok
+test rain::tests::indoors_is_tappier ... ok
+test rain::tests::no_sky_overhead_no_drumming ... ok
+test rain::tests::rain_ramps_in_and_back_out ... ok
+test rain::tests::indoors_is_quieter_and_darker ... ok
+test dense::tests::partitioned_convolution_matches_direct ... ok
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.56s
+     Running tests/fx_band_colour.rs (target/release/deps/fx_band_colour-cfa28e719f1861ce)
+test the_kernel_plays_its_band_gains ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/fx_block_render.rs (target/release/deps/fx_block_render-0a3d86fc408405f4)
+test far_doppler_blocks_match_per_sample ... ok
+test the_scene_exercises_bus_points_and_tails ... ok
+test live_source_blocks_match_per_sample ... ok
+test log_source_blocks_match_per_sample ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.23s
+     Running tests/fx_delay_smooth.rs (target/release/deps/fx_delay_smooth-c12a1ab5c2c47de7)
+test delay_is_clamped_to_the_buffer ... ok
+test integer_and_fractional_reads ... ok
+test fractional_tone_read_within_interp_bound ... ok
+test smoother_time_constant ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_dense_early.rs (target/release/deps/fx_dense_early-a71d3894c04a0b26)
+test a_dense_early_field_changing_every_block_never_bursts ... ok
+test the_dense_early_field_comes_from_where_it_is_said_to ... ok
+test the_dense_early_field_plays_each_bands_energy ... ok
+test a_dense_early_field_moving_in_time_never_bursts ... ok
+test the_dense_early_field_plays_its_energy_early ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+     Running tests/fx_doppler.rs (target/release/deps/fx_doppler-c3a8373e9cfc0eba)
+test crossfade_lands_on_the_new_delay ... ok
+test fast_motion_at_slow_updates_still_glides ... ok
+test doppler_holds_at_10_km ... ok
+test large_same_key_jump_crossfades_small_jump_glides ... ok
+test slow_motion_at_long_delay_keeps_its_shift ... ok
+test constant_speed_is_a_constant_pitch ... ok
+test moving_delay_glides_to_the_doppler_ratio ... ok
+test reflections_born_mid_motion_stay_in_step ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+     Running tests/fx_fdn_bands.rs (target/release/deps/fx_fdn_bands-11fd0c2febe32b01)
+test each_band_plays_the_energy_it_is_given ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+     Running tests/fx_fdn_rt60.rs (target/release/deps/fx_fdn_rt60-7132e19212e227b3)
+test mid_t60_independent_of_hf_damping ... ignored, BUG: FDN in-loop lowpass is not unity at mid — rt60_high=0.3·mid shortens measured mid T60 ~16% (1.0 s → 0.84 s)
+test own_late_field_is_diffuse_for_short_rooms ... ignored, BUG: own late field leans left/up in short rooms — RT60 0.3 s gives L/R +3.1 dB, E[WY]/E[W²]=0.28 (loud short FDN lines share +y,+z corners)
+test long_tail_is_stable ... ok
+test mid_band_t60_tracks_set_rt60 ... ok
+test high_band_decays_at_rt60_high ... ok
+test own_late_field_is_near_diffuse_for_long_rooms ... ok
+test result: ok. 4 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/fx_fdn_sleep.rs (target/release/deps/fx_fdn_sleep-576d0ff7853649d7)
+test default_block_never_feeds_the_fdn ... ok
+test own_fdn_sleeps_after_its_tail_and_never_clips_it ... ok
+test remote_fdn_sleeps_after_remote_goes_away ... ok
+test sleeping_fdn_wakes_instantly_and_identically ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+     Running tests/fx_head_smoothing.rs (target/release/deps/fx_head_smoothing-b84837e277ea49a0)
+test bus_rotation_follows_a_30ms_one_pole ... ok
+test point_tap_flips_sides_when_the_smoothed_head_passes_midpoint ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/fx_hrtf_bus_decode.rs (target/release/deps/fx_hrtf_bus_decode-a3df9a88e95ea72c)
+test front_source_is_centered ... ok
+test output_stage_uses_the_binaural_decoder ... ok
+test back_is_distinguishable_from_front ... ok
+test left_source_is_louder_and_earlier_in_the_left_ear ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/fx_late_level.rs (target/release/deps/fx_late_level-13496fa1efdb6382)
+test a_source_falling_silent_still_rings_out ... ok
+test leaving_the_room_takes_its_tail_along ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/fx_moving_treble.rs (target/release/deps/fx_moving_treble-76035381a77da09d)
+test a_moving_paths_treble_stays_steady ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/fx_path_crossfade.rs (target/release/deps/fx_path_crossfade-4abd974adb3634b9)
+test metrics_catch_a_hard_switch ... ok
+test new_path_fades_in ... ok
+test vanished_path_fades_out ... ok
+test rekey_crossfades_without_click_or_chirp ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/fx_point_conv.rs (target/release/deps/fx_point_conv-0a14401480dbdbdb)
+test retarget_during_a_crossfade_stays_continuous ... ignored, BUG: PointConv::set_dir mid-crossfade snaps to pure prev — output steps by f·|A−B| (≈0.7 of a full-scale HRIR difference) when re-selected within 10 ms
+test nearest_picks_the_closest_direction ... ok
+test direction_change_crossfades_over_10ms ... ok
+test renderer_point_tap_uses_the_hrir ... ok
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/fx_rain.rs (target/release/deps/fx_rain-984690854b8bd04c)
+test ground_plats_are_short_thumps ... ok
+test panes_are_brighter_than_the_roof ... ok
+test bank_hits_land_on_the_pane ... ok
+test bank_is_dulled_at_load ... ok
+test bank_slices_are_played ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+     Running tests/fx_remote_reverb.rs (target/release/deps/fx_remote_reverb-1af5e5de47c36f1c)
+test remote_wet_comes_from_the_doorway_with_aperture_spread ... ok
+test no_remote_is_silent ... ok
+test remote_send_rings_with_the_source_rooms_decay ... ok
+test wall_leaked_remote_is_lowpassed ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/fx_reverb_handover.rs (target/release/deps/fx_reverb_handover-398d213150bf2512)
+test two_sources_of_one_signal_ring_uncorrelated_either_way ... ok
+test convolved_and_parametric_put_the_same_energy_in_the_bus ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+     Running tests/fx_soft_limiter.rs (target/release/deps/fx_soft_limiter-c08bcf68f718e449)
+test small_input_is_linear ... ok
+test huge_input_is_bounded ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_stereo_fallback.rs (target/release/deps/fx_stereo_fallback-7efea1757e4c88eb)
+test left_right_front_back ... ok
+test output_stage_falls_back_to_cardioids ... ok
+test pan_is_monotone_in_azimuth ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_tap_budget.rs (target/release/deps/fx_tap_budget-b1bf4bac386c2e63)
+test lowering_the_ceiling_fades_evicted_taps ... ok
+test budget_change_reslots_with_a_level_continuous_crossfade ... ok
+test point_budget_point_renders_the_strongest ... ok
+test ceiling_keeps_the_strongest_taps ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/fx_tap_eq.rs (target/release/deps/fx_tap_eq-00ca7269f6b14415)
+test filter_primitives ... ok
+test flat_band_gains_are_transparent ... ok
+test through_wall_tap_is_a_continuous_lowpass ... ok
+test deep_band_cuts_reach_their_band_gain ... ok
+test band_centres_play_their_band_gains ... ok
+test shelves_shape_the_band_extremes ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+     Running unittests src/lib.rs (target/release/deps/omg_gpu-7a1b28565c76799c)
+test layout::tests::layout_sizes ... ok
+test layout::tests::mesh_layout_sizes ... ok
+test layout::tests::solve_layout_sizes ... ok
+test layout::tests::v3_layout_matches_the_fold_contract ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/mesh_parity.rs (target/release/deps/mesh_parity-70224b4268efe8b3)
+test panel_over_the_hole_seals_it ... ok
+test discovery_kernel_finds_the_cpu_chain_set ... ok
+test world_trace_speed_probe ... ok
+test mesh_kernel_matches_cpu_tracer ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+     Running tests/parity.rs (target/release/deps/parity-c596fdafbbce2107)
+test golden::print_goldens ... ignored
+test gpu_tracer_within_goldens ... ok
+test golden::cpu_tracer_within_goldens ... ok
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/pt_parity.rs (target/release/deps/pt_parity-e85e049e5b0dc7fc)
+test golden::print_goldens ... ignored
+test gpu_chain_discovery_matches_cpu ... ok
+test golden::cpu_tracer_within_goldens ... ok
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     Running tests/solve_parity.rs (target/release/deps/solve_parity-e4345e27598b6655)
+test batched_solve_matches_cpu_records ... ok
+test hundred_source_batch_beats_the_wall ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/speed.rs (target/release/deps/speed-4736b1b75b618e01)
+test golden::print_goldens ... ignored
+test speed ... ignored
+test golden::cpu_tracer_within_goldens ... ok
+test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     Running tests/v3_parity.rs (target/release/deps/v3_parity-d1c4fdb6ee77d01d)
+test v3_free_field_direct_only_and_full_sky ... ok
+test v3_knife_edge_shadow_matches_cpu ... ok
+test v3_earth_swallows_what_leaves_a_bunker_on_gpu ... ok
+test v3_mirror_floor_matches_cpu_and_the_image_source ... ok
+test v3_shadowed_facade_fill_matches_cpu ... ok
+test v3_lambertian_floor_matches_cpu_and_analytic ... ok
+test v3_sampled_connections_stay_unbiased_on_gpu ... ok
+test v3_thick_wall_pays_the_mass_law_on_both ... ok
+test v3_bends_over_a_barrier_match_cpu ... ok
+test v3_shoebox_early_and_late_match_cpu ... ok
+test v4_dense_response_matches_cpu ... ok
+test v3_flutter_train_matches_cpu ... ok
+test v3_demo_world_fields_match_cpu ... ok
+test v3_walk_speed_probe ... ok
+test v3_panel_over_a_doorway_matches_cpu ... ok
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.26s
+     Running tests/v3_probe.rs (target/release/deps/v3_probe-4b25f55f7f1ac978)
+test v3_probe_bunker_earth_matches_cpu ... ok
+test v3_probe_thick_wall_and_panels_match_cpu ... ok
+test v3_probe_authored_thickness_matches_cpu ... ok
+test v3_probe_demo_world_segments_match_cpu ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     Running unittests src/lib.rs (target/release/deps/omg_scene-fab8c4177e01dc6b)
+test ambient::tests::holes_remove_their_emitters ... ok
+test environment::tests::closing_a_door_drains_the_field_continuously ... ok
+test environment::tests::outdoor_field_is_physical ... ok
+test environment::tests::roof_exposure_respects_storeys ... ok
+test walkthrough::tests::aperture_is_free_on_axis_and_muffled_off_axis ... ok
+test walkthrough::tests::aperture_vertex_tracks_the_bend ... ok
+test walkthrough::tests::door_openness_prices_continuously ... ok
+test dome::tests::the_ground_carries_its_patches ... ok
+test dome::tests::indoor_inflow_localizes_the_opening ... ok
+test dome::tests::walls_beside_you_dampen_their_directions ... ok
+test dome::tests::glass_transmits_with_its_spectrum ... ok
+test dome::tests::interior_room_receives_through_two_doorways ... ok
+test dome::tests::open_field_hears_the_dome_and_rooms_hear_slivers ... ok
+test ambient::tests::quadrature_matches_brute_force ... ok
+test dome::tests::indoor_inflow_is_never_unfiltered ... ok
+test dome::tests::leaf_coverage_sweeps_the_inflow ... ok
+test world::tests::town_fits_the_v3_gpu_walk_caps ... ok
+test world::tests::deep_shadow_favors_lows ... ok
+test world::tests::aperture_reflections_spread_across_the_opening ... ok
+test world::tests::buried_radio_stays_buried ... ok
+test world::tests::closing_a_door_muffles_the_portal ... ok
+test world::tests::ambient_field_is_continuous_through_a_doorway ... ok
+test world::tests::distant_cars_stay_distant_indoors ... ok
+test world::tests::doorway_contrast_walking_past ... ok
+test world::tests::door_walk_probe2 ... ok
+test world::tests::door_walk_probe ... ok
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.09s
+     Running tests/ambient_crickets.rs (target/release/deps/ambient_crickets-e01cf880414c20aa)
+test indoors_they_arrive_through_the_doorway_like_the_old_bed ... ok
+test flying_up_they_come_from_below_and_fade ... ok
+test on_the_square_the_crickets_sound_like_the_old_bed ... ok
+test switch_off_restores_the_classic_dome_exactly ... ok
+test ten_km_away_they_point_at_the_town_and_vanish ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
+     Running tests/bells_open_vs_indoor.rs (target/release/deps/bells_open_vs_indoor-b862c1b879248086)
+test bells_are_loudest_in_the_open ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.16s
+     Running tests/bend_panels.rs (target/release/deps/bend_panels-d40d993de1f050b4)
+test no_duplicate_bends_and_smooth_walk_past_the_lock ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.16s
+     Running tests/car_drone.rs (target/release/deps/car_drone-706dfca9898c3ecc)
+test departing_car_takes_its_wet_bed_along ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+     Running tests/cathedral_vault.rs (target/release/deps/cathedral_vault-7b3f6c62312070f0)
+test legacy_numbers_follow_the_shape ... ok
+test the_mesh_has_a_vault_and_a_gable_roof ... ok
+test the_vault_rings_longer_than_the_flat_ceiling ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.75s
+     Running tests/club_boom.rs (target/release/deps/club_boom-5ce8e8bb232f59ff)
+test club_wet_leaks_into_the_house_bass_first ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.04s
+     Running tests/demo_layout.rs (target/release/deps/demo_layout-62e337407d34e1f9)
+test acoustic_tables_derive_from_the_layout ... ok
+test every_kind_is_used_sensibly ... ok
+test doorways_and_windows_stay_clear ... ok
+test ground_patches_are_disjoint_and_outdoors ... ok
+test no_source_sits_inside_furniture ... ok
+test wall_pieces_stand_against_a_wall ... ok
+test pieces_stand_inside_their_rooms_and_never_intersect ... ok
+test every_door_reaches_every_spot_and_source ... ok
+test layout_json_is_fresh ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/early_gate.rs (target/release/deps/early_gate-6b68a4f9ec4099b5)
+test traced_sim_matches_ism_and_never_churns ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/fx_ambient_dome.rs (target/release/deps/fx_ambient_dome-af56c1f3aff73f79)
+test open_air_hears_the_whole_dome ... ok
+test glass_passes_the_dome_with_its_spectrum ... ok
+test indoors_hears_a_sliver_localized_at_the_doorway ... ok
+test closing_the_leaf_drains_the_inflow_to_bass_seep ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+     Running tests/fx_ambient_shapes.rs (target/release/deps/fx_ambient_shapes-ce72845ddc8cd7d4)
+test ear_height_in_the_meadow_surrounds_with_a_downward_bias ... ok
+test walking_away_it_collapses_toward_the_meadow_and_fades ... ok
+test rising_above_the_meadow_it_comes_from_below_narrows_and_fades ... ok
+test a_volume_surrounds_from_inside_and_points_at_itself_from_outside ... ok
+test hovering_over_a_roof_the_meadow_below_is_muffled_by_the_slab ... ok
+test indoors_the_direct_share_arrives_through_the_doorway ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/fx_aperture_reradiation.rs (target/release/deps/fx_aperture_reradiation-f01fed6a33a3ac57)
+test lambert_obliquity_of_the_exit_aperture ... ok
+test muffle_is_applied_per_band ... ok
+test late_send_drops_with_the_pre_door_path ... ok
+test reradiation_decays_with_in_room_distance_not_total_path ... ok
+test huygens_gain_falls_as_one_over_extra_and_delay_grows ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+     Running tests/fx_coupled_reverb.rs (target/release/deps/fx_coupled_reverb-f9fa10c31a64cdd7)
+test reverb_only_is_the_rooms_late_field ... ok
+test world_late_field_couples_through_a_doorway ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+     Running tests/fx_door_routing.rs (target/release/deps/fx_door_routing-d8bba1d45f30dfa5)
+test bfs_finds_the_shortest_walkable_chain ... ok
+test level_drops_per_hop_and_bends_cost_highs ... ok
+test unreachable_room_falls_back_to_the_straight_line ... ok
+test shut_door_on_the_chain_charges_the_wet_path ... ok
+test virtual_source_sits_at_the_exit_doorway ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_facade_slapback.rs (target/release/deps/fx_facade_slapback-258317111b88f621)
+test facade_adds_one_exact_image_reflection ... ok
+test facade_along_y_mirrors_y ... ok
+test no_facade_or_invalid_geometry_means_no_slap_back ... ok
+test several_facades_key_by_index ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_glass_heavy_doors.rs (target/release/deps/fx_glass_heavy_doors-2dacf5e9df777a1c)
+test shut_heavy_door_dry_path_pays_the_steel_panel ... ignored, BUG: aperture_hop prices a shut HEAVY door's dry path with DOOR_PANEL_TRANSMISSION (wood), ignoring Door::heavy
+test door_fill_is_the_area_weighted_energy_mix ... ok
+test routing_prices_panes_and_closed_panels ... ok
+test fillers_obey_mass_law_and_heavy_is_tighter ... ok
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_ground_reflection.rs (target/release/deps/fx_ground_reflection-0caba24fcb526bf8)
+test ground_delay_follows_image_geometry ... ok
+test ground_gain_scales_with_material ... ok
+test ground_image_has_exact_delay_direction_and_gain ... ok
+test routed_path_and_yaw_apply_to_both_taps ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_height_aware_occlusion.rs (target/release/deps/fx_height_aware_occlusion-5ed63903299432b3)
+test low_rays_match_the_plan_view_rule ... ok
+test open_end_leaves_the_final_aperture_to_the_route ... ok
+test over_the_roof_line_is_free ... ok
+test under_an_upper_storey_skips_its_walls ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_moving_wet.rs (target/release/deps/fx_moving_wet-56e84b40390b9931)
+test wet_level_follows_separation_between_traces ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_outdoor_field.rs (target/release/deps/fx_outdoor_field-51c6ce1bc90345de)
+test field_is_partial_bass_heavy_and_deeper_is_quieter ... ok
+test open_door_beats_closed_continuously ... ok
+test roof_exposure_by_storey ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_quality_tiers.rs (target/release/deps/fx_quality_tiers-02451c81727126bf)
+test tiers_order_budgets_overrides_win_and_everything_restores ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/fx_room_blend.rs (target/release/deps/fx_room_blend-3b149fe8fa1b6833)
+test crossfade_is_continuous_through_the_door_plane ... ignored, BUG: blend weights jump ~0.22 at the door plane — distance is measured from the wall-margin-CLAMPED listener (≥ 0.3 m), not the raw pose
+test equal_power_crossfade_within_the_radius ... ok
+test no_blend_away_from_doors_at_panes_or_foreign_doors ... ok
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fx_speaker_rig.rs (target/release/deps/fx_speaker_rig-462fb2a6cf6c8d28)
+test each_emitter_is_a_scaled_image_set_with_sample_exact_delays ... ok
+test rig_yaw_rotates_every_emitter ... ok
+test rig_shares_one_reverb_independent_of_size ... ok
+test rig_power_equals_one_source_of_the_same_gain ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/late_world_gate.rs (target/release/deps/late_world_gate-9fc4fa74245f8256)
+test mesh_late_field_matches_shoebox ... ok
+test doorway_wet_is_measured_directional_and_door_sensitive ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.80s
+     Running tests/material_presets.rs (target/release/deps/material_presets-9819a8d4f8ad2098)
+test presets_are_physical ... ok
+test presets_match_the_demo_materials ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/mesh_surfaces.rs (target/release/deps/mesh_surfaces-785d441d898a5342)
+test world_mesh_surfaces_are_stable_planes ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/module_switches.rs (target/release/deps/module_switches-138e21eb820d74f8)
+test furniture_tables_are_parallel ... ok
+test module_switches_shape_the_field_and_restore ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.93s
+     Running tests/pt_mesh_gate.rs (target/release/deps/pt_mesh_gate-2d69bb5c94bf7706)
+test overlay_face_reflects_exactly ... ok
+test doorways_thread_with_zero_portal_code ... ok
+test mesh_solver_matches_analytic_in_a_box ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/sealed_club.rs (target/release/deps/sealed_club-ecafe6ad8e8416f5)
+test sealed_club_is_boomy_from_every_angle ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.39s
+     Running tests/wildlife.rs (target/release/deps/wildlife-fbf8c3ec9e450f7a)
+test bells_carry_bass_and_owls_arrive_from_above ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+     Running tests/world_traced_cost.rs (target/release/deps/world_traced_cost-a429d3cc6b9fba7a)
+test doorway_tick_within_budget_of_open_square ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.02s
+     Running tests/world_traced_gate.rs (target/release/deps/world_traced_gate-ff9432fc6957b75c)
+test closing_a_door_muffles_traced_chains ... ok
+test doorway_contrast_survives_portal_delete ... ok
+test doorway_walk_in_is_continuous ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.01s
+     Running unittests src/lib.rs (target/release/deps/omg_web-d91c65fab1b50e56)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/town_system.rs (target/release/deps/town_system-96ffdcc86650ed83)
+test a_jumped_source_still_delivers_what_it_emitted_before ... ok
+test a_moving_source_is_heard_from_where_it_emitted ... ok
+test a_source_switched_off_still_delivers_what_it_emitted ... ok
+test a_click_repeated_is_the_same_click ... ok
+test shadow_boundaries_are_continuous ... ok
+test the_bell_reaches_the_square_around_the_cathedral ... ok
+test standing_still_the_estimate_settles_and_stays ... ok
+test a_door_shut_between_sounds_is_shut_for_the_next_one_v6 ... ok
+test a_door_shut_between_sounds_is_shut_for_the_next_one ... ok
+test a_door_swinging_shut_takes_the_level_down_without_bursts_v6 ... ok
+test the_bell_is_loudest_in_the_open ... ok
+test standing_still_the_reverb_settles_v6 ... ok
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.22s
+     Running tests/walk_out.rs (target/release/deps/walk_out-85d2b8dcd09e1fe3)
+test the_reverb_follows_the_listener_out_of_a_room ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.74s
+test crates/omg-audio/src/threaded.rs - threaded (line 8) - compile ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+--- gpu
+test gpu_walk_matches_the_cpu_walk ... ok
+test async_gpu_walks_arrive_a_tick_late ... ok
+test a_door_swinging_shut_is_heard_where_it_is_on_the_gpu ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.42s
+--- parity (omg-gpu)
+test layout::tests::layout_sizes ... ok
+test layout::tests::mesh_layout_sizes ... ok
+test layout::tests::solve_layout_sizes ... ok
+test layout::tests::v3_layout_matches_the_fold_contract ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test panel_over_the_hole_seals_it ... ok
+test discovery_kernel_finds_the_cpu_chain_set ... ok
+test world_trace_speed_probe ... ok
+test mesh_kernel_matches_cpu_tracer ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+test golden::print_goldens ... ignored
+test gpu_tracer_within_goldens ... ok
+test golden::cpu_tracer_within_goldens ... ok
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test golden::print_goldens ... ignored
+test gpu_chain_discovery_matches_cpu ... ok
+test golden::cpu_tracer_within_goldens ... ok
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test batched_solve_matches_cpu_records ... ok
+test hundred_source_batch_beats_the_wall ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test golden::print_goldens ... ignored
+test speed ... ignored
+test golden::cpu_tracer_within_goldens ... ok
+test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.08s
+test v3_free_field_direct_only_and_full_sky ... ok
+test v3_knife_edge_shadow_matches_cpu ... ok
+test v3_shadowed_facade_fill_matches_cpu ... ok
+test v3_mirror_floor_matches_cpu_and_the_image_source ... ok
+test v3_earth_swallows_what_leaves_a_bunker_on_gpu ... ok
+test v3_lambertian_floor_matches_cpu_and_analytic ... ok
+test v3_sampled_connections_stay_unbiased_on_gpu ... ok
+test v3_bends_over_a_barrier_match_cpu ... ok
+test v3_thick_wall_pays_the_mass_law_on_both ... ok
+test v4_dense_response_matches_cpu ... ok
+test v3_shoebox_early_and_late_match_cpu ... ok
+test v3_flutter_train_matches_cpu ... ok
+test v3_demo_world_fields_match_cpu ... ok
+test v3_walk_speed_probe ... ok
+test v3_panel_over_a_doorway_matches_cpu ... ok
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.14s
+test v3_probe_thick_wall_and_panels_match_cpu ... ok
+test v3_probe_bunker_earth_matches_cpu ... ok
+test v3_probe_authored_thickness_matches_cpu ... ok
+test v3_probe_demo_world_segments_match_cpu ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

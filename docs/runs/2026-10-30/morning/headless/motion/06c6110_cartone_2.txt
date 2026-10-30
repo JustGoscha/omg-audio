@@ -1,0 +1,3 @@
+assess cartone: mode v6.2 rung gov quality 2 pace 0
+cartone (v6.2): a car 30 m off at 100 km/h playing 500 Hz; jitter against the 25 ms course: pitch 9.36 Hz rms, level 1.40 dB rms, level off by >2 dB in 853 of 10599 ms
+   artifacts (output above 3 kHz, under the tone): pass     2119 windows: median  -64.3 dB, worst  -58.2 dB, over −40 dB   0, over −30 dB   0

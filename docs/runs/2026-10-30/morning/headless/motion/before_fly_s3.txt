@@ -1,0 +1,5 @@
+assess fly: mode v6.2 rung 3 quality 2 pace 0
+fly (v6.2): through the cathedral wall at 8 m/s, the flute clicking every 50 ms; pops = periods off their neighbours' median
+   outside   85 periods: off course >2 dB   0, >4 dB   0, worst  0.3 dB
+   crossing   6 periods: off course >2 dB   0, >4 dB   0, worst  0.7 dB
+   inside    79 periods: off course >2 dB   6, >4 dB   6, worst 17.5 dB

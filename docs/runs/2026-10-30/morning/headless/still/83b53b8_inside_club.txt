@@ -1,0 +1,15 @@
+assess still: mode v6.2 rung gov quality 2 pace 0
+still (v6.2): club at inside, 10 clicks every 3 s; dB low/mid/high
+   click  0  early   10.0   14.4   23.3  late   12.1   16.2   20.8
+   click  1  early   11.4   15.0   23.2  late   13.5   17.3   20.6
+   click  2  early   11.7   15.1   23.2  late   14.3   17.7   20.6
+   click  3  early   11.8   15.2   23.2  late   14.8   18.2   20.9
+   click  4  early   11.8   15.1   23.2  late   15.0   18.2   20.8
+   click  5  early   11.7   15.2   23.2  late   15.4   18.5   21.0
+   click  6  early   11.7   15.0   23.2  late   15.9   18.9   21.2
+   click  7  early   11.7   15.2   23.2  late   16.1   19.2   21.5
+   click  8  early   11.7   15.0   23.2  late   16.1   19.1   21.4
+   click  9  early   11.6   15.0   23.1  late   16.0   19.0   21.2
+   tail kurtosis (noise ≈ 3)  low   3.0  mid   3.0  high   3.1
+   early spread  low sd 0.52 span  1.8  mid sd 0.22 span  0.8  high sd 0.05 span  0.2
+   late  spread  low sd 1.23 span  4.0  mid sd 0.90 span  3.0  high sd 0.30 span  0.9
