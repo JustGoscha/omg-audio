@@ -542,3 +542,41 @@ fn shadow_boundaries_are_continuous() {
     }
     eprintln!("walking the Old House's shadow: the largest step {worst:.1} dB");
 }
+
+/// The radar dome across the west road (`walkthrough::RADOME`) focuses: the
+/// stage's voice, heard at the sphere's centre, comes back from every way
+/// at once `2 · radius / c` later (~70 ms) — its taps there together about
+/// as loud as the direct sound — and off the centre (4 m towards the
+/// doorway) that return is far weaker and from fewer ways (measured: −0.6
+/// dB from 23 ways at the centre, −10.8 from 4 off it, within 3.5 ms).
+#[test]
+fn the_radar_dome_focuses_its_echo_back_to_its_centre() {
+    const STAGE: usize = 15;
+    let rd = omg_scene::walkthrough::RADOME;
+    let (cx, cy) = rd.center;
+    let back = 2.0 * rd.radius / C;
+    let ring = |at: [f32; 3]| -> (f32, usize) {
+        let mut sim = Simulation::new(Config { quality: Quality::High, compute: Compute::Cpu, v4: false, v5: false, v6: true, v61: true, v62: true, kernel_thread: false, ..Config::default() });
+        let mut town = Town::new(&mut sim);
+        only(&mut town, &mut sim, STAGE);
+        let id = town.sources[STAGE][0];
+        sim.set_listener(at, 0.0, 0.0, 0.0);
+        let mut f = sim.tick();
+        for _ in 0..60 {
+            f = sim.tick();
+        }
+        let pb = f.block(id).expect("the stage is traced");
+        let direct = pb.taps.iter().find(|t| t.key == omg_core::v3::KEY_DIRECT).map_or(0.0, |t| t.gains[1] * t.gains[1]);
+        // the taps arriving together with the return (3.5 ms: its bin and
+        // the next), and how many ways
+        let near: Vec<&omg_audio::Tap> = pb.taps.iter().filter(|t| t.key != omg_core::v3::KEY_DIRECT && (t.delay_s - pb.onset_s - back).abs() < 0.0035).collect();
+        let e: f32 = near.iter().map(|t| t.gains[1] * t.gains[1]).sum();
+        (db(e / direct.max(1e-30)), near.len())
+    };
+    let (centre, n_c) = ring([cx, cy, rd.center_z]);
+    let (off, n_o) = ring([cx + 4.0, cy, 1.6]);
+    eprintln!("the dome's return at {:.0} ms: at its centre {centre:+.1} dB from {n_c} ways, 4 m off {off:+.1} dB from {n_o}", back * 1e3);
+    assert!(centre > -6.0, "the focus comes back about as loud as the direct sound: {centre:+.1} dB");
+    assert!(n_c >= 8, "from every way: {n_c} taps");
+    assert!(centre > off + 6.0, "and off the centre far weaker: {centre:+.1} vs {off:+.1} dB");
+}

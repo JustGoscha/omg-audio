@@ -32,7 +32,7 @@ const ROOMS = [
   // "canyon"): two sheer rock cliffs, faces 40 m apart
   { name: 'West Cliff', min: [-12, -120], max: [-6, -70], h: 24, solid: true, rock: true },
   { name: 'East Cliff', min: [34, -120], max: [40, -70], h: 24, solid: true, rock: true },
-  { name: 'Outside', min: [-28, -1900], max: [48, 2000], outdoor: true, floor: 0x1c2a20 },
+  { name: 'Outside', min: [-60, -1900], max: [48, 2000], outdoor: true, floor: 0x1c2a20 },
 ];
 // axis: 0 = opening in an x=const wall, 1 = opening in a y=const wall
 const DOORS = [
@@ -84,6 +84,8 @@ const SOURCES = [
   { name: 'bells', pos: [10, 321], z: 25.5, color: 0xf0d890 },
   // appended after the sim's dynamic slots (balls, cars, feet = 8..13)
   { name: 'fountain', index: 14, pos: [14.2, 199], z: 0.8, color: 0x7fd8ff },
+  // a voice on the radar dome's stage (walkthrough::RADOME, layout.json "radome")
+  { name: 'stage', index: 15, pos: [-42, 30], z: 2.4, color: 0xe8e0ff },
 ];
 // the room sources stand where the layout puts them (the piano, the
 // lectern, the bunker table …); index-aligned with the sim's sources()
@@ -170,8 +172,9 @@ const MIXER = [
   { name: 'cars', srcs: [11, 12], base: 92, def: 86, meters: [11, 12], spl: true },
   { name: 'steps', srcs: [13], base: 78, def: 62, meters: [13], spl: true },
   { name: 'fountain', srcs: [14], base: 76, def: 76, meters: [14], spl: true },
-  { name: 'ambience', target: 'ambient', def: -16, meters: [15] },
-  { name: 'rain', target: 'rainGain', def: 0, meters: [16] },
+  { name: 'stage', srcs: [15], base: 84, def: 78, meters: [15], spl: true }, // a voice projecting
+  { name: 'ambience', target: 'ambient', def: -16, meters: [16] },
+  { name: 'rain', target: 'rainGain', def: 0, meters: [17] },
   { name: 'master', target: 'master', def: 0, meters: 'lr' },
 ];
 const SPL_MIN = 20, SPL_MAX = 130, TRIM_MIN = -30, TRIM_MAX = 12;
@@ -642,9 +645,27 @@ function updateMixerMeters() {
 // surrounds all buildings — everything was "inside a room".
 const COLLIDERS = []; // { axis, plane, lo, hi }  axis 0: x=plane, 1: y=plane
 const PLAYER_R = 0.22;
-const WORLD = { min: [-27.6, -31.6], max: [47.6, 95.6] }; // playable region (the road runs on)
+const WORLD = { min: [-59.6, -31.6], max: [47.6, 95.6] }; // playable region (the road runs on; west to the radar dome)
+
+// The radar dome's shell (layout.json "radome"): a step that crosses its
+// circle at the walker's height is blocked, but in the doorway (east).
+function crossesDome(x0, y0, x1, y1, z) {
+  const rd = LAYOUT?.radome;
+  if (!rd) return false;
+  const [cx, cy] = rd.center;
+  const dz = z - rd.center_z;
+  if (Math.abs(dz) >= rd.radius) return false;
+  const r = Math.sqrt(rd.radius * rd.radius - dz * dz);
+  const d0 = Math.hypot(x0 - cx, y0 - cy);
+  const d1 = Math.hypot(x1 - cx, y1 - cy);
+  const crosses = (d0 - r) * (d1 - r) <= 0 || Math.abs(d1 - r) < PLAYER_R;
+  if (!crosses) return false;
+  const inDoor = x1 > cx && Math.abs(y1 - cy) < rd.door_w / 2 - PLAYER_R && z < rd.door_h;
+  return !inDoor;
+}
 
 function crossesWall(x0, y0, x1, y1, z = 1.6) {
+  if (crossesDome(x0, y0, x1, y1, z)) return true;
   for (const c of COLLIDERS) {
     if (c.off) continue; // opened door panel
     if (z > c.h || z < (c.zlo || 0)) continue; // above wall / below upper storey
@@ -831,6 +852,64 @@ const glassMat = new THREE.MeshLambertMaterial({
 });
 const edgeMat = new THREE.LineBasicMaterial({ color: 0x6a7f9f });
 const ceilMat = new THREE.MeshLambertMaterial({ color: 0x232b38, side: THREE.DoubleSide });
+
+// The radar dome across the west road (walkthrough::RADOME, layout.json
+// "radome"): an icosphere's panels (the sim's facets: dome.rs `radome`)
+// above the ground, open where its doorway faces the street, and the round
+// stage at its centre.
+function icosphere(levels) {
+  const t = (1 + Math.sqrt(5)) / 2;
+  let v = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+    [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map((p) => { const l = Math.hypot(...p); return p.map((x) => x / l); });
+  let f = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+    [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+  for (let k = 0; k < levels; k++) {
+    const mid = new Map();
+    const split = (a, b) => {
+      const key = Math.min(a, b) + ':' + Math.max(a, b);
+      if (!mid.has(key)) {
+        const p = [0, 1, 2].map((i) => (v[a][i] + v[b][i]) / 2);
+        const l = Math.hypot(...p);
+        v.push(p.map((x) => x / l));
+        mid.set(key, v.length - 1);
+      }
+      return mid.get(key);
+    };
+    const next = [];
+    for (const [a, b, c] of f) {
+      const ab = split(a, b), bc = split(b, c), ca = split(c, a);
+      next.push([a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]);
+    }
+    f = next;
+  }
+  return [v, f];
+}
+
+function buildRadome(rd) {
+  const [cx, cy] = rd.center;
+  const [v, f] = icosphere(rd.subdiv);
+  const pos = [];
+  for (const tri of f) {
+    let p = tri.map((i) => [cx + v[i][0] * rd.radius, cy + v[i][1] * rd.radius, rd.center_z + v[i][2] * rd.radius]);
+    if (p.every((q) => q[2] <= 0)) continue;
+    p = p.map((q) => [q[0], q[1], Math.max(q[2], 0)]);
+    const m = [0, 1, 2].map((i) => (p[0][i] + p[1][i] + p[2][i]) / 3);
+    if (m[0] > cx && Math.abs(m[1] - cy) < rd.door_w / 2 && m[2] < rd.door_h) continue; // the doorway
+    for (const q of p) { const w = v3(q[0], q[1], q[2]); pos.push(w.x, w.y, w.z); }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.computeVertexNormals();
+  const skin = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0xe9ecf1, side: THREE.DoubleSide, flatShading: true }));
+  scene.add(skin);
+  const stage = new THREE.Mesh(new THREE.CylinderGeometry(rd.stage_r, rd.stage_r, rd.stage_h, 16),
+    new THREE.MeshLambertMaterial({ color: 0x6b4a2f }));
+  stage.position.copy(v3(cx, cy, rd.stage_h / 2));
+  scene.add(stage);
+  const light = new THREE.PointLight(0xfff2dd, 1.6, rd.radius * 2.2);
+  light.position.copy(v3(cx, cy, rd.center_z + rd.radius * 0.6));
+  scene.add(light);
+}
 
 function addBox(cx, cy, cz, sx, sy, sz, mat = wallMat) {
   const g = new THREE.BoxGeometry(sx, sz, sy); // (wx, wz, wy) sizes
@@ -2013,6 +2092,8 @@ function buildWorld() {
     COLLIDERS.push({ axis: 1, plane: r.max[1], lo: r.min[0], hi: r.max[0], h: r.h });
   }
 
+  if (LAYOUT?.radome) buildRadome(LAYOUT.radome);
+
   // sources: pulsing emissive markers + labels + local light
   for (const src of SOURCES) {
     src.meshes = [];
@@ -2319,6 +2400,9 @@ async function startAudio() {
   // projectile slots + owls/bells + feet: fx voices only (one buffer
   // each — transferables)
   const silents = Array.from({ length: 7 }, () => new Float32Array(480));
+  // the dome's stage plays the voice too (its own copy: a buffer is
+  // transferred once)
+  const stageVoice = alice.buffer.slice(0);
 
   await audio.audioWorklet.addModule('worklet.js');
   const node = new AudioWorkletNode(audio, 'omg-engine', {
@@ -2340,13 +2424,13 @@ async function startAudio() {
                 silents[0].buffer, silents[1].buffer, silents[2].buffer, // owls + bells
                 silents[3].buffer, silents[4].buffer, silents[5].buffer, // balls
                 m0.buffer, m1.buffer, silents[6].buffer,                 // cars + feet
-                fountain.buffer],                                        // 14: fountain
+                fountain.buffer, stageVoice],                            // 14: fountain, 15: the dome's stage
       fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
            owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
            whis0.buffer, whis1.buffer, clapFx.buffer],
       ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, aria.buffer, alice.buffer, club.buffer, flute.buffer,
-     radio.buffer, ...silents.map((b) => b.buffer), fountain.buffer,
+     radio.buffer, ...silents.map((b) => b.buffer), fountain.buffer, stageVoice,
      whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
      owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
      whis0.buffer, whis1.buffer, clapFx.buffer,
@@ -3242,13 +3326,13 @@ function frame(t) {
 // scrolling history of the totals — pile-ups, leaks and perf spikes are
 // visible at a glance instead of reconstructed from ear-memory.
 
-const NSRC_UI = 15; // keep in sync with wasm sim_nsrc()
+const NSRC_UI = 16; // keep in sync with wasm sim_nsrc()
 const DBG_NAMES = ['music', 'voice', 'club', 'flute', 'radio',
   'owl·c', 'owl·h', 'bells',
-  'ball0', 'ball1', 'ball2', 'car0', 'car1', 'feet', 'fount', 'amb', 'rain'];
+  'ball0', 'ball1', 'ball2', 'car0', 'car1', 'feet', 'fount', 'stage', 'amb', 'rain'];
 const DBG_COLORS = ['#ffaa3c', '#6ee0a0', '#ff5a9e', '#9ad2ff', '#d2b06e',
   '#cfd8e6', '#cfd8e6', '#f0d890',
-  '#fff1a8', '#fff1a8', '#fff1a8', '#7ad7ff', '#7ad7ff', '#ddd6c9', '#7fd8ff', '#8a95ff', '#59c9e8'];
+  '#fff1a8', '#fff1a8', '#fff1a8', '#7ad7ff', '#7ad7ff', '#ddd6c9', '#7fd8ff', '#e8e0ff', '#8a95ff', '#59c9e8'];
 
 function dbgSourceDist(i) {
   if (i < 8 || i > 13) { // static sources (the dynamic slots are 8..13)

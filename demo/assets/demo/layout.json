@@ -229,6 +229,7 @@
     }
   ],
   "canyon": { "height": 24, "material": "rock", "cliffs": [{ "min": [-12, -120], "max": [-6, -70] }, { "min": [34, -120], "max": [40, -70] }] },
+  "radome": { "center": [-42, 30], "radius": 12, "center_z": 4, "door_w": 3, "door_h": 3.2, "stage_r": 2.5, "stage_h": 0.8, "subdiv": 4, "material": "radome" },
   "ground": [
     { "name": "square", "surface": "paving", "min": [5.5, 24.2], "max": [21.5, 44] },
     { "name": "lane to the old house", "surface": "paving", "min": [21.5, 23.2], "max": [34.5, 26] },
@@ -253,6 +254,7 @@
     { "index": 5, "name": "owl·cathedral", "room": 15, "pos": [4, 53, 24.25], "emitters": [[4, 53]] },
     { "index": 6, "name": "owl·house", "room": 15, "pos": [27.5, 19.5, 6.3], "emitters": [[27.5, 19.5]] },
     { "index": 7, "name": "bells", "room": 15, "pos": [10, 321, 25.5], "emitters": [[10, 321]] },
-    { "index": 14, "name": "fountain", "room": 15, "pos": [14.2, 199, 0.8], "emitters": [[14.2, 199]] }
+    { "index": 14, "name": "fountain", "room": 15, "pos": [14.2, 199, 0.8], "emitters": [[14.2, 199]] },
+    { "index": 15, "name": "stage", "room": 15, "pos": [-42, 30, 2.4], "emitters": [[-42, 30]] }
   ]
 }

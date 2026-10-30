@@ -27,7 +27,7 @@ use std::sync::Arc;
 use town::Town;
 
 /// The walkthrough's logical sources (town.rs; the page's mixer indices).
-const NSRC: usize = 15;
+const NSRC: usize = 16;
 /// Doors the page reports openness for, and the dynamic slots (balls,
 /// cars, the footsteps): x, y, z, gain each (gain 0: idle).
 const DOORS: usize = 16;

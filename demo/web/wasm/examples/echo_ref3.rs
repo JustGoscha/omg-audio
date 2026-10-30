@@ -81,7 +81,7 @@ fn main() {
     let floor: f32 = std::env::var("FLOOR").ok().and_then(|v| v.parse().ok()).unwrap_or(-30.0);
     let ys: Vec<f32> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
     let ys = if ys.is_empty() { vec![-10.0, 12.0, 40.0] } else { ys };
-    let (mesh, _) = dome::build_world_mesh(&walkthrough::rooms(), &walkthrough::doors());
+    let (mesh, _) = dome::build_town_mesh(&walkthrough::rooms(), &walkthrough::doors());
     // the doors' leaves as the town has them (the mesh leaves their holes
     // open): a leg through a closed one is a transmitted path, no mirror
     // chain

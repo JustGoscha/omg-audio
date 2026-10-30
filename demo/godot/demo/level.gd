@@ -97,6 +97,7 @@ func build() -> void:
 	_curtains()
 	_street()
 	_canyon()
+	_radome()
 	_lamps()
 	_hall_lights()
 	_trees()
@@ -1548,6 +1549,87 @@ func _canyon() -> void:
 			var mn: Vector2 = pv["min"]
 			var mx: Vector2 = pv["max"]
 			floor_mat.box(mn.x, mn.y, 0.0, mx.x, mx.y, 0.02, ["z-"])
+
+# The radar dome across the west road (layout.json "radome", the sim's
+# walkthrough::RADOME): an icosphere's panels above the ground — the
+# engine's facets, dome.rs `radome` — open where the doorway faces the
+# street, and the round stage at its centre.
+func _radome() -> void:
+	var path := DemoAssets.file(LAYOUT)
+	var data = JSON.parse_string(FileAccess.get_file_as_string(path)) if FileAccess.file_exists(path) else null
+	var rd: Dictionary = data.get("radome", {}) if data is Dictionary else {}
+	if rd.is_empty():
+		return
+	var c := Vector3(float(rd["center"][0]), float(rd["center"][1]), float(rd["center_z"]))
+	var rad := float(rd["radius"])
+	var door_w := float(rd["door_w"])
+	var door_h := float(rd["door_h"])
+	var skin_mat := DemoMats.plain(Color(0.91, 0.92, 0.95), 0.7, 0.0, "radome")
+	skin_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var skin := geo.B(skin_mat, "radome", true, false, "the radar dome's panels")
+	var ico := _icosphere(int(rd["subdiv"]))
+	var verts: Array = ico[0]
+	for f in ico[1]:
+		var p: Array = []
+		var below := true
+		for i in f:
+			var q: Vector3 = c + verts[i] * rad
+			below = below and q.z <= 0.0
+			p.append(Vector3(q.x, q.y, maxf(q.z, 0.0)))
+		if below:
+			continue
+		var m: Vector3 = (p[0] + p[1] + p[2]) / 3.0
+		if m.x > c.x and absf(m.y - c.y) < 0.5 * door_w and m.z < door_h:
+			continue # the doorway
+		if (p[1] - p[0]).cross(p[2] - p[0]).length() < 1e-4:
+			continue # flattened onto the grade
+		skin.tri(p[0], p[1], p[2], (m - c).normalized())
+	# the stage: a 16-sided wooden drum
+	var sr := float(rd["stage_r"])
+	var sh := float(rd["stage_h"])
+	var wood := geo.B(DemoMats.planks(Color(0.8, 0.62, 0.45)), "wood")
+	var n := 16
+	for k in n:
+		var a0 := TAU * k / n
+		var a1 := TAU * (k + 1) / n
+		var p0 := Vector3(c.x + sr * cos(a0), c.y + sr * sin(a0), sh)
+		var p1 := Vector3(c.x + sr * cos(a1), c.y + sr * sin(a1), sh)
+		wood.tri(Vector3(c.x, c.y, sh), p0, p1, Vector3(0, 0, 1))
+		var out := Vector3(cos((a0 + a1) * 0.5), sin((a0 + a1) * 0.5), 0.0)
+		wood.quad(Vector3(p0.x, p0.y, 0.0), Vector3(p1.x, p1.y, 0.0), p1, p0, out)
+	var l := OmniLight3D.new()
+	l.position = v(c.x, c.y, c.z + rad * 0.6)
+	l.light_color = Color(1.0, 0.94, 0.86)
+	l.light_energy = 2.0
+	l.omni_range = rad * 2.2
+	root.add_child(l)
+
+# A unit icosphere: the icosahedron, each facet split in four `levels`
+# times, the new vertices pushed onto the sphere (dome.rs `icosphere`).
+func _icosphere(levels: int) -> Array:
+	var t := (1.0 + sqrt(5.0)) / 2.0
+	var verts: Array = []
+	for p in [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]]:
+		verts.append(Vector3(p[0], p[1], p[2]).normalized())
+	var faces: Array = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+		[3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]]
+	for _k in levels:
+		var mid := {}
+		var next: Array = []
+		for f in faces:
+			var e: Array = []
+			for pair in [[f[0], f[1]], [f[1], f[2]], [f[2], f[0]]]:
+				var key := Vector2i(mini(pair[0], pair[1]), maxi(pair[0], pair[1]))
+				if not mid.has(key):
+					verts.append(((verts[pair[0]] + verts[pair[1]]) * 0.5).normalized())
+					mid[key] = verts.size() - 1
+				e.append(mid[key])
+			next.append([f[0], e[0], e[2]])
+			next.append([f[1], e[1], e[0]])
+			next.append([f[2], e[2], e[1]])
+			next.append([e[0], e[1], e[2]])
+		faces = next
+	return [verts, faces]
 
 func _street() -> void:
 	# acoustic asphalt and curbs along the town (the ground tile's

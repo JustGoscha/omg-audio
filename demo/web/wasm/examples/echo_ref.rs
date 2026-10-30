@@ -51,7 +51,7 @@ fn main() {
     let floor: f32 = std::env::var("FLOOR").ok().and_then(|v| v.parse().ok()).unwrap_or(-30.0);
     let ys: Vec<f32> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
     let ys = if ys.is_empty() { (0..11).map(|k| -50.0 + 27.78 * k as f32).collect() } else { ys };
-    let (mesh, _) = dome::build_world_mesh(&walkthrough::rooms(), &walkthrough::doors());
+    let (mesh, _) = dome::build_town_mesh(&walkthrough::rooms(), &walkthrough::doors());
     println!("echo_ref: {} triangles; listener ({:.1}, {:.1}, {:.1}); the car on x = {road}", mesh.indices.len(), lis.x, lis.y, lis.z);
     for y in ys {
         let src = Vec3::new(road, y, 0.7);

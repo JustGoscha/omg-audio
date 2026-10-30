@@ -67,7 +67,10 @@ fn flying_up_they_come_from_below_and_fade() {
         println!("{h:>5} m over the square: {:+.1} dB re ear height, mean dir z {:+.2}", db(e / ground), d[2]);
         assert!(e < prev, "{h} m: quieter than below");
         if h >= 30.0 {
-            assert!(d[2] < -0.95, "{h} m: from below: {d:?}");
+            // (−0.95 while the grass ended 46 m west of here; it runs on
+            // to x = −60 since the radar dome: 30 m up, more of it lies
+            // west — the mean tilts that way, −0.948)
+            assert!(d[2] < -0.9, "{h} m: from below: {d:?}");
         }
         prev = e;
         // the dome bed would have stayed put (it is the sky)

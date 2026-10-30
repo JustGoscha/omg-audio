@@ -4,7 +4,7 @@
 //! materials, moving boxes and sources. This is the demo putting its
 //! level in, like Godot's level.gd does from its scene: the same rooms,
 //! walls with their real apertures, roofs, the nave, the paved ground and
-//! the furniture (`omg_scene::dome::build_world_mesh`, `walkthrough`). What
+//! the furniture and the radar dome (`omg_scene::dome::build_town_mesh`, `walkthrough`). What
 //! fills an aperture is a moving object: a glass pane always, a door leaf
 //! for the share of the hole it covers (its openness moves it). Sources
 //! are the walkthrough's, by their logical index (a speaker rig is
@@ -19,7 +19,7 @@ use omg_scene::walkthrough::{self, Door, RoomDef, SourceDef};
 
 /// The static town: the world mesh and the furniture.
 pub fn geometry(rooms: &[RoomDef], doors: &[Door]) -> Geometry {
-    let (mesh, _glass) = omg_scene::dome::build_world_mesh(rooms, doors);
+    let (mesh, _glass) = omg_scene::dome::build_town_mesh(rooms, doors);
     let mut g = Geometry::new();
     let ids: Vec<MaterialId> = mesh.materials.iter().map(|m| g.material(*m)).collect();
     let positions: Vec<[f32; 3]> = mesh.positions.iter().map(|p| [p.x, p.y, p.z]).collect();

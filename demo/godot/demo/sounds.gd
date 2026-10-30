@@ -24,6 +24,8 @@ var STATIC := [
 	["owl·house", Vector2(27.5, 19.5), 6.3, "", spl(1.4, 74, 66)],
 	["bells", Vector2(10, 321), 25.5, "", spl(30.0, 100, 104)],
 	["fountain", DemoLevel.FOUNTAIN, 0.8, "fountain48.ogg", spl(0.2, 76, 76)],
+	# a voice projecting on the radar dome's stage (layout.json "radome")
+	["stage", Vector2(-42, 30), 2.4, "alice48.ogg", spl(1.0, 84, 78)],
 ]
 var CLUB_LEVEL := spl(5.0, 104, 112) - 6.0206 # 112 dB at 1 m (a real club PA), power split over 4 sample-locked speakers
 var BALL_LEVEL := spl(0.9, 89, 89)

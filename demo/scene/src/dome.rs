@@ -127,6 +127,17 @@ pub(crate) fn subrects(
 /// as transmissive panels (they are not mesh — rays pass them with the
 /// pane's loss).
 pub fn build_world_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>) {
+    build_world_mesh_with(rooms, doors, |_| {})
+}
+
+/// The walkthrough town's world: `build_world_mesh` and what stands in it
+/// that is no room (the radar dome, `radome`).
+pub fn build_town_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>) {
+    build_world_mesh_with(rooms, doors, radome)
+}
+
+/// `build_world_mesh`, with `extra` adding to the mesh before it is built.
+pub fn build_world_mesh_with(rooms: &[RoomDef], doors: &[Door], extra: impl FnOnce(&mut MeshBuilder)) -> (Mesh, Vec<Panel>) {
     let mut b = MeshBuilder::new();
     let mut glass = Vec::new();
 
@@ -319,7 +330,85 @@ pub fn build_world_mesh(rooms: &[RoomDef], doors: &[Door]) -> (Mesh, Vec<Panel>)
             );
         }
     }
+    extra(&mut b);
     (b.build(), glass)
+}
+
+/// The radar dome across the west road (`walkthrough::RADOME`): an
+/// icosphere's facets (each a flat panel) where they stand above the grade —
+/// those crossing it clamped to it — open where its doorway faces the
+/// street; and the round stage at its centre (a 16-sided drum, wood).
+pub fn radome(b: &mut MeshBuilder) {
+    let r = crate::walkthrough::RADOME;
+    let skin = b.material(crate::walkthrough::RADOME_FABRIC);
+    let wood = b.material(Material::WOOD);
+    let c = Vec3::new(r.center.0, r.center.1, r.center_z);
+    let (verts, faces) = icosphere(r.subdiv);
+    b.begin_surface();
+    for f in faces {
+        let p = f.map(|i| c + verts[i] * r.radius);
+        if p.iter().all(|q| q.z <= 0.0) {
+            continue;
+        }
+        let p = p.map(|q| Vec3::new(q.x, q.y, q.z.max(0.0)));
+        let m = (p[0] + p[1] + p[2]) * (1.0 / 3.0);
+        if m.x > c.x && (m.y - c.y).abs() < 0.5 * r.door_w && m.z < r.door_h {
+            continue; // the doorway
+        }
+        if (p[1] - p[0]).cross(p[2] - p[0]).length() < 1e-4 {
+            continue; // flattened onto the grade
+        }
+        b.tri(p[0], p[1], p[2], skin);
+    }
+    b.begin_surface();
+    let n = 16;
+    let at = |k: usize, z: f32| {
+        let a = core::f32::consts::TAU * k as f32 / n as f32;
+        Vec3::new(c.x + r.stage_r * a.cos(), c.y + r.stage_r * a.sin(), z)
+    };
+    let top = Vec3::new(c.x, c.y, r.stage_h);
+    for k in 0..n {
+        let (a, bb) = (at(k, r.stage_h), at(k + 1, r.stage_h));
+        b.tri(top, a, bb, wood);
+        b.quad(at(k, 0.0), at(k + 1, 0.0), bb, a, wood);
+    }
+}
+
+/// A unit icosphere: the icosahedron with every facet split in four
+/// `levels` times, the new vertices pushed out onto the sphere.
+pub fn icosphere(levels: u32) -> (Vec<Vec3>, Vec<[usize; 3]>) {
+    let t = (1.0 + 5f32.sqrt()) / 2.0;
+    let mut v: Vec<Vec3> = [
+        (-1.0, t, 0.0), (1.0, t, 0.0), (-1.0, -t, 0.0), (1.0, -t, 0.0),
+        (0.0, -1.0, t), (0.0, 1.0, t), (0.0, -1.0, -t), (0.0, 1.0, -t),
+        (t, 0.0, -1.0), (t, 0.0, 1.0), (-t, 0.0, -1.0), (-t, 0.0, 1.0),
+    ]
+    .iter()
+    .map(|&(x, y, z)| Vec3::new(x, y, z).normalize())
+    .collect();
+    let mut f: Vec<[usize; 3]> = vec![
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+    ];
+    for _ in 0..levels {
+        let mut mid: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+        let mut split = |a: usize, b: usize, v: &mut Vec<Vec3>| -> usize {
+            let key = (a.min(b), a.max(b));
+            *mid.entry(key).or_insert_with(|| {
+                v.push(((v[a] + v[b]) * 0.5).normalize());
+                v.len() - 1
+            })
+        };
+        let mut next = Vec::with_capacity(f.len() * 4);
+        for [a, b, c] in f {
+            let (ab, bc, ca) = (split(a, b, &mut v), split(b, c, &mut v), split(c, a, &mut v));
+            next.extend([[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]]);
+        }
+        f = next;
+    }
+    (v, f)
 }
 
 /// Index of a room def within the list (defs are compared by bounds —

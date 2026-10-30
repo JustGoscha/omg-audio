@@ -388,7 +388,9 @@ pub fn rooms() -> Vec<RoomDef> {
         // room_of matches in order. It surrounds all buildings.
         RoomDef {
             name: "Outside",
-            min: (-28.0, -1900.0),
+            // west to the radar dome across the road (`RADOME`), as far as
+            // the Godot level's ground tile reaches
+            min: (-60.0, -1900.0),
             max: (48.0, 2000.0),
             height: 30.0,
             barrier_height: 30.0,
@@ -664,7 +666,7 @@ pub struct SourceDef {
 pub const CLUB_SPEAKERS: [(f32, f32); 4] =
     [(23.5, 27.5), (30.5, 27.5), (23.5, 36.5), (30.5, 36.5)];
 
-pub fn sources() -> [SourceDef; 15] {
+pub fn sources() -> [SourceDef; 16] {
     [
         // the living room's grand piano: the sound rises off its
         // soundboard, half a meter above the case
@@ -769,11 +771,57 @@ pub fn sources() -> [SourceDef; 15] {
             z: 0.8,
             emitters: &[FOUNTAIN],
         },
+        // A voice on the stage at the centre of the radar dome (`RADOME`):
+        // a speaker standing on it, projecting.
+        SourceDef {
+            name: "stage",
+            pos: RADOME.center,
+            room: OUTSIDE,
+            gain: 1.0,
+            z: RADOME.stage_h + 1.6,
+            emitters: &[RADOME.center],
+        },
     ]
 }
 
 /// The garden fountain beside the belfry path (basin centre).
 pub const FOUNTAIN: (f32, f32) = (14.2, 199.0);
+
+/// A radar dome across the west road, like Teufelsberg's: a sphere of
+/// fabric panels standing on the ground (its centre `center_z` up, cut by
+/// the grade), a doorway facing the street (east), and a round stage at
+/// its centre. A sphere focuses: what leaves the centre comes back to it
+/// together, `2 · radius / c` later, over and over.
+#[derive(Clone, Copy)]
+pub struct Radome {
+    pub center: (f32, f32),
+    pub radius: f32,
+    pub center_z: f32,
+    /// The doorway: width and height (m), facing +x.
+    pub door_w: f32,
+    pub door_h: f32,
+    /// The stage: radius and height (m).
+    pub stage_r: f32,
+    pub stage_h: f32,
+    /// Icosphere subdivisions (4: 5120 facets, ~0.8 m at r 12 m).
+    pub subdiv: u32,
+}
+
+pub const RADOME: Radome = Radome {
+    center: (-42.0, 30.0),
+    radius: 12.0,
+    center_z: 4.0,
+    door_w: 3.0,
+    door_h: 3.2,
+    stage_r: 2.5,
+    stage_h: 0.8,
+    subdiv: 4,
+};
+
+/// The dome's skin: coated fibreglass membrane panels — smooth (a mirror
+/// that focuses), light (the bass passes). Godot tags it "radome"
+/// (`omg-godot` backend::materials, the same values).
+pub const RADOME_FABRIC: Material = Material::new([0.08, 0.05, 0.04], 0.05, [0.30, 0.10, 0.03]);
 
 /// Sources `DYN_BASE .. DYN_BASE + DYN_SLOTS` are the dynamic slots
 /// (positions set per tick by the frontend); every other source is static.
@@ -1544,6 +1592,17 @@ pub fn layout_json() -> String {
             .map(|(a, b)| format!("{{ \"min\": {}, \"max\": {} }}", arr(&[a.0, a.1]), arr(&[b.0, b.1])))
             .collect::<Vec<_>>()
             .join(", ")
+    ));
+    o.push_str(&format!(
+        "  \"radome\": {{ \"center\": {}, \"radius\": {}, \"center_z\": {}, \"door_w\": {}, \"door_h\": {}, \"stage_r\": {}, \"stage_h\": {}, \"subdiv\": {}, \"material\": \"radome\" }},\n",
+        arr(&[RADOME.center.0, RADOME.center.1]),
+        n(RADOME.radius),
+        n(RADOME.center_z),
+        n(RADOME.door_w),
+        n(RADOME.door_h),
+        n(RADOME.stage_r),
+        n(RADOME.stage_h),
+        RADOME.subdiv
     ));
     o.push_str("  \"ground\": [\n");
     let out = rooms.iter().find(|r| r.outdoor).expect("an outdoor room");
