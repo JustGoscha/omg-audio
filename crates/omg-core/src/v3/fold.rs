@@ -117,6 +117,9 @@ pub struct WalkJob {
     /// The tracer's epoch at launch; hand it back in `Walked::epoch`. A
     /// result from before the listener crossed a surface is discarded.
     pub epoch: u32,
+    /// Where the listener was at launch; hand it back in
+    /// `Walked::listener` (a walk landing ticks later describes there).
+    pub listener: Vec3,
 }
 
 impl WalkJob {
@@ -203,7 +206,7 @@ impl WalkJob {
             }
         }
         w[25] = n_edges;
-        Self { words: w, ids: sources.iter().map(|s| s.id).collect(), epoch: 0 }
+        Self { words: w, ids: sources.iter().map(|s| s.id).collect(), epoch: 0, listener }
     }
 
     pub fn header(&self) -> &[u32] {
@@ -302,6 +305,8 @@ pub struct Walked {
     pub debug: Vec<(u32, f32, Vec<Vec3>)>,
     /// `WalkJob::epoch` of the job this answers.
     pub epoch: u32,
+    /// `WalkJob::listener` of the job this answers.
+    pub listener: Vec3,
 }
 
 /// Decode debug records (DEBUG_WORDS each, any order) into the
@@ -526,7 +531,9 @@ impl Tracer {
                 if self.v4 {
                     st.fold_v4(acc, budget, listener, s.pos);
                 } else {
-                    st.fold(acc.early, acc.echo, budget, self.v6, listener, s.pos);
+                    // traced from where the walk was launched
+                    let launched = walked.as_ref().map_or(listener, |w| w.listener);
+                    st.fold(acc.early, acc.echo, budget, self.v6, listener, s.pos, launched, self.tick);
                     if let Some(aps) = aps {
                         st.fold_paths(acc.paths, acc.walked, aps, (self.tick as f32 * 0.618_034).fract());
                     }
@@ -641,7 +648,7 @@ mod tests {
             move |job: &WalkJob| {
                 let epoch = if stale { last_epoch } else { job.epoch };
                 last_epoch = job.epoch;
-                Walk::Fresh(Walked { ids: job.ids.clone(), data: vec![1e-3; output_words(job.ids.len())], debug: Vec::new(), epoch })
+                Walk::Fresh(Walked { ids: job.ids.clone(), data: vec![1e-3; output_words(job.ids.len())], debug: Vec::new(), epoch, listener: job.listener })
             }
         };
         let early = |f: &SourceField| f.taps.iter().filter(|t| t.key >= KEY_EARLY_BASE && t.key < 20_000).count();

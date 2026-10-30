@@ -74,22 +74,22 @@ mod tests {
     /// in every bin.
     struct Late {
         late: u32,
-        flight: Option<(u32, Vec<u32>, u32)>,
+        flight: Option<(u32, Vec<u32>, u32, Vec3)>,
     }
 
     impl V3Walker for Late {
         fn walk(&mut self, job: &WalkJob) -> Walk {
             match self.flight.take() {
-                Some((epoch, ids, age)) if age + 1 >= self.late => {
-                    self.flight = Some((job.epoch, job.ids.clone(), 0));
-                    Walk::Fresh(Walked { data: vec![1e-3; output_words(ids.len())], ids, debug: Vec::new(), epoch })
+                Some((epoch, ids, age, at)) if age + 1 >= self.late => {
+                    self.flight = Some((job.epoch, job.ids.clone(), 0, job.listener));
+                    Walk::Fresh(Walked { data: vec![1e-3; output_words(ids.len())], ids, debug: Vec::new(), epoch, listener: at })
                 }
-                Some((epoch, ids, age)) => {
-                    self.flight = Some((epoch, ids, age + 1));
+                Some((epoch, ids, age, at)) => {
+                    self.flight = Some((epoch, ids, age + 1, at));
                     Walk::Pending
                 }
                 None => {
-                    self.flight = Some((job.epoch, job.ids.clone(), 0));
+                    self.flight = Some((job.epoch, job.ids.clone(), 0, job.listener));
                     Walk::Pending
                 }
             }

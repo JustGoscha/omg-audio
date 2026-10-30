@@ -71,6 +71,19 @@ it. More rays right after the change did not move the average (six times
 the late rays for eight ticks: 2.1 / 1.8 dB) — the heavy tail is the
 estimator's, not the sample count's.
 
+### Walking out of a room, its sound lingered (v6) — solved Oct 30
+Back up from the bunker the radio played 10–15 dB over the street's
+level for ten seconds (the GPU walk; the CPU walk 12 dB on arrival, 3
+dB ten seconds on): a still spell's running mean began from the moving
+average of the way here, and the GPU's late walks were taken for
+estimates of here. Now a walk carries where it was launched, a fold
+weighs the ticks it stands for, and a still spell counts the way here as
+`STILL_PRIOR` estimates (ENGINE_V6.md, "Walking out of a room, its sound
+goes"). Left: the trade itself — fewer and a young estimate of a field
+reached through openings jumps from place to place, more and the way
+lingers; the cure for both is that field without the heavy tail ("A
+loud room's field through its walls", above).
+
 ### Moving sources on the GPU walk
 The GPU walk connects to where a source emitted its direct sound; its
 echoes reach that point too (exact only on the CPU, which solves each

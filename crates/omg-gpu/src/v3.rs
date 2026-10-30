@@ -33,6 +33,7 @@ pub type ProbeResult = ([f32; 3], f32, [f32; 3], bool, bool, Option<(f32, f32)>)
 struct InFlight {
     ids: Vec<u32>,
     epoch: u32,
+    listener: omg_core::vec3::Vec3,
     out_words: usize,
     passes: u32,
     out_bytes: u64,
@@ -391,6 +392,7 @@ impl GpuV3Tracer {
         self.flight = Some(InFlight {
             ids: job.ids.clone(),
             epoch: job.epoch,
+            listener: job.listener,
             out_words,
             passes,
             out_bytes,
@@ -484,7 +486,7 @@ impl GpuV3Tracer {
                 self.floor_latency((self.waited - sum * 1e-3) / f.passes as f32);
             }
         }
-        Some(Walked { ids: f.ids, data, debug, epoch: f.epoch })
+        Some(Walked { ids: f.ids, data, debug, epoch: f.epoch, listener: f.listener })
     }
 
     /// Walk one job synchronously: dispatch, wait, read the bins back.

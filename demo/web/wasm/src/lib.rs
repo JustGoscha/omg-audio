@@ -507,7 +507,7 @@ struct Bridge {
     /// The newest job not yet taken (newest wins).
     job: Option<WalkJob>,
     /// The job gpu.js took (source ids, epoch) and its plan.
-    taken: Option<(Vec<u32>, u32, LiveWalk)>,
+    taken: Option<(Vec<u32>, u32, LiveWalk, omg_core::vec3::Vec3)>,
     result: Option<Walked>,
     words: Vec<u32>,
     stage: Vec<f32>,
@@ -667,7 +667,7 @@ pub extern "C" fn sim_v3_take() -> u32 {
     b.words.clear();
     b.words.extend_from_slice(&live.header);
     b.words.extend_from_slice(job.scene());
-    b.taken = Some((job.ids.clone(), job.epoch, live));
+    b.taken = Some((job.ids.clone(), job.epoch, live, job.listener));
     b.words.len() as u32
 }
 
@@ -712,13 +712,13 @@ pub extern "C" fn sim_v3_buf_ptr(n: u32) -> *mut f32 {
 #[no_mangle]
 pub extern "C" fn sim_v3_inject(n: u32, gpu_ms: f32, gpu_max_ms: f32) {
     let b = bridge();
-    let Some((ids, epoch, _)) = b.taken.take() else { return };
+    let Some((ids, epoch, _, listener)) = b.taken.take() else { return };
     let out = walkfmt::output_words(ids.len());
     if (n as usize) < out {
         return; // malformed: the next walk refreshes
     }
     let data = b.stage[..out].to_vec();
-    b.result = Some(Walked { ids, data, debug: Vec::new(), epoch });
+    b.result = Some(Walked { ids, data, debug: Vec::new(), epoch, listener });
     b.gpu_ms = gpu_ms;
     b.gpu_max_ms = gpu_max_ms;
 }

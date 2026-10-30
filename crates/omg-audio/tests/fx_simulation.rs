@@ -702,6 +702,88 @@ fn a_walls_echo_passing_its_edge_keeps_its_energy() {
     assert!((db(on) - db(off)).abs() < 0.8, "the edge's bends take or add {:+.2} dB", db(on) - db(off));
 }
 
+/// Walking out of a room, its sound goes as fast as its paths do: a
+/// concrete room (8 × 6 × 3 m, α 0.05) with a doorway, a source inside,
+/// the ears running (4 m/s) out through the doorway and round the corner,
+/// out of its sight, stopping there. A second after they stop, the source
+/// plays no louder than for ears that stood there all along (within 2 dB,
+/// mid band, its whole field). Before, a still spell's running mean
+/// started from the moving average — the room's reverb from along the way,
+/// diluted as 1/n: here +4.0 dB a second on (its reverb +14), in the
+/// town's bunker 12 dB over the street's on arrival and 3 dB ten seconds
+/// on (the GPU walk, its walks landing late: 20 and 10). Now +1.6
+/// (`STILL_PRIOR`). (From
+/// below it converges as slowly as a field reached through a doorway
+/// does: OPEN.md, "A loud room's field through its walls".)
+#[test]
+fn walking_out_of_a_room_its_sound_goes_as_fast_as_its_paths() {
+    let geometry = || {
+        let mut g = Geometry::new();
+        let m = g.material(Material::new([0.05; 3], 0.3, [0.0; 3]));
+        let grass = g.material(Material::GRASS);
+        let t = 0.3;
+        let (lx, ly, lz) = (8.0f32, 6.0, 3.0);
+        g.add_box([-t, -t, lz], [lx + t, ly + t, lz + t], m);
+        g.add_box([-t, -t, 0.0], [0.0, ly + t, lz], m);
+        g.add_box([0.0, -t, 0.0], [lx, 0.0, lz], m);
+        g.add_box([0.0, ly, 0.0], [lx, ly + t, lz], m);
+        // the east wall, a doorway 1 m wide at y 2.5 … 3.5, 2.2 m high
+        g.add_box([lx, -t, 0.0], [lx + t, 2.5, lz], m);
+        g.add_box([lx, 3.5, 0.0], [lx + t, ly + t, lz], m);
+        g.add_box([lx, 2.5, 2.2], [lx + t, 3.5, lz], m);
+        g.ground_plane(0.0, grass);
+        g
+    };
+    let src_at = [3.0f32, 3.0, 1.2];
+    // running (4 m/s) from beside the source out through the doorway to
+    // (9.5, 3), then north round the corner to (9.5, 9): the room's wall
+    // between
+    let stop = [9.5f32, 9.0, 1.6];
+    let way = |t: f64| -> [f32; 3] {
+        let d = 4.0 * (t - 1.0).max(0.0) as f32;
+        if d < 4.5 {
+            [5.0 + d, 3.0, 1.6]
+        } else {
+            [9.5, (3.0 + d - 4.5).min(stop[1]), 1.6]
+        }
+    };
+    let level = |f: &Frame, id| -> f64 {
+        let pb = f.block(id).expect("the source");
+        let mut e: f64 = pb.taps.iter().map(|t| (t.gains[1] as f64).powi(2)).sum();
+        e += (pb.early.level[1] as f64).powi(2) + (pb.reverb.level[1] as f64).powi(2);
+        e += pb.remote.map_or(0.0, |r| (r.send[1] as f64).powi(2));
+        10.0 * e.max(1e-30).log10()
+    };
+    let cfg = || Config { quality: Quality::High, v4: false, v5: false, v6: true, v61: true, v62: true, kernel_thread: false, ..Config::default() };
+    // standing there all along
+    let reference = {
+        let mut sim = Simulation::new(cfg());
+        sim.set_geometry(geometry());
+        let id = sim.add_source(SourceDesc::at(src_at));
+        sim.set_listener(stop, 0.0, 0.0, 0.0);
+        let f = settle(&mut sim, 60);
+        level(&f, id)
+    };
+    let mut sim = Simulation::new(cfg());
+    sim.set_geometry(geometry());
+    let id = sim.add_source(SourceDesc::at(src_at));
+    // the stop: 1 s in, 4.5 + 6 m at 4 m/s
+    let stopped = 1.0 + 10.5 / 4.0;
+    let mut after = Vec::new();
+    for k in 0..((stopped + 2.0) * 20.0) as usize {
+        let t = k as f64 / 20.0;
+        sim.set_time(t);
+        sim.set_listener_at(way(t), 0.0, 0.0, 0.0, t);
+        let f = sim.tick();
+        if t >= stopped + 1.0 {
+            after.push(level(&f, id));
+        }
+    }
+    let mean = 10.0 * (after.iter().map(|d| 10f64.powf(d / 10.0)).sum::<f64>() / after.len() as f64).log10();
+    eprintln!("walking out: a second after stopping {mean:+.1} dB, standing there all along {reference:+.1} dB");
+    assert!(mean - reference < 2.0, "a second after stopping {:+.1} dB over standing there all along", mean - reference);
+}
+
 /// A large closed hall (30×20×15 m, walls absorbing 6 %): the
 /// reverberation time and the reverberant level each engine plays,
 /// against Sabine's time and diffuse-field theory's level — both with

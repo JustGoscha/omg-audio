@@ -502,6 +502,45 @@ plays — a clap in the hall +1.3 dB early, the bell heard from the north
 door swing climbing back 21.4 → 21.0 dB, windows over −40 dB 4 → 3; the
 car's tone and the flight as before; cost within the noise.
 
+## Walking out of a room, its sound goes (v6)
+
+Playing the Godot demo: down into the bunker to the radio and back up
+into the street, the radio "heard forever, much louder than it should".
+Headless (`demo/web/wasm/examples/cellar`: the same walk, the Godot
+level, paced in real time with the GPU walk — unpaced, the GPU's walks
+never land): standing in the street all along the radio settles at
+about −31 dB; back out from the bunker it read −15 dB on arrival and
+−20 dB eleven seconds on. On the CPU walk the same, milder: 12 dB over on
+arrival, 3 dB ten seconds on.
+
+Why: moving, v6 averages each source's field with a weight per fold
+(0.35 early, 0.15 late); standing still, a running mean that converges
+over ~10 s. A still spell's running mean started from the moving average
+with its weight (~12 estimates) — and the moving average held the way
+here: the bunker, the stair, the doorway. A running mean dilutes it as
+1/n. The GPU walk made it worse twice over: its walks land every few
+ticks, each weighted as one tick (the moving average lagged seconds), and
+a walk launched before the listener stopped, landing after, was taken
+for an estimate of here.
+
+Now: a walk carries where it was launched (`WalkJob::listener`,
+`Walked::listener`) and one traced elsewhere is a moving estimate; moving,
+a fold's weight is the EMA's over the ticks it stands for; and when a
+still spell begins, what the average held counts as `STILL_PRIOR` (3)
+estimates of here. Not none: from none, a young estimate of a field
+reached through openings reads 20–40 dB low and jumps from place to
+place — the trade measured on two tests (one estimate / three / five /
+kept whole): a second after running out of a room and round its corner
++0.9 / +1.6 / +2.1 / +4.0 dB over standing there all along
+(`fx_simulation::walking_out_of_a_room_its_sound_goes_as_fast_as_its_paths`),
+the largest step walking the Old House's shadow 10.2 / 9.2 / 8.5 / 6.3 dB
+(`town_system::shadow_boundaries_are_continuous`, under 10). The cellar
+walk (three runs on the GPU): back in the street within ±5 dB of
+standing there from arrival on, no lingering (before: 15 dB over,
+fading for ten seconds); on the CPU within 2–3 dB. The door swing
+(six seeds) as before: climbing back 18.1 dB, windows over −40 dB 3; the
+flight, the car's tone and the door shut unchanged.
+
 ## The GPU walk through a crossing (every engine)
 
 Recorded in Godot (its walk on the GPU), flying into the cathedral with

@@ -44,11 +44,12 @@ of the flight on each build, the same session, the windows over −40 dB
 | ee8994b (before the morning) | 2, 0, 1, 4, 7, 1, 11, 5 | 3 |
 | 2879a2d (now) | 13, 4, 0, 3, 0, 0, 8, 4 | 3.5 |
 
-Headless on the dumped Godot level with the GPU walk (`assess fly
-SIGNAL=tone COMPUTE=gpu GEOMETRY=…`, seeds 1–3) all three builds
-(ee8994b, 06c6110, 83b53b8) read alike: none over −40 dB inside or
-crossing, the same one outside at the start. On the GPU walk the walks
-land when they land; the night's four takes of df7f9d5 were 3 / 0 / 5 /
+Headless runs on the dumped Godot level meant to use the GPU walk
+(`assess fly SIGNAL=tone COMPUTE=gpu GEOMETRY=…`) read alike on all three
+builds — **but they walked on the CPU**: `assess` was built without the
+`gpu` feature, and `COMPUTE=gpu` falls back to the CPU walk without
+failing (correction, Oct 30 midday; `demo/web/wasm/examples/cellar.rs`
+says which walk ran). On the GPU walk the walks land when they land; the night's four takes of df7f9d5 were 3 / 0 / 5 /
 2. The car's level jumps (85 against the night's 65) are one take each;
 headless (`headless/motion/*cartone*`, three seeds) the car's tone is
 the same on every build to 0.1 dB rms.

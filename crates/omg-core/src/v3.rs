@@ -190,6 +190,19 @@ pub const MAX_COHERENT_TAPS: usize = 48;
 /// still — nothing moved, the world as it was — it is a plain running
 /// mean, the same truth sampled again.
 const STILL_ALPHA_FLOOR: f32 = 0.005;
+/// v6: what the average held when a still spell begins — traced along
+/// the way here — counts as this many estimates of here (`fold`). Kept
+/// whole (the moving average's ~12), walking out of the town's bunker its
+/// reverb lingered 12 dB over the street's on arrival and 3 dB ten
+/// seconds on (`fx_simulation::walking_out_of_a_room_its_sound_goes_as_
+/// fast_as_its_paths`: +4.0 dB a second after stopping). As none, a young
+/// estimate of a field reached through openings reads 20–40 dB low and
+/// jumps from place to place (`town_system::shadow_boundaries_are_
+/// continuous`: 10.2 dB between two steps; 6.3 kept whole). Measured on
+/// both: one +0.9 / 10.2, three +1.6 / 9.2, five +2.1 / 8.5. An
+/// estimator's trade, not physics — the cure for both is a field reached
+/// through openings estimated without the heavy tail (OPEN.md).
+const STILL_PRIOR: f32 = 3.0;
 /// v6: moved less than this (m) since a still spell began, a listener
 /// or a source stands still — paths change by less, nothing an energy
 /// estimate in `DELAY_BIN_S` bins (69 cm of path) can tell.
@@ -1144,6 +1157,12 @@ struct SourceState {
     held: [f32; 2],
     /// The early and the late average's weight for the last tick (`fold`).
     alphas: [f32; 2],
+    /// v6: the last fold was a moving one (`fold`: a still spell that
+    /// begins after it starts its running mean over), and the tick of the
+    /// last fold (a walk landing every few ticks weighs as the ticks it
+    /// stands for).
+    moving: bool,
+    folded_at: u64,
     /// v6.2: the averaged paths that met apertures, by the apertures they
     /// were walked with: per entry its weight in the early and the late
     /// average now, the apertures' signature then, its paths
@@ -1188,6 +1207,8 @@ impl SourceState {
         v6: bool,
         listener: Vec3,
         source: Vec3,
+        launched: Vec3,
+        tick: u64,
     ) {
         let first = self.echo.is_none();
         let (mut alpha_early, mut alpha_late) = (if first { 1.0 } else { budget.ema.clamp(0.0, 1.0) }, budget.late_ema.clamp(0.0, 1.0));
@@ -1210,12 +1231,35 @@ impl SourceState {
             // the running mean goes on converging (down to
             // `STILL_ALPHA_FLOOR`: ~10 s of memory, should something
             // change that no test sees)
+            //
+            // A still spell starts its running mean over: what the
+            // average held was traced along the way here (walking out of
+            // the bunker, the bunker's reverb, 20 dB over the street's,
+            // diluted as 1/n: heard ten seconds on). And an estimate
+            // traced elsewhere — a GPU walk launched before the listener
+            // stopped, landing ticks later — is a moving one: it describes
+            // where it was launched
             let world_moved = std::mem::take(&mut self.world_moving);
-            let moved = world_moved || self.at.is_none_or(|(l, s)| (l - listener).length() > STILL_M || (s - source).length() > STILL_M);
+            let elsewhere = (launched - listener).length() > STILL_M;
+            let moved = world_moved
+                || elsewhere
+                || self.at.is_none_or(|(l, s)| (l - listener).length() > STILL_M || (s - source).length() > STILL_M);
             if moved {
                 self.at = Some((listener, source));
+                self.moving = true;
+            } else if std::mem::take(&mut self.moving) {
+                // the way here counts as `STILL_PRIOR` estimates, diluted
+                // by what is traced here
+                self.held = [self.held[0].min(STILL_PRIOR), self.held[1].min(STILL_PRIOR)];
             }
-            let emas = [budget.ema, if world_moved { budget.ema } else { budget.late_ema }];
+            // moving, the EMA's weight per tick, over as many ticks as
+            // this fold stands for (a GPU walk landing every few ticks
+            // lagged as many times longer: the bunker's reverb seconds
+            // out into the street)
+            let ticks = tick.saturating_sub(self.folded_at).max(1).min(64) as i32;
+            self.folded_at = tick;
+            let per = |ema: f32| 1.0 - (1.0 - ema.clamp(0.0, 1.0)).powi(ticks);
+            let emas = [per(budget.ema), per(if world_moved { budget.ema } else { budget.late_ema })];
             let mut alphas = [0.0f32; 2];
             for ((a, n), ema) in alphas.iter_mut().zip(self.held.iter_mut()).zip(emas) {
                 let mean = 1.0 / (*n + 1.0);
@@ -2857,7 +2901,7 @@ impl Tracer {
                 st.fold_v4(acc, budget, listener, s.pos);
                 out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared, fit));
             } else {
-                st.fold(acc.early, acc.echo, budget, self.v6, listener, s.pos);
+                st.fold(acc.early, acc.echo, budget, self.v6, listener, s.pos, listener, self.tick);
                 let aps = self.v62.then_some(world.apertures);
                 if let Some(aps) = aps {
                     st.fold_paths(acc.paths, acc.walked, aps, (self.tick as f32 * 0.618_034).fract());
