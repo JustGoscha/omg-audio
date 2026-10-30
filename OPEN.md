@@ -263,6 +263,13 @@ room, whose own rays already pass there (through the wall): both would
 count it twice. Knowing which cut-away parts are solid is the missing
 piece — or an estimator for mirror paths that needn't find the
 source's sphere (bidirectional) takes the bias and the jitter at once.
+Rebased on main after the edge gate (branch `clearance-rebase`, Oct 30
+morning): the shoebox within 0.5 dB everywhere — late +0.5 / +0.4 / +0.2
+(main −1.8 / −0.9 / −0.6), the corner source late +0.3 / +0.3 / 0.0
+(main −4.4 / −3.4 / −3.1), early +0.2 … −0.1 on both. The door swing
+the same trade as before: six seeds (`EAR=0`), climbing back 18.1 dB on
+average on main, 22.1 on the branch (33.2 and 26.9 in two seeds),
+windows over −40 dB 3 against 11. Still to judge by ear.
 
 ### A reflection whose last leg passes an edge was dropped — solved Oct 30
 A wall's early echo on the square read ~1.8 dB under the image sources;
