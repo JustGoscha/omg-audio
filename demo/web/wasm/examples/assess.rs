@@ -412,7 +412,7 @@ impl Rig {
                     if (t - w).abs() < 0.12 {
                         for (id, pb) in &f.blocks {
                             let floor = if env("DEBUG_ALL").is_some() { 0.0 } else { 0.003 };
-                            let loud: Vec<String> = pb.taps.iter().filter(|x| x.gains[1] > floor).take(8).map(|x| format!("{}:{:.1}ms {:.1}dB", x.key, x.delay_s * 1e3, 20.0 * x.gains[1].max(1e-12).log10())).collect();
+                            let loud: Vec<String> = pb.taps.iter().filter(|x| x.gains[1] > floor).take(if env("DEBUG_ALL").is_some() { 256 } else { 8 }).map(|x| format!("{}:{:.1}ms {:.1}dB", x.key, x.delay_s * 1e3, 20.0 * x.gains[1].max(1e-12).log10())).collect();
                             if !loud.is_empty() || pb.reverb.level[1] > 0.0 {
                                 let k = f.kernels.iter().find(|(kid, _)| kid == id).map_or("none".to_string(), |(_, k)| format!("{:x}/{:.2}s", std::sync::Arc::as_ptr(k) as usize & 0xffffff, k.len as f32 / SR));
                                 eprintln!("t {t:.3} {} id {} v{} rev {:.1}dB rt60 {:.2} kernel {k} {}", if full { "tick " } else { "exact" }, id.0, pb.version, 20.0 * pb.reverb.level[1].max(1e-9).log10(), pb.reverb.rt60[1], loud.join(" "));

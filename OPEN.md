@@ -206,8 +206,11 @@ before, 18 at rung 0). Each first-order chain's twins off the ground
 are named with it (the ground first or last: the echo's own ground
 reflection, as the direct sound has its): in the test the facade, then
 the ground on the car's side, 0.03 ms later at the grass's mirror share
-— 281 of 281 frames, 0 before. Open: other second order (a street's two
-facades) is still left to the finders (any two faces: quadratic).
+— 281 of 281 frames, 0 before. Second order between two large faces (a
+street's facades, an inside corner) is named from pairs of faces now (Oct
+30: ENGINE_V6.md, "Echoes between two faces"; an inside corner 100 m off
+a passing car 226 of 226 frames, 0 before). Open: third order and beyond
+between distinct faces, second order off small faces.
 
 ### Doppler in the hosts: one instant per frame — solved Oct 29
 Measured in the browser (headless Chrome, `tools/web_doppler.mjs`) and

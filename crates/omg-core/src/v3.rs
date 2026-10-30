@@ -382,6 +382,16 @@ impl Event {
     }
 }
 
+/// Second-order chains are named from pairs of faces this large (m²) —
+/// a facade, a hall's wall: where a distinct echo comes from (a window's
+/// reveal reflects little but the highs) — …
+const SECOND_ORDER_M2: f32 = 10.0;
+/// … and at most this many pair tests (a face pair, a source) a tick
+/// (`Tracer::name_mirrors`), a candidate's legs checked counting as
+/// `SECOND_ORDER_RAY_COST` tests.
+const SECOND_ORDER_TESTS: usize = 60_000;
+const SECOND_ORDER_RAY_COST: usize = 60;
+
 /// v6.2 with an external walker: the ticks after a door's leaf last moved
 /// that still walk on the CPU (`Tracer::doors_moving`) — past the restart
 /// where the door comes to rest (`prepare`).
@@ -2101,6 +2111,9 @@ pub struct Tracer {
     /// last tick, and the ticks left that walk on the CPU (`doors_moving`).
     door_sig: u64,
     door_ticks: u32,
+    /// Where `name_mirrors`' second-order sweep goes on (the large faces,
+    /// in turn).
+    second_at: usize,
     /// Diffraction edges of the last mesh traced (rebuilt if it changes).
     edges: Option<EdgeSet>,
     tick: u64,
@@ -2437,6 +2450,7 @@ impl Tracer {
             epoch: 0,
             door_sig: 0,
             door_ticks: 0,
+            second_at: 0,
             edges: None,
             tick: 0,
             ear_vis: None,
@@ -3142,6 +3156,88 @@ impl Tracer {
                     if within(chain_points(&twin, listener, x)[at], f) {
                         self.name_chain(s.id, &twin, cached, (listener, s.pos, moving));
                     }
+                }
+            }
+        }
+        // second order between two large faces — a street's two facades,
+        // an inside corner (−15 dB, 122 ms after a passing car's direct
+        // sound by the town's west road: `examples/echo_ref2`): the
+        // listener's image across the first, that across the second, both
+        // mirror points inside their faces. Any two faces is quadratic: the
+        // large ones (`SECOND_ORDER_M2`), the first faces taken in turn
+        // under `SECOND_ORDER_TESTS` a tick — all of them every few ticks
+        let area = |f: &MirrorFace| {
+            let (e, n) = (f.hi - f.lo, f.plane.0);
+            e.x * e.y * n.z.abs() + e.y * e.z * n.x.abs() + e.x * e.z * n.y.abs()
+        };
+        let big: Vec<usize> = (0..faces.len()).filter(|&i| area(&faces[i]) >= SECOND_ORDER_M2).collect();
+        let mut tests = SECOND_ORDER_TESTS;
+        let mut steps = 0;
+        while tests > 0 && steps < big.len() && big.len() > 1 {
+            let f1 = &faces[big[self.second_at % big.len()]];
+            self.second_at = self.second_at.wrapping_add(1);
+            steps += 1;
+            let (n1, d1) = f1.plane;
+            let s1 = n1.dot(listener) - d1;
+            if s1.abs() < 1e-3 || 2.0 * s1.abs() > reach {
+                continue;
+            }
+            let im1 = listener - n1 * (2.0 * s1);
+            for &i2 in &big {
+                let f2 = &faces[i2];
+                let (n2, d2) = f2.plane;
+                if planes_eq(f1.plane, f2.plane) {
+                    continue;
+                }
+                let a = n2.dot(im1) - d2;
+                if a.abs() < 1e-3 {
+                    continue;
+                }
+                let im2 = im1 - n2 * (2.0 * a);
+                for (si, s) in sources.iter().enumerate() {
+                    tests = tests.saturating_sub(1);
+                    if (n2.dot(s.pos) - d2) * a <= 0.0 {
+                        continue; // the source behind the second mirror
+                    }
+                    let Some(x) = self.motion.emit(si, s.pos, im2, 0.0) else { continue };
+                    let b = n2.dot(x) - d2;
+                    if a * b <= 0.0 || b.abs() < 1e-3 {
+                        continue;
+                    }
+                    let len = (x - im2).length();
+                    let rel = len / SPEED_OF_SOUND - t_free[si];
+                    if len > reach || !(self.v4 || 2 > budget.bounces || rel >= EARLY_S) {
+                        continue;
+                    }
+                    let q2 = x + (im2 - x) * (b / (b + a));
+                    if !within(q2, f2) {
+                        continue;
+                    }
+                    let (c, e) = (n1.dot(q2) - d1, -s1);
+                    if c * e >= 0.0 {
+                        continue;
+                    }
+                    let q1 = q2 + (im1 - q2) * (c / (c - e));
+                    if !within(q1, f1) {
+                        continue;
+                    }
+                    // its three legs clear of the fixed geometry, before the
+                    // solver sees it: a face is a plane's whole group (one
+                    // street's facades in a line), most such pairs are not
+                    // a path, and a chain named only to fail is solved and
+                    // named again while anything moves
+                    tests = tests.saturating_sub(SECOND_ORDER_RAY_COST);
+                    let (p1, p2) = (q1 + n1 * (1e-3 * s1.signum()), q2 + n2 * (1e-3 * b.signum()));
+                    let clear = |a: Vec3, b: Vec3| {
+                        let d = b - a;
+                        let l = d.length();
+                        l < 2e-3 || world.mesh.raycast(a, d * (1.0 / l)).is_none_or(|(t, _)| t >= l - 2e-3)
+                    };
+                    if !clear(listener, p1) || !clear(p1, p2) || !clear(p2, x) {
+                        continue;
+                    }
+                    let moving = self.motion.moving(si);
+                    self.name_chain(s.id, &[f1.plane, f2.plane], cached, (listener, s.pos, moving));
                 }
             }
         }

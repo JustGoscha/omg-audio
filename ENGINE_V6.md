@@ -380,13 +380,36 @@ The walk now changes as a shadow does (the largest step of a metre 8.5
 dB); the bell's paths around the cathedral, the facades' echoes: as
 before. The legacy copy of the test retired; the suite green.
 
+## Echoes between two faces (every engine)
+
+First-order echoes are named from the world's flat faces every tick;
+second order was left to the finders' rays, which come across two far
+walls in turn rarely. The reference (`examples/echo_ref2`: every pair of
+triangles as two mirrors, both mirror points inside, every leg clear)
+finds by the town's west road an inside corner of two facades echoing a
+passing car 122 ms late, −15 dB (car at y = −10) and −22 dB (y = 0) —
+the engine never played it. Now pairs of large faces (≥ 10 m², where a
+distinct echo comes from) are tried too: the listener's image across the
+first, that across the second, both mirror points inside their faces,
+the three legs clear (one ray each, before the solver sees it — a face is
+a plane's whole group, a street's facades in a line, and most such pairs
+are not a path). The first faces are taken in turn under a budget of
+tests a tick (`SECOND_ORDER_TESTS`). The town's corner echo plays as the
+car comes (−22.6 dB under the car at y ≈ −3, the reference −22.1); an
+inside corner 100 m off a passing car
+(`fx_simulation::an_inside_corners_echo_of_a_passing_car_plays`): 226 of
+226 frames at the image source's delay and level, 0 before. Cost on the
+Godot level (375 such faces): chains 0.6 → 1.2 ms a tick.
+
 ## Still open (OPEN.md)
 
-A loud room heard through its walls or a shut door is a heavy-tailed
-estimate: young (right after a restart) it reads low and steps up as
-rare strong paths come — paths from the sources too (bidirectional) or
-learnt splitting at partitions would fix it. Also: the estimate's ±2–4
-dB wobble moving at the lowest rungs; a cheaper transmission query (half
-the walk); wasm walks on one thread; second-order echoes between two
-faces (a street's two facades) are still left to the finders' rays —
-first order and its ground twins are named from the faces.
+A loud room heard through its walls is a heavy-tailed estimate: young
+(right after a restart) it reads low and steps up as rare strong paths
+come — paths from the sources too (bidirectional) or learnt splitting at
+partitions would fix it (at a door's leaf v6.2 splits). Also: the
+estimate's ±2–4 dB wobble moving at the lowest rungs; a cheaper
+transmission query (half the walk); wasm walks on one thread; echoes of
+third order and beyond between distinct faces, and second order off
+small ones, are still left to the finders' rays (first order, its ground
+twins and second order between large faces are named from the faces); a
+moving door on the GPU walk costs a CPU tick.

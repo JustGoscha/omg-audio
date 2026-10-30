@@ -468,6 +468,82 @@ fn a_facades_echo_of_a_passing_car_plays_at_every_rung() {
     }
 }
 
+/// An inside corner of two facades 100 m from the listener (8 m tall: x = 0
+/// from y = 0 to 80, and y = 80 from x = −80 to 0) and a car passing at 100
+/// km/h on x = −110: its echo off both walls — off the first (x = 0), then
+/// the second — plays as its own tap at the double image's delay and
+/// level, every tick and exact frame while both mirror points lie on the
+/// walls, at the cheapest rung and a middle one. Second order between two
+/// faces was left to the finders' rays, which come across two far walls in
+/// turn rarely (by the town's west road such an echo, −15 dB at 122 ms,
+/// was missed: `examples/echo_ref2`); pairs of large faces name it now
+/// (`Tracer::name_mirrors`).
+#[test]
+fn an_inside_corners_echo_of_a_passing_car_plays() {
+    let facade = Material::new([0.03; 3], 0.35, [0.0; 3]);
+    let lis = [-100.0f32, 20.0, 1.6];
+    let car = |t: f64| [-110.0f32, -10.0 + 27.78 * t as f32, 0.7];
+    let dist = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    let c = SPEED_OF_SOUND as f64;
+    let emitted = |t: f64, to: [f32; 3]| {
+        let mut te = t;
+        for _ in 0..8 {
+            te = t - dist(car(te), to) as f64 / c;
+        }
+        (car(te), dist(car(te), to))
+    };
+    // the listener across x = 0, then across y = 80
+    let (im1, image) = ([-lis[0], lis[1], lis[2]], [-lis[0], 160.0 - lis[1], lis[2]]);
+    for level in [0, 6] {
+        let mut g = Geometry::new();
+        let stone = g.material(facade);
+        g.add_box([0.0, 0.0, 0.0], [0.3, 80.3, 8.0], stone);
+        g.add_box([-80.0, 80.0, 0.0], [0.3, 80.3, 8.0], stone);
+        let mut sim = Simulation::new(Config { quality: Quality::Level(level), ..Config::default() });
+        sim.set_geometry(g);
+        let src = sim.add_source(SourceDesc::at(car(0.0)));
+        let (mut want, mut heard, mut worst_ms, mut worst_db) = (0, 0, 0.0f64, 0.0f32);
+        for k in 0..(3.5 * 120.0) as usize {
+            let t = k as f64 / 120.0;
+            sim.set_time(t);
+            sim.set_source(src, car(t), true);
+            sim.set_listener_at(lis, 0.0, 0.0, 0.0, t);
+            let f = if k % 6 == 0 { Some(sim.tick()) } else { sim.tick_exact() };
+            let Some(f) = f else { continue };
+            let (x, len) = emitted(t, image);
+            // the mirror points: x → image crosses y = 80, then on to the
+            // first image it crosses x = 0
+            let s2 = (80.0 - x[1]) / (image[1] - x[1]);
+            let q2 = [x[0] + (image[0] - x[0]) * s2, 80.0, x[2] + (image[2] - x[2]) * s2];
+            let s1 = -q2[0] / (im1[0] - q2[0]);
+            let q1 = [0.0, q2[1] + (im1[1] - q2[1]) * s1, q2[2] + (im1[2] - q2[2]) * s1];
+            // (half a metre in from the walls' edges)
+            let on = (-79.5..-0.5).contains(&q2[0]) && (0.5..79.5).contains(&q1[1]) && (0.5..7.5).contains(&q1[2]) && (0.5..7.5).contains(&q2[2]);
+            if !(t > 0.5 && on) {
+                continue;
+            }
+            want += 1;
+            let pb = f.block(src).expect("the car");
+            let direct = pb.taps.iter().find(|tp| tp.key == omg_core::v3::KEY_DIRECT).expect("direct path");
+            let at = len as f64 / c;
+            let Some(echo) = pb.taps.iter().find(|tp| tp.key >= 9_000_000 && (tp.delay_s as f64 - at).abs() < 2e-3) else { continue };
+            heard += 1;
+            let (_, d) = emitted(t, lis);
+            let share: f32 = (1.0 - 0.03) * (1.0 - 0.35);
+            let air = air_attenuation(len)[1] / air_attenuation(d)[1];
+            let want_db = 20.0 * share.log10() + 20.0 * (air * d / len).log10();
+            let got_db = 20.0 * (echo.gains[1] / direct.gains[1]).log10();
+            worst_ms = worst_ms.max(((echo.delay_s as f64 - at) * 1e3).abs());
+            worst_db = worst_db.max((got_db - want_db).abs());
+        }
+        eprintln!("level {level}: the corner's echo in {heard} of {want} frames; delay off by ≤ {worst_ms:.2} ms, level by ≤ {worst_db:.2} dB");
+        assert!(want > 100, "the corner mirrors the car for a while: {want} frames");
+        assert!(heard as f32 >= 0.95 * want as f32, "level {level}: the corner's echo plays in {heard} of {want} frames");
+        assert!(worst_ms < 1.0, "level {level}: its delay off by {worst_ms:.2} ms");
+        assert!(worst_db < 1.0, "level {level}: its level off by {worst_db:.2} dB");
+    }
+}
+
 /// A large closed hall (30×20×15 m, walls absorbing 6 %): the
 /// reverberation time and the reverberant level each engine plays,
 /// against Sabine's time and diffuse-field theory's level — both with
