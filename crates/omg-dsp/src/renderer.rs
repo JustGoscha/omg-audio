@@ -1245,15 +1245,23 @@ impl Renderer {
             None => self.remote_level.set(0.0),
         }
 
-        // the dense early field: each band sent so it plays the energy
+        // the dense early field: the early network's decay set so its
+        // output arrives as late on average as the field does (gliding
+        // there with its gains), each band sent so it plays the energy
         // traced, the lines spread as the field comes (at the next
-        // re-selections); the early network's decay is fixed (`Fdn::early`)
+        // re-selections)
         let e = &pb.early;
         if e.level.iter().any(|&l| l > 0.0) {
+            self.early_fdn.set_centre(e.centre_s);
+            // asleep it holds nothing: its decay is the one set now (the
+            // sends and the input's normalization are solved from it)
+            if self.early_idle >= self.early_fdn.idle_after() {
+                self.early_fdn.settle();
+            }
             let lv = e.level;
             let mid = lv[1].max(lv.iter().fold(0.0f32, |a, &b| a.max(b)) * 1e-4);
             let shape = if mid > 0.0 { [lv[0] / mid, 1.0, lv[2] / mid] } else { [1.0; 3] };
-            let m = self.early_sends.get(&self.early_fdn, [0.0; 2], shape);
+            let m = self.early_sends.get(&self.early_fdn, [e.centre_s; 2], shape);
             self.early_level.set(mid * m[1]);
             self.early_low.set(shape[0] * m[0] / m[1]);
             self.early_high.set(shape[2] * m[2] / m[1]);
@@ -1673,8 +1681,10 @@ impl Renderer {
         let early_level = self.early_level.tick();
         let early_gate = if early_level > 1e-6 || self.early_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
         let ein = self.early_eq.shape(x * early_gate, self.early_low.tick(), self.early_high.tick());
-        let early_in = if self.mute_early { 0.0 } else { ein * early_norm };
-        fdn_step(&mut self.early_fdn, &mut self.early_idle, early_in, 1.0, early_level * mix, early_gate, &self.early_spread, foa);
+        // calibrated on the way OUT: its decay moves with the field's
+        // arrival, and what it holds plays at the decay it has now
+        let early_in = if self.mute_early { 0.0 } else { ein };
+        fdn_step(&mut self.early_fdn, &mut self.early_idle, early_in, 1.0, early_level * mix * early_norm, early_gate, &self.early_spread, foa);
     }
 
     /// The FDNs' input normalization `k` samples into a re-selection
@@ -1723,8 +1733,8 @@ impl Renderer {
             let e_level = self.early_level.tick();
             let gate = if e_level > 1e-6 || self.early_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
             let ein = self.early_eq.shape(x * gate, self.early_low.tick(), self.early_high.tick());
-            early_in[j] = if self.mute_early { 0.0 } else { ein * e_norm };
-            early_lvl[j] = e_level * mix;
+            early_in[j] = if self.mute_early { 0.0 } else { ein };
+            early_lvl[j] = e_level * mix * e_norm;
             early_gate[j] = gate;
         }
         let own = FdnFeed { input: &own_in[..m], pre: 1.0, lvl: &own_lvl[..m], gate: &own_gate[..m] };

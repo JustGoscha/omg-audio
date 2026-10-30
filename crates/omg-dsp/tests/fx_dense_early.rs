@@ -4,13 +4,13 @@
 //!
 //! Claims:
 //! - it plays the energy it is given (level L: energy L², per band);
-//! - it arrives within the early window: ~35 ms after the first arrival
-//!   on average (the early network's fixed decay — `centre_s` is not
-//!   followed: a decay swinging with each block's estimate burst), little
-//!   of it past 80 ms;
-//! - changing every block (level, direction, centre) it never bursts —
-//!   the web demo's smoke test played +20 dB when the decay followed the
-//!   estimate;
+//! - it arrives as late on average as it is said to (`centre_s`), down
+//!   to what the early network's first pass takes (~17 ms), little of it
+//!   past 80 ms;
+//! - changing every block (level, direction, centre), or jumping from an
+//!   early field to a late one and back, it never bursts — the web demo's
+//!   smoke test played +20 dB when the network's pass gain could reach 0
+//!   and it was calibrated on the way in;
 //! - it comes from where it is said to (`dir`): one-sided, the side it
 //!   comes from louder; from all round (dir 0), even.
 //!
@@ -51,15 +51,17 @@ fn energy(x: &[f32]) -> f64 {
 
 #[test]
 fn the_dense_early_field_plays_its_energy_early() {
-    for centre in [0.003f32, 0.02, 0.06] {
+    for centre in [0.003f32, 0.02, 0.035, 0.05] {
         let (w, _) = impulse(DenseEarly { level: [0.5; 3], centre_s: centre, dir: [0.0; 3] }, 1.0);
         let e = energy(&w);
         let t: f64 = w.iter().enumerate().map(|(k, v)| k as f64 / SR as f64 * (*v as f64) * (*v as f64)).sum::<f64>() / e;
         let early = energy(&w[..(0.08 * SR) as usize]) / e;
         eprintln!("centre said {centre:.3} s: energy {:+.2} dB of L², centre time {:.1} ms, within 80 ms {:.0} %", 10.0 * (e / 0.25).log10(), t * 1e3, early * 100.0);
         assert!((10.0 * (e / 0.25).log10()).abs() < 1.0, "energy {:.2} dB off L²", 10.0 * (e / 0.25).log10());
-        assert!((t - 0.035).abs() < 0.008, "centre time {:.1} ms", t * 1e3);
-        assert!(early > 0.85, "within 80 ms {:.0} %", early * 100.0);
+        // as late as said, down to what the network's first pass takes
+        let want = (centre as f64).max(0.018);
+        assert!((t / want - 1.0).abs() < 0.25, "centre time {:.1} ms for {:.1}", t * 1e3, want * 1e3);
+        assert!(early > 0.8, "within 80 ms {:.0} %", early * 100.0);
     }
 }
 
@@ -149,4 +151,35 @@ fn a_dense_early_field_changing_every_block_never_bursts() {
     eprintln!("changing every block: {:+.2} dB of the energy given, loudest 10 ms {:+.1} dB over the median", 10.0 * (got / want).log10(), 10.0 * (top / median).log10());
     assert!((10.0 * (got / want).log10()).abs() < 1.5, "energy {:+.2} dB", 10.0 * (got / want).log10());
     assert!(10.0 * (top / median).log10() < 6.0, "a burst: {:+.1} dB over the median", 10.0 * (top / median).log10());
+}
+
+#[test]
+fn a_dense_early_field_moving_in_time_never_bursts() {
+    // steady noise; the field said to arrive at one time, then at a very
+    // different one (the network's decay gliding from one to the other
+    // with what it holds): no 10 ms window over the level either side
+    // settles at, beyond a glide's worth
+    for (a, b) in [(0.003f32, 0.06f32), (0.06, 0.003)] {
+        let mut r = Renderer::new(SR);
+        let x = noise(5, (2.0 * SR) as usize, 0.3);
+        let mut w = Vec::with_capacity(x.len());
+        let at = (1.0 * SR) as usize;
+        for (k, &v) in x.iter().enumerate() {
+            if k == 0 || k == at {
+                let c = if k == 0 { a } else { b };
+                r.set_params(&ParamBlock { version: 1 + k as u64, early: DenseEarly { level: [0.3; 3], centre_s: c, dir: [0.0; 3] }, ..Default::default() });
+            }
+            let mut bus = [0.0f32; NCH];
+            r.process(v, &mut bus);
+            w.push(bus[0]);
+        }
+        let win: Vec<f64> = w.chunks(480).map(energy).collect();
+        let level = |from: usize, to: usize| win[from..to].iter().sum::<f64>() / (to - from) as f64;
+        let (before, after) = (level(50, 100), level(150, 200));
+        let top = win[100..150].iter().cloned().fold(0.0f64, f64::max);
+        let over = 10.0 * (top / before.max(after)).log10();
+        eprintln!("{:.0} → {:.0} ms: settled {:+.2} / {:+.2} dB apart, loudest 10 ms across the change {over:+.1} dB over the louder side", a * 1e3, b * 1e3, 0.0, 10.0 * (after / before).log10());
+        assert!((10.0 * (after / before).log10()).abs() < 1.0, "the level depends on the timing");
+        assert!(over < 3.0, "a burst: {over:+.1} dB");
+    }
 }

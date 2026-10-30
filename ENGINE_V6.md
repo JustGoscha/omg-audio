@@ -474,34 +474,39 @@ the first arrival on through a short network of its own
 ones', one gain per pass so its energy normalization is exact), its
 lines spread over the corners as the field comes (an energy density
 1 + 3a·cos θ about its mean direction), each band sent as a path of
-those gains would put it. Its output arrives 35 ms after the first
-arrival on average, 93–95 % within 80 ms.
+those gains would put it, and its decay set so its output arrives as
+late on average as the field does (`DenseEarly::centre_s`, Σ E·t over
+Σ E; the gains glide there).
 
-That arrival time is fixed. A network whose decay followed each block's
-estimate of when the field arrives held, when the next block asked for
-a longer decay, what it had taken in for a short one, and rang it out
-many times over: the web demo's smoke test played +20 dB bursts (with
-the estimate under the diffuser's own centre time, a pass gain of 0
-sent the input's normalization towards 1/g). A delay following the
-estimate instead would warble. So the field's energy and direction
-follow the trace every frame; its timing within the window doesn't
-(`DenseEarly::centre_s` is carried, not played).
+The first cut of this burst: the web demo's smoke test played +20 dB.
+With the field's centre under what the network's first pass takes, its
+pass gain went to 0 and the input's normalization (∝ 1/g) ran off;
+what it let in rang out once the gain came back up. And calibrated on
+the way in, a network moving from a short decay to a long one rings out
+what it took in for the short one: +3.5 dB. Now the pass gain stays
+over 0.05 (a numerical guard: the network arrives within 0.5 ms of its
+first pass alone) and the early network is calibrated on the way out —
+what it holds plays at the decay it has now — so a field moving from
+early to late dips and comes up instead (+1.0 dB at most across the
+change), and from late to early overshoots for the short decay's few
+ms (+1.5 dB). (A fixed arrival at 35 ms, tried in between, avoided the
+bursts by not following; a delay following it would warble.)
 
 Isolated (`omg-dsp fx_dense_early`): the energy given within 0.7 dB,
-its centre at 33.7 ms whatever it is said to be, each band within
-1.2 dB of what a path of the same gains puts there, one-sided as said
-(Y/W ±0.67, from all round −0.06), and changing every block (level,
-direction, centre) no 10 ms window more than 1.1 dB over the median.
+the centre as said (20 / 35 / 50 ms → 19.3 / 33.7 / 48.0; down to the
+first pass's ~17 ms), each band within 1.2 dB of what a path of the
+same gains puts there, one-sided as said (Y/W ±0.67, from all round
+−0.05), and changing every block (level, direction, centre) no 10 ms
+window more than 1.0 dB over the median.
 Measured (`assess still`, rung 3, against v5): inside the club the
-first 80 ms −3.3 / −1.1 / −0.9 dB (was −6.4 / −4.7 / −4.1), the whole
+first 80 ms −3.4 / −1.3 / −1.1 dB (was −6.4 / −4.7 / −4.1), the whole
 response −2.6 / −0.7 / −0.6 (was −4.1 / −2.9 / −3.1); the club's
-entrance within 1.1 dB; a clap in the hall or the cathedral as before
-(its own direct sound fills its early window), the cathedral's late
-treble +1.0 → +2.0 dB (the 5 % past 80 ms). In motion as before, seed
-by seed: flying into the cathedral the same pops, the passing car's
-pitch and level jitter the same, walking out of the hall the same
+entrance within 0.8 dB; a clap in the hall or the cathedral as before
+(its own direct sound fills its early window). In motion as before,
+seed by seed: flying into the cathedral the same pops, the passing
+car's pitch and level jitter the same, walking out of the hall the same
 tail; the door swinging shut against the door standing, rms 5.20 →
-4.67 dB (three seeds). The cost: a third network per sounding source —
+4.78 dB (three seeds). The cost: a third network per sounding source —
 the mixer 3.29 → 3.05× real time with 64 sources, 2.71 → 2.23× with
 256 (`bench_sources OMG_V62=1`, one thread). The web smoke test's
 level +0.9 dB.
@@ -518,5 +523,7 @@ third order and beyond between three walls, and second order off small
 faces, are still left to the finders' rays (first and second order and
 their ground twins are named from the faces); a moving door, and a
 crossing, on the GPU walk cost CPU ticks; the dense early field's
-timing within the window (its arrival is fixed at 35 ms), and inside
-the club its low band still 3.3 dB under the traced sum.
+envelope (an exponential from the first arrival: a field arriving late
+in the window spills past it — inside the club its treble 1.3 dB over
+v5's late), and inside the club its low band still 3.4 dB under the
+traced sum.

@@ -33,3 +33,10 @@ seeds, `EAR=0 RUNG=3 PACE=0`): `fly` (clicks) the same pops per seed,
 and level jitter, `walkout` the same tail, `doorswing` against
 `doortruth DUR=8` (each build its own) rms 3.16 / 6.85 / 5.60 → 3.23 /
 5.18 / 5.59 dB.
+
+The field's arrival following the trace (`follow_v6.2_*`, `motion_follow/`;
+in between it was fixed at 35 ms): inside the club early −3.4 / −1.3 /
+−1.1, late −1.3 / +0.2 / +1.3, whole −2.6 / −0.7 / −0.6 dB from v5; a
+clap in the cathedral late +3.7 / +2.9 / +1.0 (fixed: +3.8 / +3.1 /
++2.0); in motion the same per seed; the door swing 3.25 / 5.42 / 5.66 dB
+rms.

@@ -210,15 +210,16 @@ outdoors, and against v5 (the traced response convolved) the club's
 first 80 ms played 6.4 / 4.7 / 4.1 dB under. Adding what was dropped to
 the late network's level didn't place it early (it spread over the
 decay: early +0.6 … +1.4 dB, late over by up to 4.8 dB). Now a short
-network of its own plays it from the first arrival on (ENGINE_V6.md,
-"The dense early field"): inside the club −3.3 / −1.1 / −0.9 dB early,
-the whole response −2.6 / −0.7 / −0.6 dB from v5; in motion as before.
-Left: its arrival within the window is fixed (35 ms on average) — a
-decay or a delay following each block's estimate burst or would warble;
-smoothing that estimate (or building it from the bins' own envelope,
-not their centre) could let it follow. Inside the club the low band is
-still 3.3 dB under, and the network costs the mixer 7–18 %. Also seen:
-a clap in the cathedral's late part 3.7 / 3.1 / 2.0 dB over v5's in the
+network of its own plays it from the first arrival on, as late on
+average as the trace says (ENGINE_V6.md, "The dense early field"):
+inside the club −3.4 / −1.3 / −1.1 dB early, the whole response −2.6 /
+−0.7 / −0.6 dB from v5; in motion as before. Left: its envelope is an
+exponential from the first arrival — a field gathered late in the
+window spills past 80 ms (inside the club the treble 1.3 dB over v5's
+late part); a second network, or an envelope built from the bins' own
+course, would follow its shape. Inside the club the low band is still
+3.4 dB under, and the network costs the mixer 7–18 %. Also seen:
+a clap in the cathedral's late part 3.7 / 2.9 / 1.0 dB over v5's in the
 first 3 s — which of the two is right is open (a shoebox against Sabine
 and the image sources would tell).
 
