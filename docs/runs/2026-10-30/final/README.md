@@ -32,9 +32,8 @@ engine has nothing there); level jumps: 10 ms off the 90 ms course.
 | door | v6.2 | −44.1 dB | 0 | 0 | 6.8–26.4 ms |
 
 fly: v6.1's one window is the wall crossing (2.56 s, where outside
-becomes inside at once). car: both engines alike — the level jumps are
-a moving tone's own (the direct sound and its reflections sliding in
-and out of phase). door: no jumps either way, opening or shutting.
+becomes inside at once). car: both engines alike (its level jumps as
+many in each; their cause is not looked into here). door: no jumps either way, opening or shutting.
 (A take at df90f4f, before the dense early field, read alike: v6.2 at
 the wall −36.9 dB, two windows; the door's leaf sealing at 7.10 s
 −35.0 dB in v6.2, −37.9 dB in v6.1 — single windows that move from
