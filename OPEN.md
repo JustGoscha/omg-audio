@@ -253,9 +253,16 @@ door): climbing back 18.1 dB on average on main, 22.3 with the branch
 quality rung moves neither (main 18.1 / 17.8 dB at rungs 8 / 10, the
 branch 22.3 / 25.2 / 19.2 at 8 / 9 / 10) — a few rare heavy events per
 swing, the club's speakers reached through the doorway by rarer, heavier
-hits. To judge by ear; an estimator for mirror paths that needn't find
-the source's sphere (bidirectional, or mirror-image connections) would
-take both the bias and the jitter.
+hits. To judge by ear. Considered, not built: counting the straight
+continuation of a segment that ends at a surface near the source (and
+the backward one of a segment leaving it) as passes through the
+sphere's cut-away part — samples at the ordinary weight instead of
+rarer ones weighted up. It, and the branch's share, assume what lies
+behind the surface is dead space; behind a thin wall it is the next
+room, whose own rays already pass there (through the wall): both would
+count it twice. Knowing which cut-away parts are solid is the missing
+piece — or an estimator for mirror paths that needn't find the
+source's sphere (bidirectional) takes the bias and the jitter at once.
 
 ### The GPU walk fell silent through pillars — solved Oct 30
 Flying through the cathedral on the GPU walk (Godot's default), the
