@@ -6,6 +6,7 @@
 //!
 //!     cargo run --release -p omg-web --example club_spike
 //!     AT=x,y,z (38,40,1.6)  SEED=n  TICKS=n (60)  GEOMETRY=<file>
+//!     SOURCE=name (club): another of the town's sources alone  OPEN=i,j (doors)
 use omg_audio::{Config, PathKind, Quality, Simulation};
 use omg_web::town::Town;
 
@@ -19,9 +20,16 @@ fn main() {
     if let Some(path) = env("GEOMETRY") {
         sim.set_geometry(omg_audio::Geometry::load(&path).expect("geometry"));
     }
-    let club = town.defs.iter().position(|d| d.name == "club").expect("club");
+    let name = env("SOURCE").unwrap_or_else(|| "club".into());
+    let club = town.defs.iter().position(|d| d.name == name).expect("the source");
     for i in 0..town.defs.len() {
         town.set_muted(&mut sim, i, i != club);
+    }
+    // OPEN=i,j: open those doors (the club's inner door is 4)
+    if let Some(open) = env("OPEN") {
+        for i in open.split(',').filter_map(|x| x.parse::<usize>().ok()) {
+            town.set_door(&mut sim, i, 1.0);
+        }
     }
     let ids = town.sources[club].clone();
     sim.set_listener([at[0], at[1], at[2]], 0.0, 0.0, 0.0);

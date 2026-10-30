@@ -34,7 +34,8 @@
 #         square, into the club (its inner door opened), out and into the
 #         cathedral (its portal opened, curtains down, a clap), down into
 #         the bunker to the radio and back up, south to the echo canyon (a
-#         clap at three places), to the west road for two cars. The RNG
+#         clap at three places), to the west road for two cars, and across
+#         it into the radar dome (onto its stage, a clap). The RNG
 #         seeded and every random event of the demo (owls, bells, cars,
 #         the clap's and the steps' variation) off its timers, played at
 #         fixed points of the walk instead: the same tour every take (the
@@ -420,6 +421,8 @@ func _tour(base: String) -> void:
 		["go", 27.0, -95.0, g, "canyon"], ["clap", "canyon"], ["wait", 4.0, "canyon"],
 		["go", 14.0, -65.0, g, "south"], ["go", -13.0, -45.0, g, "road"], ["wait", 1.0, "road"],
 		["car", true, "road"], ["wait", 5.0, "road"], ["car", false, "road"], ["wait", 9.0, "road"],
+		["go", -14.0, 30.0, g, "road"], ["go", -30.0, 30.0, g, "dome"], ["go", -37.0, 30.0, g, "dome"], ["wait", 3.0, "dome"],
+		["go", -42.0, 31.0, 1.2, "stage"], ["wait", 2.0, "stage"], ["clap", "stage"], ["wait", 5.0, "stage"],
 	]
 	var pos := Vector3(3.5, 4.0, g)
 	_place(pos.x, pos.y, pos.z)
