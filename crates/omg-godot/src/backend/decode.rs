@@ -239,6 +239,22 @@ mod tests {
         }
     }
 
+    /// The bunker radio loops without a gap: whole Opus frames (no padded
+    /// end), and its seam (the last 50 ms into the first) is music, not the
+    /// fade to silence the clip first shipped with (tools/make_radio_loop.py).
+    #[test]
+    fn the_radio_loops_without_a_gap() {
+        let pcm = decode_file(&asset("radio48.ogg"), 0.0).expect("radio");
+        assert_eq!(pcm.samples.len(), 707 * 960 - 312, "not whole frames");
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let w = 2400;
+        let mut all: Vec<f32> = pcm.samples.chunks_exact(w).map(rms).collect();
+        all.sort_by(f32::total_cmp);
+        let quiet = all[all.len() / 10];
+        let seam = rms(&[&pcm.samples[pcm.samples.len() - w..], &pcm.samples[..w]].concat());
+        assert!(seam > quiet, "the seam drops out: {seam} under the quietest tenth {quiet}");
+    }
+
     #[test]
     fn shaping_options_apply() {
         let pcm = Pcm { samples: [vec![0.0; 4800], vec![0.5; 4800], vec![0.0; 4800]].concat(), channels: 1, rate: 48_000 };

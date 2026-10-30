@@ -358,7 +358,7 @@ Code: Apache-2.0. Acoustic data and demo media:
 - Cathedral flute: ["Natural Native Flute with Lush Reverb"](https://freesound.org/people/CVLTIV8R/sounds/816095/)
   by CVLTIV8R, performed by RJ Roush — CC0.
 - Bunker radio: ["An old radio playing in a Sri Lankan sewing factory"](https://freesound.org/people/florianreichelt/sounds/423446/)
-  by florianreichelt — CC0.
+  by florianreichelt — CC0, looped without its fades via `tools/make_radio_loop.py`.
 - Car motors: ["car_idle_loop"](https://freesound.org/people/AndrewAlexander/sounds/369053/)
   by AndrewAlexander, ["Bus Motor/Engine Sound Loop"](https://freesound.org/people/qubodup/sounds/54909/)
   by qubodup, ["Diesel Generator 03"](https://freesound.org/people/KVV_Audio/sounds/748274/)
