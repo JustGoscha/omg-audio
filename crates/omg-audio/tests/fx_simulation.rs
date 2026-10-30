@@ -36,6 +36,7 @@ fn energy(pb: &ParamBlock) -> [f32; 3] {
         pb.taps.iter().map(|t| t.gains[b] * t.gains[b]).sum::<f32>()
             + pb.reverb.level[b] * pb.reverb.level[b]
             + pb.remote.map_or(0.0, |r| r.send[b] * r.send[b])
+            + pb.early.level[b] * pb.early.level[b]
     })
 }
 
@@ -582,7 +583,8 @@ fn hall_against_theory(mode: &str) -> (f32, f32, f32, f32) {
         v4: mode == "v5",
         v5: mode == "v5",
         v6: mode.starts_with("v6"),
-        v61: mode == "v6.1",
+        v61: mode == "v6.1" || mode == "v6.2",
+        v62: mode == "v6.2",
         ..Config::default()
     };
     let mut sim = Simulation::new(cfg);
@@ -603,7 +605,7 @@ fn hall_against_theory(mode: &str) -> (f32, f32, f32, f32) {
     let reflected: f32 = pb.taps.iter().filter(|tp| tp.key != omg_core::v3::KEY_DIRECT).map(|tp| tp.gains[1] * tp.gains[1]).sum::<f32>()
         + match sim.dense_response(src) {
             Some(d) => d.bins.iter().map(|x| x[1]).sum::<f32>(),
-            None => pb.reverb.level[1].powi(2) + pb.remote.as_ref().map_or(0.0, |rr| rr.send[1].powi(2)),
+            None => pb.reverb.level[1].powi(2) + pb.remote.as_ref().map_or(0.0, |rr| rr.send[1].powi(2)) + pb.early.level[1].powi(2),
         };
     let rt = match sim.dense_response(src) {
         Some(d) => dense_rt60(d),
@@ -615,16 +617,17 @@ fn hall_against_theory(mode: &str) -> (f32, f32, f32, f32) {
     (rt, sabine, ratio_db, theory_db)
 }
 
-/// v6.1 and v5 play a hall as long and as loud as theory says: within
-/// 15 % of Sabine's time and 3 dB of diffuse-field theory's reflected
-/// level (measured: 6.50 / 6.32 s against 7.25; +14.7 / +15.1 dB against
-/// +16.9 — the trace's field a little less diffuse than theory's). v6
-/// played it 5.00 s (clamped) and +6.5 dB: its late level in the
+/// v6.1, v6.2 and v5 play a hall as long and as loud as theory says:
+/// within 15 % of Sabine's time and 3 dB of diffuse-field theory's
+/// reflected level (measured: 6.50 / 6.32 s against 7.25; +14.7 / +15.1
+/// dB against +16.9 for v6.1 / v5 — the trace's field a little less
+/// diffuse than theory's; v6.2, its dense early field played, nearer).
+/// v6 played it 5.00 s (clamped) and +6.5 dB: its late level in the
 /// echogram's legacy units, 12 dB under (ENGINE_V4.md, "Level").
 #[test]
 fn a_hall_rings_and_sounds_as_long_and_loud_as_theory_says() {
     hall_against_theory("v6");
-    for mode in ["v6.1", "v5"] {
+    for mode in ["v6.1", "v6.2", "v5"] {
         let (rt, sabine, ratio, theory) = hall_against_theory(mode);
         assert!((rt / sabine - 1.0).abs() < 0.15, "{mode}: rt60 {rt:.2} s against Sabine's {sabine:.2} s");
         assert!((ratio - theory).abs() < 3.0, "{mode}: reflected {ratio:+.1} dB over direct, theory {theory:+.1} dB");
