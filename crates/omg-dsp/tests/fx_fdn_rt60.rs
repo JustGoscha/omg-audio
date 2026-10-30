@@ -131,6 +131,7 @@ fn own_field_lean(rt60: f32) -> (f64, f64, f64) {
         remote: None,
         version: 1,
         onset_s: 0.0,
+        early: Default::default(),
     });
     let mut src = Noise::new(42);
     let dec = StereoDecoder::new();

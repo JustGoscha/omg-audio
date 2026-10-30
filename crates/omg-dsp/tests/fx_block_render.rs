@@ -90,6 +90,7 @@ fn scene(v: u64, k: usize) -> ParamBlock {
         remote,
         version: v,
         onset_s: 0.0,
+        early: Default::default(),
     }
 }
 

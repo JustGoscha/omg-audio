@@ -4,16 +4,17 @@
 //!
 //! Physical claim guaranteed: the transport is LOSSLESS for everything
 //! the renderer consumes — tap identity (key), delay, direction, per-band
-//! gains, late reverb (rt60, level), and the coupled-room remote reverb
-//! (present or absent) — bit-exact, in tap order; a reused buffer never
-//! leaks stale data from a previous, larger block; the documented layout
-//! (header 24, 9 floats per tap) holds.
+//! gains, late reverb (rt60, level), the coupled-room remote reverb
+//! (present or absent) and the dense early field (v6.2) — bit-exact, in
+//! tap order; a reused buffer never leaks stale data from a previous,
+//! larger block; the documented layout (header 32, 9 floats per tap)
+//! holds.
 //!
 //! Combined in the demo: omg-web `tick` writes every source's block with
 //! `write_flat` and the audio worklet side rebuilds it with `read_flat`
 //! — the whole web demo hears the world only through this.
 
-use omg_core::params::{ParamBlock, RemoteReverb, ReverbParams, Tap, FLAT_HEADER, FLAT_PER_TAP};
+use omg_core::params::{DenseEarly, ParamBlock, RemoteReverb, ReverbParams, Tap, FLAT_HEADER, FLAT_PER_TAP};
 use omg_core::rng::Rng;
 use omg_core::NBANDS;
 
@@ -37,7 +38,8 @@ fn block(n_taps: usize, remote: bool, version: u64, seed: u64) -> ParamBlock {
         send: [0.12, 0.06, 0.01],
         sh: core::array::from_fn(|i| (i as f32 - 4.0) * 0.123),
     });
-    ParamBlock { taps, reverb, remote, version, onset_s: 0.0137 * seed as f32 }
+    let early = DenseEarly { level: [0.04, 0.02 * seed as f32, 1e-6], centre_s: 0.031, dir: [0.2, -0.1, 0.05 * seed as f32] };
+    ParamBlock { taps, reverb, remote, version, onset_s: 0.0137 * seed as f32, early }
 }
 
 fn bits3(a: [f32; NBANDS]) -> [u32; NBANDS] {
@@ -56,6 +58,9 @@ fn assert_same(a: &ParamBlock, b: &ParamBlock) {
     }
     assert_eq!(bits3(a.reverb.rt60), bits3(b.reverb.rt60), "reverb rt60");
     assert_eq!(bits3(a.reverb.level), bits3(b.reverb.level), "reverb level");
+    assert_eq!(bits3(a.early.level), bits3(b.early.level), "early level");
+    assert_eq!(a.early.centre_s.to_bits(), b.early.centre_s.to_bits(), "early centre");
+    assert_eq!(bits3(a.early.dir), bits3(b.early.dir), "early dir");
     match (&a.remote, &b.remote) {
         (None, None) => {}
         (Some(x), Some(y)) => {

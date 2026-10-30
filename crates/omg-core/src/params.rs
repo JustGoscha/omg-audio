@@ -54,6 +54,25 @@ pub struct RemoteReverb {
     pub sh: [f32; 9],
 }
 
+/// The dense early field (engine v6.2): the early energy past the
+/// strongest early taps — many arrivals of like loudness inside the early
+/// window, too many to play one by one — played as a short diffuse field
+/// from the first arrival on (the renderer's early network), so the
+/// early response plays as loud as traced.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DenseEarly {
+    /// Per-band amplitude for a unit source signal (√energy, like a
+    /// path's gain); 0: none.
+    pub level: [f32; NBANDS],
+    /// When its energy arrives on average after the free-field arrival
+    /// (s): the network's decay is set so its output arrives as late.
+    pub centre_s: f32,
+    /// Its energy vector over its energy: the direction it comes from on
+    /// average, as long as it is one-sided (0: from all round, 1: from
+    /// one direction).
+    pub dir: [f32; 3],
+}
+
 /// The complete simulation → renderer contract. The simulation thread
 /// produces one of these at 10–30 Hz; the audio thread interpolates toward
 /// it. This struct is the *entire* coupling between the two clocks — in the
@@ -72,6 +91,8 @@ pub struct ParamBlock {
     /// the listener do, whichever paths are present (0: unknown — the
     /// earliest tap).
     pub onset_s: f32,
+    /// The dense early field (v6.2; level 0: none).
+    pub early: DenseEarly,
 }
 
 /// Flat f32 layout so a ParamBlock can cross thread/worker boundaries
@@ -81,9 +102,10 @@ pub struct ParamBlock {
 ///   [8]      remote flag (0/1)
 ///   [9..24]  remote rt60[3], send[3], sh[9]
 ///   [24]     onset_s
+///   [25..32] early level[3], centre_s, dir[3]
 ///   then per tap 9 floats: key bits 0..16, delay_s, dir[3], gains[3],
 ///   key bits 16..32 (each half an exact small integer in f32)
-pub const FLAT_HEADER: usize = 25;
+pub const FLAT_HEADER: usize = 32;
 pub const FLAT_PER_TAP: usize = 9;
 
 impl ParamBlock {
@@ -109,6 +131,9 @@ impl ParamBlock {
             out[15..24].copy_from_slice(&r.sh);
         }
         out[24] = self.onset_s;
+        out[25..28].copy_from_slice(&self.early.level);
+        out[28] = self.early.centre_s;
+        out[29..32].copy_from_slice(&self.early.dir);
         for (i, t) in self.taps.iter().enumerate() {
             let o = FLAT_HEADER + i * FLAT_PER_TAP;
             out[o] = (t.key & 0xFFFF) as f32;
@@ -125,6 +150,7 @@ impl ParamBlock {
             taps: Vec::with_capacity(n_taps),
             version: data[0] as u64,
             onset_s: data[24],
+            early: DenseEarly { level: [data[25], data[26], data[27]], centre_s: data[28], dir: [data[29], data[30], data[31]] },
             ..Default::default()
         };
         for b in 0..NBANDS {

@@ -167,9 +167,9 @@ taps read high — v6.2 −0.8 … +4.7 dB, v6.1 −0.2 … +6.5 dB, in two
 seeds still +3 … +4 dB 3 s on. Not the heavy tail's low reading: the
 field plays the strongest 24 of ~2000 early bins, and the strongest
 bins of a younger, noisier average carry more (a selection's bias). It
-shrinks as the average ages; playing the whole early field ("The dense
-early field isn't played", above) would remove it — the sum over all
-bins is unbiased at any age. (The tone through the shut door, 6 s on,
+shrinks as the average ages; the whole early field played removes it —
+the sum over all bins is unbiased at any age (v6.2 plays it since: "The
+dense early field", below). (The tone through the shut door, 6 s on,
 2–4 dB over the door shut all along in all three seeds: the tone's
 level is its taps' phasor sum, and wanders by as much standing still;
 the field's energies there agree within 0.2 dB in two seeds.)
@@ -202,31 +202,25 @@ GPU's early rays pass a leaf half the time); the restart where a door
 comes to rest (young estimate, below). Next: door events in the kernel
 (a moving door priced without the CPU tick).
 
-### The dense early field isn't played (v3 to v6.2)
-Inside 80 ms an estimate holds its arrivals in ~1000–2500 bins (a
-direction cell × 0.3 ms); the field plays the strongest 24 as taps
-(`MAX_EARLY_TAPS`) and drops the rest — v3's split, kept by v6, against
-"the response is the sum of arrivals". The share of the early energy
-the taps carry (v6.2, rung 3, `assess still`, settled): the club from
-the square 83 %, the bell in the square 88 %, north of the club 82 %, a
-clap in the cathedral 57 %, the club's entrance 44 %, a clap in the
-hall 38 %, inside the club 26 % (−5.8 dB). Against v5 (the traced
-response convolved: the sum of arrivals), inside the club the first
-80 ms plays 6.4 / 4.7 / 4.1 dB under (low / mid / high), the late part
-1.5 / 0.6 / 0.1 dB under: C80 −1.1 dB where the trace says +3.0 — the
-club sounds more reverberant than traced. (A clap's own direct sound
-fills its early window: in the hall and the cathedral within 0.7 dB.)
-Tried, Oct 30: the dropped energy added to the network's level — the
-network spreads it over the decay, not into the first 80 ms: early
-+0.6 … +1.4 dB, late over v5 by 0.9 … 4.8 dB (cathedral 5.6 … 7.9 dB);
-reverted. Needs a diffuse early stage in the renderer: the dense early
-energy per direction played as a decorrelated burst inside the window
-(velvet noise, or a short network whose envelope follows the bins), or
-the early part convolved (v4's kernels, 80 ms of them) — a design
-choice (cost per source, behaviour in motion). Also seen there: a clap
-in the cathedral's late part 3.7 / 2.9 / 1.0 dB over v5's in the first
-3 s; which of the two is right is open (a shoebox against Sabine and
-the image sources would tell).
+### The dense early field — played since Oct 30 (v6.2)
+Inside 80 ms the field played the strongest 24 of ~1000–2500 early bins
+and dropped the rest (v3's split, kept by v6): the taps carried 26 % of
+the early energy inside the club, 38 % for a clap in the hall, 82–88 %
+outdoors, and against v5 (the traced response convolved) the club's
+first 80 ms played 6.4 / 4.7 / 4.1 dB under. Adding what was dropped to
+the late network's level didn't place it early (it spread over the
+decay: early +0.6 … +1.4 dB, late over by up to 4.8 dB). Now a short
+network of its own plays it from the first arrival on (ENGINE_V6.md,
+"The dense early field"): inside the club −3.3 / −1.1 / −0.9 dB early,
+the whole response −2.6 / −0.7 / −0.6 dB from v5; in motion as before.
+Left: its arrival within the window is fixed (35 ms on average) — a
+decay or a delay following each block's estimate burst or would warble;
+smoothing that estimate (or building it from the bins' own envelope,
+not their centre) could let it follow. Inside the club the low band is
+still 3.3 dB under, and the network costs the mixer 7–18 %. Also seen:
+a clap in the cathedral's late part 3.7 / 3.1 / 2.0 dB over v5's in the
+first 3 s — which of the two is right is open (a shoebox against Sabine
+and the image sources would tell).
 
 ### The GPU walk fell silent through pillars — solved Oct 30
 Flying through the cathedral on the GPU walk (Godot's default), the

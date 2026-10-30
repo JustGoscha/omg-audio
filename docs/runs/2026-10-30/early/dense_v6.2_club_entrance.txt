@@ -1,0 +1,9 @@
+assess still: mode v6.2 rung 3 quality 2 pace 0
+still (v6.2): club at entrance, 4 clicks every 3 s; dB low/mid/high
+   click  0  early  -29.0  -36.6  -33.6  late  -23.1  -31.8  -40.7
+   click  1  early  -29.0  -36.5  -36.4  late  -24.6  -32.5  -41.7
+   click  2  early  -29.4  -36.6  -36.7  late  -25.2  -33.0  -40.2
+   click  3  early  -29.1  -36.6  -37.1  late  -25.6  -33.3  -40.6
+   tail kurtosis (noise ≈ 3)  low   2.6  mid   2.7  high   3.2
+   early spread  low sd 0.16 span  0.4  mid sd 0.05 span  0.1  high sd 1.37 span  3.5
+   late  spread  low sd 0.95 span  2.5  mid sd 0.58 span  1.5  high sd 0.55 span  1.5

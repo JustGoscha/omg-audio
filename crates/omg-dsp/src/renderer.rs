@@ -615,11 +615,12 @@ pub struct Renderer {
     dense: crate::dense::DenseConv,
     /// The engine time the convolver's input continues at.
     dense_at: f64,
-    /// The FDNs' input normalization (`Fdn::energy_norm`, own and remote),
-    /// taken at each re-selection: [own from, own to, remote from, remote
-    /// to] — each period glides from the last value to the new one, the
-    /// same on the per-sample and the block path.
-    norms: Option<[f32; 4]>,
+    /// The FDNs' input normalization (`Fdn::energy_norm`, own, remote and
+    /// early), taken at each re-selection: [own from, own to, remote from,
+    /// remote to, early from, early to] — each period glides from the
+    /// last value to the new one, the same on the per-sample and the block
+    /// path.
+    norms: Option<[f32; 6]>,
     /// Turn the dense output about z by this (a host whose bus is in the
     /// listener's yaw frame while its kernels are in the world's: the
     /// web), smoothed. 0: the bus and the kernels share a frame.
@@ -665,6 +666,21 @@ pub struct Renderer {
     /// arc around the door direction instead of collapsing to mono at a
     /// point — a mono-summed FDN combs audibly ("metallic").
     remote_spread: [[f32; NCH]; NLINES],
+    // The dense early field (`ParamBlock::early`, v6.2): the early energy
+    // past the strongest taps, its own short network from the first
+    // arrival on, the lines spread over the corners as the field comes.
+    early_fdn: Fdn,
+    early_level: Smoothed,
+    early_low: Smoothed,
+    early_high: Smoothed,
+    early_eq: BandSplit,
+    early_sends: SendCache,
+    /// Where the field comes from (its energy vector), smoothed; the
+    /// lines' spread follows it at each re-selection (`early_spread`).
+    early_dir: [Smoothed; 3],
+    early_spread: [[f32; NCH]; NLINES],
+    /// The corners the networks' lines play from (unit vectors).
+    line_dirs: [[f32; 3]; NLINES],
     fdn_dirs: [[f32; NCH]; NLINES],
     shelf: ShelfEdges,
     /// `pw[i]` = coefⁱ⁺¹ of the per-tap parameter smoothers (all share one
@@ -691,6 +707,7 @@ pub struct Renderer {
     /// FDN sleeps (see process). Starts asleep.
     fdn_idle: u32,
     remote_idle: u32,
+    early_idle: u32,
     reselect_countdown: u32,
     version_seen: u64,
     first_params: bool,
@@ -703,6 +720,7 @@ pub struct Renderer {
     pub mute_taps: bool,
     pub mute_own_fdn: bool,
     pub mute_remote: bool,
+    pub mute_early: bool,
 }
 
 impl Renderer {
@@ -768,6 +786,15 @@ impl Renderer {
             remote_eq: BandSplit::new(sample_rate),
             remote_sh: [Smoothed::new(0.0, FDN_TAU_S, sample_rate); NCH],
             remote_spread: [[0.0; NCH]; NLINES],
+            early_fdn: Fdn::early(sample_rate),
+            early_level: Smoothed::new(0.0, FDN_TAU_S, sample_rate),
+            early_low: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
+            early_high: Smoothed::new(1.0, FDN_TAU_S, sample_rate),
+            early_eq: BandSplit::new(sample_rate),
+            early_sends: SendCache::default(),
+            early_dir: [Smoothed::new(0.0, FDN_TAU_S, sample_rate); 3],
+            early_spread: core::array::from_fn(|i| encode_gains(corner_dirs[i])),
+            line_dirs: corner_dirs,
             fdn_dirs: core::array::from_fn(|i| encode_gains(corner_dirs[i])),
             shelf: ShelfEdges::new(sample_rate),
             pw: coefs.map(|c| core::array::from_fn(|i| (c as f64).powi(i as i32 + 1) as f32)),
@@ -779,6 +806,7 @@ impl Renderer {
             head: core::array::from_fn(|_| Smoothed::new(0.0, 0.03, sample_rate)),
             fdn_idle: u32::MAX,
             remote_idle: u32::MAX,
+            early_idle: u32::MAX,
             reselect_countdown: 0,
             version_seen: 0,
             first_params: true,
@@ -787,6 +815,7 @@ impl Renderer {
             mute_taps: false,
             mute_own_fdn: false,
             mute_remote: false,
+            mute_early: false,
         }
     }
 
@@ -803,8 +832,10 @@ impl Renderer {
     pub fn decorrelate(&mut self, seed: u32) {
         self.fdn = Fdn::seeded(self.sample_rate, seed, false);
         self.remote_fdn = Fdn::seeded(self.sample_rate, seed, true);
+        self.early_fdn = Fdn::seeded_early(self.sample_rate, seed);
         self.own_sends = SendCache::default();
         self.remote_sends = SendCache::default();
+        self.early_sends = SendCache::default();
     }
 
     /// How far back (samples) any path may still read, now or once its
@@ -1213,6 +1244,25 @@ impl Renderer {
             // tail rings out through the last doorway direction.
             None => self.remote_level.set(0.0),
         }
+
+        // the dense early field: each band sent so it plays the energy
+        // traced, the lines spread as the field comes (at the next
+        // re-selections); the early network's decay is fixed (`Fdn::early`)
+        let e = &pb.early;
+        if e.level.iter().any(|&l| l > 0.0) {
+            let lv = e.level;
+            let mid = lv[1].max(lv.iter().fold(0.0f32, |a, &b| a.max(b)) * 1e-4);
+            let shape = if mid > 0.0 { [lv[0] / mid, 1.0, lv[2] / mid] } else { [1.0; 3] };
+            let m = self.early_sends.get(&self.early_fdn, [0.0; 2], shape);
+            self.early_level.set(mid * m[1]);
+            self.early_low.set(shape[0] * m[0] / m[1]);
+            self.early_high.set(shape[2] * m[2] / m[1]);
+            for k in 0..3 {
+                self.early_dir[k].set(e.dir[k]);
+            }
+        } else {
+            self.early_level.set(0.0);
+        }
         self.first_params = false;
         self.snap_born = false;
     }
@@ -1316,13 +1366,18 @@ impl Renderer {
             let yaw = self.head[0].tick();
             let pitch = self.head[1].tick();
             let roll = self.head[2].tick();
+            for d in &mut self.early_dir {
+                d.tick();
+            }
             self.reselect(yaw, pitch, roll);
             self.reselect_countdown = RESELECT_EVERY;
             m = left.min(RESELECT_EVERY as usize);
             advance_n(&mut self.head, m - 1);
+            advance_n(&mut self.early_dir, m - 1);
         } else {
             m = left.min(self.reselect_countdown as usize);
             advance_n(&mut self.head, m);
+            advance_n(&mut self.early_dir, m);
         }
         self.reselect_countdown -= m as u32;
         self.since_params = self.since_params.saturating_add(m as u32);
@@ -1333,11 +1388,27 @@ impl Renderer {
     /// crossfades index changes) and refresh the remote-reverb aperture
     /// spread from the smoothed door direction.
     fn reselect(&mut self, yaw: f32, pitch: f32, roll: f32) {
-        let (own, rem) = (self.fdn.energy_norm(), self.remote_fdn.energy_norm());
+        let (own, rem, ear) = (self.fdn.energy_norm(), self.remote_fdn.energy_norm(), self.early_fdn.energy_norm());
         self.norms = Some(match self.norms {
-            Some([_, o, _, r]) => [o, own, r, rem],
-            None => [own, own, rem, rem],
+            Some([_, o, _, r, _, e]) => [o, own, r, rem, e, ear],
+            None => [own, own, rem, rem, ear, ear],
         });
+        // the early field's lines weighted by where it comes from: an
+        // energy density 1 + 3·a·cos θ about its mean direction (a the
+        // energy vector's length — the first-order spread of a field
+        // that one-sided), at each corner, kept to the field's energy
+        let d: [f32; 3] = core::array::from_fn(|k| self.early_dir[k].current());
+        let w: [f32; NLINES] = core::array::from_fn(|i| {
+            let u = self.line_dirs[i];
+            (1.0 + 3.0 * (d[0] * u[0] + d[1] * u[1] + d[2] * u[2])).max(0.0)
+        });
+        let mean = w.iter().sum::<f32>() / NLINES as f32;
+        for i in 0..NLINES {
+            let g = if mean > 1e-6 { (w[i] / mean).sqrt() } else { 1.0 };
+            for k in 0..NCH {
+                self.early_spread[i][k] = g * self.fdn_dirs[i][k];
+            }
+        }
         if let Some(grid) = &self.grid {
             let rot = HeadRotation::new(yaw, pitch, roll);
             for tap in &mut self.taps {
@@ -1372,12 +1443,16 @@ impl Renderer {
         // sources, most of the time).
         let quiet = self.fdn_idle >= self.fdn.idle_after()
             && self.remote_idle >= self.remote_fdn.idle_after()
+            && self.early_idle >= self.early_fdn.idle_after()
             && self.fdn_level.current() <= 1e-6
             && self.fdn_level.target_val() <= 1e-6
             && self.remote_level.current() <= 1e-6
             && self.remote_level.target_val() <= 1e-6
+            && self.early_level.current() <= 1e-6
+            && self.early_level.target_val() <= 1e-6
             && self.send_eq.quiet(1e-9)
-            && self.remote_eq.quiet(1e-9);
+            && self.remote_eq.quiet(1e-9)
+            && self.early_eq.quiet(1e-9);
         let dense = self.dense.has_kernel() || self.dense.is_warm();
         if quiet && !dense {
             for _ in 0..m {
@@ -1391,6 +1466,9 @@ impl Renderer {
                 &mut self.remote_level,
                 &mut self.remote_low,
                 &mut self.remote_high,
+                &mut self.early_level,
+                &mut self.early_low,
+                &mut self.early_high,
             ] {
                 advance_n(core::slice::from_mut(g), m);
             }
@@ -1409,6 +1487,9 @@ impl Renderer {
                     &mut self.remote_level,
                     &mut self.remote_low,
                     &mut self.remote_high,
+                    &mut self.early_level,
+                    &mut self.early_low,
+                    &mut self.early_high,
                 ] {
                     advance_n(core::slice::from_mut(g), m);
                 }
@@ -1474,6 +1555,9 @@ impl Renderer {
         let yaw = self.head[0].tick();
         let pitch = self.head[1].tick();
         let roll = self.head[2].tick();
+        for d in &mut self.early_dir {
+            d.tick();
+        }
 
         // Every 128 samples (~375 Hz): re-select point-tap HRIRs against the
         // current head pose (PointConv crossfades index changes), and refresh
@@ -1565,7 +1649,7 @@ impl Renderer {
         let own_gate = if own_level > 1e-6 || self.fdn_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
         let wet_in = self.send_eq.shape(x * own_gate, self.send_low.tick(), self.send_high.tick());
         // energy-calibrated on the way in (`Fdn::energy_norm`)
-        let [own_norm, rem_norm] = self.norm_at(RESELECT_EVERY - 1 - self.reselect_countdown);
+        let [own_norm, rem_norm, early_norm] = self.norm_at(RESELECT_EVERY - 1 - self.reselect_countdown);
         let own_in = if self.mute_own_fdn { 0.0 } else { wet_in * own_norm };
         fdn_step(&mut self.fdn, &mut self.fdn_idle, own_in, 1.0, own_level * mix, own_gate, &self.fdn_dirs, foa);
 
@@ -1583,15 +1667,23 @@ impl Renderer {
         }
         let rem_in = if self.mute_remote { 0.0 } else { rin * rem_norm };
         fdn_step(&mut self.remote_fdn, &mut self.remote_idle, rem_in, 1.0, rem_level * mix, rem_gate, &self.remote_spread, foa);
+
+        // the dense early field: likewise, its short network spread as
+        // the field comes
+        let early_level = self.early_level.tick();
+        let early_gate = if early_level > 1e-6 || self.early_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
+        let ein = self.early_eq.shape(x * early_gate, self.early_low.tick(), self.early_high.tick());
+        let early_in = if self.mute_early { 0.0 } else { ein * early_norm };
+        fdn_step(&mut self.early_fdn, &mut self.early_idle, early_in, 1.0, early_level * mix, early_gate, &self.early_spread, foa);
     }
 
     /// The FDNs' input normalization `k` samples into a re-selection
-    /// period (own, remote).
+    /// period (own, remote, early).
     #[inline]
-    fn norm_at(&self, k: u32) -> [f32; 2] {
-        let [a, b, c, d] = self.norms.unwrap_or([1.0; 4]);
+    fn norm_at(&self, k: u32) -> [f32; 3] {
+        let [a, b, c, d, e, f] = self.norms.unwrap_or([1.0; 6]);
         let t = (k + 1) as f32 / RESELECT_EVERY as f32;
-        [a + (b - a) * t, c + (d - c) * t]
+        [a + (b - a) * t, c + (d - c) * t, e + (f - e) * t]
     }
 
     /// `late` for block samples `off..off + x.len()` (`x[j]` = the source
@@ -1607,11 +1699,14 @@ impl Renderer {
         let mut rem_in = [0.0f32; BLOCK];
         let mut rem_lvl = [0.0f32; BLOCK];
         let mut rem_gate = [0.0f32; BLOCK];
+        let mut early_in = [0.0f32; BLOCK];
+        let mut early_lvl = [0.0f32; BLOCK];
+        let mut early_gate = [0.0f32; BLOCK];
         // energy-calibrated on the way in (a level L plays L²: see
         // `Fdn::energy_norm`), gliding over each re-selection period
         let k0 = RESELECT_EVERY - self.reselect_countdown - m as u32;
         for (j, &x) in x.iter().enumerate() {
-            let [own_norm, rem_norm] = self.norm_at(k0 + j as u32);
+            let [own_norm, rem_norm, e_norm] = self.norm_at(k0 + j as u32);
             let own_level = self.fdn_level.tick();
             let mix = self.fdn_mix.tick();
             let gate = if own_level > 1e-6 || self.fdn_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
@@ -1625,11 +1720,19 @@ impl Renderer {
             rem_in[j] = if self.mute_remote { 0.0 } else { rin * rem_norm };
             rem_lvl[j] = rem_level * mix;
             rem_gate[j] = gate;
+            let e_level = self.early_level.tick();
+            let gate = if e_level > 1e-6 || self.early_level.target_val() > 1e-6 { 1.0 } else { 0.0 };
+            let ein = self.early_eq.shape(x * gate, self.early_low.tick(), self.early_high.tick());
+            early_in[j] = if self.mute_early { 0.0 } else { ein * e_norm };
+            early_lvl[j] = e_level * mix;
+            early_gate[j] = gate;
         }
         let own = FdnFeed { input: &own_in[..m], pre: 1.0, lvl: &own_lvl[..m], gate: &own_gate[..m] };
         fdn_block(&mut self.fdn, &mut self.fdn_idle, &own, &self.fdn_dirs, bus, off);
         let rem = FdnFeed { input: &rem_in[..m], pre: 1.0, lvl: &rem_lvl[..m], gate: &rem_gate[..m] };
         fdn_block(&mut self.remote_fdn, &mut self.remote_idle, &rem, &self.remote_spread, bus, off);
+        let early = FdnFeed { input: &early_in[..m], pre: 1.0, lvl: &early_lvl[..m], gate: &early_gate[..m] };
+        fdn_block(&mut self.early_fdn, &mut self.early_idle, &early, &self.early_spread, bus, off);
     }
 }
 

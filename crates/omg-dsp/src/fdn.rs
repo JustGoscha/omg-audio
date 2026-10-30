@@ -17,6 +17,23 @@ const LEN_MS: [f32; NLINES] = [23.4, 32.5, 39.7, 46.9, 55.9, 62.9, 72.0, 81.4];
 /// uncorrelated fields. (Identical networks play copies: summed in the
 /// bus they add coherently, the one-sided share of a field heard +3 dB.)
 const LEN_MS_B: [f32; NLINES] = [25.1, 29.9, 37.3, 43.9, 51.7, 59.3, 67.9, 77.3];
+/// The early network's (`Fdn::early`): short lines, so its output starts
+/// within a few ms and arrives as early as the dense early field does
+/// (the shortest over a render block: `max_block`).
+const LEN_MS_E: [f32; NLINES] = [4.1, 5.3, 6.7, 7.9, 9.4, 11.3, 13.1, 15.2];
+const INJECT_SIGN_E: [f32; NLINES] = [1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0];
+/// The early network's diffuser against the late ones' (`Diffuser`): its
+/// stages a quarter as long — the late ones' alone arrive ~30 ms late on
+/// average, more than most dense early fields do.
+const EARLY_DIFFUSER: f32 = 0.25;
+/// When the early network's output arrives on average after its input
+/// (s): fixed — the dense early field lies within the early window, its
+/// strongest arrivals played as taps; at 35 ms some 93 % of it stays
+/// inside 80 ms. Its decay follows no estimate: a network whose decay
+/// swings with each block's noisy centre holds what came in for a short
+/// decay when a long one is set, and rings it out many times over (+20
+/// dB bursts in the web demo; a delay following it would warble).
+const EARLY_CENTRE_S: f32 = 0.035;
 /// Band centres the loop filter is fitted at (omg-dsp bands: 125 / 790 /
 /// 5600 Hz).
 const MID_HZ: f32 = 790.0;
@@ -131,6 +148,54 @@ impl Fdn {
         Self::with(sample_rate, LEN_MS_B, INJECT_SIGN_B)
     }
 
+    /// The early network (`ParamBlock::early`): short lines, injection
+    /// signs of its own — a short diffuse field beside the two late ones.
+    pub fn early(sample_rate: f32) -> Self {
+        Self::with_diffuser(sample_rate, LEN_MS_E, INJECT_SIGN_E, Diffuser::scaled(sample_rate, EARLY_DIFFUSER)).at_early_centre()
+    }
+
+    /// The early network's fixed decay (`EARLY_CENTRE_S`), in place.
+    fn at_early_centre(mut self) -> Self {
+        self.set_centre(EARLY_CENTRE_S);
+        self.settle();
+        self
+    }
+
+    /// `early`'s of its own (as `seeded`): the dense early fields of two
+    /// sources playing one signal play uncorrelated.
+    pub fn seeded_early(sample_rate: f32, seed: u32) -> Self {
+        if seed == 0 {
+            return Self::early(sample_rate);
+        }
+        let mut h = seed.wrapping_mul(0x9e37_79b9) ^ 0xc2b2_ae35;
+        let mut next = || {
+            h ^= h << 13;
+            h ^= h >> 17;
+            h ^= h << 5;
+            h as f32 / u32::MAX as f32
+        };
+        let len = core::array::from_fn(|i| LEN_MS_E[i] * (1.0 + 0.12 * (next() - 0.5)));
+        let sign = core::array::from_fn(|i| if next() < 0.5 { -INJECT_SIGN_E[i] } else { INJECT_SIGN_E[i] });
+        Self::with_diffuser(sample_rate, len, sign, Diffuser::scaled(sample_rate, EARLY_DIFFUSER)).at_early_centre()
+    }
+
+    /// The decay for an output arriving `ts` after the input on average:
+    /// one gain per pass for every line, g², so the output arrives the
+    /// diffuser's centre time and then L̄ / (1 − g²) late (a pass every L̄
+    /// on average, keeping g² of it), and `energy_norm` holds exactly.
+    /// (Per-line gains for one RT60, as `set_rt60` sets, differ by up to
+    /// 7× over the early network's short lines at a decay of tens of ms:
+    /// the mean g² the normalization counts played 5 dB under.)
+    fn set_centre(&mut self, ts: f32) {
+        let lbar = self.lens.iter().sum::<f32>() / NLINES as f32 / self.sample_rate;
+        let ts = ts - self.diffuser.centre_s(self.sample_rate);
+        let g2 = if ts > lbar { (1.0 - lbar / ts).min(0.98) } else { 0.0 };
+        for i in 0..NLINES {
+            self.gains[i].set(g2.sqrt());
+            self.damp_coef[i].set(1.0);
+        }
+    }
+
     /// `new` (or `second`) of its own: line lengths moved by up to ±6 %
     /// and injection signs flipped, both by `seed` — networks of different
     /// seeds fed the same input play uncorrelated fields, as the
@@ -157,11 +222,15 @@ impl Fdn {
     }
 
     fn with(sample_rate: f32, len_ms: [f32; NLINES], sign: [f32; NLINES]) -> Self {
+        Self::with_diffuser(sample_rate, len_ms, sign, Diffuser::new(sample_rate))
+    }
+
+    fn with_diffuser(sample_rate: f32, len_ms: [f32; NLINES], sign: [f32; NLINES], diffuser: Diffuser) -> Self {
         // whole samples: a fractional read interpolates, and linear
         // interpolation lowpasses every pass of the loop
         let lens: [f32; NLINES] = core::array::from_fn(|i| (len_ms[i] * 1e-3 * sample_rate).round());
         Self {
-            diffuser: Diffuser::new(sample_rate),
+            diffuser,
             lines: (0..NLINES)
                 .map(|i| DelayLine::new(lens[i] as usize + 4))
                 .collect(),
@@ -431,7 +500,20 @@ const DIFFUSER_G: [f32; 4] = [0.75, 0.75, 0.625, 0.625];
 
 impl Diffuser {
     fn new(sample_rate: f32) -> Self {
-        Self { stages: core::array::from_fn(|i| Allpass::new((DIFFUSER_MS[i] * 1e-3 * sample_rate).round() as usize, DIFFUSER_G[i])) }
+        Self::scaled(sample_rate, 1.0)
+    }
+
+    /// Its stages `k` times as long (the early network's: a burst of a
+    /// few ms, not tens).
+    fn scaled(sample_rate: f32, k: f32) -> Self {
+        Self { stages: core::array::from_fn(|i| Allpass::new((k * DIFFUSER_MS[i] * 1e-3 * sample_rate).round() as usize, DIFFUSER_G[i])) }
+    }
+
+    /// When an arrival comes out of it on average (s): each stage's
+    /// energy arrives its own delay late on average (−g² now, then
+    /// (1 − g²)²·g²⁽ᵏ⁻¹⁾ at k delays: their mean is one delay).
+    fn centre_s(&self, sample_rate: f32) -> f32 {
+        self.stages.iter().map(|a| a.buf.len() as f32).sum::<f32>() / sample_rate
     }
 
     #[inline]

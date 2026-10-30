@@ -29,6 +29,7 @@ fn own(level: f32, version: u64) -> ParamBlock {
         remote: None,
         version,
         onset_s: 0.0,
+        early: Default::default(),
     }
 }
 

@@ -324,6 +324,7 @@ impl Sim {
             remote: None,
             version: self.version,
             onset_s: 0.0,
+            early: Default::default(),
         }
     }
 
@@ -335,7 +336,7 @@ impl Sim {
         let reverb = estimate_reverb(&self.echo_avg);
 
         self.version += 1;
-        ParamBlock { taps: self.taps_buf.clone(), reverb, remote: None, version: self.version, onset_s: 0.0 }
+        ParamBlock { taps: self.taps_buf.clone(), reverb, remote: None, version: self.version, onset_s: 0.0, early: Default::default() }
     }
 
     /// C6d: the late field measured on the WORLD geometry — actual source

@@ -1,0 +1,6 @@
+assess fly: mode v6.2 rung 3 quality 2 pace 0
+fly (v6.2): through the cathedral wall at 8 m/s, the flute playing a steady 500 Hz; artifacts = output above 3 kHz, under the tone
+   outside   670 windows: median  -62.6 dB, worst  -53.6 dB, over −40 dB   0, over −30 dB   0
+   crossing  110 windows: median  -61.7 dB, worst  -48.5 dB, over −40 dB   0, over −30 dB   0
+   inside    770 windows: median  -62.6 dB, worst  -50.9 dB, over −40 dB   0, over −30 dB   0
+   tick while flying (55 ticks): mean 7.0 ms, median 3.7, p90 12.5, max 15.5

@@ -6,7 +6,8 @@
 //!
 //!     cargo run --release -p omg-audio --example bench_sources [--features gpu]
 //!
-//! `OMG_BUDGET=taps,points,voices` overrides the mixer's budgets.
+//! `OMG_BUDGET=taps,points,voices` overrides the mixer's budgets; `OMG_V62`
+//! runs engine v6.2 (the demos' default), `OMG_V3` v3 (else v4).
 
 use omg_audio::{clip, Compute, Config, Frame, Geometry, Hrir, Material, Mixer, Play, Simulation, SourceDesc};
 use std::time::Instant;
@@ -51,7 +52,10 @@ fn sources(sim: &mut Simulation, n: usize) {
 }
 
 fn bench_sim(n: usize, compute: Compute) -> Option<(f64, usize, Vec<Frame>)> {
-    let mut sim = Simulation::new(Config { compute, v4: std::env::var_os("OMG_V3").is_none(), ..Config::default() });
+    // OMG_V3: engine v3; OMG_V62: engine v6.2 (the demos' default); else v4
+    let v62 = std::env::var_os("OMG_V62").is_some();
+    let v4 = std::env::var_os("OMG_V3").is_none() && !v62;
+    let mut sim = Simulation::new(Config { compute, v4, v5: v4, v6: v62, v61: v62, v62, ..Config::default() });
     sim.set_geometry(town());
     if compute != Compute::Cpu && !sim.gpu_active() {
         return None;

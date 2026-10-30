@@ -20,7 +20,7 @@ type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefau
 
 use crate::material::{air_attenuation, Material};
 use crate::mesh::{Mesh, SegHit};
-use crate::params::{ReverbParams, Tap};
+use crate::params::{DenseEarly, ReverbParams, Tap};
 use crate::paths::segment_transmission_after;
 use crate::rng::Rng;
 use crate::scene::{AcousticGeometry, GeomHit, WithPanels};
@@ -1066,6 +1066,9 @@ pub struct SourceField {
     /// This tick's total reflected energy (true units, unsmoothed): all
     /// NEE and sphere contributions, early and late.
     pub reflected: [f32; NBANDS],
+    /// v6.2: the early energy past the strongest early taps, played as a
+    /// short diffuse field (`SourceState::field`; level 0: none).
+    pub early: DenseEarly,
 }
 
 #[derive(Clone, Copy)]
@@ -1533,7 +1536,15 @@ impl SourceState {
         });
         let end = dense.len() as f32 * DENSE_BIN_S;
         impulses.retain(|i| i[0] < end);
-        SourceField { taps, dense: Some(DenseResponse { bin_s: DENSE_BIN_S, bins: dense, noise, impulses }), reverb, late_dir, aniso, reflected }
+        SourceField {
+            taps,
+            dense: Some(DenseResponse { bin_s: DENSE_BIN_S, bins: dense, noise, impulses }),
+            reverb,
+            late_dir,
+            aniso,
+            reflected,
+            early: DenseEarly::default(),
+        }
     }
 
     /// v6.2: one tick's paths that met apertures (walked with `aps`),
@@ -1637,7 +1648,8 @@ impl SourceState {
     }
 
     /// Step 5b: this source's field from the smoothed state (v6.2: priced
-    /// at the apertures as they are, `apertures`).
+    /// at the apertures as they are, `apertures`, and the dense early
+    /// field played too).
     #[allow(clippy::too_many_arguments)]
     fn field(
         &mut self,
@@ -1656,12 +1668,25 @@ impl SourceState {
         taps.append(edge_taps);
         let mut early: Vec<(&u32, &Bin)> = self.early.iter().filter(|(k, _)| **k < KEY_CHAIN_BASE).collect();
         early.sort_by(|x, y| y.1.e[1].total_cmp(&x.1.e[1]));
-        for (k, b) in early.into_iter().take(MAX_EARLY_TAPS) {
-            if b.e[1] <= 0.0 {
-                continue;
-            }
+        // v6.2: what the taps don't play — the bins past the strongest
+        // `MAX_EARLY_TAPS`, many arrivals of like loudness — as one dense
+        // field: its energy per band, when it arrives on average (Σ E·t),
+        // and from where (Σ E·dir)
+        let (mut dense_e, mut dense_t, mut dense_v) = ([0.0f32; NBANDS], 0.0f32, Vec3::new(0.0, 0.0, 0.0));
+        for (i, (k, b)) in early.into_iter().enumerate() {
             let dl = b.dir.length();
             let dir = if dl > 1e-9 { b.dir * (1.0 / dl) } else { cells[cell_of(*k)] };
+            if i >= MAX_EARLY_TAPS || b.e[1] <= 0.0 {
+                if apertures.is_some() {
+                    let e = b.e[1].max(0.0);
+                    for band in 0..NBANDS {
+                        dense_e[band] += b.e[band].max(0.0);
+                    }
+                    dense_t += e * (((k - KEY_EARLY_BASE) % 256) as f32 + 0.5) * DELAY_BIN_S;
+                    dense_v = dense_v + dir * e;
+                }
+                continue;
+            }
             // Delay = this tick's free-field arrival + the bin's fixed
             // offset. An energy-weighted mean of stochastic arrivals
             // jitters tick to tick, and the renderer glides every
@@ -1743,7 +1768,20 @@ impl SourceState {
                 reverb.level[b] *= self.priced[1][b].sqrt();
             }
         }
-        SourceField { taps, dense: None, reverb, late_dir, aniso, reflected }
+        // the dense early field priced as the early taps are (v6.2)
+        let early = if dense_e[1] > 0.0 && apertures.is_some() {
+            DenseEarly {
+                level: core::array::from_fn(|b| (dense_e[b] * self.priced[0][b]).max(0.0).sqrt()),
+                centre_s: dense_t / dense_e[1],
+                dir: {
+                    let v = dense_v * (1.0 / dense_e[1]);
+                    [v.x, v.y, v.z]
+                },
+            }
+        } else {
+            DenseEarly::default()
+        };
+        SourceField { taps, dense: None, reverb, late_dir, aniso, reflected, early }
     }
 }
 

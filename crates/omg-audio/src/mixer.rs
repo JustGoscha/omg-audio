@@ -142,7 +142,7 @@ impl VoiceId {
 /// Does a block carry any path to the ears (v4's convolved response
 /// comes with taps: its direct path or a bend)?
 fn heard(pb: &ParamBlock) -> bool {
-    !pb.taps.is_empty() || pb.reverb.level[1] > 0.0 || pb.remote.is_some()
+    !pb.taps.is_empty() || pb.reverb.level[1] > 0.0 || pb.remote.is_some() || pb.early.level[1] > 0.0
 }
 
 /// A channel's level since the last `take_meter`: peak and RMS amplitude.
@@ -336,7 +336,7 @@ impl Slot {
         // no path arrives on its own (blocked, or a ghost's emissions all
         // in): the scattered field still does, timed from the free-field
         // arrival — a channel whose convolution rings is not silent
-        if !first.is_finite() && pb.onset_s > 0.0 && (pb.reverb.level[1] > 0.0 || pb.remote.is_some()) {
+        if !first.is_finite() && pb.onset_s > 0.0 && (pb.reverb.level[1] > 0.0 || pb.remote.is_some() || pb.early.level[1] > 0.0) {
             first = pb.onset_s as f64 * sr;
         }
         if !first.is_finite() {
@@ -432,6 +432,7 @@ impl Slot {
         self.filtered.remote = pb.remote;
         self.filtered.version = pb.version;
         self.filtered.onset_s = pb.onset_s;
+        self.filtered.early = pb.early;
     }
 }
 
@@ -792,10 +793,11 @@ impl Mixer {
             if !s.used || s.in_frame {
                 continue;
             }
-            if s.has_block && (!s.latest.taps.is_empty() || s.latest.reverb.level[1] > 0.0 || s.latest.remote.is_some()) {
+            if s.has_block && (!s.latest.taps.is_empty() || s.latest.reverb.level[1] > 0.0 || s.latest.remote.is_some() || s.latest.early.level[1] > 0.0) {
                 s.latest.taps.clear();
                 s.latest.reverb.level = [0.0; 3];
                 s.latest.remote = None;
+                s.latest.early.level = [0.0; 3];
                 s.latest.version = s.latest.version.wrapping_add(1 << 40);
                 s.dirty = true;
             }
@@ -837,7 +839,7 @@ impl Mixer {
         // ready before a sound starts
         let loud = |s: &Slot| -> f32 {
             let pb = &s.latest;
-            let paths: f32 = pb.taps.iter().map(|t| t.gains[1]).sum::<f32>() + pb.reverb.level[1];
+            let paths: f32 = pb.taps.iter().map(|t| t.gains[1]).sum::<f32>() + pb.reverb.level[1] + pb.early.level[1];
             paths * s.fader.target_val().max(0.0) * if s.convolving { 2.0 } else { 1.0 }
         };
         let eligible = |s: &Slot| s.used && s.has_block && s.kernel.is_some();
@@ -954,7 +956,7 @@ impl Mixer {
                 continue;
             }
             let pb = &s.latest;
-            let mut loud = pb.reverb.level[1] + pb.remote.as_ref().map_or(0.0, |r| r.send[1]);
+            let mut loud = pb.reverb.level[1] + pb.remote.as_ref().map_or(0.0, |r| r.send[1]) + pb.early.level[1];
             for t in &pb.taps {
                 loud += t.gains[1];
             }
@@ -1391,4 +1393,5 @@ fn copy_block(dst: &mut ParamBlock, src: &ParamBlock) {
     dst.remote = src.remote;
     dst.version = src.version;
     dst.onset_s = src.onset_s;
+    dst.early = src.early;
 }

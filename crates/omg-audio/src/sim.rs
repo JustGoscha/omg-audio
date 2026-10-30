@@ -1245,6 +1245,8 @@ impl Simulation {
                     sh: omg_dsp::ambi::encode_gains([d[0] / l, d[1] / l, d[2] / l]),
                 });
             }
+            // the dense early field (v6.2), at the source's gain
+            pb.early = omg_core::params::DenseEarly { level: f.early.level.map(|l| l * g), ..f.early };
             s.block = pb;
             s.repriced = [[1.0; NBANDS]; 2];
             s.traced = Some((s.pos, tick));
@@ -1252,7 +1254,7 @@ impl Simulation {
         let now = self.clock;
         for s in &mut self.sources {
             let on = sounding(s, now, ear);
-            if !on && (!s.block.taps.is_empty() || s.block.reverb.level[1] > 0.0 || s.block.remote.is_some()) {
+            if !on && (!s.block.taps.is_empty() || s.block.reverb.level[1] > 0.0 || s.block.remote.is_some() || s.block.early.level[1] > 0.0) {
                 // rung out: silent from now on (the mixer fades it out)
                 s.block = ParamBlock { version, ..Default::default() };
                 s.traced = None;
@@ -1370,6 +1372,9 @@ impl Simulation {
                         for b in 0..NBANDS {
                             t.gains[b] *= early[b];
                         }
+                    }
+                    for b in 0..NBANDS {
+                        s.block.early.level[b] *= early[b];
                     }
                     for b in 0..NBANDS {
                         s.block.reverb.level[b] *= late[b];

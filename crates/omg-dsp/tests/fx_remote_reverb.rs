@@ -36,6 +36,7 @@ fn render(remote: Option<RemoteReverb>, own_level: f32, tail: usize) -> Vec<[f32
         remote,
         version: 1,
         onset_s: 0.0,
+        early: Default::default(),
     });
     let mut src = Noise::new(42);
     (0..ON + tail)

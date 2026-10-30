@@ -107,6 +107,7 @@ wgpu adapter.
 
 | Effect | Test file |
 |---|---|
+| The dense early field (v6.2): its energy, within the early window, each band as a path's, from where it comes, never bursting | `crates/omg-dsp/tests/fx_dense_early.rs` |
 | Doppler (delay glide), also at 10 km and for fast flyovers | `crates/omg-dsp/tests/fx_doppler.rs` |
 | Play log: recorded sources read at emission time, no distance limit | `crates/omg-dsp/src/playlog.rs` (unit tests), `omg-web tests::a_bell_10_km_away_arrives_29_s_late_reverb_included` |
 | Path-identity crossfade | `crates/omg-dsp/tests/fx_path_crossfade.rs` |

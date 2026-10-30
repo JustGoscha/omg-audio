@@ -453,6 +453,59 @@ tick's cost. The flight's tick on the GPU (Godot level, three seeds):
 mean 5.0–8.2 ms, max 15–21 ms (with the field missing) → mean 10.1–11.1
 ms, max 29–33 ms (the CPU walk alone: mean 14, max 19–27 ms).
 
+## The dense early field (v6.2)
+
+Inside 80 ms an estimate holds its arrivals in ~1000–2500 bins (a
+direction cell × 2 ms); the field played the strongest 24 as taps
+(`MAX_EARLY_TAPS`) and dropped the rest — v3's split, kept by v6. The
+taps carried 26 % of the early energy inside the club, 38 % for a clap
+in the hall, 82–88 % outdoors; against v5 (the traced response
+convolved: the sum of arrivals) the club's first 80 ms played 6.4 /
+4.7 / 4.1 dB under (low / mid / high), the whole response 4.1 / 2.9 /
+3.1 dB. And where an average was young (a door come to rest) its
+strongest bins carried more: the early taps read up to +5 dB high.
+
+Now the rest plays too: the tracer sums the early bins past the
+strongest 24 — energy per band, priced at the apertures as the early
+taps are, and its energy vector (where it comes from, how one-sided) —
+into `ParamBlock::early` (`DenseEarly`), and the renderer plays it from
+the first arrival on through a short network of its own
+(`Fdn::early`: eight lines of 4–15 ms, a diffuser a quarter of the late
+ones', one gain per pass so its energy normalization is exact), its
+lines spread over the corners as the field comes (an energy density
+1 + 3a·cos θ about its mean direction), each band sent as a path of
+those gains would put it. Its output arrives 35 ms after the first
+arrival on average, 93–95 % within 80 ms.
+
+That arrival time is fixed. A network whose decay followed each block's
+estimate of when the field arrives held, when the next block asked for
+a longer decay, what it had taken in for a short one, and rang it out
+many times over: the web demo's smoke test played +20 dB bursts (with
+the estimate under the diffuser's own centre time, a pass gain of 0
+sent the input's normalization towards 1/g). A delay following the
+estimate instead would warble. So the field's energy and direction
+follow the trace every frame; its timing within the window doesn't
+(`DenseEarly::centre_s` is carried, not played).
+
+Isolated (`omg-dsp fx_dense_early`): the energy given within 0.7 dB,
+its centre at 33.7 ms whatever it is said to be, each band within
+1.2 dB of what a path of the same gains puts there, one-sided as said
+(Y/W ±0.67, from all round −0.06), and changing every block (level,
+direction, centre) no 10 ms window more than 1.1 dB over the median.
+Measured (`assess still`, rung 3, against v5): inside the club the
+first 80 ms −3.3 / −1.1 / −0.9 dB (was −6.4 / −4.7 / −4.1), the whole
+response −2.6 / −0.7 / −0.6 (was −4.1 / −2.9 / −3.1); the club's
+entrance within 1.1 dB; a clap in the hall or the cathedral as before
+(its own direct sound fills its early window), the cathedral's late
+treble +1.0 → +2.0 dB (the 5 % past 80 ms). In motion as before, seed
+by seed: flying into the cathedral the same pops, the passing car's
+pitch and level jitter the same, walking out of the hall the same
+tail; the door swinging shut against the door standing, rms 5.20 →
+4.67 dB (three seeds). The cost: a third network per sounding source —
+the mixer 3.29 → 3.05× real time with 64 sources, 2.71 → 2.23× with
+256 (`bench_sources OMG_V62=1`, one thread). The web smoke test's
+level +0.9 dB.
+
 ## Still open (OPEN.md)
 
 A loud room heard through its walls is a heavy-tailed estimate: young
@@ -464,4 +517,6 @@ transmission query (half the walk); wasm walks on one thread; echoes of
 third order and beyond between three walls, and second order off small
 faces, are still left to the finders' rays (first and second order and
 their ground twins are named from the faces); a moving door, and a
-crossing, on the GPU walk cost CPU ticks.
+crossing, on the GPU walk cost CPU ticks; the dense early field's
+timing within the window (its arrival is fixed at 35 ms), and inside
+the club its low band still 3.3 dB under the traced sum.
