@@ -487,3 +487,58 @@ fn standing_still_the_reverb_settles_v6() {
     assert!(v6 < 3.0, "v6: the reverb scatters {v6:.2} dB click to click standing still");
     assert!(v6 < 0.5 * v3, "v6 {v6:.2} dB against v3 {v3:.2} dB");
 }
+
+/// Walking behind a building never cuts a source off: east–west at y = 12
+/// the ears cross the Old House's shadow of the club's windows twice, and
+/// what reaches them (the paths, bends and field the engine plays) changes
+/// across each boundary as a shadow does — no step of a metre jumps more
+/// than 10 dB (the legacy engine's `shadow_boundaries_are_continuous`,
+/// ported to the live engine).
+#[test]
+fn shadow_boundaries_are_continuous() {
+    const CLUB: usize = 2;
+    let mut sim = Simulation::new(Config {
+        quality: Quality::High,
+        compute: Compute::Cpu,
+        v6: true,
+        v61: true,
+        v62: true,
+        kernel_thread: false,
+        ..Config::default()
+    });
+    let mut town = Town::new(&mut sim);
+    only(&mut town, &mut sim, CLUB);
+    let ids = town.sources[CLUB].clone();
+    let level = |sim: &mut Simulation| -> f32 {
+        let mut e = 0.0f32;
+        for _ in 0..12 {
+            let f = sim.tick();
+            for id in &ids {
+                let pb = f.block(*id).expect("the club is traced");
+                e += pb.taps.iter().map(|t| t.gains[1] * t.gains[1]).sum::<f32>()
+                    + pb.reverb.level[1] * pb.reverb.level[1]
+                    + pb.remote.map_or(0.0, |r| r.send[1] * r.send[1]);
+            }
+        }
+        e / 12.0
+    };
+    let mut prev = f32::NAN;
+    let mut worst = 0.0f32;
+    let mut x = 16.0f32;
+    while x <= 40.0 {
+        sim.set_listener([x, 12.0, 1.6], 0.0, 0.0, 0.0);
+        for _ in 0..8 {
+            sim.tick();
+        }
+        let cur = level(&mut sim);
+        assert!(cur > 1e-10, "the club inaudible at ({x}, 12): {:.1} dB", db(cur));
+        if prev.is_finite() {
+            let step = (db(cur) - db(prev)).abs();
+            worst = worst.max(step);
+            assert!(step < 10.0, "a {step:.1} dB jump between x = {} and {x}", x - 1.0);
+        }
+        prev = cur;
+        x += 1.0;
+    }
+    eprintln!("walking the Old House's shadow: the largest step {worst:.1} dB");
+}

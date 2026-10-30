@@ -312,11 +312,11 @@ long — what the swing should sound like at every instant):
   over −40 dB above 3 kHz (`docs/runs/2026-10-29/door`).
 - Standing doors gain from the split too: the club heard from the
   square through its walls and shut door (`assess still`, click to
-  click) spreads 3.0 / 2.4 / 2.6 → 1.1 / 0.9 / 1.2 dB late, 1.1 / 1.1 /
-  2.6 → 0.5 / 0.5 / 0.5 dB early, where v6.1's drifted 7 dB down over
-  30 s; a door slammed shut (`assess door`), 0.1 s on, the highs +8 /
-  +11 dB over where they settle → −5 / −3 dB. Walking out of the hall and
-  flying through the cathedral's wall: unchanged.
+  click, three seeds) spreads late 1.33 / 0.99 / 2.69 → 0.56 / 0.42 /
+  0.56 dB, early 1.55 / 0.68 / 1.98 → 1.17 / 0.35 / 0.45 dB; a door
+  slammed shut (`assess door`), 0.1 s on, the highs +8 / +11 dB over
+  where they settle → −5 / −3 dB. Walking out of the hall and flying
+  through the cathedral's wall: unchanged.
 - Cost (the town, every source sounding, the ears by the club door,
   `examples/door_ms`): a tick 15.4 → 16.8 ms standing (the split at
   leaves and the paths' records; the virtual reflections are walked only
@@ -354,6 +354,31 @@ on the GPU walk a moving door costs a CPU tick (the kernel records no
 door paths); a path meeting apertures more than six
 times is left to the averages; the virtual reflections are first order;
 where a door comes to rest the averages still start over (young).
+
+## Edge paths that leaked (every engine)
+
+Ported to the live engine (`town_system::shadow_boundaries_are_
+continuous`: the club playing, the ears walking east–west past the Old
+House's shadow), the legacy engine's shadow-boundary test failed there
+too: at one spot a two-edge path played the club 31 dB over its
+neighbours a metre either side (−31 against −77 dB) — through the club's
+wall. Two ways a diffraction string ran through a building:
+
+- **A corner exactly in line.** Each bend's legs are checked from a
+  point 3 cm off the edge, away from the straight line. Where the line
+  passes over a vertical corner exactly (in plan) and only above or below
+  it, that point slid along the edge — onto the corner itself, 0.02 mm
+  inside the wall — and the next leg ran on through the building. Now the
+  point is moved across the edge only; a line passing the edge closer
+  than a millimetre across it has no bend around it (`off_edge`).
+- **A bend pinned to an edge's end.** The string's shortest point,
+  clamped to where a porch roof's edge meets the wall behind it, isn't
+  bending over that edge — it goes around its end — and its legs started
+  on the wall. A diffraction point lies inside its edge (`on_edge`).
+
+The walk now changes as a shadow does (the largest step of a metre 8.5
+dB); the bell's paths around the cathedral, the facades' echoes: as
+before. The legacy copy of the test retired; the suite green.
 
 ## Still open (OPEN.md)
 

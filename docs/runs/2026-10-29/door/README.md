@@ -70,8 +70,9 @@ v6.1 4.4 dB, v6.2 2.9 dB rms (three seeds: 4.80 → 3.40).
 
 `headless_<scenario>_<engine>.txt` (`assess <scenario> EAR=0`): `still`
 — the club heard from the square through its walls and shut door, a
-click every 3 s: late spread 3.0 / 2.4 / 2.6 → 1.1 / 0.9 / 1.2 dB (v6.1's
-drifting 7 dB down over 30 s, v6.2's steady: the split at the leaf);
+click every 3 s (`headless_still_<engine>_seed<n>.txt`, three seeds):
+late spread 1.33 / 0.99 / 2.69 → 0.56 / 0.42 / 0.56 dB, early 1.55 /
+0.68 / 1.98 → 1.17 / 0.35 / 0.45 dB (the split at the leaf);
 `door` — the club's door slammed shut, 0.1 s on: the highs +8 / +11 dB
 over where they settle (v6.1) → −5 / −3 dB (v6.2); `walkout`, `fly` —
 unchanged.

@@ -14,10 +14,14 @@ About half the test files drive the legacy engine (WorldSim, AutoPaths,
 the PT tracer — only `demo/app` uses it; TESTS.md lists which). They
 stayed green while the live engine lost the bell's path over the
 cathedral. Port each claim that matters to the live engine (town_system
-did so for the bells), then retire the legacy engine and its tests
-(`omg-scene` world/sim/early/late/dome, `omg-core` pt/pt_mesh/paths/
-tracer) — "consolidate duplicated code". `world::tests::shadow_
-boundaries_are_continuous` (legacy) still fails.
+did so for the bells, and for the shadow boundaries), then retire the
+legacy engine and its tests (`omg-scene` world/sim/early/late/dome,
+`omg-core` pt/pt_mesh/paths/tracer) — "consolidate duplicated code".
+`world::tests::shadow_boundaries_are_continuous` failed on the legacy
+engine; ported (`town_system::shadow_boundaries_are_continuous`), the
+live engine failed it too — a 31 dB spike of a two-edge path at one
+spot — and fixed (ENGINE_V6.md, "Edge paths that leaked"); the legacy
+copy retired.
 
 ### v3 mode is slow and noisy — v6 answers both
 Exponential averages (EMA 0.35 / 0.1): the club door took seconds to
@@ -48,9 +52,9 @@ connected through walls from the listener's vertices, weighted against
 the walk's own paths by multiple importance sampling (bidirectional) —
 or split at partitions by a learnt value of what lies beyond (path
 guiding). Large. v6.2 splits at a door's leaf (once a ray): the club from
-the square, its late part click to click 3.0 / 2.4 / 2.6 → 1.1 / 0.9 /
-1.2 dB, its drift over 30 s gone (`assess still`) — what comes through
-its walls is still the draw's.
+the square, its late part click to click 1.33 / 0.99 / 2.69 → 0.56 /
+0.42 / 0.56 dB (`assess still`, three seeds) — what comes through its
+walls is still the draw's.
 The same shows right after a door shuts: the field through the shut
 door restarts as a young estimate. Across four seeds the click 50 ms to
 0.8 s after the shut lands on average 2.3 dB (early part, per band) and

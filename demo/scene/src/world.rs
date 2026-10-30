@@ -1936,44 +1936,6 @@ impl Default for WorldSim {
 mod tests {
     use super::*;
 
-    fn mid_sum_at(w: &mut WorldSim, x: f32, y: f32, src: usize) -> f32 {
-        // settle the EMA a little, then read
-        for _ in 0..4 {
-            let _ = w.tick_at(x, y, 0.0);
-        }
-        let (blocks, _) = w.tick_at(x, y, 0.0);
-        blocks[src].taps.iter().map(|t| t.gains[1]).sum()
-    }
-
-    /// The user-facing property: walking behind a building must never cut
-    /// a source off — occlusion floors at the best knife-edge bend, so
-    /// levels stay continuous across shadow boundaries (the knife edge is
-    /// −5 dB at the boundary; allow a little more for the geometry step).
-    #[test]
-    fn shadow_boundaries_are_continuous() {
-        let mut w = WorldSim::new();
-        let mut prev = f32::NAN;
-        // east-west walk at y = 12: crosses the Old House shadow of the
-        // club's windows twice (entering and leaving)
-        let mut x = 16.0;
-        while x <= 40.0 {
-            let cur = mid_sum_at(&mut w, x, 12.0, 2);
-            assert!(cur > 1e-4, "club inaudible at ({x}, 12)");
-            if prev.is_finite() {
-                let ratio = (cur / prev).max(prev / cur);
-                assert!(
-                    ratio < 3.2,
-                    "level jump {:.1} dB between x={} and x={}",
-                    20.0 * ratio.log10(),
-                    x - 1.0,
-                    x
-                );
-            }
-            prev = cur;
-            x += 1.0;
-        }
-    }
-
     /// The v3 GPU walk takes a world only within its flat caps; beyond
     /// them every tick silently walks on the CPU (the web panel then reads
     /// "v3 · cpu" with compute = gpu). The town must fit: every door/pane

@@ -3711,7 +3711,7 @@ fn price_one(world: &World, es: &EdgeSet, hits: &mut Vec<SegHit>, ei: usize, lis
     let (a, b) = es.edges[ei];
     let p = crate::paths::bend_point(a, b, sp, listener);
     let (d1, d2) = ((p - listener).length(), (sp - p).length());
-    if d1 < 0.2 || d2 < 0.2 {
+    if d1 < 0.2 || d2 < 0.2 || !on_edge(p, (a, b)) {
         return None;
     }
     if world.grade.is_some_and(|g| p.z < g + 0.3 && listener.z > g) {
@@ -3722,7 +3722,8 @@ fn price_one(world: &World, es: &EdgeSet, hits: &mut Vec<SegHit>, ei: usize, lis
     if out.length() < 1e-3 {
         return None; // no bend: the straight line itself
     }
-    let q = p + out.normalize() * 0.03;
+    // the legs checked from just outside the edge, across it
+    let Some(q) = off_edge(p, es.edges[ei], out) else { return None };
     let t1 = world.transmission(listener, q, hits);
     if t1[0] < 1e-6 {
         return None;
@@ -4517,7 +4518,7 @@ fn price_two(
     src: Vec3,
     vis: [f32; NBANDS],
 ) -> Option<(Tap, bool)> {
-    if es.filled[e1] || es.filled[e2] {
+    if es.filled[e1] || es.filled[e2] || !on_edge(p1, es.edges[e1]) || !on_edge(p2, es.edges[e2]) {
         return None;
     }
     let direct = (src - listener).length().max(MIN_DIST);
@@ -4527,15 +4528,13 @@ fn price_two(
     }
     let na = (p1 - listener).normalize();
     // legs meet 3 cm off each edge on the outside of the string — away
-    // from the straight line it goes around (a grazing edge, the string
-    // almost straight there, still has an outside)
+    // from the straight line it goes around, across the edge (`off_edge`)
     let line = src - listener;
-    let off = |p: Vec3| -> Option<Vec3> {
+    let off = |p: Vec3, ei: usize| -> Option<Vec3> {
         let k = ((p - listener).dot(line) / line.dot(line)).clamp(0.0, 1.0);
-        let o = p - (listener + line * k);
-        (o.length() > 1e-4).then(|| p + o.normalize() * 0.03)
+        off_edge(p, es.edges[ei], p - (listener + line * k))
     };
-    let (q1, q2) = (off(p1)?, off(p2)?);
+    let (q1, q2) = (off(p1, e1)?, off(p2, e2)?);
     // a leg through the fixed geometry (a string through a church, not
     // over it): one ray each, before pricing anything
     let open = |a: Vec3, b: Vec3| {
@@ -5134,6 +5133,29 @@ pub fn exposed(mesh: &Mesh, a: Vec3, b: Vec3) -> bool {
     // outside corner or roof ridge ~270°+ — the strings over a building
     // cross its gables, so they are edges too
     best * 360 > 205 * N
+}
+
+/// Where a path's legs are checked from at its bend point `p` on edge
+/// a→b: 3 cm off the edge, across it, on the outside of the string —
+/// `away` (from the straight line, or the bend's own outside) without its
+/// part along the edge. None if that is under a millimetre: the straight
+/// line passes over the edge itself (a corner exactly in line, in plan),
+/// no bend around it — and a point off the line along the edge (a corner
+/// passed above or below) sat on the corner, a hair inside the wall, and
+/// a string ran on through the building (`price_two`).
+fn off_edge(p: Vec3, (a, b): (Vec3, Vec3), away: Vec3) -> Option<Vec3> {
+    let u = (b - a).normalize();
+    let across = away - u * away.dot(u);
+    (across.length() > 1e-3).then(|| p + across.normalize() * 0.03)
+}
+
+/// Does the bend point `p` lie inside its edge, not at an end? A
+/// string's shortest point clamped to an edge's end isn't bending over
+/// that edge — it goes around the end, where the edge meets other
+/// surfaces (a porch roof's edge where it meets the wall behind): its
+/// legs started on that wall and slipped through it.
+fn on_edge(p: Vec3, (a, b): (Vec3, Vec3)) -> bool {
+    (p - a).length() > 1e-3 && (p - b).length() > 1e-3
 }
 
 /// Bend angle for a ray passing an edge at distance `a`: sampled from
