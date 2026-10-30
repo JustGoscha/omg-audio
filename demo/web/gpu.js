@@ -11,7 +11,7 @@ const V3_VERSION = 8; // omg_core::v3::fold::WALK_LAYOUT_VERSION
 const V3_SKY = 384;
 const V3_SRC = 17164; // SOURCE_WORDS
 const V3_MAX_SRC = 64;
-const V3_SCENE_WORDS = 64 * 12 + 256 * 16 + 8 * 8 + 65536 / 32; // fold MAX_SCENE_WORDS
+const V3_SCENE_WORDS = 64 * 16 + 256 * 16 + 8 * 8 + 65536 / 32; // fold MAX_SCENE_WORDS
 
 export async function initGpu(wasm) {
   if (!navigator.gpu || !wasm.sim_v3_version || wasm.sim_v3_version() !== V3_VERSION) return null;
