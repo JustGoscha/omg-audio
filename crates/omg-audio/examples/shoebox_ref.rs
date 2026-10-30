@@ -14,6 +14,8 @@
 //!     cargo run --release -p omg-audio --example shoebox_ref
 //!     SCATTER=0..1 (default 0)  SIZE=x,y,z (10,7,4)  ALPHA=low,mid,high
 //!     (0.1,0.2,0.3)  SRC=x,y,z  LIS=x,y,z  TICKS=n (60)  MODES=v6.2,v6.1,v5
+//!     K=k: the source sphere's radius per metre of path
+//!     PROFILE=1: v5's response per 100 ms against the images'
 //!     FLOOR=1: a floor alone (an infinite plane at z = 0): the direct
 //!     sound and its one image
 
@@ -115,8 +117,13 @@ fn main() {
             g.add_box([0.0, -t, 0.0], [lx, 0.0, lz], m);
             g.add_box([0.0, ly, 0.0], [lx, ly + t, lz], m);
         }
+        // K=k: the sphere radius per metre of path (the rung's otherwise)
+        let quality = match std::env::var("K").ok().and_then(|v| v.parse::<f32>().ok()) {
+            Some(k) => Quality::Custom(omg_core::v3::Budget { k, ..Quality::High.budget(false) }),
+            None => Quality::High,
+        };
         let cfg = Config {
-            quality: Quality::High,
+            quality,
             v4: mode == "v5",
             v5: mode == "v5",
             v6: mode.starts_with("v6"),
@@ -161,5 +168,36 @@ fn main() {
         }
         println!("   {mode:6} {}", abs(&p));
         line(mode, &p, &ism);
+        // PROFILE=1 (v5, whose traced response is kept in bins): the mid
+        // band per 100 ms after the direct sound, engine against images
+        if std::env::var_os("PROFILE").is_some() {
+            if let Some(d) = sim.dense_response(src) {
+                let mut eng = [0.0f64; 30];
+                for (i, x) in d.bins.iter().enumerate() {
+                    let w = (((i as f32 + 0.5) * d.bin_s) / 0.1) as usize;
+                    if w < 30 {
+                        eng[w] += x[1].max(0.0) as f64;
+                    }
+                }
+                for tp in pb.taps.iter().filter(|t| t.key != omg_core::v3::KEY_DIRECT) {
+                    let w = ((tp.delay_s - pb.onset_s) / 0.1) as usize;
+                    if w < 30 {
+                        eng[w] += (tp.gains[1] as f64).powi(2);
+                    }
+                }
+                let mut img = [0.0f64; 30];
+                for t in &taps {
+                    if (t.delay_s - t_direct).abs() < 1e-5 {
+                        continue;
+                    }
+                    let w = ((t.delay_s - t_direct) / 0.1) as usize;
+                    if w < 30 {
+                        img[w] += (t.gains[1] as f64).powi(2);
+                    }
+                }
+                let row: Vec<String> = (0..12).map(|w| format!("{:+.1}", db(eng[w]) - db(img[w]))).collect();
+                println!("   {mode:6} mid band per 100 ms, dB from the images: {}", row.join(" "));
+            }
+        }
     }
 }

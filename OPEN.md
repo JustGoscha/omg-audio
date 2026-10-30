@@ -225,25 +225,30 @@ first 3 s. A shoebox against its image sources (ENGINE_V6.md) finds v5
 1.4 dB over in the early part and both v5 and v6.2 within 1 dB of each
 other late: v5 isn't the yardstick; the cathedral itself is untested.
 
-### Mirror paths near a surface read low (every engine)
+### Mirror paths near a surface read low (every engine) — fixed on a branch
 Against a shoebox's image sources (`examples/shoebox_ref`, ENGINE_V6.md
 "Against the image sources") the late part reads low, more the larger
 the walls' mirror share (scattering 1: 0 dB; 0: −1.8 … −0.6 dB) and the
 nearer the source's surfaces (α 0.1: −1.0 dB mid-room, −4.5 dB 0.5 m off
-the floor). Sphere hits weight a ray passing within k·l of the source as
-if the whole sphere were crossable. Tried (Oct 30, not committed): the
-weight over the sphere's reachable share from 64 directions' free
-distances — overshot by about as much (+0.7 … +2.3 dB): mirrored rays
-cross part of a clipped sphere after all (beyond a wall the sphere's cap
-overlaps the sphere around the source's image there, and the reflected
-rays crossing it are counted for that image's path). Not the exact
-solver's claim on loud mirror chains it never named (`solver_owns`):
-with the claim off (spheres count every mirror path, the solver
-nothing) the numbers barely move — uncorrected late −2.0 … −1.0 dB,
-corrected +1.6 … +2.2 dB (Oct 30). A fix models that overlap — the
-share of the sphere no image's sphere covers — rather than splitting
-the difference. The outdoor case (a car over the road, its sphere half
-underground on long paths) is the same question.
+the floor); in time it grows with the path (`PROFILE=1`: −1.1 dB at
+100–200 ms, −6.4 at 300 ms, −12 by 0.7 s). Found (Oct 30): a sphere hit
+counts a ray whose closest approach lies on the disk through the source
+across the ray, weighted as if it could lie anywhere on it; where the
+disk reaches past a surface no ray's can. The source over a floor alone
+reads exactly that (h/r 0.12 / 0.25 / 0.49: −2.1 / −1.4 / −0.7 dB).
+Not the exact solver's claim on mirror chains (off: the same numbers).
+A correction by the whole sphere's reachable share overshot in a room
+(+0.7 … +2.3 dB); by each hit's own disk it holds: the branch
+`sphere-clearance` (d97f849) divides each hit's weight by its disk's
+free share (the clearance along ±x, ±y, ±z as a box; the sphere stops
+growing where less than half is reachable, no weight more than
+doubled), on the CPU and the GPU walk alike — the shoebox late +0.4 /
++0.5 dB, the corner source +0.4 / +0.2 / +0.1, the floor +0.3. Not on
+main: in motion a door swinging shut jitters more (climbing back 17 /
+28 / 34 dB against 14 / 19 / 20, a treble window over −40 dB in two
+seeds of three) — the unbiased weights are noisier per tick. To judge by
+ear; more rays at the swing, or the correction's variance tamed, would
+take it to main.
 
 ### The GPU walk fell silent through pillars — solved Oct 30
 Flying through the cathedral on the GPU walk (Godot's default), the

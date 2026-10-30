@@ -547,7 +547,9 @@ directions of min(free distance, r)², what an isotropic field of ray
 segments gives) overshot by about as much (+0.7 … +2.3 dB): mirrored
 rays cover part of a clipped sphere after all, and the exact solver's
 claim on loud mirror chains it never named may add to the deficit. Not
-committed; OPEN.md. Guarded: `fx_simulation::a_shoebox_plays_its_image_sources_early_and_late`
+committed here; a correction by each hit's own disk holds against the
+image sources (late +0.4 / +0.5 dB) but makes a door's swing jitter
+more — on the branch `sphere-clearance`, OPEN.md. Guarded: `fx_simulation::a_shoebox_plays_its_image_sources_early_and_late`
 (v6.2 within 1.5 dB early, 2.5 dB late; v6.1's early part 4 dB short or
 more).
 
