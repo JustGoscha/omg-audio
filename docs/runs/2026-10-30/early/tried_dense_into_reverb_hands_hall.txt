@@ -1,0 +1,9 @@
+assess still: mode v6.2 rung 3 quality 2 pace 0
+still (v6.2): hands at hall, 4 clicks every 3 s; dB low/mid/high
+   click  0  early  -12.5   -5.9    2.4  late  -12.8   -7.7   -2.2
+   click  1  early  -12.6   -6.1    2.0  late  -16.4  -12.1   -6.8
+   click  2  early  -12.6   -6.1    2.0  late  -16.4  -12.2   -6.9
+   click  3  early  -12.6   -6.1    2.0  late  -16.5  -12.1   -6.8
+   tail kurtosis (noise ≈ 3)  low   2.7  mid   3.0  high   3.5
+   early spread  low sd 0.07 span  0.2  mid sd 0.11 span  0.3  high sd 0.16 span  0.4
+   late  spread  low sd 1.59 span  3.7  mid sd 1.92 span  4.5  high sd 1.99 span  4.7

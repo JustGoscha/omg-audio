@@ -1,0 +1,9 @@
+assess still: mode v5 rung 3 quality 2 pace 0
+still (v5): club at inside, 4 clicks every 3 s; dB low/mid/high
+   click  0  early    5.5    8.8   16.7  late    2.8    5.9    9.9
+   click  1  early    5.7    8.9   16.8  late    2.8    5.9    9.8
+   click  2  early    5.8    8.9   16.8  late    2.8    5.9    9.8
+   click  3  early    5.7    8.9   16.8  late    2.8    5.9    9.9
+   tail kurtosis (noise ≈ 3)  low   2.5  mid   3.1  high   3.4
+   early spread  low sd 0.10 span  0.3  mid sd 0.05 span  0.1  high sd 0.04 span  0.1
+   late  spread  low sd 0.02 span  0.1  mid sd 0.01 span  0.0  high sd 0.02 span  0.0

@@ -189,6 +189,32 @@ GPU's early rays pass a leaf half the time); the restart where a door
 comes to rest (young estimate, below). Next: door events in the kernel
 (a moving door priced without the CPU tick).
 
+### The dense early field isn't played (v3 to v6.2)
+Inside 80 ms an estimate holds its arrivals in ~1000–2500 bins (a
+direction cell × 0.3 ms); the field plays the strongest 24 as taps
+(`MAX_EARLY_TAPS`) and drops the rest — v3's split, kept by v6, against
+"the response is the sum of arrivals". The share of the early energy
+the taps carry (v6.2, rung 3, `assess still`, settled): the club from
+the square 83 %, the bell in the square 88 %, north of the club 82 %, a
+clap in the cathedral 57 %, the club's entrance 44 %, a clap in the
+hall 38 %, inside the club 26 % (−5.8 dB). Against v5 (the traced
+response convolved: the sum of arrivals), inside the club the first
+80 ms plays 6.4 / 4.7 / 4.1 dB under (low / mid / high), the late part
+1.5 / 0.6 / 0.1 dB under: C80 −1.1 dB where the trace says +3.0 — the
+club sounds more reverberant than traced. (A clap's own direct sound
+fills its early window: in the hall and the cathedral within 0.7 dB.)
+Tried, Oct 30: the dropped energy added to the network's level — the
+network spreads it over the decay, not into the first 80 ms: early
++0.6 … +1.4 dB, late over v5 by 0.9 … 4.8 dB (cathedral 5.6 … 7.9 dB);
+reverted. Needs a diffuse early stage in the renderer: the dense early
+energy per direction played as a decorrelated burst inside the window
+(velvet noise, or a short network whose envelope follows the bins), or
+the early part convolved (v4's kernels, 80 ms of them) — a design
+choice (cost per source, behaviour in motion). Also seen there: a clap
+in the cathedral's late part 3.7 / 2.9 / 1.0 dB over v5's in the first
+3 s; which of the two is right is open (a shoebox against Sabine and
+the image sources would tell).
+
 ### The GPU walk fell silent through pillars — solved Oct 30
 Flying through the cathedral on the GPU walk (Godot's default), the
 Godot level's nave pillars on the line: each crossing dropped the
