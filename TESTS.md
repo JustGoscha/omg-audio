@@ -101,6 +101,7 @@ wgpu adapter.
 |---|---|
 | v3 tracer: direct, walls, NEE, late field, diffraction; crossing a wall drops the room left behind | `crates/omg-core/tests/fx_v3_tracer.rs` |
 | GPU walk results from before a wall crossing are discarded | `omg-core v3::fold::tests::a_walk_from_before_crossing_a_wall_is_discarded` |
+| A walker ticks late: after a crossing the CPU walks, no tick loses the room | `omg-core v3::walker::tests::after_a_crossing_the_cpu_walks_until_the_walker_catches_up` |
 
 ### DSP (omg-dsp)
 

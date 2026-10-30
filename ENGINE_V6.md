@@ -347,7 +347,7 @@ long — what the swing should sound like at every instant):
   slammed door 0.1 s on, +12 … +14 dB over where it settles → within
   1.2 dB. While a door's leaf moves, and for
   `DOOR_CPU_TICKS` after, the tick walks on the CPU instead
-  (`Tracer::doors_moving`; the averages start over as the door starts
+  (`Tracer::cpu_walks`; the averages start over as the door starts
   and where it stops, so the swing's whole estimate is priced); back on
   the GPU, the walk still in flight is dropped. Headless on the GPU
   (`COMPUTE=gpu`, three seeds): v6.1 12.0 dB rms against the door
@@ -418,6 +418,41 @@ test 226 of 226 frames, within 0.02 dB of the grass's mirror share (0
 before). Cost on the Godot level (375 such faces): chains 0.6 → 1.2 ms a
 tick.
 
+## The GPU walk through a crossing (every engine)
+
+Recorded in Godot (its walk on the GPU), flying into the cathedral with
+the flute playing a tone, the output held treble over −40 dB in 12
+windows (v6.1: 2). Headless on the dumped Godot level with the GPU walk
+(`assess fly SIGNAL=tone COMPUTE=gpu GEOMETRY=…`, three seeds): 45–79
+windows over −40 dB, −34 dB at worst, in v6.1 and v6.2 alike — none on
+the CPU walk. The flight runs through the nave's pillars (x = 4: stone
+every ~3 m). Crossing a surface drops every average and the walk in
+flight, launched on the other side; on that level the GPU's walk lands
+3–6 ticks late (sliced to its share of the GPU), and between pillars no
+walk ever landed fresh: from the wall until 0.4 s after the listener
+stopped the cathedral played its direct sound alone — reverb −180 dB
+where the CPU's walk reads −20.6 dB — then all of it at once, a burst
+heard in the treble. Now the CPU walks the tick of a crossing and the
+next `CROSS_CPU_TICKS` − 1 (`Tracer::cpu_walks`, which also carries
+v6.2's moving doors); back on the GPU, the walk in flight is dropped
+and the averages hold until its next lands. The flight on the GPU:
+reverb −20.5 dB all the way, no window over −40 dB (three seeds, v6.1
+and v6.2). Isolated: `v3::walker::tests::after_a_crossing_the_cpu_walks_until_the_walker_catches_up`
+(a walker four ticks late, a hall's two pillars on the line: 9 of 18
+ticks without reflections or reverb before, none now).
+
+Two smaller faults on the way. The restart's extra rays
+(`Tracer::burst`, 4× the late rays) were counted down only by CPU walks:
+on the GPU a burst left from the first tick was spent by the first CPU
+tick after a crossing (40–55 ms ticks); their ticks pass on walked ticks
+too now. And a walked tick never reset its cost record: the late
+family's cost summed tick over tick (79 ms on a 9 ms tick), and a CPU
+tick's burst flag stayed on — the hosts' governors leave burst ticks
+out, so on the GPU, once a door had moved, they no longer saw the
+tick's cost. The flight's tick on the GPU (Godot level, three seeds):
+mean 5.0–8.2 ms, max 15–21 ms (with the field missing) → mean 10.1–11.1
+ms, max 29–33 ms (the CPU walk alone: mean 14, max 19–27 ms).
+
 ## Still open (OPEN.md)
 
 A loud room heard through its walls is a heavy-tailed estimate: young
@@ -428,5 +463,5 @@ estimate's ±2–4 dB wobble moving at the lowest rungs; a cheaper
 transmission query (half the walk); wasm walks on one thread; echoes of
 third order and beyond between three walls, and second order off small
 faces, are still left to the finders' rays (first and second order and
-their ground twins are named from the faces); a moving door on the GPU
-walk costs a CPU tick.
+their ground twins are named from the faces); a moving door, and a
+crossing, on the GPU walk cost CPU ticks.

@@ -149,10 +149,12 @@ fn main() {
         let over = |d: f64| v.iter().filter(|x| x.1 > d).count();
         println!("    {:8} {:4} windows: median {:6.1} dB, worst {:6.1} dB, over −40 dB {:3}, over −30 dB {:3}", names[p], v.len(), s[s.len() / 2], s[s.len() - 1], over(-40.0), over(-30.0));
     }
-    let mut worst: Vec<(f64, f64)> = art.iter().flatten().copied().filter(|x| x.1 > -30.0).collect();
+    // LOUDEST=dB: every window over this (default: the eight loudest over −30)
+    let list: Option<f64> = std::env::var("LOUDEST").ok().and_then(|v| v.parse().ok());
+    let mut worst: Vec<(f64, f64)> = art.iter().flatten().copied().filter(|x| x.1 > list.unwrap_or(-30.0)).collect();
     worst.sort_by(|a, b| b.1.total_cmp(&a.1));
     if !worst.is_empty() {
-        let w: Vec<String> = worst.iter().take(8).map(|(t, d)| format!("{t:.3}s {d:.0}dB ({})", names[phase_at(*t)])).collect();
+        let w: Vec<String> = worst.iter().take(if list.is_some() { usize::MAX } else { 8 }).map(|(t, d)| format!("{t:.3}s {d:.0}dB ({})", names[phase_at(*t)])).collect();
         println!("    loudest: {}", w.join(", "));
     }
 

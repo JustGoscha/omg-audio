@@ -189,6 +189,18 @@ GPU's early rays pass a leaf half the time); the restart where a door
 comes to rest (young estimate, below). Next: door events in the kernel
 (a moving door priced without the CPU tick).
 
+### The GPU walk fell silent through pillars — solved Oct 30
+Flying through the cathedral on the GPU walk (Godot's default), the
+Godot level's nave pillars on the line: each crossing dropped the
+averages and the walk in flight, and with the GPU's walk 3–6 ticks late
+on that level none landed until the listener stopped — the reverb gone
+for 1.6 s, then back at once (a treble burst, −34 dB under the tone).
+The CPU walks the ticks just after a crossing now (ENGINE_V6.md, "The
+GPU walk through a crossing"). Left: those ticks cost a CPU walk (the
+flight's tick max 29–33 ms on the Godot level); a crossing that leaves
+the room the same (a pillar) still drops everything — a test of which
+side a surface separates would keep the averages there.
+
 ### A facade's echo found by chance — first order solved Oct 29
 A car passing the field (`assess cartone`) played the town's facade
 echoes at some rungs and runs and not others. The reference

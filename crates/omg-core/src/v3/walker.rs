@@ -50,8 +50,9 @@ pub fn trace_with(
     cpu_budget: Budget,
     walker: Option<&mut dyn V3Walker>,
 ) -> Vec<SourceField> {
-    // v6.2: while a door moves the CPU walks (`Tracer::doors_moving`)
-    if let Some(w) = walker.filter(|_| !tracer.doors_moving(world)) {
+    // just after a crossing (and v6.2: while a door moves) the CPU walks
+    // (`Tracer::cpu_walks`)
+    if let Some(w) = walker.filter(|_| !tracer.cpu_walks(world, listener)) {
         // the late family at the CPU's own count when the walker leaves it
         let cpu_late = (!w.walks_late()).then_some(cpu_budget.late_rays);
         if let Some(fields) = tracer.trace_walked(world, listener, sources, budget, cpu_late, &mut |job| w.walk(job)) {
@@ -59,4 +60,89 @@ pub fn trace_with(
         }
     }
     tracer.trace(world, listener, sources, cpu_budget)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::fold::{output_words, Walked};
+    use super::*;
+    use crate::material::Material;
+    use crate::mesh::MeshBuilder;
+
+    /// A walker that answers `late` ticks after a job (a large level's
+    /// GPU walk, sliced to its share of the GPU): one walk in flight, the
+    /// job of the tick it lands on launched next. Every walk lands energy
+    /// in every bin.
+    struct Late {
+        late: u32,
+        flight: Option<(u32, Vec<u32>, u32)>,
+    }
+
+    impl V3Walker for Late {
+        fn walk(&mut self, job: &WalkJob) -> Walk {
+            match self.flight.take() {
+                Some((epoch, ids, age)) if age + 1 >= self.late => {
+                    self.flight = Some((job.epoch, job.ids.clone(), 0));
+                    Walk::Fresh(Walked { data: vec![1e-3; output_words(ids.len())], ids, debug: Vec::new(), epoch })
+                }
+                Some((epoch, ids, age)) => {
+                    self.flight = Some((epoch, ids, age + 1));
+                    Walk::Pending
+                }
+                None => {
+                    self.flight = Some((job.epoch, job.ids.clone(), 0));
+                    Walk::Pending
+                }
+            }
+        }
+    }
+
+    /// Flying through a hall's pillars on a walker that answers four
+    /// ticks late: each crossing drops every average and the walk in
+    /// flight (launched on the other side). Walked by the walker alone
+    /// the hall went silent but for the direct sound until a walk launched
+    /// on this side landed — and with a pillar every few ticks none did
+    /// (the Godot level's nave at 8 m/s: no reverb for 1.6 s, then all of
+    /// it at once). The CPU walks the ticks after a crossing: every tick
+    /// of the flight carries the hall's reflections and reverb.
+    #[test]
+    fn after_a_crossing_the_cpu_walks_until_the_walker_catches_up() {
+        let mut mb = MeshBuilder::new();
+        let stone = mb.material(Material::BRICK);
+        let t = 0.3;
+        let (lo, hi) = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(12.0, 10.0, 6.0));
+        mb.abox(Vec3::new(lo.x - t, lo.y - t, lo.z - t), Vec3::new(hi.x + t, hi.y + t, lo.z), stone);
+        mb.abox(Vec3::new(lo.x - t, lo.y - t, hi.z), Vec3::new(hi.x + t, hi.y + t, hi.z + t), stone);
+        mb.abox(Vec3::new(lo.x - t, lo.y - t, lo.z), Vec3::new(lo.x, hi.y + t, hi.z), stone);
+        mb.abox(Vec3::new(hi.x, lo.y - t, lo.z), Vec3::new(hi.x + t, hi.y + t, hi.z), stone);
+        mb.abox(Vec3::new(lo.x, lo.y - t, lo.z), Vec3::new(hi.x, lo.y, hi.z), stone);
+        mb.abox(Vec3::new(lo.x, hi.y, lo.z), Vec3::new(hi.x, hi.y + t, hi.z), stone);
+        // two pillars on the flight's line (y = 4), the source off it
+        for x in [4.85, 6.85] {
+            mb.abox(Vec3::new(x, 3.8, 0.0), Vec3::new(x + 0.3, 4.2, 6.0), stone);
+        }
+        let mesh = mb.build();
+        let world = World::new(&mesh, &[]);
+        let src = [Source { id: 3, pos: Vec3::new(10.0, 7.0, 1.6), weight: 1.0 }];
+        let budget = Budget::default();
+        let mut tracer = Tracer::new(5);
+        let mut walker = Late { late: 4, flight: None };
+        let at = |x: f32| Vec3::new(x, 4.0, 1.6);
+        let early = |f: &SourceField| f.taps.iter().filter(|t| t.key >= 16 && t.key < 20_000).count();
+        // standing until the walker's walks land
+        for _ in 0..12 {
+            let f = trace_with(&mut tracer, &world, at(2.0), &src, budget, budget, Some(&mut walker));
+            assert!(f[0].reverb.level[1] >= 0.0);
+        }
+        // 0.4 m a tick (8 m/s at 20 Hz) through both pillars
+        let mut empty = Vec::new();
+        for k in 1..=18 {
+            let x = 2.0 + 0.4 * k as f32;
+            let f = trace_with(&mut tracer, &world, at(x), &src, budget, budget, Some(&mut walker));
+            if early(&f[0]) == 0 || !(f[0].reverb.level[1] > 0.0) {
+                empty.push(x);
+            }
+        }
+        assert!(empty.is_empty(), "ticks with no reflections or reverb, at x = {empty:?}");
+    }
 }

@@ -29,6 +29,8 @@
 //!
 //!   fly      the listener flies (8 m/s) through the cathedral's wall to
 //!            the flute, clicking every 50 ms: pops (periods off course)
+//!            (SIGNAL=tone: a steady tone — the treble the output gains,
+//!            and the tick's cost while flying; TICKS=1: each tick's)
 //!   cartone  a car passes 30 m off at 100 km/h playing a steady tone
 //!            (WALK=v: the car stands, the listener walks past at v m/s):
 //!            its pitch and level, demodulated, and how they jitter
@@ -190,6 +192,8 @@ struct Rig {
     watch: Vec<SourceId>,
     watched: Vec<f64>,
     meters: Vec<(SourceId, omg_audio::Meter)>,
+    /// Each full tick's wall-clock: (time s, ms, the tracer's parts).
+    ticks: Vec<(f32, f64, omg_core::v3::TickCosts)>,
 }
 
 impl Rig {
@@ -293,6 +297,7 @@ impl Rig {
             watch: Vec::new(),
             watched: Vec::new(),
             meters: Vec::new(),
+            ticks: Vec::new(),
         };
         rig.levels();
         rig
@@ -407,7 +412,11 @@ impl Rig {
             let dbg_win = env("DEBUG_TAPS").and_then(|v| v.parse::<f32>().ok());
             {
                 let full = self.blocks % TICK_EVERY == 0;
+                let t0 = Instant::now();
                 let f = if full { Some(self.sim.tick()) } else { self.sim.tick_exact() };
+                if full {
+                    self.ticks.push((t, t0.elapsed().as_secs_f64() * 1e3, self.sim.tick_costs()));
+                }
                 if let (Some(w), Some(f)) = (dbg_win, &f) {
                     if (t - w).abs() < 0.12 {
                         for (id, pb) in &f.blocks {
@@ -791,6 +800,7 @@ fn fly() {
         println!("   {}", artifact_line("outside", &artifacts(&rig, 1.0, cross - 0.15)));
         println!("   {}", artifact_line("crossing", &artifacts(&rig, cross - 0.15, cross + 0.4)));
         println!("   {}", artifact_line("inside", &artifacts(&rig, cross + 0.4, total)));
+        println!("   {}", tick_line(&rig, t0, t0 + (y1 - y0) / speed));
         if env("TRACE").is_some() {
             for (k, v) in artifacts(&rig, 1.0, total).iter().enumerate() {
                 if *v > -40.0 {
@@ -840,6 +850,26 @@ fn fly() {
             println!("   t {:6.2} y {:5.1}  {:6.1} dB  {:+5.1}", v.0, v.1, v.2, v.3);
         }
     }
+}
+
+/// The full ticks' wall-clock from `t0` to `t1` (s).
+fn tick_line(rig: &Rig, t0: f32, t1: f32) -> String {
+    let mut v: Vec<f64> = rig.ticks.iter().filter(|x| (t0..t1).contains(&x.0)).map(|x| x.1).collect();
+    if v.is_empty() {
+        return "tick: none".into();
+    }
+    // TICKS=1: each of them
+    if env("TICKS").is_some() {
+        for (t, ms, c) in rig.ticks.iter().filter(|x| (t0..t1).contains(&x.0)) {
+            println!(
+                "   t {t:.2}: {ms:5.1} ms (direct {:.1} edges {:.1} early {:.1} late {:.1} chains {:.1} fold {:.1}{})",
+                c.direct, c.edges, c.early, c.late, c.chains, c.fold, if c.burst { ", burst" } else { "" }
+            );
+        }
+    }
+    v.sort_by(|a, b| a.total_cmp(b));
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    format!("tick while flying ({} ticks): mean {mean:.1} ms, median {:.1}, p90 {:.1}, max {:.1}", v.len(), v[v.len() / 2], v[v.len() * 9 / 10], v[v.len() - 1])
 }
 
 /// What a pure tone came out with besides itself: the output above

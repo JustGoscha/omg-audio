@@ -400,9 +400,13 @@ const SECOND_ORDER_TESTS: usize = 60_000;
 const SECOND_ORDER_RAY_COST: usize = 60;
 
 /// v6.2 with an external walker: the ticks after a door's leaf last moved
-/// that still walk on the CPU (`Tracer::doors_moving`) — past the restart
+/// that still walk on the CPU (`Tracer::cpu_walks`) — past the restart
 /// where the door comes to rest (`prepare`).
 const DOOR_CPU_TICKS: u32 = 3;
+/// With an external walker: the ticks after the listener crossed a
+/// surface that walk on the CPU (`Tracer::cpu_walks`) — until the
+/// walker's walk launched on the new side can land.
+const CROSS_CPU_TICKS: u32 = 3;
 
 /// v6.2: entries of paths kept (`SourceState::paths`), each of
 /// `PATHS_KEEP` paths at most.
@@ -2115,9 +2119,10 @@ pub struct Tracer {
     /// (its result arrives a tick late) is discarded.
     pub(crate) epoch: u32,
     /// v6.2 with an external walker: the apertures' leaves as they were
-    /// last tick, and the ticks left that walk on the CPU (`doors_moving`).
+    /// last tick. With one: the ticks left that walk on the CPU
+    /// (`cpu_walks`).
     door_sig: u64,
-    door_ticks: u32,
+    cpu_ticks: u32,
     /// Where `name_mirrors`' second-order sweep goes on (the large faces,
     /// in turn).
     second_at: usize,
@@ -2456,7 +2461,7 @@ impl Tracer {
             last_listener: None,
             epoch: 0,
             door_sig: 0,
-            door_ticks: 0,
+            cpu_ticks: 0,
             second_at: 0,
             edges: None,
             tick: 0,
@@ -2764,31 +2769,62 @@ impl Tracer {
         Some(core::array::from_fn(|part| core::array::from_fn(|b| now[part][b] / st.priced[part][b].max(1e-9))))
     }
 
-    /// v6.2 with an external walker (a GPU's): whether this tick walks on
-    /// the CPU instead — a door's leaf moved within the last
-    /// `DOOR_CPU_TICKS`. The walker records no door paths and doesn't
-    /// split at a leaf (`Aperture`): the averages start over as a door
-    /// starts moving and again where it stops (`prepare`), so the swing's
-    /// whole estimate comes from walks that price the door. Back on the
-    /// walker, the walk it still has in flight (launched before the door
-    /// moved) is dropped.
-    pub fn doors_moving(&mut self, world: &World) -> bool {
-        if !self.v62 || world.apertures.is_empty() {
-            return false;
+    /// With an external walker (a GPU's): whether this tick walks on the
+    /// CPU instead. The walker's walk lands a tick late or more (several
+    /// on a large level, sliced to its GPU share), and the CPU's walk is
+    /// from where the listener is now:
+    ///
+    /// - the listener crossed a surface (`crossed`) within the last
+    ///   `CROSS_CPU_TICKS`: every average is dropped (`prepare`) and with
+    ///   them the walk in flight, launched on the other side — the walker
+    ///   alone would play nothing here until its next walk lands (flying
+    ///   through a nave's pillars at 8 m/s on the Godot level: no reverb
+    ///   for 1.6 s, then all of it at once);
+    /// - v6.2: a door's leaf moved within the last `DOOR_CPU_TICKS`. The
+    ///   walker records no door paths and doesn't split at a leaf
+    ///   (`Aperture`): the averages start over as a door starts moving and
+    ///   again where it stops (`prepare`), so the swing's whole estimate
+    ///   comes from walks that price the door.
+    ///
+    /// Back on the walker, the walk it still has in flight (launched
+    /// before) is dropped; until its next lands the averages hold.
+    pub fn cpu_walks(&mut self, world: &World, listener: Vec3) -> bool {
+        if self.v62 && !world.apertures.is_empty() {
+            let ids: Vec<u32> = world.apertures.iter().map(|a| a.id).collect();
+            let sig = apertures_sig(&ids, world.apertures);
+            if sig != self.door_sig {
+                self.door_sig = sig;
+                // the first tick sees every door "move": the walker's from the start
+                if !self.state.is_empty() {
+                    self.cpu_ticks = self.cpu_ticks.max(DOOR_CPU_TICKS + 1);
+                }
+            }
         }
-        let ids: Vec<u32> = world.apertures.iter().map(|a| a.id).collect();
-        let sig = apertures_sig(&ids, world.apertures);
-        if sig != self.door_sig {
-            self.door_sig = sig;
-            // the first tick sees every door "move": the walker's from the start
-            self.door_ticks = if self.state.is_empty() { 0 } else { DOOR_CPU_TICKS };
-        } else if self.door_ticks > 0 {
-            self.door_ticks -= 1;
-            if self.door_ticks == 0 {
+        if self.crossed(world, listener) {
+            self.cpu_ticks = self.cpu_ticks.max(CROSS_CPU_TICKS + 1);
+        }
+        if self.cpu_ticks > 0 {
+            self.cpu_ticks -= 1;
+            if self.cpu_ticks == 0 {
                 self.epoch = self.epoch.wrapping_add(1);
             }
         }
-        self.door_ticks > 0
+        self.cpu_ticks > 0
+    }
+
+    /// Whether the listener crossed a surface since last tick (flew
+    /// through a wall). The segment reaches 1 cm past both ends: a
+    /// listener exactly ON a wall face last tick or this one still counts
+    /// as crossing it.
+    fn crossed(&mut self, world: &World, listener: Vec3) -> bool {
+        let Some(prev) = self.last_listener else { return false };
+        let step = listener - prev;
+        let len = step.length();
+        if len <= 1e-4 {
+            return false;
+        }
+        let pad = step * (0.01 / len);
+        world.transmission(prev - pad, listener + pad, &mut self.hits)[1] < 0.999
     }
 
     /// v6.2: each source's threshold for recording its paths that meet
@@ -3492,17 +3528,8 @@ impl Tracer {
     ) -> (Vec<Option<Tap>>, Vec<[f32; NBANDS]>, Vec<Vec<Tap>>) {
         // 0. crossed a surface since last tick (flew through a wall)?
         // Then nothing averaged on the old side can reach this one.
-        // (the segment reaches 1 cm past both ends: a listener exactly ON
-        // a wall face last tick or this one still counts as crossing it)
-        if let Some(prev) = self.last_listener {
-            let step = listener - prev;
-            let len = step.length();
-            if len > 1e-4 {
-                let pad = step * (0.01 / len);
-                if world.transmission(prev - pad, listener + pad, &mut self.hits)[1] < 0.999 {
-                    self.forget_all();
-                }
-            }
+        if self.crossed(world, listener) {
+            self.forget_all();
         }
         self.last_listener = Some(listener);
         // the world changed (an object moved, a door closed): every cached

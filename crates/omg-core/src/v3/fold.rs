@@ -374,7 +374,14 @@ impl Tracer {
             return None;
         }
         let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
+        // this tick's costs (the walk's own are the walker's)
+        self.costs = TickCosts::default();
         let (direct, vis, edge_taps) = self.prepare(world, listener, sources, budget);
+        // the extra rays of averages restarting are the CPU walk's
+        // (`Tracer::burst`), but their ticks pass here too: left over,
+        // the next CPU tick — after a crossing, ticks later — traced them
+        // (4× the late rays: 40–55 ms ticks on the Godot level)
+        self.burst = self.burst.saturating_sub(1);
         let rot = random_rotation(&mut self.rng);
         let seed = (self.rng.next_u64() >> 32) as u32;
         let edges = if budget.diffraction { self.edges.as_ref() } else { None };
