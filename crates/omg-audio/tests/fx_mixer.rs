@@ -40,6 +40,8 @@ fn a_click_arrives_one_path_delay_later() {
     let frame = sim.tick();
 
     let mut m = Mixer::new(SR, Hrir::none());
+
+    m.settle_ear();
     m.apply(&frame);
     // a 1 ms pulse (a single-sample impulse would land between samples:
     // the path delay is fractional and the log interpolates)
@@ -67,6 +69,7 @@ fn only_the_voice_budget_renders_and_silence_is_free() {
     sim.set_listener([0.0, 0.0, 1.6], 0.0, 0.0, 0.0);
     let frame = sim.tick();
     let mut m = Mixer::new(SR, Hrir::none());
+    m.settle_ear();
     m.set_budget(128, 8, 12);
     m.apply(&frame);
     let noise: Vec<f32> = (0..4800u32).map(|i| ((i.wrapping_mul(2654435761) >> 8) as f32 / 8388608.0 - 1.0) * 0.3).collect();
@@ -98,6 +101,7 @@ fn stopping_a_loop_silences_it() {
     sim.set_listener([0.0, 0.0, 1.6], 0.0, 0.0, 0.0);
     let frame = sim.tick();
     let mut m = Mixer::new(SR, Hrir::none());
+    m.settle_ear();
     m.apply(&frame);
     let tone: Vec<f32> = (0..4800).map(|i| (i as f32 * 0.0577).sin() * 0.5).collect();
     let v = m.play(src, &clip(&tone), Play::LOOP.gain(0.8));
@@ -125,6 +129,7 @@ fn clap_after_silence(hrir: Hrir, rerank: bool) -> (f32, f32) {
     sim.set_listener([0.0, 0.0, 1.6], 0.0, 0.0, 0.0);
     let frame = sim.tick();
     let mut m = Mixer::new(SR, hrir);
+    m.settle_ear();
     m.apply(&frame);
     render(&mut m, 0.5);
     m.apply(&frame); // ranked while silent
@@ -174,6 +179,7 @@ fn the_ambience_rides_the_loudness_stage() {
         .collect();
     let level = |amp: f32, sky: &[SkyCell]| -> (f32, f32) {
         let mut m = Mixer::new(SR, Hrir::none());
+        m.settle_ear();
         m.set_ambience_gain(16.0);
         let noise: Vec<f32> = (0..2 * 48_000u32)
             .map(|i| amp * (((i.wrapping_mul(2654435761) >> 8) as f32 / 8388608.0) - 1.0))
@@ -218,6 +224,7 @@ fn a_bed_muted_before_it_arrives_stays_muted() {
 
     // the bed: muted, a second passes, then it arrives
     let mut m = Mixer::new(SR, Hrir::none());
+    m.settle_ear();
     m.apply(&frame);
     m.set_ambience_gain(0.0);
     render(&mut m, 1.0);
@@ -226,6 +233,7 @@ fn a_bed_muted_before_it_arrives_stays_muted() {
     let bed = peak(&l).max(peak(&r));
     // the same bed unmuted, for scale
     let mut m = Mixer::new(SR, Hrir::none());
+    m.settle_ear();
     m.apply(&frame);
     render(&mut m, 1.0);
     m.set_ambience(noise.clone(), false);
@@ -233,6 +241,7 @@ fn a_bed_muted_before_it_arrives_stays_muted() {
     let heard = peak(&l).max(peak(&r));
     // the rain: muted, then it starts
     let mut m = Mixer::new(SR, Hrir::none());
+    m.settle_ear();
     m.apply(&frame);
     m.set_rain_gain(0.0);
     render(&mut m, 1.0);
@@ -261,6 +270,7 @@ fn a_loud_scene_drops_the_sounds_it_masks() {
     let frame = Frame { version: 1, blocks: vec![(loud, block(30.0)), (quiet, block(3e-3))], ..Default::default() };
     let noise: Vec<f32> = (0..48_000u32).map(|i| ((i.wrapping_mul(2654435761) >> 8) as f32 / 8388608.0) - 1.0).collect();
     let mut m = Mixer::new(SR, Hrir::none());
+    m.settle_ear();
     m.apply(&frame);
     // the quiet source's own level over the last second
     let run = |m: &mut Mixer, secs: f32| -> f32 {
@@ -306,6 +316,7 @@ fn bass_through_a_wall_stays_in_the_window() {
     let frame = Frame { version: 1, blocks: vec![(flute, block([1.0; 3])), (club, block([0.03, 1e-4, 3e-5]))], ..Default::default() };
     let tone = |f: f32, a: f32| -> Vec<f32> { (0..48_000).map(|i| a * (core::f32::consts::TAU * f * i as f32 / SR).sin()).collect() };
     let mut m = Mixer::new(SR, Hrir::none());
+    m.settle_ear();
     m.apply(&frame);
     m.play(flute, &clip(&tone(1000.0, 1.0)), Play::LOOP);
     m.play(club, &clip(&tone(60.0, 1.0)), Play::LOOP);
@@ -336,6 +347,7 @@ fn a_clap_rings_out_in_the_window() {
     let frame = Frame { version: 1, blocks: vec![(id, pb)], ..Default::default() };
     let burst: Vec<f32> = (0..480u32).map(|i| (((i.wrapping_mul(2654435761) >> 8) as f32 / 8388608.0) - 1.0) * (-(i as f32) / 80.0).exp()).collect();
     let mut m = Mixer::new(SR, Hrir::none());
+    m.settle_ear();
     m.apply(&frame);
     render(&mut m, 0.5);
     m.play(id, &clip(&burst), Play::ONCE);

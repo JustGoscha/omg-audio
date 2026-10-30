@@ -1237,6 +1237,13 @@ impl Mixer {
         self.out.set_ear(on);
     }
 
+    /// Skip the ear's coming in (it starts at its least sensitive and
+    /// opens over ~3.5 s): adapted at once, as a mixer that has been
+    /// running.
+    pub fn settle_ear(&mut self) {
+        self.out.settle();
+    }
+
     /// Hearing fatigue after sustained loudness, 0 (fresh) … 1 (dulled).
     pub fn ear_fatigue(&self) -> f32 {
         self.out.ear_fatigue()

@@ -33,6 +33,10 @@ pub struct OutputStage {
     adapt_up: f32,
     adapt_slew: f32,
     adapt_down: f32,
+    /// Starting: the ear comes in at its least sensitive and opens at
+    /// `ADAPT_START_DB_S` until it meets the scene (per control step).
+    starting: bool,
+    adapt_start: f32,
     /// The acoustic reflex (dB of attenuation below `REFLEX_HZ`).
     reflex_db: f32,
     reflex_on: f32,
@@ -130,6 +134,16 @@ const ADAPT_BAND_LOW_DB: f32 = 50.0;
 const ADAPT_BAND_HIGH_DB: f32 = 80.0;
 /// The adaptation's reach (dB): at most this far down / up.
 const ADAPT_MAX_CUT_DB: f32 = 30.0;
+/// The ear starts at its least sensitive — adapted as to the loudest
+/// place it can take (the full cut) — and opens at this many dB a second
+/// until it meets the scene: a spawn beside the grand piano started at
+/// the anchor (90 dB) and climbed at `ADAPT_SLEW_DB_S` to the piano's
+/// level, a second or two of it 7–8 dB too loud; now nothing plays over
+/// its adapted level, and a quiet place fades in over ~3.5 s. Coming in
+/// to a scene is a display choice (the ear has no state before it), like
+/// HDR's eye opening.
+const ADAPT_START_DB: f32 = ADAPT_REF_DB + ADAPT_MAX_CUT_DB / ADAPT_SHARE;
+const ADAPT_START_DB_S: f32 = 20.0;
 const ADAPT_MAX_BOOST_DB: f32 = 24.0;
 /// The acoustic (stapedius) reflex: from ~90 dB SPL it stiffens the
 /// middle ear — up to 15 dB less below ~1.5 kHz, within ~0.1 s, letting go
@@ -200,10 +214,12 @@ impl OutputStage {
             short_coef: tc(SHORT_S),
             loud_ms: 0.0,
             loud_coef: tc(LOUDNESS_S),
-            adapt_db: ADAPT_REF_DB,
+            adapt_db: ADAPT_START_DB,
             adapt_up: tc_ctl(ADAPT_UP_S),
             adapt_slew: ADAPT_SLEW_DB_S * CONTROL as f32 / sample_rate,
             adapt_down: tc_ctl(ADAPT_DOWN_S),
+            starting: true,
+            adapt_start: ADAPT_START_DB_S * CONTROL as f32 / sample_rate,
             reflex_db: 0.0,
             reflex_on: tc_ctl(REFLEX_ON_S),
             reflex_off: tc_ctl(REFLEX_OFF_S),
@@ -238,6 +254,14 @@ impl OutputStage {
 
     /// The ear on or off. Off, the scene plays at its own level: no
     /// adaptation, no reflex, no fatigue (the safety limiter stays).
+    /// Skip the ear's coming in (`ADAPT_START_DB`): adapted to the
+    /// anchor at once, as a stage that has been running (for measuring
+    /// what follows the start, not the start).
+    pub fn settle(&mut self) {
+        self.starting = false;
+        self.adapt_db = ADAPT_REF_DB;
+    }
+
     pub fn set_ear(&mut self, on: bool) {
         self.ear = on;
     }
@@ -311,11 +335,17 @@ impl OutputStage {
             self.tts_coef = 1.0;
             return;
         }
-        self.adapt_db += if short > self.adapt_db {
-            (self.adapt_up * (short - self.adapt_db)).min(self.adapt_slew)
+        if self.starting {
+            // opening from the least sensitive until the scene is met
+            self.adapt_db = (self.adapt_db - self.adapt_start).max(short);
+            self.starting = self.adapt_db > short;
         } else {
-            self.adapt_down * (short - self.adapt_db)
-        };
+            self.adapt_db += if short > self.adapt_db {
+                (self.adapt_up * (short - self.adapt_db)).min(self.adapt_slew)
+            } else {
+                self.adapt_down * (short - self.adapt_db)
+            };
+        }
         let band = -ADAPT_SHARE * (ADAPT_BAND_HIGH_DB - ADAPT_REF_DB);
         let g_db = if self.adapt_db > ADAPT_BAND_HIGH_DB {
             -ADAPT_SHARE * (self.adapt_db - ADAPT_REF_DB)
@@ -433,9 +463,51 @@ mod tests {
         peak(8000.0) / peak(1500.0).max(1e-9)
     }
 
+    /// The ear comes in at its least sensitive (`ADAPT_START_DB`): a scene
+    /// as loud as a grand piano at a metre (105 dB SPL, a steady 500 Hz
+    /// tone) never plays louder than the level it settles at — starting at
+    /// the anchor as before, the first second played over it (and into the
+    /// limiter); a quiet room (65 dB) fades in and is there within ~4 s.
+    #[test]
+    fn the_ear_comes_in_at_its_least_sensitive() {
+        let sr = 48_000.0f32;
+        // per 100 ms: the output's level, dB
+        let run = |spl: f32, settled: bool| -> Vec<f32> {
+            let mut out = OutputStage::from_speaker_bytes(None, sr);
+            if settled {
+                out.settle();
+            }
+            let a = SPL_REF_RMS * 10f32.powf((spl - SPL_REF_DB) / 20.0) * core::f32::consts::SQRT_2;
+            let w = (0.1 * sr) as usize;
+            (0..100)
+                .map(|k| {
+                    let mut e = 0.0f64;
+                    for i in 0..w {
+                        let x = a * (core::f32::consts::TAU * 500.0 * (k * w + i) as f32 / sr).sin();
+                        let (l, _) = out.process(&[0.0; NCH], x, x);
+                        e += (l as f64).powi(2);
+                    }
+                    10.0 * ((e / w as f64) as f32).log10()
+                })
+                .collect()
+        };
+        let tail = |v: &[f32]| v[80..].iter().sum::<f32>() / 20.0;
+        let loud = run(105.0, false);
+        let over = loud[..30].iter().map(|d| d - tail(&loud)).fold(f32::MIN, f32::max);
+        let was = run(105.0, true);
+        let was_over = was[..30].iter().map(|d| d - tail(&was)).fold(f32::MIN, f32::max);
+        let quiet = run(65.0, false);
+        let at = |t: usize| quiet[t] - tail(&quiet);
+        eprintln!("105 dB: the first 3 s at most {over:+.1} dB over settled (starting at the anchor {was_over:+.1}); 65 dB: {:+.1} dB at 0.2 s, {:+.1} at 2 s, {:+.1} at 4 s", at(2), at(20), at(40));
+        assert!(over < 1.0, "a loud start plays {over:+.1} dB over its settled level");
+        assert!(at(2) < -15.0, "a quiet start is not faded in: {:+.1} dB at 0.2 s", at(2));
+        assert!(at(40).abs() < 1.0, "a quiet start not there at 4 s: {:+.1} dB", at(40));
+    }
+
     #[test]
     fn loud_exposure_muffles_highs_then_recovers() {
         let mut out = OutputStage::from_speaker_bytes(None, 48_000.0);
+        out.settle();
         let fresh = hf_lf_ratio(&mut out);
 
         // 10 s of club-at-the-PA level (demand ≫ AGC target, below the

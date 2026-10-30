@@ -541,6 +541,22 @@ fading for ten seconds); on the CPU within 2–3 dB. The door swing
 (six seeds) as before: climbing back 18.1 dB, windows over −40 dB 3; the
 flight, the car's tone and the door shut unchanged.
 
+## The ear comes in at its least sensitive (every host)
+
+Spawned beside the living room's grand piano, the first seconds played
+"super duper loud": the ear stage (adaptation, reflex, limiter) started
+adapted to its anchor (90 dB SPL) and climbs at most 10 dB a second, and
+the piano close up is ~105 dB — the first second 10.9 dB over the level
+it settles at, into the limiter. Now it starts at its least sensitive (the
+full 30 dB cut, as if adapted to the loudest place it takes) and opens at
+20 dB a second until it meets the scene, then adapts as before: a scene
+at 105 dB never plays over its settled level (+0.5 dB at most), a quiet
+room (65 dB) fades in — −33 dB at 0.2 s, −15 dB at 2 s, there by 4 s
+(`output::tests::the_ear_comes_in_at_its_least_sensitive`). Coming in to
+a scene is a display choice (the ear has no state before it), like an
+eye opening in HDR. `Mixer::settle_ear` skips it, for measuring what
+follows the start.
+
 ## The GPU walk through a crossing (every engine)
 
 Recorded in Godot (its walk on the GPU), flying into the cathedral with

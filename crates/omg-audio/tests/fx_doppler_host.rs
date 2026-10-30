@@ -53,6 +53,7 @@ fn run(v: f32, secs: f32) -> Vec<f32> {
     let mut sim = Simulation::new(Config::default());
     let src = sim.add_source(SourceDesc::at([0.0, 0.0, 1.6]));
     let mut m = Mixer::new(SR, Hrir::none());
+    m.settle_ear();
     let tone: Vec<f32> = (0..4800).map(|k| (std::f32::consts::TAU * F0 * k as f32 / SR).sin() * 0.5).collect();
     let x0 = -(v * secs + 30.0);
     // the pose at wall time t, and the physics step it has been current since
@@ -125,6 +126,7 @@ fn run_source(v: f32, secs: f32, each: bool) -> Vec<f32> {
     let src = sim.add_source(SourceDesc::at([x0, 0.0, 1.6]));
     sim.set_listener_at([0.0, 0.0, 1.6], 0.0, 0.0, 0.0, 0.0);
     let mut m = Mixer::new(SR, Hrir::none());
+    m.settle_ear();
     let tone: Vec<f32> = (0..4800).map(|k| (std::f32::consts::TAU * F0 * k as f32 / SR).sin() * 0.5).collect();
     let n = (secs * SR) as usize;
     let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
@@ -207,6 +209,7 @@ fn run_threaded(v: f32, secs: f32, runner: Runner) -> Vec<f32> {
     let src_at = if runner == Runner::Source { x0 } else { 0.0 };
     let src = sim.add_source(SourceDesc::at([src_at, 0.0, 1.6]));
     let mut m = Mixer::new(SR, Hrir::none());
+    m.settle_ear();
     let tone: Vec<f32> = (0..4800).map(|k| (std::f32::consts::TAU * F0 * k as f32 / SR).sin() * 0.5).collect();
     // the game's frame f at time f/FRAME_HZ: the runner where the last
     // physics step left it (two frames a step), and that step's time

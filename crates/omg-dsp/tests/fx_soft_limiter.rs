@@ -21,6 +21,7 @@ use omg_dsp::output::OutputStage;
 #[test]
 fn huge_input_is_bounded() {
     let mut out = OutputStage::from_speaker_bytes(None, SR);
+    out.settle();
     let mut peak_early = 0.0f32;
     for k in 0..48_000 {
         let x = 100.0 * sine_at(90.0, k + 20); // full-scale ×100, from sample 0
@@ -44,6 +45,7 @@ fn small_input_is_linear() {
     // limiter's small-signal slope, ≈ 1
     for amp in [0.01f32, 0.05, 0.1] {
         let mut out = OutputStage::from_speaker_bytes(None, SR);
+        out.settle();
         let mut worst = 0.0f32;
         for k in 0..480 {
             let x = amp * sine_at(440.0, k);
