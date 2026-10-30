@@ -28,6 +28,19 @@
 #   bunker  down in the bunker (floor 3 m below grade), walking back and
 #         forth along it at 1.5 m/s for 8 s (--view=1|2: the paths view,
 #         exact or all, a screenshot a second)
+#   tour  the whole level, one predictable walk (the final render of an
+#         engine change): from the piano through the corridor into the
+#         seminar (its door shut behind, curtains down, a clap), out to the
+#         square, into the club (its inner door opened), out and into the
+#         cathedral (its portal opened, curtains down, a clap), down into
+#         the bunker to the radio and back up, south to the echo canyon (a
+#         clap at three places), to the west road for two cars. The RNG
+#         seeded and every random event of the demo (owls, bells, cars,
+#         the clap's and the steps' variation) off its timers, played at
+#         fixed points of the walk instead: the same tour every take (the
+#         engine traces in real time: its paths, not the tour, vary a
+#         little). --video=fps: frames of the window too (<name>_frames/),
+#         for tools/tour_video.sh
 #   --paths the scenario's source's exactly solved paths (direct, edge
 #           bends, mirror chains) per frame to <name>.paths.csv
 #   --tone  the scenario's source plays a steady 500 Hz instead of its
@@ -47,6 +60,7 @@ var quality := -2 # unset: the demo's (auto)
 var log_paths := false # --paths: the scenario source's exact paths per frame
 var shots := -1 # --view=0|1|2: the paths view off/exact/all, a screenshot a second
 var at := Vector3(35.0, 10.0, -2.6) # --at=x,y,z: where the bunker scenario walks (feet)
+var video_fps := 0.0 # --video=fps: the tour's frames of the window
 var paths_file: FileAccess
 var frames: FileAccess
 var t0 := 0
@@ -71,6 +85,8 @@ func _init(d: Node, w: OmgWorld, p: DemoPlayer) -> void:
 			log_paths = true
 		elif a.begins_with("--view="):
 			shots = int(a.trim_prefix("--view="))
+		elif a.begins_with("--video="):
+			video_fps = float(a.trim_prefix("--video="))
 		elif a.begins_with("--at="):
 			var v := a.trim_prefix("--at=").split(",")
 			at = Vector3(float(v[0]), float(v[1]), float(v[2]))
@@ -105,6 +121,8 @@ func run() -> void:
 			await _bunker(base)
 		"curtains":
 			await _curtains(base)
+		"tour":
+			await _tour(base)
 		_:
 			push_error("unknown scenario " + scenario)
 	get_tree().quit()
@@ -361,3 +379,138 @@ func _curtains(base: String) -> void:
 		phase = "down" if pulled else "up"
 		_frame_log(t * 1000.0, spot.x, spot.y)
 	_stop(base)
+
+
+# The whole level, one predictable walk: legs walked at a steady pace,
+# actions at fixed points of it (see the header).
+const TOUR_WALK := 2.5 # m/s
+const TOUR_STEP := 0.75 # m between footsteps
+func _tour(base: String) -> void:
+	seed(20261030)
+	var snd = demo.sounds
+	var lv = demo.level
+	snd.wild = {"owl1": 1e9, "owl2": 1e9, "bells": 1e9}
+	snd.next_car = 1e9
+	# [kind, args…, phase]: "go" x, y, z (feet) — walk there (straight:
+	# the legs keep clear of solids — through the kiosk the ears heard
+	# nothing for half a second, rightly); "wait" s;
+	# "door" i, open; "curtains"; "clap"; "bells"; "owl" source; "car"
+	# north (from 200 m off at 100 km/h)
+	var g := 0.4 # feet over a floor at grade
+	var b := -2.6 # … over the bunker's
+	var plan := [
+		["wait", 4.0, "piano"], ["bells", "piano"], ["wait", 3.0, "piano"],
+		["go", 4.0, 6.0, g, "corridor"], ["go", 4.0, 13.5, g, "corridor"], ["go", 5.5, 17.0, g, "seminar"],
+		["door", 1, false, "seminar"], ["curtains", "seminar"], ["wait", 4.0, "seminar"], ["clap", "seminar"], ["wait", 3.0, "seminar"],
+		["go", 7.0, 23.0, g, "seminar"], ["go", 7.0, 25.5, g, "square"], ["go", 12.0, 30.0, g, "square"], ["wait", 2.0, "square"],
+		["go", 19.0, 31.0, g, "entrance"], ["go", 21.0, 31.0, g, "entrance"], ["door", 4, true, "entrance"], ["wait", 2.0, "entrance"],
+		["go", 25.0, 32.0, g, "club"], ["go", 27.0, 33.5, g, "club"], ["wait", 5.0, "club"],
+		["go", 21.0, 31.0, g, "entrance"], ["go", 18.5, 31.0, g, "square"], ["go", 13.5, 32.0, g, "square"], ["go", 12.0, 37.0, g, "square"], ["go", 8.0, 46.0, g, "path"],
+		["go", 8.0, 50.8, g, "portal"], ["door", 6, true, "portal"], ["wait", 2.0, "portal"],
+		["go", 8.0, 56.0, g, "cathedral"], ["go", 8.0, 62.0, g, "cathedral"], ["owl", "owl·cathedral", "cathedral"],
+		["curtains", "cathedral"], ["wait", 4.0, "cathedral"], ["clap", "cathedral"], ["wait", 5.0, "cathedral"],
+		["go", 8.0, 53.0, g, "portal"], ["go", 8.0, 46.0, g, "path"], ["go", 13.0, 35.0, g, "square"], ["go", 15.0, 25.0, g, "lane"],
+		["go", 22.0, 20.0, g, "lane"], ["go", 22.0, 8.5, g, "bunker path"], ["go", 30.5, 7.0, g, "bunker path"],
+		["go", 32.7, 7.0, g, "blockhouse"], ["go", 33.6, 7.0, b, "stair"], ["go", 35.0, 7.4, b, "bunker"], ["go", 36.5, 9.0, b, "bunker"],
+		["wait", 5.0, "bunker"],
+		["go", 35.0, 7.4, b, "bunker"], ["go", 33.6, 7.0, b, "stair"], ["go", 32.7, 7.0, g, "blockhouse"], ["go", 30.5, 7.0, g, "bunker path"],
+		["go", 26.0, 7.0, g, "bunker path"], ["wait", 3.0, "bunker path"],
+		["go", 20.0, -40.0, g, "south"], ["go", 14.0, -80.0, g, "canyon"], ["go", 14.0, -95.0, g, "canyon"], ["clap", "canyon"], ["wait", 4.0, "canyon"],
+		["go", 2.0, -95.0, g, "canyon"], ["clap", "canyon"], ["wait", 4.0, "canyon"],
+		["go", 27.0, -95.0, g, "canyon"], ["clap", "canyon"], ["wait", 4.0, "canyon"],
+		["go", 14.0, -65.0, g, "south"], ["go", -13.0, -45.0, g, "road"], ["wait", 1.0, "road"],
+		["car", true, "road"], ["wait", 5.0, "road"], ["car", false, "road"], ["wait", 9.0, "road"],
+	]
+	var pos := Vector3(3.5, 4.0, g)
+	_place(pos.x, pos.y, pos.z)
+	player.set_heading(PI / 2.0)
+	await get_tree().create_timer(4.0).timeout
+	if not _start(base):
+		return
+	var frames_dir := base + "_frames"
+	if video_fps > 0.0:
+		DirAccess.make_dir_recursive_absolute(frames_dir)
+	var slot := 0
+	var t := _now()
+	var walked := 0.0
+	var log := FileAccess.open(base + ".tour.csv", FileAccess.WRITE)
+	log.store_line("t_s,step,kind,phase")
+	for i in plan.size():
+		var st: Array = plan[i]
+		var kind: String = st[0]
+		phase = st[st.size() - 1]
+		log.store_line("%.3f,%d,%s,%s" % [_now(), i, kind, phase])
+		match kind:
+			"go":
+				var to := Vector3(st[1], st[2], st[3])
+				var flat := Vector2(to.x - pos.x, to.y - pos.y)
+				if flat.length() > 0.01:
+					player.set_heading(atan2(flat.y, flat.x))
+				var from := pos
+				var dist := (to - from).length()
+				var t0 := _now()
+				var done := false
+				while not done:
+					await get_tree().physics_frame
+					t = _now()
+					var u := clampf((t - t0) * TOUR_WALK / maxf(dist, 1e-3), 0.0, 1.0)
+					var p := from.lerp(to, u)
+					walked += (p - pos).length()
+					pos = p
+					_place(pos.x, pos.y, pos.z)
+					if walked >= TOUR_STEP:
+						walked -= TOUR_STEP
+						snd._step(true)
+					slot = _tour_frame(frames_dir, slot, t)
+					_frame_log(t * 1000.0, pos.x, pos.y)
+					done = u >= 1.0
+			"wait":
+				var until: float = _now() + float(st[1])
+				while _now() < until:
+					await get_tree().physics_frame
+					t = _now()
+					slot = _tour_frame(frames_dir, slot, t)
+					_frame_log(t * 1000.0, pos.x, pos.y)
+			"door":
+				lv.door_nodes[int(st[1])]["target"] = 1.0 if st[2] else 0.0
+			"curtains":
+				var best := 0
+				var here := Vector2(pos.x, pos.y)
+				for k in lv.curtain_sets.size():
+					if (lv.curtain_sets[k]["cord"] - here).length() < (lv.curtain_sets[best]["cord"] - here).length():
+						best = k
+				lv.curtain_sets[best]["target"] = 0.0
+			"clap":
+				snd.hands.play_clip(snd.clip["clap"], 8.0, 1.0)
+			"bells":
+				snd.sources["bells"].play_clip(snd.clip["bell_big"], 1.0, 1.0)
+			"owl":
+				snd.sources[st[1]].play_clip(snd.clip["owl0"], 1.0, 1.0)
+			"car":
+				snd._spawn_car()
+				var c: Dictionary = snd.cars.back()
+				var north: bool = st[1]
+				c["x"] = DemoSounds.CAR_LANES[1] if north else DemoSounds.CAR_LANES[0]
+				c["y"] = -200.0 if north else 160.0
+				c["vy"] = 27.8 if north else -27.8
+	log.close()
+	_stop(base)
+
+# The window's frame for every 1/fps of the tour passed (missed slots
+# repeat the frame: the video keeps the audio's time).
+func _tour_frame(dir: String, slot: int, t: float) -> int:
+	if video_fps <= 0.0:
+		return slot
+	if float(slot) / video_fps > t:
+		return slot
+	var img := demo.get_viewport().get_texture().get_image()
+	img.resize(960, int(960.0 * img.get_height() / img.get_width()))
+	var first := slot
+	while float(slot) / video_fps <= t:
+		var path := "%s/%06d.jpg" % [dir, slot]
+		if slot == first:
+			img.save_jpg(path, 0.85)
+		else:
+			DirAccess.copy_absolute("%s/%06d.jpg" % [dir, first], path)
+		slot += 1
+	return slot

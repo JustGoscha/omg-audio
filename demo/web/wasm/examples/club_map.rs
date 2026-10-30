@@ -9,7 +9,7 @@
 //!
 //!     cargo run --release -p omg-web --example club_map
 //!     AREA=x0,x1,y0,y1 (14,42,18,46)  STEP=m (1)  TICKS=n (40)  POCKET=dB (6)
-//!     MODE=v6.2 | v6.1 | v6 | v5   GEOMETRY=<file>  SEED=n
+//!     MODE=v6.2 | v6.1 | v6 | v5   GEOMETRY=<file>  SEED=n  OPEN=i,j (doors)
 use omg_audio::{Config, Frame, Quality, Simulation, SourceId};
 use omg_web::town::Town;
 
@@ -65,6 +65,12 @@ fn main() {
         let club = town.defs.iter().position(|d| d.name == "club").expect("the club");
         for i in 0..town.defs.len() {
             town.set_muted(&mut sim, i, i != club);
+        }
+        // OPEN=i,j: open those doors (the club's inner door is 4)
+        if let Some(open) = env("OPEN") {
+            for i in open.split(',').filter_map(|x| x.parse::<usize>().ok()) {
+                town.set_door(&mut sim, i, 1.0);
+            }
         }
         let ids = town.sources[club].clone();
         (sim, ids)
