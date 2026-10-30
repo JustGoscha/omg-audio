@@ -147,8 +147,10 @@ seed, −12.9 … +0.3 dB with seeds 1–4 — the same heavy tail (the treble
 has the fewest paths through a heavy door), not a bug of its own.
 v6.2 (the split at the door's leaf): the click 0.1 s after the shut,
 early −5.3 dB and late −2.6 dB in the treble from settled (v6.1 +8.0 /
-+11.4 dB, `assess door`); on the GPU walk (Godot's default) the early
-family doesn't split yet.
++11.4 dB, `assess door`); on the GPU walk (Godot's default) its early
+rays pass a leaf half the time: +12.4 / +13.5 / +13.4 → −0.3 / −1.2 /
+−0.2 dB, and the shut door no longer reads nearly open in the treble
+(−16 → −45 dB under open).
 
 ### The car's closest pass: a one-sample step — solved Oct 29
 The Godot car scenario showed a single-sample step as the car passed
@@ -173,9 +175,10 @@ heavy tail: through a narrow gap a few paths carry all); the GPU walk
 (Godot's default) records no door paths and doesn't split at leaves —
 while a door moves the CPU walks the tick instead (on the GPU, against
 the door standing: 12.0 → 3.6 dB rms), which costs a CPU tick (~23 ms
-in the town) for that second, and a standing door's early part keeps
-v6.1's heavy tail there; the restart where a door comes to rest (young
-estimate, below). Next: door events and the leaf split in the kernel.
+in the town) for that second; a standing door there is steady now (the
+GPU's early rays pass a leaf half the time); the restart where a door
+comes to rest (young estimate, below). Next: door events in the kernel
+(a moving door priced without the CPU tick).
 
 ### A facade's echo found by chance — first order solved Oct 29
 A car passing the field (`assess cartone`) played the town's facade

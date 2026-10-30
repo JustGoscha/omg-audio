@@ -17,19 +17,19 @@ the analyses, `.frames.csv` per game frame.
 
 Level of the tone, every 50 ms from 5.9 s (dB):
 
-    v6.1  -6 -6 -6 -6 -8 -7 -8 -7 -8 -7 -8 -9 -9 -10 -10 -11 -11 -11 -13 -15 -16 -18 -20 -22 -32 -39 -40 -32 -30 -30
-    v6.2  -6 -6 -6 -6 -7 -8 -8 -9 -10 -11 -13 -11 -9 -14 -16 -17 -19 -21 -23 -25 -28 -29 -44 -41 -37 -30 -28 -29 -29 -30
+    v6.1  -7 -7 -7 -7 -7 -9 -10 -9 -9 -8 -8 -9 -10 -10 -11 -11 -12 -13 -15 -17 -18 -20 -21 -22 -23 -38 -44 -48 -42 -34
+    v6.2  -7 -7 -7 -7 -7 -7 -7 -8 -10 -11 -10 -13 -16 -18 -20 -22 -24 -26 -28 -29 -31 -33 -32 -33 -34 -36 -39 -36 -34 -34
 
-0.7 s after the shut command v6.2 is at −19 dB, falling with the leaf;
-v6.1 holds at −10 … −11 dB until the leaf settles and drops 20 dB at once.
-Within 3 dB of the shut level at 6.96 s (v6.2) against 7.08 s (v6.1).
-No level jumps over 4 dB; above 3 kHz, worst −39.6 dB (v6.2, 2 windows
-of 201 shutting) and −39.1 dB (v6.1, 1 of 402 shut). The tick, 3.8–17.5
-ms (v6.1) and 5.3–27.3 ms (v6.2: the CPU walks while the door moves).
+0.7 s after the shut command v6.2 is at −26 dB, falling with the leaf;
+v6.1 holds at −11 … −13 dB, then plunges 25 dB under where it settles and
+climbs back (the restart where the leaf comes to rest). Level jumps: v6.2
+none, v6.1 two over 2 dB shut. Above 3 kHz, worst −48.8 dB (v6.2)
+against −35.2 dB (v6.1, four windows over −40 dB). The tick, 4.8–19.2 ms
+(v6.1) and 6.3–30.0 ms (v6.2: the CPU walks while the door moves).
 
-(A first recording, before the CPU took over the moving door's ticks,
-had v6.2 22 dB down at 0.7 s too: there the reverb was priced, the early
-taps weren't.)
+(Earlier recordings of the night — before the CPU took over a moving
+door's ticks, and before the GPU's rays passed a leaf half the time —
+showed v6.2 ahead less cleanly.)
 
 ## Headless, against the door standing still
 
@@ -52,6 +52,15 @@ gpu`; `headless_gpu_doorswing_<engine>_seed<n>.txt`): v6.1 13.1 / 11.7 /
 11.2 dB rms (its walk arrives a tick late on top of the averaging: +10
 dB on average, the door heard where it was), v6.2 3.7 / 3.5 / 3.5 dB —
 while a door moves the tick walks on the CPU, which prices the door.
+
+Standing doors on the GPU (`headless_gpu_still_*`, `headless_gpu_door_*`):
+the club from the square, click to click, early 1.6 / 1.7 / 2.2 → 0.7 /
+0.2 / 0.3 dB, late 5.6 / 2.1 / 2.6 → 1.0 / 0.5 / 1.0 dB; a slammed door
+0.1 s on, early +12.4 / +13.5 / +13.4 → −0.3 / −1.2 / −0.2 dB from where it
+settles; and settled, the shut door against open early −15 / −16 / −16
+dB (v6.1 on the GPU: a shut door nearly open in the treble) → −22 / −36
+/ −45 dB (as the CPU's walk reads it) — the GPU's early rays pass a
+door's leaf half the time (the draw's floor was one in thirty).
 
 The isolated test (`fx_simulation::a_door_swinging_shut_is_heard_where_it_is`,
 a room with a doorway, the ears at four places before and beside it):

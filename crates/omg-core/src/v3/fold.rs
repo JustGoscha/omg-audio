@@ -33,8 +33,9 @@
 //!   walk)  37 state_off  38..40 reserved (0)
 //! scene: sources (SRC_WORDS = 12 each): pos xyz, weight, t_free, id,
 //!          direct visibility xyz, fixed-point norm, 0, 0
-//!        panels (PANEL_WORDS = 16):  min xyz, scattering, max xyz, 0,
-//!          absorption xyz, 0, transmission xyz, 0
+//!        panels (PANEL_WORDS = 16):  min xyz, scattering, max xyz, leaf
+//!          (1: a door's leaf in its aperture, v6.2), absorption xyz, 0,
+//!          transmission xyz, 0
 //!        pockets (POCKET_WORDS = 8): min xyz, 0, max xyz, 0
 //!        edges: n_edges bits (32 a word) over the walker's own copy of
 //!          the edge set (`EdgeSet::flat`, uploaded with the mesh): set =
@@ -175,8 +176,9 @@ impl WalkJob {
         }
         w[26] = (w.len() - HEADER_WORDS) as u32;
         for (mn, mx, m) in world.panels {
+            let leaf = world.apertures.iter().any(|a| a.leaf == Some((*mn, *mx)));
             w.extend_from_slice(&[f(mn.x), f(mn.y), f(mn.z), f(m.scattering)]);
-            w.extend_from_slice(&[f(mx.x), f(mx.y), f(mx.z), 0]);
+            w.extend_from_slice(&[f(mx.x), f(mx.y), f(mx.z), leaf as u32]);
             w.extend_from_slice(&[f(m.absorption[0]), f(m.absorption[1]), f(m.absorption[2]), 0]);
             w.extend_from_slice(&[f(m.transmission[0]), f(m.transmission[1]), f(m.transmission[2]), 0]);
         }

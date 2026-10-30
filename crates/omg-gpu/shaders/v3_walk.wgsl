@@ -219,11 +219,13 @@ struct Panel {
     pmax: vec3<f32>,
     absorption: vec3<f32>,
     transmission: vec3<f32>,
+    // v6.2: a door's leaf in its aperture (fold.rs)
+    leaf: bool,
 }
 
 fn panel(i: u32) -> Panel {
     let o = job.off_panels + i * 16u;
-    return Panel(sv3(o), sf(o + 3u), sv3(o + 4u), sv3(o + 8u), sv3(o + 12u));
+    return Panel(sv3(o), sf(o + 3u), sv3(o + 4u), sv3(o + 8u), sv3(o + 12u), scene[o + 7u] != 0u);
 }
 
 fn pocket_min(i: u32) -> vec3<f32> { return sv3(job.off_pockets + i * 8u); }
@@ -309,6 +311,7 @@ struct Hit {
     absorption: vec3<f32>,
     scattering: f32,
     transmission: vec3<f32>,
+    leaf: bool,
 }
 
 // World::raycast — the mesh (ordered BVH traversal, as Mesh::raycast)
@@ -402,6 +405,7 @@ fn raycast_world(o: vec3<f32>, d: vec3<f32>) -> Hit {
             h.absorption = pl.absorption;
             h.scattering = pl.scattering;
             h.transmission = pl.transmission;
+            h.leaf = pl.leaf;
         }
     }
     return h;
@@ -1273,9 +1277,14 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             p_seg = seg + 1u;
         }
         // a surface that reflects nothing (a hanging drape) — every ray
-        // goes through it (v3.rs)
+        // goes through it (v3.rs). v6.2: an early ray at a door's leaf
+        // passes it half the time — what passes a door is what is heard
+        // behind it (the CPU's walk splits there; a paced ray can't carry a
+        // branch through its passes), at its draw's floor one ray in
+        // thirty passed: a heavy-tailed few
         let pure = p_t > 1e-5 && all(keep < vec3<f32>(1e-6));
-        let pt = select(select(select(0.0, min(max(p_t, 0.02), 0.5), p_t > 1e-5), 1.0, pure), 0.0, split_here);
+        let leaf_draw = select(min(max(p_t, 0.02), 0.5), 0.5, hit.leaf && !late);
+        let pt = select(select(select(0.0, leaf_draw, p_t > 1e-5), 1.0, pure), 0.0, split_here);
         if (pt > 0.0 && rand_f32() < pt) {
             let tw = through(p, dir, hit);
             thr = thr * tw / pt;
