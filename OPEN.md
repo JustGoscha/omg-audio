@@ -135,6 +135,20 @@ the next lever; the late family's rays could take Russian roulette past
 what the reverb is fitted from, but measured no cheaper in either world
 (Oct 29: the rays end at 3 s or escape before they fade 35 dB).
 
+Oct 31: the tour of the Godot town (`tools/record_tour.sh`) ran on rungs
+0–2 — 128–256 rays — at ~11 ms a tick, 6–7 ms of it the mirror chains,
+which cost the same on every rung; the governor took the whole tick for
+scaling and never climbed. It now prices the next rung as the fixed part
+(`governor::fixed_ms`: direct paths, chains) plus 1.45× the rest, and
+the chains cost about half (a moving source's track searched from the
+last knot found; trains hashed without building them; the solves on the
+walk's threads): Godot, the tour to the club and out, chains 6.4 → 3.7
+ms, rungs 2–4. Most of what remains is churn: a moving listener re-tries
+every chain rejected for want of a path (held only while both ends
+stand), 500–1000 solves a tick of which a few hundred stay; and the
+demo's feet and hands, walking with the ears, name a mirror off nearly
+every face near them (`examples/tour_replay COST=1 BODY=1`: +1.5 ms).
+
 ### A car receding on the west road: bursts at ~120 m — solved Oct 29
 Not the car, not the engine's paths: the ambience bed. The Godot demo
 decodes its bed ~13 s after load — 8.7 s into the car scenario, every
@@ -439,6 +453,20 @@ the scattered estimate carries it. Cost cap; lift with a cheaper solver.
     order 2. Medium.
 
 ## Smaller items
+
+- **A listener grazing a surface counts as passing through it.** Ears
+  exactly at a lintel's height (the tour floated them at 2.0 m under
+  2.0 m doorways) cross the wall's edge: `Tracer::crossed` drops every
+  average, and the restart plays as a dip as deep as a fresh estimate's
+  (the club's bass ~10 dB for half a second at its door). A person's ears
+  never ride a lintel; the tour now walks at 1.6 m. A crossing could be
+  counted only past a millimetre into the solid.
+- **A source switched on starts its early field low.** Hands switched
+  on at a clap read 7 dB under hands traced all along, ~1 s to settle
+  (`examples/body_onset`): the running mean of a few heavy-tailed ticks
+  (the same as a door's shut, above). A new sound's first reflections —
+  a shot from a new place, a car spawned — are thin until the
+  bidirectional estimate.
 
 - **Body**: the full-sphere head-and-torso HRIRs (SADIE II KEMAR) already
   carry the torso's shadow; legs add a ~11° cone straight down. Only a
