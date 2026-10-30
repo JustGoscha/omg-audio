@@ -3262,6 +3262,16 @@ impl Tracer {
                     }
                     let moving = self.motion.moving(si);
                     self.name_chain(s.id, &[f1.plane, f2.plane], cached, (listener, s.pos, moving));
+                    // and its twins off the ground — before, between or
+                    // after the two walls — as a first-order chain's are
+                    // (third order; the ground's mirror share under it)
+                    let Some(g) = ground.filter(|&g| !planes_eq(f1.plane, g) && !planes_eq(f2.plane, g)) else { continue };
+                    for (twin, a1, a2) in [([g, f1.plane, f2.plane], 2, 3), ([f1.plane, f2.plane, g], 1, 2), ([f1.plane, g, f2.plane], 1, 3)] {
+                        let pts = chain_points(&twin, listener, x);
+                        if within(pts[a1], f1) && within(pts[a2], f2) {
+                            self.name_chain(s.id, &twin, cached, (listener, s.pos, moving));
+                        }
+                    }
                 }
             }
         }

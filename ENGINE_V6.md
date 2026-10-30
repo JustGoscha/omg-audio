@@ -411,8 +411,12 @@ tests a tick (`SECOND_ORDER_TESTS`). The town's corner echo plays as the
 car comes (−22.6 dB under the car at y ≈ −3, the reference −22.1); an
 inside corner 100 m off a passing car
 (`fx_simulation::an_inside_corners_echo_of_a_passing_car_plays`): 226 of
-226 frames at the image source's delay and level, 0 before. Cost on the
-Godot level (375 such faces): chains 0.6 → 1.2 ms a tick.
+226 frames at the image source's delay and level, 0 before. Each such
+chain's twins off the ground are named with it, as a first-order chain's
+are — third order, the ground before, between or after the walls: in the
+test 226 of 226 frames, within 0.02 dB of the grass's mirror share (0
+before). Cost on the Godot level (375 such faces): chains 0.6 → 1.2 ms a
+tick.
 
 ## Still open (OPEN.md)
 
@@ -422,7 +426,7 @@ come — paths from the sources too (bidirectional) or learnt splitting at
 partitions would fix it (at a door's leaf v6.2 splits). Also: the
 estimate's ±2–4 dB wobble moving at the lowest rungs; a cheaper
 transmission query (half the walk); wasm walks on one thread; echoes of
-third order and beyond between distinct faces, and second order off
-small ones, are still left to the finders' rays (first order, its ground
-twins and second order between large faces are named from the faces); a
-moving door on the GPU walk costs a CPU tick.
+third order and beyond between three walls, and second order off small
+faces, are still left to the finders' rays (first and second order and
+their ground twins are named from the faces); a moving door on the GPU
+walk costs a CPU tick.

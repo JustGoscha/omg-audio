@@ -473,11 +473,13 @@ fn a_facades_echo_of_a_passing_car_plays_at_every_rung() {
 /// km/h on x = −110: its echo off both walls — off the first (x = 0), then
 /// the second — plays as its own tap at the double image's delay and
 /// level, every tick and exact frame while both mirror points lie on the
-/// walls, at the cheapest rung and a middle one. Second order between two
+/// walls, at the cheapest rung and a middle one — and its twins off the
+/// grass (third order: the ground before, between or after the walls), a
+/// few ms later at the ground's mirror share. Second order between two
 /// faces was left to the finders' rays, which come across two far walls in
 /// turn rarely (by the town's west road such an echo, −15 dB at 122 ms,
 /// was missed: `examples/echo_ref2`); pairs of large faces name it now
-/// (`Tracer::name_mirrors`).
+/// (`Tracer::name_mirrors`), with its ground twins.
 #[test]
 fn an_inside_corners_echo_of_a_passing_car_plays() {
     let facade = Material::new([0.03; 3], 0.35, [0.0; 3]);
@@ -496,13 +498,15 @@ fn an_inside_corners_echo_of_a_passing_car_plays() {
     let (im1, image) = ([-lis[0], lis[1], lis[2]], [-lis[0], 160.0 - lis[1], lis[2]]);
     for level in [0, 6] {
         let mut g = Geometry::new();
-        let stone = g.material(facade);
+        let (stone, grass) = (g.material(facade), g.material(Material::GRASS));
         g.add_box([0.0, 0.0, 0.0], [0.3, 80.3, 8.0], stone);
         g.add_box([-80.0, 80.0, 0.0], [0.3, 80.3, 8.0], stone);
+        g.ground_plane(0.0, grass);
         let mut sim = Simulation::new(Config { quality: Quality::Level(level), ..Config::default() });
         sim.set_geometry(g);
         let src = sim.add_source(SourceDesc::at(car(0.0)));
         let (mut want, mut heard, mut worst_ms, mut worst_db) = (0, 0, 0.0f64, 0.0f32);
+        let (mut twins, mut twin_db) = (0, 0.0f32);
         for k in 0..(3.5 * 120.0) as usize {
             let t = k as f64 / 120.0;
             sim.set_time(t);
@@ -535,12 +539,24 @@ fn an_inside_corners_echo_of_a_passing_car_plays() {
             let got_db = 20.0 * (echo.gains[1] / direct.gains[1]).log10();
             worst_ms = worst_ms.max(((echo.delay_s as f64 - at) * 1e3).abs());
             worst_db = worst_db.max((got_db - want_db).abs());
+            // its twins off the ground (third order: before, between or
+            // after the walls), a few ms later, the grass's share under it
+            let gm = Material::GRASS;
+            let gshare = (1.0 - gm.absorption[1] - gm.transmission[1] * gm.transmission[1]) * (1.0 - gm.scattering);
+            let tw: Vec<&omg_audio::Tap> = pb.taps.iter().filter(|tp| tp.key >= 9_000_000 && tp.key != echo.key && tp.delay_s > echo.delay_s && tp.delay_s - echo.delay_s < 0.01).collect();
+            if !tw.is_empty() {
+                twins += 1;
+                let e: f32 = tw.iter().map(|t| t.gains[1] * t.gains[1]).sum::<f32>() / tw.len() as f32;
+                twin_db = twin_db.max((10.0 * (e / (echo.gains[1] * echo.gains[1])).log10() - 10.0 * gshare.log10()).abs());
+            }
         }
-        eprintln!("level {level}: the corner's echo in {heard} of {want} frames; delay off by ≤ {worst_ms:.2} ms, level by ≤ {worst_db:.2} dB");
+        eprintln!("level {level}: the corner's echo in {heard} of {want} frames; delay off by ≤ {worst_ms:.2} ms, level by ≤ {worst_db:.2} dB; its ground twins in {twins}, their mean off the ground's share by ≤ {twin_db:.2} dB");
         assert!(want > 100, "the corner mirrors the car for a while: {want} frames");
         assert!(heard as f32 >= 0.95 * want as f32, "level {level}: the corner's echo plays in {heard} of {want} frames");
         assert!(worst_ms < 1.0, "level {level}: its delay off by {worst_ms:.2} ms");
         assert!(worst_db < 1.0, "level {level}: its level off by {worst_db:.2} dB");
+        assert!(twins as f32 >= 0.95 * want as f32, "level {level}: its ground twins in {twins} of {want} frames");
+        assert!(twin_db < 1.0, "level {level}: the twins off the ground's share by {twin_db:.2} dB");
     }
 }
 
