@@ -399,14 +399,10 @@ const SECOND_ORDER_M2: f32 = 10.0;
 const SECOND_ORDER_TESTS: usize = 60_000;
 const SECOND_ORDER_RAY_COST: usize = 60;
 
-/// v6.2 with an external walker: the ticks after a door's leaf last moved
-/// that still walk on the CPU (`Tracer::cpu_walks`) — past the restart
-/// where the door comes to rest (`prepare`).
-const DOOR_CPU_TICKS: u32 = 3;
-/// With an external walker: the ticks after the listener crossed a
-/// surface that walk on the CPU (`Tracer::cpu_walks`) — until the
-/// walker's walk launched on the new side can land.
-const CROSS_CPU_TICKS: u32 = 3;
+
+/// A tick's `prepare`: per source the exact direct tap, the direct
+/// visibility per band, and the edge next-event taps.
+pub(crate) type Prepared = (Vec<Option<Tap>>, Vec<[f32; NBANDS]>, Vec<Vec<Tap>>);
 
 /// v6.2: entries of paths kept (`SourceState::paths`), each of
 /// `PATHS_KEEP` paths at most.
@@ -2157,10 +2153,17 @@ pub struct Tracer {
     /// (its result arrives a tick late) is discarded.
     pub(crate) epoch: u32,
     /// v6.2 with an external walker: the apertures' leaves as they were
-    /// last tick. With one: the ticks left that walk on the CPU
-    /// (`cpu_walks`).
+    /// last tick (`doors_moved`).
     door_sig: u64,
-    cpu_ticks: u32,
+    /// With an external walker: since the listener crossed a surface (the
+    /// averages dropped: `forget_all`) or a door's leaf moved (v6.2), no
+    /// walk launched since has landed — the walks in flight describe the
+    /// other side, or price no door. Till one lands the CPU walks the
+    /// tick (`trace_walked`).
+    walk_stale: bool,
+    /// The early average's memory in ticks, (2 − α)/α (`prepare`): a
+    /// change within it is the same motion going on.
+    memory: u32,
     /// Where `name_mirrors`' second-order sweep goes on (the large faces,
     /// in turn).
     second_at: usize,
@@ -2499,7 +2502,8 @@ impl Tracer {
             last_listener: None,
             epoch: 0,
             door_sig: 0,
-            cpu_ticks: 0,
+            walk_stale: false,
+            memory: 0,
             second_at: 0,
             edges: None,
             tick: 0,
@@ -2646,6 +2650,7 @@ impl Tracer {
         self.rejected.clear();
         self.sky_primed = false;
         self.epoch = self.epoch.wrapping_add(1);
+        self.walk_stale = true;
     }
 
     /// Step 4b, shared with the externally walked fold: the sky. A running
@@ -2709,22 +2714,28 @@ impl Tracer {
         sources: &[Source],
         budget: Budget,
     ) -> Vec<SourceField> {
+        self.costs = TickCosts::default();
+        // 1. direct, visibility, edge next-event paths (shared with the
+        // externally walked tick, fold.rs)
+        let clock = Stopwatch::start();
+        let prepared = self.prepare(world, listener, sources, budget);
+        self.costs.direct = clock.ms() - self.costs.edges;
+        self.trace_prepared(world, listener, sources, budget, prepared)
+    }
+
+    /// The CPU's tick past `prepare` (`trace`; and an externally walked
+    /// tick whose walk is stale or refused, fold.rs): the walk, the
+    /// chains, the fold.
+    pub(crate) fn trace_prepared(&mut self, world: &World, listener: Vec3, sources: &[Source], budget: Budget, prepared: Prepared) -> Vec<SourceField> {
+        let (direct, vis, mut edge_taps) = prepared;
         let mut accs: Vec<Acc> = sources
             .iter()
             .enumerate()
             .map(|(si, s)| Acc::new((self.direct_from(si, s, listener).unwrap_or(s.pos) - listener).length() / SPEED_OF_SOUND, self.v4))
             .collect();
-
         let debug = self.debug;
         let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
-        self.costs = TickCosts::default();
         self.pre_record(&mut accs, sources);
-
-        // 1. direct, visibility, edge next-event paths (shared with the
-        // externally walked tick, fold.rs)
-        let clock = Stopwatch::start();
-        let (direct, vis, mut edge_taps) = self.prepare(world, listener, sources, budget);
-        self.costs.direct = clock.ms() - self.costs.edges;
         // the world just changed: more rays for the responses restarting
         self.costs.burst = self.burst > 0;
         let budget = if self.burst > 0 {
@@ -2807,47 +2818,26 @@ impl Tracer {
         Some(core::array::from_fn(|part| core::array::from_fn(|b| now[part][b] / st.priced[part][b].max(1e-9))))
     }
 
-    /// With an external walker (a GPU's): whether this tick walks on the
-    /// CPU instead. The walker's walk lands a tick late or more (several
-    /// on a large level, sliced to its GPU share), and the CPU's walk is
-    /// from where the listener is now:
-    ///
-    /// - the listener crossed a surface (`crossed`) within the last
-    ///   `CROSS_CPU_TICKS`: every average is dropped (`prepare`) and with
-    ///   them the walk in flight, launched on the other side — the walker
-    ///   alone would play nothing here until its next walk lands (flying
-    ///   through a nave's pillars at 8 m/s on the Godot level: no reverb
-    ///   for 1.6 s, then all of it at once);
-    /// - v6.2: a door's leaf moved within the last `DOOR_CPU_TICKS`. The
-    ///   walker records no door paths and doesn't split at a leaf
-    ///   (`Aperture`): the averages start over as a door starts moving and
-    ///   again where it stops (`prepare`), so the swing's whole estimate
-    ///   comes from walks that price the door.
-    ///
-    /// Back on the walker, the walk it still has in flight (launched
-    /// before) is dropped; until its next lands the averages hold.
-    pub fn cpu_walks(&mut self, world: &World, listener: Vec3) -> bool {
-        if self.v62 && !world.apertures.is_empty() {
-            let ids: Vec<u32> = world.apertures.iter().map(|a| a.id).collect();
-            let sig = apertures_sig(&ids, world.apertures);
-            if sig != self.door_sig {
-                self.door_sig = sig;
-                // the first tick sees every door "move": the walker's from the start
-                if !self.state.is_empty() {
-                    self.cpu_ticks = self.cpu_ticks.max(DOOR_CPU_TICKS + 1);
-                }
-            }
+    /// v6.2 with an external walker: a door's leaf moved since last tick.
+    /// The walker records no door paths and doesn't split at a leaf
+    /// (`Aperture`), and the averages start over as a door starts moving
+    /// and again where it stops (`prepare`): the walks in flight price no
+    /// door, so they are dropped (the epoch) and the CPU walks
+    /// (`walk_stale`) until a walk launched with the leaf at rest lands.
+    pub(crate) fn doors_moved(&mut self, world: &World) {
+        if !self.v62 || world.apertures.is_empty() {
+            return;
         }
-        if self.crossed(world, listener) {
-            self.cpu_ticks = self.cpu_ticks.max(CROSS_CPU_TICKS + 1);
-        }
-        if self.cpu_ticks > 0 {
-            self.cpu_ticks -= 1;
-            if self.cpu_ticks == 0 {
+        let ids: Vec<u32> = world.apertures.iter().map(|a| a.id).collect();
+        let sig = apertures_sig(&ids, world.apertures);
+        if sig != self.door_sig {
+            self.door_sig = sig;
+            // the first tick sees every door "move": the walker's from the start
+            if !self.state.is_empty() {
                 self.epoch = self.epoch.wrapping_add(1);
+                self.walk_stale = true;
             }
         }
-        self.cpu_ticks > 0
     }
 
     /// Whether the listener crossed a surface since last tick (flew
@@ -2967,7 +2957,7 @@ impl Tracer {
             t_free: &t_free,
             debug: self.debug,
             v4: self.v4,
-            virtuals: self.rest < DOOR_CPU_TICKS,
+            virtuals: self.rest < self.memory,
             v62: self.v62,
             rooms: &rooms,
         };
@@ -3556,14 +3546,7 @@ impl Tracer {
     /// (step 1), each source's per-band direct visibility, and the
     /// edge next-event paths (diffraction); with `debug`, the exact
     /// direct and bent paths for the debug view.
-    #[allow(clippy::type_complexity)]
-    fn prepare(
-        &mut self,
-        world: &World,
-        listener: Vec3,
-        sources: &[Source],
-        budget: Budget,
-    ) -> (Vec<Option<Tap>>, Vec<[f32; NBANDS]>, Vec<Vec<Tap>>) {
+    fn prepare(&mut self, world: &World, listener: Vec3, sources: &[Source], budget: Budget) -> Prepared {
         // 0. crossed a surface since last tick (flew through a wall)?
         // Then nothing averaged on the old side can reach this one.
         if self.crossed(world, listener) {
@@ -3605,6 +3588,7 @@ impl Tracer {
         // for seconds (Godot: +9…+11 dB 3 s after the shut command, now
         // 0…+5)
         let memory = ((2.0 - budget.ema.max(0.05)) / budget.ema.max(0.05)).ceil() as u32;
+        self.memory = memory;
         let settled = !changed && self.rest == 0 && self.moved_for >= 2;
         let restart = if self.v6 { (changed && self.rest >= memory) || settled } else { changed };
         self.moved_for = if changed { if self.rest < memory { self.moved_for + 1 } else { 1 } } else if self.rest >= memory { 0 } else { self.moved_for };

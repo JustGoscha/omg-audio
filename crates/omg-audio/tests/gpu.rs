@@ -183,7 +183,7 @@ fn gpu_swing(mode: &str, ears: [f32; 3]) -> Option<f32> {
 #[test]
 fn a_door_swinging_shut_is_heard_where_it_is_on_the_gpu() {
     // v6.2 on the GPU walk: the kernel records no door paths, so while a
-    // door moves the tick walks on the CPU (`Tracer::cpu_walks`)
+    // door moves the tick walks on the CPU (`Tracer::doors_moved`)
     let ears = [[7.5, 2.8, 1.6], [8.0, 6.0, 1.6]];
     let (mut e61, mut e62) = (0.0f32, 0.0f32);
     for e in ears {

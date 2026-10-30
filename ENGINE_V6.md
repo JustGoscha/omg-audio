@@ -333,7 +333,9 @@ long — what the swing should sound like at every instant):
 - Cost (the town, every source sounding, the ears by the club door,
   `examples/door_ms`): a tick 15.4 → 16.8 ms standing (the split at
   leaves and the paths' records; the virtual reflections are walked only
-  while the world changes), 18.9 → 23.1 ms while the door moves; a frame
+  while the world changes — within the early average's memory,
+  (2 − α)/α ticks, of its last change), 18.9 → 23.1 ms while the door
+  moves; a frame
   between ticks 0.18 → 0.38 ms while it moves.
 - **On the GPU walk** (Godot's default) the kernel records no door paths
   and doesn't split at a leaf (a paced early ray can't carry a split
@@ -345,11 +347,11 @@ long — what the swing should sound like at every instant):
   door, early −15 / −16 / −16 dB under open (v6.1 on the GPU: nearly
   open in the treble) → −22 / −36 / −45 dB, as the CPU reads it; a
   slammed door 0.1 s on, +12 … +14 dB over where it settles → within
-  1.2 dB. While a door's leaf moves, and for
-  `DOOR_CPU_TICKS` after, the tick walks on the CPU instead
-  (`Tracer::cpu_walks`; the averages start over as the door starts
-  and where it stops, so the swing's whole estimate is priced); back on
-  the GPU, the walk still in flight is dropped. Headless on the GPU
+  1.2 dB. While a door's leaf moves, and until a walk launched with
+  it at rest lands, the tick walks on the CPU instead
+  (`Tracer::doors_moved`, `walk_stale`; the averages start over as the
+  door starts and where it stops, so the swing's whole estimate is
+  priced); the walks in flight meanwhile are dropped. Headless on the GPU
   (`COMPUTE=gpu`, three seeds): v6.1 12.0 dB rms against the door
   standing (its walk a tick late on top of the averaging: the door heard
   where it was, +10 dB on average), v6.2 3.6 dB. The cost: a tick 0.5 →
@@ -432,14 +434,19 @@ flight, launched on the other side; on that level the GPU's walk lands
 walk ever landed fresh: from the wall until 0.4 s after the listener
 stopped the cathedral played its direct sound alone — reverb −180 dB
 where the CPU's walk reads −20.6 dB — then all of it at once, a burst
-heard in the treble. Now the CPU walks the tick of a crossing and the
-next `CROSS_CPU_TICKS` − 1 (`Tracer::cpu_walks`, which also carries
-v6.2's moving doors); back on the GPU, the walk in flight is dropped
-and the averages hold until its next lands. The flight on the GPU:
-reverb −20.5 dB all the way, no window over −40 dB (three seeds, v6.1
-and v6.2). Isolated: `v3::walker::tests::after_a_crossing_the_cpu_walks_until_the_walker_catches_up`
+heard in the treble. Now, from a crossing (and v6.2: a door's leaf
+moving) until a walk launched since has landed, the CPU walks the tick
+from where the listener is, the walker launching from there all the
+same; the first walk from here to land is folded as any, and the
+walker takes over (`Tracer::walk_stale`, `trace_walked`; a refused walk
+too). (The first cut walked the crossing's tick and two more, then held
+the averages until the walker's next walk landed — a count, not the
+condition.) The flight on the GPU: reverb −20.5 dB all the way, no
+window over −40 dB (three seeds, v6.1 and v6.2). Isolated:
+`v3::walker::tests::after_a_crossing_the_cpu_walks_until_the_walker_catches_up`
 (a walker four ticks late, a hall's two pillars on the line: 9 of 18
-ticks without reflections or reverb before, none now).
+ticks without reflections or reverb before, none now; standing, the
+walker takes over within its lateness).
 
 Two smaller faults on the way. The restart's extra rays
 (`Tracer::burst`, 4× the late rays) were counted down only by CPU walks:
@@ -450,8 +457,9 @@ family's cost summed tick over tick (79 ms on a 9 ms tick), and a CPU
 tick's burst flag stayed on — the hosts' governors leave burst ticks
 out, so on the GPU, once a door had moved, they no longer saw the
 tick's cost. The flight's tick on the GPU (Godot level, three seeds):
-mean 5.0–8.2 ms, max 15–21 ms (with the field missing) → mean 10.1–11.1
-ms, max 29–33 ms (the CPU walk alone: mean 14, max 19–27 ms).
+mean 5.0–8.2 ms, max 15–21 ms (with the field missing) → mean 12.2–12.6
+ms, max 19.5–26.6 ms (the CPU covers the walker's 3–6 ticks after each
+pillar; the CPU walk alone: mean 14, max 19–27 ms).
 
 ## The dense early field (v6.2)
 

@@ -361,12 +361,14 @@ impl Tracer {
     /// now (`V3Walker::walks_late`). Returns None when the walker refused
     /// (or the world exceeds the flat caps) — the caller traces on the
     /// CPU instead.
+    #[allow(clippy::too_many_arguments)]
     pub fn trace_walked(
         &mut self,
         world: &World,
         listener: Vec3,
         sources: &[Source],
         budget: Budget,
+        cpu_budget: Budget,
         cpu_late: Option<u32>,
         walk: &mut dyn FnMut(&WalkJob) -> Walk,
     ) -> Option<Vec<SourceField>> {
@@ -376,12 +378,9 @@ impl Tracer {
         let mut dbg: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
         // this tick's costs (the walk's own are the walker's)
         self.costs = TickCosts::default();
+        // v6.2: a door's leaf moved: the walks in flight price no door
+        self.doors_moved(world);
         let (direct, vis, edge_taps) = self.prepare(world, listener, sources, budget);
-        // the extra rays of averages restarting are the CPU walk's
-        // (`Tracer::burst`), but their ticks pass here too: left over,
-        // the next CPU tick — after a crossing, ticks later — traced them
-        // (4× the late rays: 40–55 ms ticks on the Godot level)
-        self.burst = self.burst.saturating_sub(1);
         let rot = random_rotation(&mut self.rng);
         let seed = (self.rng.next_u64() >> 32) as u32;
         let edges = if budget.diffraction { self.edges.as_ref() } else { None };
@@ -392,12 +391,30 @@ impl Tracer {
             sources.iter().enumerate().map(|(si, s)| Source { pos: self.direct_from(si, s, listener).unwrap_or(s.pos), ..*s }).collect();
         let mut job = WalkJob::build(world, listener, &at_emission, job_budget, rot, seed, self.debug, &vis, edges).v4(self.v4);
         job.epoch = self.epoch;
-        let walked = match walk(&job) {
-            Walk::Refused => return None,
-            Walk::Pending => None,
-            Walk::Fresh(w) => Some(w),
+        let (walked, refused) = match walk(&job) {
+            Walk::Refused => (None, true),
+            Walk::Pending => (None, false),
+            Walk::Fresh(w) => (Some(w), false),
         };
         let fresh = walked.as_ref().is_some_and(|w| w.epoch == self.epoch);
+        // since the listener crossed a surface or a door moved, no walk
+        // launched since has landed (`walk_stale`): the averages were
+        // dropped, and the walker alone would play nothing until one
+        // does — a walk lands a tick late, or several on a large level
+        // (sliced to its share of the GPU: flying through the Godot
+        // level's nave at 8 m/s no reverb for 1.6 s, then all of it at
+        // once). Meanwhile the CPU walks the tick from here, this walk
+        // launched all the same; the first walk from here to land is
+        // folded as any. A refused walk: the CPU's tick too.
+        if refused || (self.walk_stale && !fresh) {
+            return Some(self.trace_prepared(world, listener, sources, cpu_budget, (direct, vis, edge_taps)));
+        }
+        self.walk_stale = false;
+        // the extra rays of averages restarting are the CPU walk's
+        // (`Tracer::burst`), but their ticks pass here too: left over,
+        // the next CPU tick — after a crossing, ticks later — traced them
+        // (4× the late rays: 40–55 ms ticks on the Godot level)
+        self.burst = self.burst.saturating_sub(1);
         // the mirror chains the kernel leaves to the CPU (named by a few
         // mirror rays here, solved exactly), folded in with a fresh walk
         let chains = walked.as_ref().map(|_| self.walked_chains(world, listener, sources, budget));
@@ -629,15 +646,18 @@ mod tests {
         };
         let early = |f: &SourceField| f.taps.iter().filter(|t| t.key >= KEY_EARLY_BASE && t.key < 20_000).count();
         let near = Vec3::new(3.0, 0.0, 1.6);
+        // the CPU's own walk, which takes the ticks the walker can't, walks
+        // no rays here: what lands is the walker's alone
+        let cpu = Budget { rays: 0, late_rays: 0, ..budget };
         for _ in 0..3 {
-            let f = tracer.trace_walked(&world, near, &src, budget, None, &mut walk(false)).unwrap();
+            let f = tracer.trace_walked(&world, near, &src, budget, cpu, None, &mut walk(false)).unwrap();
             assert!(early(&f[0]) > 0, "a fresh walk on this side lands");
         }
         // fly through the wall: this tick's answer is the old side's job
         let far = Vec3::new(-3.0, 0.0, 1.6);
-        let f = tracer.trace_walked(&world, far, &src, budget, None, &mut walk(true)).unwrap();
+        let f = tracer.trace_walked(&world, far, &src, budget, cpu, None, &mut walk(true)).unwrap();
         assert_eq!(early(&f[0]), 0, "the walk from the other side of the wall was folded in");
-        let f = tracer.trace_walked(&world, far, &src, budget, None, &mut walk(false)).unwrap();
+        let f = tracer.trace_walked(&world, far, &src, budget, cpu, None, &mut walk(false)).unwrap();
         assert!(early(&f[0]) > 0, "the next walk, from this side, lands again");
     }
 

@@ -39,8 +39,9 @@ pub trait V3Walker: Send {
     }
 }
 
-/// One v3 tick: through `walker` when there is one, else (or when it
-/// refuses the job) the CPU walk at `cpu_budget`.
+/// One v3 tick: through `walker` when there is one, else the CPU walk at
+/// `cpu_budget` — also while the walker's walks are stale or refused
+/// (`Tracer::trace_walked`).
 pub fn trace_with(
     tracer: &mut Tracer,
     world: &World,
@@ -50,12 +51,10 @@ pub fn trace_with(
     cpu_budget: Budget,
     walker: Option<&mut dyn V3Walker>,
 ) -> Vec<SourceField> {
-    // just after a crossing (and v6.2: while a door moves) the CPU walks
-    // (`Tracer::cpu_walks`)
-    if let Some(w) = walker.filter(|_| !tracer.cpu_walks(world, listener)) {
+    if let Some(w) = walker {
         // the late family at the CPU's own count when the walker leaves it
         let cpu_late = (!w.walks_late()).then_some(cpu_budget.late_rays);
-        if let Some(fields) = tracer.trace_walked(world, listener, sources, budget, cpu_late, &mut |job| w.walk(job)) {
+        if let Some(fields) = tracer.trace_walked(world, listener, sources, budget, cpu_budget, cpu_late, &mut |job| w.walk(job)) {
             return fields;
         }
     }
@@ -103,8 +102,9 @@ mod tests {
     /// the hall went silent but for the direct sound until a walk launched
     /// on this side landed — and with a pillar every few ticks none did
     /// (the Godot level's nave at 8 m/s: no reverb for 1.6 s, then all of
-    /// it at once). The CPU walks the ticks after a crossing: every tick
-    /// of the flight carries the hall's reflections and reverb.
+    /// it at once). The CPU walks until a walk launched since the crossing
+    /// lands: every tick of the flight carries the hall's reflections and
+    /// reverb, and once standing the walker's walks take over.
     #[test]
     fn after_a_crossing_the_cpu_walks_until_the_walker_catches_up() {
         let mut mb = MeshBuilder::new();
@@ -144,5 +144,16 @@ mod tests {
             }
         }
         assert!(empty.is_empty(), "ticks with no reflections or reverb, at x = {empty:?}");
+        // standing: once a walk launched here lands, the walker's walks
+        // take over (the CPU walks no rays: its walk's cost is nil) —
+        // within the walker's lateness and a tick
+        let mut cpu_ticks = Vec::new();
+        for k in 0..10 {
+            trace_with(&mut tracer, &world, at(9.2), &src, budget, budget, Some(&mut walker));
+            if tracer.costs.early + tracer.costs.late > 0.0 {
+                cpu_ticks.push(k);
+            }
+        }
+        assert!(cpu_ticks.iter().all(|&k| k <= walker.late as usize), "the CPU still walked standing, ticks {cpu_ticks:?}");
     }
 }
