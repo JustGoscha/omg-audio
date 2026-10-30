@@ -811,6 +811,10 @@ struct Branch {
     coherent: bool,
     loud: bool,
     mirror_thr: f32,
+    // every bounce a mirror so far, bends aside: the chain the ray would
+    // follow unbent (whose straight wave a bend's gate leaves out only
+    // where an exact path carries it)
+    mirrored: bool,
     // bent around an edge since the last diffuse bounce, and where the ray
     // was when it first bent (gating: a bend only adds what the straight
     // line from there doesn't carry); a ray passes an edge once
@@ -838,6 +842,7 @@ impl Branch {
             coherent: true,
             loud: true,
             mirror_thr: 1.0,
+            mirrored: true,
             bent: false,
             bends: 0,
             bend_from: None,
@@ -4197,6 +4202,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         mut coherent,
         mut loud,
         mut mirror_thr,
+        mut mirrored,
         mut bent,
         mut bends,
         mut bend_from,
@@ -4264,6 +4270,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                     coherent: false,
                     loud: false,
                     mirror_thr: 0.0,
+                    mirrored: false,
                     bent: false,
                     bends,
                     bend_from: None,
@@ -4310,14 +4317,23 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 }
                 // a bent path only carries what the straight
                 // line from where it bent doesn't (lit side:
-                // nothing — that wave is already counted)
+                // nothing — that wave is already counted) where an
+                // exact path counts that straight wave: the direct
+                // sound, or a chain the solver owns. Any other path
+                // has no straight wave elsewhere — every ray passing
+                // within `EDGE_REACH` of an edge bends, so near one
+                // its bent rays are all there is of it (gated, a
+                // wall's echo lost the share of its sphere passing the
+                // wall's top or bottom edge: −1.5 dB at k 0.06, −2.4 dB
+                // at 0.12, none with diffraction off)
+                let rel = l_s / SPEED_OF_SOUND - cx.t_free[si];
                 let gate: [f32; NBANDS] = match bend_from {
                     Some(_) if refl == 0 => core::array::from_fn(|b| 1.0 - vis[si][b]),
-                    Some(f) => {
+                    Some(f) if solver_owns(refl, mirrored, loud, rel) => {
                         let tv = world.transmission(f, sp, &mut *hits);
                         core::array::from_fn(|b| (1.0 - tv[b]).clamp(0.0, 1.0))
                     }
-                    None => [1.0; NBANDS],
+                    _ => [1.0; NBANDS],
                 };
                 let e: [f32; NBANDS] = core::array::from_fn(|b| {
                     thr[b] * t[b] * t[b] * air[b] * air[b] * w * gate[b]
@@ -4513,6 +4529,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 coherent,
                 loud: loud && t_mirror >= COHERENT_FLOOR,
                 mirror_thr: t_mirror,
+                mirrored,
                 bent,
                 bends,
                 bend_from,
@@ -4590,6 +4607,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
             specular = false;
             bent = false;
             coherent = false;
+            mirrored = false;
         } else {
             if seg == 0 {
                 reusable = false;

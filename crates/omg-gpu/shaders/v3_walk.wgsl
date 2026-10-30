@@ -965,6 +965,9 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
     var mirror_only = true;
     var loud = true;
     var mirror_thr = 1.0;
+    // every bounce a mirror so far, bends aside: the chain the ray would
+    // follow unbent (v3.rs `Branch::mirrored`)
+    var mirrored = true;
     // bent since the last diffuse bounce; where it first bent since the
     // last reflection; never twice at the same edge in a row
     var bent = false;
@@ -1006,6 +1009,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
         loud = (flags & 4u) != 0u;
         bent = (flags & 8u) != 0u;
         have_bend_from = (flags & 16u) != 0u;
+        mirrored = (flags & 64u) != 0u;
         mirror_thr = bitcast<f32>(dbg[so + 12u]);
         bends = dbg[so + 13u];
         bend_from = vec3<f32>(bitcast<f32>(dbg[so + 14u]), bitcast<f32>(dbg[so + 15u]), bitcast<f32>(dbg[so + 16u]));
@@ -1049,7 +1053,8 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             dbg[so + 9u] = bitcast<u32>(length_m);
             dbg[so + 10u] = refl;
             dbg[so + 11u] = select(0u, 1u, specular) | select(0u, 2u, mirror_only) | select(0u, 4u, loud)
-                | select(0u, 8u, bent) | select(0u, 16u, have_bend_from) | select(0u, 32u, split);
+                | select(0u, 8u, bent) | select(0u, 16u, have_bend_from) | select(0u, 32u, split)
+                | select(0u, 64u, mirrored);
             dbg[so + 12u] = bitcast<u32>(mirror_thr);
             dbg[so + 13u] = bends;
             dbg[so + 14u] = bitcast<u32>(bend_from.x);
@@ -1126,12 +1131,15 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let a = air(l_s);
                 let w = 4.0 * inv_n / (job.k * job.k * l_s * l_s);
                 // a bent path only carries what the straight line from
-                // where it bent doesn't
+                // where it bent doesn't — where an exact path counts that
+                // straight wave: the direct sound, or a chain the solver
+                // owns (v3.rs: any other path's bent rays are all there
+                // is of it near an edge)
                 var gate = vec3<f32>(1.0);
                 if (have_bend_from) {
                     if (refl == 0u) {
                         gate = vec3<f32>(1.0) - src_vis(si);
-                    } else {
+                    } else if (mirrored && loud && refl <= MAX_COHERENT_REFL && (job.v4 != 0u || refl > job.bounces || rel >= EARLY_S)) {
                         gate = clamp(vec3<f32>(1.0) - seg_transmission(bend_from, sp), vec3<f32>(0.0), vec3<f32>(1.0));
                     }
                 }
@@ -1270,7 +1278,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             p_mirror_thr = mirror_thr * tw.y;
             p_flags = select(0u, 1u, specular) | select(0u, 2u, mirror_only)
                 | select(0u, 4u, loud && p_mirror_thr >= COHERENT_FLOOR) | select(0u, 8u, bent)
-                | select(0u, 16u, have_bend_from);
+                | select(0u, 16u, have_bend_from) | select(0u, 64u, mirrored);
             p_bends = bends;
             p_bend_from = bend_from;
             p_last_edge = last_edge;
@@ -1315,6 +1323,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             specular = false;
             bent = false;
             mirror_only = false;
+            mirrored = false;
         } else {
             dir = dir - normal * (2.0 * dot(dir, normal));
             specular = true;
@@ -1334,6 +1343,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
     loud = (p_flags & 4u) != 0u;
     bent = (p_flags & 8u) != 0u;
     have_bend_from = (p_flags & 16u) != 0u;
+    mirrored = (p_flags & 64u) != 0u;
     mirror_thr = p_mirror_thr;
     bends = p_bends;
     bend_from = p_bend_from;
