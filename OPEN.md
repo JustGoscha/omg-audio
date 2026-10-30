@@ -246,9 +246,16 @@ doubled), on the CPU and the GPU walk alike — the shoebox late +0.4 /
 +0.5 dB, the corner source +0.4 / +0.2 / +0.1, the floor +0.3. Not on
 main: in motion a door swinging shut jitters more (climbing back 17 /
 28 / 34 dB against 14 / 19 / 20, a treble window over −40 dB in two
-seeds of three) — the unbiased weights are noisier per tick. To judge by
-ear; more rays at the swing, or the correction's variance tamed, would
-take it to main.
+seeds of three). Six seeds, `assess doorswing EAR=0` (v6.2, the club
+door): climbing back 18.1 dB on average on main, 22.3 with the branch
+(23.7 uncapped); windows over −40 dB 4 / 6 / 11 in all. v6.1: 11.8 →
+14.7 dB, windows 10 → 6. Not the tick's sampling noise: a higher
+quality rung moves neither (main 18.1 / 17.8 dB at rungs 8 / 10, the
+branch 22.3 / 25.2 / 19.2 at 8 / 9 / 10) — a few rare heavy events per
+swing, the club's speakers reached through the doorway by rarer, heavier
+hits. To judge by ear; an estimator for mirror paths that needn't find
+the source's sphere (bidirectional, or mirror-image connections) would
+take both the bias and the jitter.
 
 ### The GPU walk fell silent through pillars — solved Oct 30
 Flying through the cathedral on the GPU walk (Godot's default), the
