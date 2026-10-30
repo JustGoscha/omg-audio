@@ -180,6 +180,17 @@ fn a_source_outside_the_convolution_budget_keeps_its_reverb() {
 /// over 120–300 ms has an echo in every few cells, not a noise envelope.
 #[test]
 fn a_flutter_train_runs_on() {
+    flutter_train_runs_on(Config::default());
+}
+
+/// The same on v6.2 (the demos' engine): its solved chains past the early
+/// window stand out as distinct echoes, the train through the window.
+#[test]
+fn a_flutter_train_runs_on_v62() {
+    flutter_train_runs_on(Config { v6: true, v61: true, v62: true, ..Config::default() });
+}
+
+fn flutter_train_runs_on(cfg: Config) {
     let mut g = Geometry::new();
     let hard = g.material(Material::CONCRETE);
     let tile = g.material(Material::ACOUSTIC_TILE);
@@ -191,7 +202,7 @@ fn a_flutter_train_runs_on() {
     g.add_box([0.0, ly, 0.0], [lx, ly + t, lz], tile);
     g.add_box([-t, -t, -t], [lx + t, ly + t, 0.0], carpet);
     g.add_box([-t, -t, lz], [lx + t, ly + t, lz + t], tile);
-    let mut sim = Simulation::new(Config::default());
+    let mut sim = Simulation::new(cfg);
     sim.set_geometry(g);
     let id = sim.add_source(SourceDesc::at([1.5, 3.15, 1.3]));
     sim.set_listener([1.3, 3.0, 1.6], 0.0, 0.0, 0.0);
