@@ -41,7 +41,9 @@
 #         fixed points of the walk instead: the same tour every take (the
 #         engine traces in real time: its paths, not the tour, vary a
 #         little). --video=fps: frames of the window too (<name>_frames/),
-#         for tools/tour_video.sh
+#         for tools/tour_video.sh. --until=n: stop after step n (a stretch
+#         of it); --alone=name: only the sources whose name starts so
+#         play, their own recordings (the steps, beds and one-shots off)
 #   --paths the scenario's source's exactly solved paths (direct, edge
 #           bends, mirror chains) per frame to <name>.paths.csv
 #   --tone  the scenario's source plays a steady 500 Hz instead of its
@@ -62,6 +64,8 @@ var log_paths := false # --paths: the scenario source's exact paths per frame
 var shots := -1 # --view=0|1|2: the paths view off/exact/all, a screenshot a second
 var at := Vector3(35.0, 10.0, -2.6) # --at=x,y,z: where the bunker scenario walks (feet)
 var video_fps := 0.0 # --video=fps: the tour's frames of the window
+var until_step := -1 # --until=n: the tour stops after step n
+var alone := "" # --alone=name: the tour with those sources only
 var paths_file: FileAccess
 var frames: FileAccess
 var t0 := 0
@@ -88,6 +92,10 @@ func _init(d: Node, w: OmgWorld, p: DemoPlayer) -> void:
 			shots = int(a.trim_prefix("--view="))
 		elif a.begins_with("--video="):
 			video_fps = float(a.trim_prefix("--video="))
+		elif a.begins_with("--until="):
+			until_step = int(a.trim_prefix("--until="))
+		elif a.begins_with("--alone="):
+			alone = a.trim_prefix("--alone=")
 		elif a.begins_with("--at="):
 			var v := a.trim_prefix("--at=").split(",")
 			at = Vector3(float(v[0]), float(v[1]), float(v[2]))
@@ -103,7 +111,7 @@ func run() -> void:
 	if quality >= -1:
 		world.quality = quality
 	DirAccess.make_dir_recursive_absolute(out_dir)
-	var name := "%s_%s%s" % [scenario, engine, "_tone" if tone else ""]
+	var name := "%s_%s%s%s" % [scenario, engine, "_tone" if tone else "", ("_" + alone) if alone != "" else ""]
 	player.set_physics_process(false) # the script moves the ears
 	player.flying = true
 	var base := out_dir.path_join(name)
@@ -397,8 +405,13 @@ func _tour(base: String) -> void:
 	# nothing for half a second, rightly); "wait" s;
 	# "door" i, open; "curtains"; "clap"; "bells"; "owl" source; "car"
 	# north (from 200 m off at 100 km/h)
-	var g := 0.4 # feet over a floor at grade
-	var b := -2.6 # … over the bunker's
+	# the feet on the floors, the ears 1.6 m over them (the player's EYE),
+	# as a person's: 0.4 m up they rode at 2.0 m, the height of the
+	# doorways' lintels — walking through a door they grazed the lintel,
+	# which the engine takes for passing through a wall (every average
+	# dropped: the club's bass fell ~10 dB for half a second at its door)
+	var g := 0.0 # at grade
+	var b := -3.0 # the bunker's floor
 	var plan := [
 		["wait", 4.0, "piano"], ["bells", "piano"], ["wait", 3.0, "piano"],
 		["go", 4.0, 6.0, g, "corridor"], ["go", 4.0, 13.5, g, "corridor"], ["go", 5.5, 17.0, g, "seminar"],
@@ -422,8 +435,14 @@ func _tour(base: String) -> void:
 		["go", 14.0, -65.0, g, "south"], ["go", -13.0, -45.0, g, "road"], ["wait", 1.0, "road"],
 		["car", true, "road"], ["wait", 5.0, "road"], ["car", false, "road"], ["wait", 9.0, "road"],
 		["go", -14.0, 30.0, g, "road"], ["go", -30.0, 30.0, g, "dome"], ["go", -37.0, 30.0, g, "dome"], ["wait", 3.0, "dome"],
-		["go", -42.0, 31.0, 1.2, "stage"], ["wait", 2.0, "stage"], ["clap", "stage"], ["wait", 5.0, "stage"],
+		["go", -42.0, 31.0, 0.8, "stage"], ["wait", 2.0, "stage"], ["clap", "stage"], ["wait", 5.0, "stage"],
 	]
+	if alone != "":
+		for k in snd.sources:
+			if not String(k).begins_with(alone):
+				(snd.sources[k] as OmgSource).stop()
+		world.ambience_db = -200.0
+		world.rain_db = -200.0
 	var pos := Vector3(3.5, 4.0, g)
 	_place(pos.x, pos.y, pos.z)
 	player.set_heading(PI / 2.0)
@@ -439,6 +458,8 @@ func _tour(base: String) -> void:
 	var log := FileAccess.open(base + ".tour.csv", FileAccess.WRITE)
 	log.store_line("t_s,step,kind,phase")
 	for i in plan.size():
+		if until_step >= 0 and i > until_step:
+			break
 		var st: Array = plan[i]
 		var kind: String = st[0]
 		phase = st[st.size() - 1]
@@ -463,7 +484,8 @@ func _tour(base: String) -> void:
 					_place(pos.x, pos.y, pos.z)
 					if walked >= TOUR_STEP:
 						walked -= TOUR_STEP
-						snd._step(true)
+						if alone == "":
+							snd._step(true)
 					slot = _tour_frame(frames_dir, slot, t)
 					_frame_log(t * 1000.0, pos.x, pos.y)
 					done = u >= 1.0
@@ -484,11 +506,14 @@ func _tour(base: String) -> void:
 						best = k
 				lv.curtain_sets[best]["target"] = 0.0
 			"clap":
-				snd.hands.play_clip(snd.clip["clap"], 8.0, 1.0)
+				if alone == "":
+					snd.hands.play_clip(snd.clip["clap"], 8.0, 1.0)
 			"bells":
-				snd.sources["bells"].play_clip(snd.clip["bell_big"], 1.0, 1.0)
+				if alone == "":
+					snd.sources["bells"].play_clip(snd.clip["bell_big"], 1.0, 1.0)
 			"owl":
-				snd.sources[st[1]].play_clip(snd.clip["owl0"], 1.0, 1.0)
+				if alone == "":
+					snd.sources[st[1]].play_clip(snd.clip["owl0"], 1.0, 1.0)
 			"car":
 				snd._spawn_car()
 				var c: Dictionary = snd.cars.back()
