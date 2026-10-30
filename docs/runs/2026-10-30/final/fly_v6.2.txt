@@ -1,0 +1,13 @@
+/Users/justgoscha/dev/omg-audio/docs/runs/2026-10-30/final/fly_v6.2: 6.8 s at 44100 Hz
+  artifacts (above 3 kHz, under the whole; a pure tone's output has none):
+    outside   465 windows: median  -50.2 dB, worst  -20.4 dB, over −40 dB  53, over −30 dB   7
+    crossing   61 windows: median  -36.1 dB, worst  -22.2 dB, over −40 dB  36, over −30 dB   7
+    inside    818 windows: median  -36.8 dB, worst  -27.6 dB, over −40 dB 636, over −30 dB  13
+    loudest: 0.629s -20dB (outside), 0.639s -22dB (outside), 2.619s -22dB (crossing), 2.629s -22dB (crossing), 0.634s -23dB (outside), 2.624s -23dB (crossing), 2.609s -25dB (crossing), 2.634s -25dB (crossing)
+  level jumps (10 ms off its 90 ms course):
+    outside   234 windows: >2 dB  86, >4 dB  41
+    crossing   30 windows: >2 dB   9, >4 dB   3
+    inside    404 windows: >2 dB  63, >4 dB  10
+  audio thread: 582 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 3 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 2 at the start; 0.7s → 3, 2.9s → 2
+  engine: tick 3.0–17.7 ms, load up to 0.24, budget changes 0 (taps 480 → 480), late frames 0

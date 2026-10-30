@@ -1,0 +1,11 @@
+/Users/justgoscha/dev/omg-audio/docs/runs/2026-10-30/final/curtains_v6.2_tone: 16.0 s at 44100 Hz
+  artifacts (above 3 kHz, under the whole; a pure tone's output has none):
+    up       1190 windows: median  -31.4 dB, worst  -13.5 dB, over −40 dB 1034, over −30 dB 526
+    down     2009 windows: median  -26.9 dB, worst   -3.6 dB, over −40 dB 1928, over −30 dB 1339
+    loudest: 11.444s -4dB (down), 11.424s -4dB (down), 11.454s -4dB (down), 11.434s -5dB (down), 11.464s -5dB (down), 11.484s -5dB (down), 11.419s -5dB (down), 11.474s -5dB (down)
+  level jumps (10 ms off its 90 ms course):
+    up        595 windows: >2 dB  67, >4 dB   3
+    down      999 windows: >2 dB 163, >4 dB   9
+  audio thread: 1379 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 16 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 0 at the start; 11.7s → 1, 14.0s → 2
+  engine: tick 4.1–58.3 ms, load up to 0.30, budget changes 0 (taps 480 → 480), late frames 0

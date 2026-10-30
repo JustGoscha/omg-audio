@@ -1,0 +1,6 @@
+assess fly: mode v6.2 rung gov quality 2 pace 1
+geometry: /private/tmp/claude-501/-Users-justgoscha-dev-omg-audio/7a733559-7822-4b67-923c-babc2ab4e81b/scratchpad/godot_level.geo
+fly (v6.2): through the cathedral wall at 8 m/s, the flute playing a steady 500 Hz; artifacts = output above 3 kHz, under the tone
+   outside   670 windows: median  -62.6 dB, worst  -55.2 dB, over −40 dB   0, over −30 dB   0
+   crossing  110 windows: median  -61.7 dB, worst  -40.7 dB, over −40 dB   0, over −30 dB   0
+   inside    770 windows: median  -62.3 dB, worst  -54.1 dB, over −40 dB   0, over −30 dB   0

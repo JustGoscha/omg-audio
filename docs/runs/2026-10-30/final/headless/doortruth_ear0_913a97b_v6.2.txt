@@ -1,0 +1,7 @@
+assess doortruth: mode v6.2 rung 3 quality 2 pace 0
+doortruth (v6.2): the club's tone, the door standing at each openness (ears at 21,31,1.6)
+   openness 0.3000: -6.0 dB
+   openness 0.5000: -7.1 dB
+   openness 0.7000: -7.0 dB
+   openness 0.9000: -7.3 dB
+   openness 1.0000: -5.8 dB

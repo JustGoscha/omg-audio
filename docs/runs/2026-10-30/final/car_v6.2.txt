@@ -1,0 +1,13 @@
+/Users/justgoscha/dev/omg-audio/docs/runs/2026-10-30/final/car_v6.2: 10.8 s at 44100 Hz
+  artifacts (above 3 kHz, under the whole; a pure tone's output has none):
+    approach  761 windows: median  -14.2 dB, worst   -6.6 dB, over −40 dB 761, over −30 dB 761
+    pass      217 windows: median  -12.9 dB, worst   -8.0 dB, over −40 dB 217, over −30 dB 217
+    away     1176 windows: median  -14.2 dB, worst   -4.4 dB, over −40 dB 1176, over −30 dB 1176
+    loudest: 10.297s -4dB (away), 10.351s -5dB (away), 10.436s -5dB (away), 10.656s -5dB (away), 9.748s -5dB (away), 10.302s -5dB (away), 9.179s -5dB (away), 10.386s -5dB (away)
+  level jumps (10 ms off its 90 ms course):
+    approach  381 windows: >2 dB  49, >4 dB   5
+    pass      109 windows: >2 dB  18, >4 dB   0
+    away      582 windows: >2 dB 106, >4 dB   5
+  audio thread: 930 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 15 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 2 at the start; 0.6s → 3, 2.6s → 4, 4.6s → 5, 6.7s → 6, 8.7s → 7, 10.7s → 8
+  engine: tick 2.7–8.3 ms, load up to 0.18, budget changes 0 (taps 480 → 480), late frames 0
