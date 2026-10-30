@@ -54,9 +54,12 @@ or split at partitions by a learnt value of what lies beyond (path
 guiding). Large. v6.2 splits at a door's leaf (once a ray): the club from
 the square, its late part click to click 1.33 / 0.99 / 2.69 → 0.56 /
 0.42 / 0.56 dB (`assess still`, three seeds), over 30 s the mid band's
-range 2.4–3.6 → 1.3–1.5 dB, the first click within 1 dB of the last —
-what comes through its walls alone (a room without a door between) is
-still the draw's.
+range 2.4–3.6 → 1.3–1.5 dB, the first click within 1 dB of the last. A
+room heard through its walls alone: v6.2 also walks on through a wall a
+sounding source is enclosed behind, a quarter of the time — its seeds
+within 0.9 dB (4.4 before), the one-second sd 1.3–1.9 → 0.3–0.7 dB. The
+bidirectional estimate stays the cure for what remains (rooms reached
+only over several walls).
 The same shows right after a door shuts: the field through the shut
 door restarts as a young estimate. Across four seeds the click 50 ms to
 0.8 s after the shut lands on average 2.3 dB (early part, per band) and

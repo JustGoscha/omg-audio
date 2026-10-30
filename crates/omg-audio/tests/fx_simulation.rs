@@ -710,3 +710,57 @@ fn a_door_swinging_shut_is_heard_where_it_is() {
     assert!(e62 < e61 - 0.5, "v6.2 follows the door closer than v6.1: {e62:.1} vs {e61:.1} dB");
     assert!(e62 < 3.5, "v6.2 within 3.5 dB rms of the door standing where it is: {e62:.1} dB");
 }
+
+/// A loud room heard through its walls alone (8 × 6 × 3 m, concrete, no
+/// door): what comes through is reached through the walls — at the
+/// draw's floor, one ray in fifty, carrying × 50: a heavy-tailed few (the
+/// same room's level up to 4 dB apart between seeds over 20–30 s
+/// standing, its one-second means swinging over 5–7 dB). v6.2 also walks
+/// on through a wall a sounding source is enclosed behind, a quarter of
+/// the time (× 4): three seeds within 1.5 dB, steadier second to second
+/// (here the worst seed's sd 1.77 → 0.75 dB).
+#[test]
+fn a_room_heard_through_its_walls_settles() {
+    let run = |v62: bool, seed: u64| -> (f32, f32) {
+        let mut g = Geometry::new();
+        let w = g.material(Material::CONCRETE);
+        let t = 0.2;
+        let (lx, ly, lz) = (8.0, 6.0, 3.0);
+        g.add_box([-t, -t, -t], [lx + t, ly + t, 0.0], w);
+        g.add_box([-t, -t, lz], [lx + t, ly + t, lz + t], w);
+        g.add_box([-t, -t, 0.0], [0.0, ly + t, lz], w);
+        g.add_box([lx, -t, 0.0], [lx + t, ly + t, lz], w);
+        g.add_box([0.0, -t, 0.0], [lx, 0.0, lz], w);
+        g.add_box([0.0, ly, 0.0], [lx, ly + t, lz], w);
+        let grass = g.material(Material::GRASS);
+        g.ground_plane(-t, grass);
+        let mut sim = Simulation::new(Config { quality: Quality::Level(3), v6: true, v61: true, v62, seed, kernel_thread: false, ..Config::default() });
+        sim.set_geometry(g);
+        let src = sim.add_source(SourceDesc::at([3.0, 3.0, 1.5]));
+        sim.set_listener([13.0, 3.0, 1.6], 0.0, 0.0, 0.0);
+        let mut late = Vec::new();
+        for _ in 0..400 {
+            let f = sim.tick();
+            let pb = f.block(src).unwrap();
+            late.push(pb.reverb.level[1] * pb.reverb.level[1] + pb.remote.map_or(0.0, |r| r.send[1] * r.send[1]));
+        }
+        let db = |x: f32| 10.0 * x.max(1e-30).log10();
+        // one-second means past the first two, their spread; the last 10 s
+        let secs: Vec<f32> = late.chunks(20).skip(2).map(|c| db(c.iter().sum::<f32>() / 20.0)).collect();
+        let m = secs.iter().sum::<f32>() / secs.len() as f32;
+        let sd = (secs.iter().map(|x| (x - m) * (x - m)).sum::<f32>() / (secs.len() - 1) as f32).sqrt();
+        (db(late[200..].iter().sum::<f32>() / 200.0), sd)
+    };
+    let span = |v62: bool| {
+        let r: Vec<(f32, f32)> = (1..=3).map(|s| run(v62, s)).collect();
+        let lv: Vec<f32> = r.iter().map(|x| x.0).collect();
+        let span = lv.iter().cloned().fold(f32::MIN, f32::max) - lv.iter().cloned().fold(f32::MAX, f32::min);
+        (span, r.iter().map(|x| x.1).fold(0.0f32, f32::max), lv)
+    };
+    let (s61, sd61, l61) = span(false);
+    let (s62, sd62, l62) = span(true);
+    eprintln!("through the walls, three seeds: v6.1 levels {l61:.1?} (span {s61:.1} dB, 1-s sd ≤ {sd61:.2}), v6.2 {l62:.1?} (span {s62:.1} dB, 1-s sd ≤ {sd62:.2})");
+    assert!(s62 < 1.5, "v6.2: the seeds agree within 1.5 dB ({s62:.1})");
+    assert!(sd62 < 1.0, "v6.2: steady second to second ({sd62:.2} dB)");
+    assert!(sd62 < sd61, "v6.2 steadier than v6.1: {sd62:.2} vs {sd61:.2} dB");
+}

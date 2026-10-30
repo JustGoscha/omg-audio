@@ -286,6 +286,19 @@ What it took to be exact, each found by measuring:
   below). At a door's leaf a ray now splits (v4's rule, once a ray): what
   passes and what reflects are both walked. A curtain (it reflects
   nothing) neither splits nor reflects virtually.
+- **Into a room through its walls.** The same heavy tail as at a door,
+  where no door is between: a room heard through its walls alone is
+  reached through them at the draw's floor (one ray in fifty, × 50) — an
+  8 × 6 × 3 m concrete room's level 4.4 dB apart between seeds after
+  20–30 s standing, its one-second means over 5–7 dB. Now at a wall of a
+  room a sounding source is enclosed in (walls all round within 30 m,
+  the source ahead of the ray beyond the wall) a ray reflects as ever and
+  also walks on through it a quarter of the time (× 4): the seeds within
+  0.9 dB, the one-second means' sd 1.3–1.9 → 0.3–0.7 dB
+  (`fx_simulation::a_room_heard_through_its_walls_settles`). Not at every
+  wall — a full split there cost 40 % of the Godot level's tick, and from
+  a square went into whichever building came first: +1.6 ms in the town
+  (CPU), +4 ms on the Godot level, +0.25 ms on the GPU walk.
 - **Kept, not dropped.** Per tick 256 paths a part (early, late), by
   energy over a 4 × 4 grid of where they met the opening (pre-thinned
   while walking against the last tick's threshold, unbiased); the six

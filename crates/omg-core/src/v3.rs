@@ -382,6 +382,13 @@ impl Event {
     }
 }
 
+/// v6.2: at a wall of a room a sounding source is enclosed in — walls all
+/// round within this (m), the source behind the wall and ahead — a ray
+/// also walks on through it this share of the time (× 1 / it),
+/// reflecting as ever (`walk_ray`).
+const WALL_SPLIT_M: f32 = 30.0;
+const WALL_SPLIT_P: f32 = 0.25;
+
 /// Second-order chains are named from pairs of faces this large (m²) —
 /// a facade, a hall's wall: where a distinct echo comes from (a window's
 /// reveal reflects little but the highs) — …
@@ -2858,6 +2865,21 @@ impl Tracer {
             self.scratch.resize_with(threads, WalkScratch::default);
         }
         let edges = self.edges.take();
+        // v6.2: the rooms the sources sound in (`WalkCtx::rooms`)
+        let rooms: Vec<f32> = sources
+            .iter()
+            .map(|s| {
+                if !self.v62 {
+                    return 0.0;
+                }
+                let axes = [(1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, -1.0)];
+                axes.iter()
+                    .map(|&(x, y, z)| world.raycast(s.pos, Vec3::new(x, y, z)).map_or(f32::MAX, |h| h.t))
+                    .fold(0.0f32, f32::max)
+                    .min(f32::MAX)
+            })
+            .map(|r| if r <= WALL_SPLIT_M { r } else { 0.0 })
+            .collect();
         let cx = WalkCtx {
             world,
             listener,
@@ -2872,6 +2894,8 @@ impl Tracer {
             debug: self.debug,
             v4: self.v4,
             virtuals: self.rest < DOOR_CPU_TICKS,
+            v62: self.v62,
+            rooms: &rooms,
         };
         for (fi, (dirs, lo, hi, segments, nee)) in fams.into_iter().enumerate() {
             if dirs.is_empty() || lo > hi {
@@ -3859,6 +3883,11 @@ struct WalkCtx<'a> {
     /// while the world is changing: they price a door on its way; standing,
     /// a door's paths are what they were walked as.
     virtuals: bool,
+    /// v6.2: split at a wall a sounding source lies behind (`WALL_SPLIT_M`).
+    v62: bool,
+    /// v6.2: per source, the size of the room it sounds in (the farthest
+    /// of six walls around it), 0 when it isn't enclosed (outdoors).
+    rooms: &'a [f32],
 }
 
 /// One family of rays (`walk_rays`): the reflection orders it counts,
@@ -4281,16 +4310,40 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         // ray in thirty through a door (the draw's floor) left a shut
         // door's level to a heavy-tailed few
         let leaf = !aps.is_empty() && !virt && keep.iter().any(|&k| k > 1e-6) && aps.iter().any(|a| a.covers(p));
-        let split_here = (v4 || leaf) && !split && p_t >= SPLIT_T2;
+        // v6.2: and at a wall of a room a sounding source is enclosed in
+        // (walls all round within `WALL_SPLIT_M`), the source ahead of the
+        // ray beyond it: a room heard through its walls is reached through
+        // them — at the draw's floor one ray in fifty, a heavy-tailed few
+        // (the same room's level 4 dB apart between seeds after 30 s
+        // standing). Not at every wall: from a square the split went into
+        // whichever building came first, and an outdoor source behind a
+        // building isn't in it
+        let behind = cx.v62
+            && !virt
+            && !split
+            && keep.iter().any(|&k| k > 1e-6)
+            && sources.iter().zip(cx.rooms).any(|(s, &room)| {
+                let to = s.pos - p;
+                room > 0.0 && to.dot(normal) < 0.0 && to.dot(dir) > 0.0 && to.length() < room + 1.0
+            });
+        let split_here = (v4 || leaf || behind) && !split && p_t >= SPLIT_T2;
+        // the transmitted branch walked always (v4, a leaf), or a share of
+        // the time at a wall a source lies behind (`WALL_SPLIT_P`, × 1 /
+        // it) — the reflected one always, at its own weight: an entry
+        // through the wall weighs × 4 instead of the draw's × 50, for a
+        // quarter of a split's walk
+        let q = if v4 || leaf { 1.0 } else { WALL_SPLIT_P };
         if split_here && seg == 0 {
             reusable = false;
         }
         if split_here {
             split = true;
+        }
+        if split_here && (q >= 1.0 || rng.next_f32() < q) {
             // the wall as a whole: the same price a segment
             // through it pays (both faces, its thickness, once)
             let (t2, beyond) = world.through(p, dir, &mat, &mut *hits);
-            let t_thr: [f32; NBANDS] = core::array::from_fn(|b| thr[b] * t2[b]);
+            let t_thr: [f32; NBANDS] = core::array::from_fn(|b| thr[b] * t2[b] / q);
             let t_mirror = mirror_thr * t2[1];
             branches.push(Branch {
                 origin: beyond,
