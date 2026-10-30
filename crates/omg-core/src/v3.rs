@@ -45,12 +45,22 @@ pub struct TickCosts {
     pub late: f32,
     /// Mirror chains: named and solved.
     pub chains: f32,
+    /// Of `chains`, naming them (the mirror rays and the named mirrors).
+    pub naming: f32,
     /// The tick's estimates folded into each source's field.
     pub fold: f32,
     /// The world had just changed: this tick traced extra rays for the
     /// averages restarting (`Tracer::burst`) — its cost is the change's,
     /// not the quality's (a governor leaves it out).
     pub burst: bool,
+}
+
+impl TickCosts {
+    /// By part (ms): direct, one-edge, two-edge, early, late, chains,
+    /// fold.
+    pub fn parts(&self) -> [f32; 7] {
+        [self.direct, self.edges - self.edges2, self.edges2, self.early, self.late, self.chains, self.fold]
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -134,6 +144,8 @@ fn chain_finders(budget: Budget) -> usize {
 }
 /// Chains cached per source.
 const MAX_CHAINS: usize = 128;
+/// The fewest chain solves a thread takes at a time (`solve_chain_work`).
+const CHAIN_SOLVES_PER_CHUNK: usize = 16;
 /// Salience: a solved chain plays as a tap when it is this many times
 /// louder than the diffuse field in its slot — the incoherent energy
 /// arriving from its side (±x, ±y, ±z) within ±`ECHO_SPAN`, per direction
@@ -705,20 +717,49 @@ pub struct Track {
 impl Track {
     /// Where it was at `t` (held at its ends).
     pub fn at(&self, t: f64) -> Vec3 {
+        self.at_from(t, self.knots.len()).0
+    }
+
+    /// `at`, and the knot it found: looked for outward from `hint` (the
+    /// last one found — the next time asked for lies near it), in steps
+    /// doubling, then halved down between: the same knot as a search of
+    /// the whole track (a walker's, a knot a frame for `TRACK_KEEP_S`,
+    /// thousands long), in steps of how far it lies.
+    fn at_from(&self, t: f64, hint: usize) -> (Vec3, usize) {
         let k = &self.knots;
-        if k.is_empty() {
-            return Vec3::new(0.0, 0.0, 0.0);
+        let n = k.len();
+        if n == 0 {
+            return (Vec3::new(0.0, 0.0, 0.0), 0);
         }
-        let i = k.partition_point(|(tk, _)| *tk <= t);
+        // i: how many knots are at or before t, within [lo, hi)
+        let h = hint.min(n);
+        let (lo, hi) = if h > 0 && k[h - 1].0 > t {
+            let (mut lo, mut hi, mut step) = (h - 1, h - 1, 1);
+            while lo > 0 && k[lo].0 > t {
+                hi = lo;
+                lo = lo.saturating_sub(step);
+                step *= 2;
+            }
+            (lo, hi + 1)
+        } else {
+            let (mut lo, mut hi, mut step) = (h, h, 1);
+            while hi < n && k[hi].0 <= t {
+                lo = hi;
+                hi = (hi + step).min(n);
+                step *= 2;
+            }
+            (lo, hi)
+        };
+        let i = lo + k[lo..hi].partition_point(|(tk, _)| *tk <= t);
         if i == 0 {
-            return k[0].1;
+            return (k[0].1, i);
         }
-        if i == k.len() {
-            return k[i - 1].1;
+        if i == n {
+            return (k[i - 1].1, i);
         }
         let ((t0, a), (t1, b)) = (k[i - 1], k[i]);
         let f = if t1 > t0 { ((t - t0) / (t1 - t0)) as f32 } else { 1.0 };
-        a + (b - a) * f
+        (a + (b - a) * f, i)
     }
 
     /// Where it emitted what reaches the end of a path now (`now`): the
@@ -729,11 +770,11 @@ impl Track {
     /// None: emitted outside the track's span.
     pub fn emit(&self, now: f64, p: Vec3, before: f32) -> Option<Vec3> {
         let c = SPEED_OF_SOUND as f64;
-        let mut x = self.at(now);
+        let (mut x, mut i) = self.at_from(now, self.knots.len());
         let mut t = now;
         for _ in 0..4 {
             t = now - (before + (x - p).length()) as f64 / c;
-            x = self.at(t);
+            (x, i) = self.at_from(t, i);
         }
         (t >= self.from && t <= self.until).then_some(x)
     }
@@ -2372,11 +2413,15 @@ fn plane_of(normal: Vec3, p: Vec3) -> (Vec3, f32) {
 }
 
 fn planes_hash(planes: &[(Vec3, f32)]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for (n, d) in planes {
-        for q in [n.x * 1e3, n.y * 1e3, n.z * 1e3, d * 1e3] {
-            h = (h ^ (q.round() as i64 as u64)).wrapping_mul(0x0100_0000_01b3);
-        }
+    planes.iter().fold(PLANES_HASH_SEED, |h, &pl| planes_hash_step(h, pl))
+}
+
+const PLANES_HASH_SEED: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// `planes_hash` of a chain one plane longer, from the shorter one's.
+fn planes_hash_step(mut h: u64, (n, d): (Vec3, f32)) -> u64 {
+    for q in [n.x * 1e3, n.y * 1e3, n.z * 1e3, d * 1e3] {
+        h = (h ^ (q.round() as i64 as u64)).wrapping_mul(0x0100_0000_01b3);
     }
     h
 }
@@ -2681,29 +2726,7 @@ impl Tracer {
     /// A mirror chain solved for a moving source: the image of where the
     /// source was when it emitted what arrives along the chain now.
     fn solve_chain_at(&mut self, world: &World, planes: &[(Vec3, f32)], listener: Vec3, si: usize, cur: Vec3) -> Option<([f32; NBANDS], f32, Vec3)> {
-        let Some(Some(tr)) = self.motion.tracks.get(si) else {
-            return solve_chain(world, planes, listener, cur, &mut self.hits);
-        };
-        let tr = tr.clone();
-        let now = self.motion.now;
-        // where it emitted what arrives along the chain now: the light
-        // cone to the listener from the chain's image of the source
-        // (fixed-point steps contract by v/c). Its length needs no valid
-        // path; only the place found is solved, legs and all. (Each step
-        // solved, starting from where the source is now, a facade's echo
-        // of a passing car went 8 m before the facade's end: the car's
-        // place now mirrored past it while the one it emitted from didn't.)
-        let image_len = |x: Vec3| {
-            let im = planes.iter().rev().fold(x, |im, &pl| mirror_point(im, pl));
-            (im - listener).length()
-        };
-        let mut x = tr.at(now);
-        for _ in 0..4 {
-            x = tr.at(now - (image_len(x) / SPEED_OF_SOUND) as f64);
-        }
-        let r = solve_chain(world, planes, listener, x, &mut self.hits)?;
-        let t = now - r.1 as f64;
-        (t >= tr.from && t <= tr.until).then_some(r)
+        solve_chain_moving(world, planes, listener, &self.motion, si, cur, &mut self.hits)
     }
 
     /// The traced outdoor field: (unit direction, per-band energy) per
@@ -2900,6 +2923,7 @@ impl Tracer {
         // solved every tick while cached
         let clock = Stopwatch::start();
         self.find_chains(world, listener, sources, budget, chain_finders(budget));
+        self.costs.naming = clock.ms();
         self.solve_chains(world, listener, sources, budget, &mut accs);
         self.costs.chains = clock.ms();
 
@@ -3539,35 +3563,40 @@ impl Tracer {
         let mut reject: Vec<((u32, u64), Option<(Vec3, Vec3)>)> = Vec::new();
         let mut mirrors: Vec<ExactPath> = Vec::new();
         let keys: Vec<(u32, u64)> = self.chains.keys().copied().collect();
-        for key in keys {
+        let tick = self.tick;
+        // each chain this tick: gone (its source gone, or expired), its
+        // last solve (neither end moved since, lately), or solved now —
+        // a moving source's at the image of where it emitted
+        let mut at: Vec<Option<usize>> = vec![None; keys.len()];
+        let mut results: Vec<Option<([f32; NBANDS], f32, Vec3)>> = vec![None; keys.len()];
+        let mut work: Vec<(usize, usize)> = Vec::new();
+        for (i, key) in keys.iter().enumerate() {
             let Some(si) = sources.iter().position(|s| s.id == key.0) else {
-                drop.push(key);
+                drop.push(*key);
                 continue;
             };
-            let c = self.chains.get_mut(&key).expect("listed above");
+            let c = self.chains.get_mut(key).expect("listed above");
             c.ttl = c.ttl.saturating_sub(1);
             if c.ttl == 0 {
-                drop.push(key);
+                drop.push(*key);
                 continue;
             }
-            let long = c.planes.len() as u32 > budget.bounces;
+            at[i] = Some(si);
+            match c.solved {
+                Some((l, s, t, r)) if l == listener && s == sources[si].pos && tick < t + CHAIN_RESOLVE_TICKS => results[i] = Some(r),
+                _ => work.push((i, si)),
+            }
+        }
+        let solved = self.solve_chain_work(world, listener, sources, &keys, &work);
+        for (&(i, si), r) in work.iter().zip(solved) {
+            self.chains.get_mut(&keys[i]).expect("listed above").solved = r.map(|r| (listener, sources[si].pos, tick, r));
+            results[i] = r;
+        }
+        for (i, &key) in keys.iter().enumerate() {
+            let Some(si) = at[i] else { continue };
+            let long = self.chains[&key].planes.len() as u32 > budget.bounces;
             let src = sources[si].pos;
-            let tick = self.tick;
-            let result = match c.solved {
-                Some((l, s, t, r)) if l == listener && s == src && tick < t + CHAIN_RESOLVE_TICKS => Some(r),
-                _ if self.motion.moving(si) => {
-                    // a moving source: the image of where it emitted
-                    let planes = c.planes.clone();
-                    let r = self.solve_chain_at(world, &planes, listener, si, src);
-                    self.chains.get_mut(&key).expect("listed above").solved = r.map(|r| (listener, src, tick, r));
-                    r
-                }
-                _ => {
-                    let r = solve_chain(world, &c.planes, listener, src, &mut self.hits);
-                    c.solved = r.map(|r| (listener, src, tick, r));
-                    r
-                }
-            };
+            let result = results[i];
             if let (true, Some((e, delay, _))) = (self.debug, result) {
                 // (v3: short early chains are the sphere estimate's; a
                 // last leg through a solid wall carries nothing)
@@ -3657,6 +3686,55 @@ impl Tracer {
         }
     }
 
+    /// The chains `work` names (index into `keys`, source index) solved
+    /// exactly, in order — on the walk's threads when there are many:
+    /// each solve reads only the world, the chain and where its ends are,
+    /// so the result is the same however many threads solved them.
+    fn solve_chain_work(&mut self, world: &World, listener: Vec3, sources: &[Source], keys: &[(u32, u64)], work: &[(usize, usize)]) -> Vec<Option<([f32; NBANDS], f32, Vec3)>> {
+        let threads = self.threads.max(1);
+        if self.scratch.len() < threads {
+            self.scratch.resize_with(threads, WalkScratch::default);
+        }
+        let (chains, motion) = (&self.chains, &self.motion);
+        let solve = |hits: &mut Vec<SegHit>, &(i, si): &(usize, usize)| {
+            let planes = &chains[&keys[i]].planes;
+            solve_chain_moving(world, planes, listener, motion, si, sources[si].pos, hits)
+        };
+        // a few solves aren't worth the threads' start
+        let chunk = work.len().div_ceil(threads * WALK_CHUNKS_PER_THREAD).max(CHAIN_SOLVES_PER_CHUNK);
+        let n_chunks = work.len().div_ceil(chunk);
+        #[cfg(not(target_arch = "wasm32"))]
+        if threads > 1 && n_chunks > 1 {
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let (solve, next) = (&solve, &next);
+            let mut done: Vec<(usize, Vec<_>)> = std::thread::scope(|s| {
+                let workers: Vec<_> = self.scratch[..threads]
+                    .iter_mut()
+                    .take(n_chunks)
+                    .map(|sc| {
+                        s.spawn(move || {
+                            let mut mine = Vec::new();
+                            loop {
+                                let c = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if c >= n_chunks {
+                                    break;
+                                }
+                                let part = &work[c * chunk..((c + 1) * chunk).min(work.len())];
+                                mine.push((c, part.iter().map(|w| solve(&mut sc.hits, w)).collect()));
+                            }
+                            mine
+                        })
+                    })
+                    .collect();
+                workers.into_iter().flat_map(|w| w.join().expect("a solving thread panicked")).collect()
+            });
+            done.sort_by_key(|d| d.0);
+            return done.into_iter().flat_map(|d| d.1).collect();
+        }
+        let hits = &mut self.scratch[0].hits;
+        work.iter().map(|w| solve(hits, w)).collect()
+    }
+
     /// A chain whose last mirrors alternate between two parallel planes
     /// is one member of a train — the flutter between them: every other
     /// number of round trips is a path too, as rare for a ray to find as
@@ -3667,6 +3745,7 @@ impl Tracer {
             *per_source.entry(k.0).or_default() += 1;
         }
         let mut new: Vec<((u32, u64), MirrorChain)> = Vec::new();
+        let mut proposed: std::collections::HashSet<(u32, u64)> = std::collections::HashSet::default();
         let mut grown: Vec<(u32, u64)> = Vec::new();
         let tick = self.tick;
         for (key, c) in &self.chains {
@@ -3690,18 +3769,28 @@ impl Tracer {
             // and the pure alternation both ways round (off either wall
             // first): the train's halves
             let families = [(start, phase), (0, phase), (0, (phase.1, phase.0))];
-            for &(pre, (first, second)) in &families {
-                for len in pre + 2..=MAX_COHERENT_REFL as usize {
-                    let planes: Vec<(Vec3, f32)> =
-                        (0..len).map(|i| if i < pre { p[i] } else if (i - pre) % 2 == 0 { first } else { second }).collect();
-                    let k = (key.0, planes_hash(&planes));
-                    let count = per_source.entry(key.0).or_default();
+            let count = per_source.entry(key.0).or_default();
+            'families: for &(pre, (first, second)) in &families {
+                let plane = |i: usize| if i < pre { p[i] } else if (i - pre) % 2 == 0 { first } else { second };
+                // each length's key from the one before (no planes made
+                // until one is proposed)
+                let mut h = planes_hash(&p[..pre]);
+                for len in pre + 1..=MAX_COHERENT_REFL as usize {
+                    h = planes_hash_step(h, plane(len - 1));
+                    if len < pre + 2 {
+                        continue;
+                    }
+                    // the source's cache full: nothing more is proposed
+                    if *count >= 2 * MAX_CHAINS {
+                        break 'families;
+                    }
+                    let k = (key.0, h);
                     let rejected = self.rejected.get(&k).is_some_and(|r| tick < r.0 + CHAIN_REJECT_TICKS);
-                if *count >= 2 * MAX_CHAINS || rejected || self.chains.contains_key(&k) || new.iter().any(|(nk, _)| *nk == k) {
+                    if rejected || self.chains.contains_key(&k) || !proposed.insert(k) {
                         continue;
                     }
                     *count += 1;
-                    new.push((k, MirrorChain { planes, ttl: c.ttl, energy: 0.0, grown_at: 0, solved: None }));
+                    new.push((k, MirrorChain { planes: (0..len).map(plane).collect(), ttl: c.ttl, energy: 0.0, grown_at: 0, solved: None }));
                 }
             }
         }
@@ -5089,6 +5178,40 @@ fn deposit_spread(acc: &mut Acc, cells: &[Vec3], e: [f32; NBANDS], delay: f32, d
         deposit(acc, cells, part, t.max(acc.t_free), dir);
     }
     acc.sq_scale = 1.0;
+}
+/// A chain of a moving source solved where the source emitted what
+/// arrives along it now (`Motion`; not moving: where it is, `cur`).
+fn solve_chain_moving(
+    world: &World,
+    planes: &[(Vec3, f32)],
+    listener: Vec3,
+    motion: &Motion,
+    si: usize,
+    cur: Vec3,
+    hits: &mut Vec<SegHit>,
+) -> Option<([f32; NBANDS], f32, Vec3)> {
+    let Some(Some(tr)) = motion.tracks.get(si) else {
+        return solve_chain(world, planes, listener, cur, hits);
+    };
+    let now = motion.now;
+    // where it emitted what arrives along the chain now: the light
+    // cone to the listener from the chain's image of the source
+    // (fixed-point steps contract by v/c). Its length needs no valid
+    // path; only the place found is solved, legs and all. (Each step
+    // solved, starting from where the source is now, a facade's echo
+    // of a passing car went 8 m before the facade's end: the car's
+    // place now mirrored past it while the one it emitted from didn't.)
+    let image_len = |x: Vec3| {
+        let im = planes.iter().rev().fold(x, |im, &pl| mirror_point(im, pl));
+        (im - listener).length()
+    };
+    let mut x = tr.at(now);
+    for _ in 0..4 {
+        x = tr.at(now - (image_len(x) / SPEED_OF_SOUND) as f64);
+    }
+    let r = solve_chain(world, planes, listener, x, hits)?;
+    let t = now - r.1 as f64;
+    (t >= tr.from && t <= tr.until).then_some(r)
 }
 
 /// Exact image-source solve of a mirror chain between `lis` and `src`:

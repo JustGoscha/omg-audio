@@ -531,7 +531,7 @@ fn sim_loop(
         stats.walk_us.store((sim.gpu_walk_ms() * 1000.0) as u32, Ordering::Relaxed);
         let c = sim.tick_costs();
         stats.burst.store(c.burst, Ordering::Relaxed);
-        for (a, ms) in stats.parts_us.iter().zip([c.direct, c.edges - c.edges2, c.edges2, c.early, c.late, c.chains, c.fold]) {
+        for (a, ms) in stats.parts_us.iter().zip(c.parts()) {
             a.store((ms.max(0.0) * 1000.0) as u32, Ordering::Relaxed);
         }
         if sim.debug_paths_enabled() {

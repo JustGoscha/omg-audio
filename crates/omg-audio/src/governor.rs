@@ -114,6 +114,17 @@ impl Governor {
     }
 }
 
+/// The part of a tick (ms) the quality ladder doesn't scale, from its
+/// parts (`omg_core::v3::TickCosts::parts`: direct, one-edge, two-edge,
+/// early, late, chains, fold): the direct paths (never shed) and the
+/// exactly solved mirror chains (named off the faces and a fixed few
+/// mirror rays up to the middle levels, every cached one solved each
+/// tick). The rest — the rays, the edge searches, the fold of what they
+/// found — counts as scaling (climbing, the safe side).
+pub fn fixed_ms(parts: &[f32; 7]) -> f32 {
+    parts[0] + parts[5]
+}
+
 /// The simulation's quality level (`sim::LADDER`), walked by what a tick
 /// costs against a target (the host's: 16 ms leaves a 60 Hz game its
 /// frame — the tick shares the machine with it): starts at the lowest
@@ -123,7 +134,12 @@ impl Governor {
 /// the lesser overrun asks, each about `sim::LEVEL_STEP`× the one below
 /// (one tick alone over it is the machine's hiccup, not the level's
 /// cost) — and one level after `HOT_TICKS` ticks with the audio thread
-/// over `LOAD`.
+/// over `LOAD`. Only part of a tick scales with the level (`fixed_ms`:
+/// the rest is the same on every level): the next level up costs the
+/// fixed part and `LEVEL_STEP`× the rest. Taking the whole tick for
+/// scaling held the tour of the Godot town on the bottom levels (128–256
+/// rays) while its mirror chains — 6–7 ms of an ~11 ms tick — cost the
+/// same on every level.
 pub struct LevelGovernor {
     level: usize,
     top: usize,
@@ -148,16 +164,22 @@ impl LevelGovernor {
         self.level
     }
 
-    /// One tick took `tick_ms` against `target_ms`, with the audio thread
-    /// at `load` (render time over audio time): the new level if it moves.
-    pub fn report(&mut self, tick_ms: f32, target_ms: f32, load: f32) -> Option<usize> {
+    /// One tick took `tick_ms` — `fixed_ms` of it the same on every
+    /// level (`fixed_ms`) — against `target_ms`, with the audio thread at
+    /// `load` (render time over audio time): the new level if it moves.
+    pub fn report(&mut self, tick_ms: f32, fixed_ms: f32, target_ms: f32, load: f32) -> Option<usize> {
+        let step = crate::sim::LEVEL_STEP;
+        let fixed = fixed_ms.clamp(0.0, tick_ms);
         let both = tick_ms.min(self.last);
         self.last = tick_ms;
         if tick_ms > target_ms {
             self.calm = 0;
         }
         if both > target_ms && self.level > 0 {
-            let over = ((both / target_ms).ln() / crate::sim::LEVEL_STEP.ln()).ceil().max(1.0) as usize;
+            // as many levels as bring the scaled part under what the
+            // fixed one leaves (all of the target gone to it: by the whole)
+            let ratio = if target_ms > fixed + 1e-3 { (both - fixed).max(1e-3) / (target_ms - fixed) } else { both / target_ms };
+            let over = (ratio.ln() / step.ln()).ceil().max(1.0) as usize;
             self.level = self.level.saturating_sub(over);
             self.calm = 0;
             self.hot = 0;
@@ -174,7 +196,9 @@ impl LevelGovernor {
             return None;
         }
         self.hot = 0;
-        if tick_ms < CLIMB * target_ms && self.level < self.top {
+        // the next level: the fixed part, and `step`× the rest
+        let next = fixed + (tick_ms - fixed) * step;
+        if next < CLIMB * step * target_ms && self.level < self.top {
             self.calm += 1;
             if self.calm >= CALM_TICKS {
                 self.calm = 0;
@@ -197,24 +221,50 @@ mod tests {
         let mut g = LevelGovernor::new(7);
         for l in 1..=4 {
             for _ in 0..39 {
-                assert_eq!(g.report(5.0, 16.0, 0.2), None);
+                assert_eq!(g.report(5.0, 0.0, 16.0, 0.2), None);
             }
-            assert_eq!(g.report(5.0, 16.0, 0.2), Some(l));
+            assert_eq!(g.report(5.0, 0.0, 16.0, 0.2), Some(l));
         }
         // one tick over the target alone: a hiccup
-        assert_eq!(g.report(40.0, 16.0, 0.2), None);
-        assert_eq!(g.report(5.0, 16.0, 0.2), None);
+        assert_eq!(g.report(40.0, 0.0, 16.0, 0.2), None);
+        assert_eq!(g.report(5.0, 0.0, 16.0, 0.2), None);
         // two in a row just over it: one level down, now
-        assert_eq!(g.report(17.0, 16.0, 0.2), None);
-        assert_eq!(g.report(17.0, 16.0, 0.2), Some(3));
+        assert_eq!(g.report(17.0, 0.0, 16.0, 0.2), None);
+        assert_eq!(g.report(17.0, 0.0, 16.0, 0.2), Some(3));
         // three times over, twice: as many levels as that takes
-        assert_eq!(g.report(48.0, 16.0, 0.2), Some(2));
-        assert_eq!(g.report(48.0, 16.0, 0.2), Some(0));
+        assert_eq!(g.report(48.0, 0.0, 16.0, 0.2), Some(2));
+        assert_eq!(g.report(48.0, 0.0, 16.0, 0.2), Some(0));
         // the audio thread pressed for a second of ticks: no climb, and
         // at the floor nothing to shed
         for _ in 0..400 {
-            assert_eq!(g.report(5.0, 16.0, 0.9), None);
+            assert_eq!(g.report(5.0, 0.0, 16.0, 0.9), None);
         }
         assert_eq!(g.level(), 0);
+    }
+
+    /// A tick 6 ms of which cost the same on every level (the town's
+    /// mirror chains): 10.5 ms, over the 60 % the whole-tick rule climbs
+    /// under, yet the next level costs 6 + 4.5 × 1.45 ≈ 12.5 ms — under
+    /// the target with the same room the rule leaves. It climbs; at 12.5
+    /// it stays (6 + 6.5 × 1.45 ≈ 15.4). Over the target, it sheds as
+    /// many levels as the scaled part needs.
+    #[test]
+    fn a_fixed_part_of_the_tick_does_not_hold_the_level_down() {
+        let mut g = LevelGovernor::new(7);
+        for _ in 0..39 {
+            assert_eq!(g.report(10.5, 0.0, 16.0, 0.2), None);
+        }
+        assert_eq!(g.report(10.5, 0.0, 16.0, 0.2), None, "all of it scaled: no climb");
+        for _ in 0..39 {
+            assert_eq!(g.report(10.5, 6.0, 16.0, 0.2), None);
+        }
+        assert_eq!(g.report(10.5, 6.0, 16.0, 0.2), Some(1));
+        for _ in 0..100 {
+            assert_eq!(g.report(12.5, 6.0, 16.0, 0.2), None);
+        }
+        // 6 fixed, 22 scaling into the 10 ms left: ⌈ln 2.2 / ln 1.45⌉ = 3
+        // levels down (from 1: to 0)
+        assert_eq!(g.report(28.0, 6.0, 16.0, 0.2), None);
+        assert_eq!(g.report(28.0, 6.0, 16.0, 0.2), Some(0));
     }
 }

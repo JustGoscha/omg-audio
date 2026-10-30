@@ -17,7 +17,7 @@
 
 pub mod town;
 
-use omg_audio::governor::{Governor, LevelGovernor};
+use omg_audio::governor::{fixed_ms, Governor, LevelGovernor};
 use omg_audio::sim::LEVELS;
 use omg_core::v3::fold::{self as walkfmt, LiveWalk, Walk, WalkJob, Walked};
 use omg_audio::{clip, normalize, Clip, Compute, Config, Frame, Hrir, Mixer, Play, Quality, Simulation, SourceId, VoiceId};
@@ -208,7 +208,8 @@ pub extern "C" fn sim_govern(tick_ms: f32, load: f32) -> i32 {
         return -1;
     }
     // a door moved: the extra rays are the change's cost, not the level's
-    if !h.sim.tick_costs().burst && h.gov.report(tick_ms, TICK_TARGET_MS, load).is_some() {
+    let costs = h.sim.tick_costs();
+    if !costs.burst && h.gov.report(tick_ms, fixed_ms(&costs.parts()), TICK_TARGET_MS, load).is_some() {
         h.reconfigure();
     }
     h.gov.level() as i32

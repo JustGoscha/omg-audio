@@ -9,7 +9,12 @@
 //!     Z=m (ears' height: 1.6)  MODE=v6.2 | v6.1 | v6  SEED=n
 //!     LEVEL=n: the quality ladder's rung (0 … 10; the take's `level`
 //!     column says where the host's governor was), else High
+//!     COST=1: every source playing, and per second instead the tick's
+//!     wall-clock by part (ms; the chains split into naming and solving)
+//!     BODY=1: two sources more that walk with the ears, as the Godot
+//!     demo's feet (1.4 m under them) and hands (0.4 m)
 //!     GEOMETRY=<file>: the host's dumped level   COMPUTE=gpu   PACE=1
+//!     THREADS=n: the walk's threads (the machine's default)
 //!     MIX=1: rendered through the mixer too (no HRIR; the source plays
 //!     bass-heavy noise, or CLIP=<raw f32 mono 48 kHz>): the output's
 //!     level under 250 Hz and in all (dBFS) per 50 ms, after the ear (and
@@ -97,6 +102,7 @@ fn main() {
         seed: env("SEED").and_then(|v| v.parse().ok()).unwrap_or(1),
         kernel_thread: false,
         compute: if env("COMPUTE").as_deref() == Some("gpu") { Compute::Gpu } else { Compute::Cpu },
+        walk_threads: env("THREADS").and_then(|v| v.parse().ok()).unwrap_or(Config::default().walk_threads),
         ..Config::default()
     };
     // the take's frames: (s, x, y)
@@ -121,13 +127,21 @@ fn main() {
         sim.set_geometry(omg_audio::Geometry::load(&path).expect("GEOMETRY: a dumped geometry"));
     }
     let src = town.defs.iter().position(|d| d.name == name).unwrap_or_else(|| panic!("no source {name}"));
+    let cost = env("COST").as_deref() == Some("1");
     for i in 0..town.defs.len() {
-        town.set_muted(&mut sim, i, i != src);
+        town.set_muted(&mut sim, i, i != src && !cost);
     }
     for i in env("OPEN").unwrap_or_default().split(',').filter_map(|x| x.parse::<usize>().ok()) {
         town.set_door(&mut sim, i, 1.0);
     }
     let ids = town.sources[src].clone();
+    // BODY=1: the feet and the hands, at the ears' first place
+    let body: Vec<(SourceId, f32)> = if env("BODY").as_deref() == Some("1") {
+        let p = at(t0);
+        [1.4f32, 0.4].iter().map(|&dz| (sim.add_source(omg_audio::SourceDesc::at([p[0], p[1], p[2] - dz])), dz)).collect()
+    } else {
+        Vec::new()
+    };
     // MIX=1: the mixer as a host runs it
     let mut mix = (env("MIX").as_deref() == Some("1")).then(|| {
         let mut mix = Mixer::new(48_000.0, Hrir::none());
@@ -154,6 +168,9 @@ fn main() {
     println!("     t s   (x, y)          low   mid  high dB | low: direct taps early reverb remote{}", if mix.is_some() { " | out: low, all dBFS" } else { "" });
     let start = std::time::Instant::now();
     let rate = 120.0;
+    // COST=1: per second, the ticks' mean cost by part
+    let mut costs = [0.0f64; 9];
+    let mut n_cost = 0usize;
     let mut acc = [[0.0f64; 5]; 3];
     let mut n = 0;
     for k in 0..((t1 - t0) * rate) as usize {
@@ -166,7 +183,36 @@ fn main() {
         }
         sim.set_time(t);
         sim.set_listener_at(at(t), 0.0, 0.0, 0.0, t);
-        let f = if k % 6 == 0 { Some(sim.tick()) } else { sim.tick_exact() };
+        for &(id, dz) in &body {
+            let p = at(t);
+            sim.set_source_at(id, [p[0], p[1], p[2] - dz], true, t);
+        }
+        let f = if k % 6 == 0 {
+            let clock = std::time::Instant::now();
+            let f = sim.tick();
+            let c = sim.tick_costs();
+            let v = [clock.elapsed().as_secs_f64() * 1e3, c.direct as f64, (c.edges - c.edges2) as f64, c.edges2 as f64, c.early as f64, c.late as f64, c.chains as f64, c.naming as f64, c.fold as f64];
+            for (a, b) in costs.iter_mut().zip(v) {
+                *a += b;
+            }
+            n_cost += 1;
+            Some(f)
+        } else {
+            sim.tick_exact()
+        };
+        if cost {
+            if (k + 1) % 120 == 0 {
+                let c = costs.map(|v| v / n_cost.max(1) as f64);
+                let q = at(t);
+                println!(
+                    "  {t:6.1}  ({:6.1}, {:6.1})  tick {:5.1} ms: direct {:.1} edges {:.1} 2-edge {:.1} early {:.1} late {:.1} chains {:.1} (naming {:.1}) fold {:.1}",
+                    q[0], q[1], c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8]
+                );
+                costs = [0.0; 9];
+                n_cost = 0;
+            }
+            continue;
+        }
         if let (Some(mix), Some(f)) = (mix.as_mut(), f.as_ref()) {
             mix.apply(f);
         }

@@ -39,7 +39,7 @@ use godot::classes::{
 use godot::meta::conv::RawPtr;
 use godot::prelude::*;
 
-use omg_audio::governor::LevelGovernor;
+use omg_audio::governor::{fixed_ms, LevelGovernor};
 use omg_audio::sim::LEVELS;
 use omg_audio::{from_y_up, to_y_up, Compute, Config, Geometry, Material, MaterialId, ObjectId, Play, Quality, SourceDesc, SourceId, VoiceId};
 
@@ -756,7 +756,7 @@ impl OmgWorld {
         self.auto_ticks = s.ticks;
         // a door moved: the extra rays are the change's cost, not the level's
         if !s.tick_burst {
-            self.auto_tier.report(s.tick_ms, self.tick_target_ms, s.load);
+            self.auto_tier.report(s.tick_ms, fixed_ms(&s.tick_parts), self.tick_target_ms, s.load);
         }
     }
 
