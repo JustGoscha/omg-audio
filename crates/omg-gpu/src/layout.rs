@@ -274,7 +274,8 @@ pub struct GpuV3Job {
 }
 
 /// One walk source (scene words). WGSL accessors: pos @0, weight @12,
-/// t_free @16, id @20, direct visibility @24, fixed-point norm @36 — 48 B.
+/// t_free @16, id @20, direct visibility @24, fixed-point norm @36,
+/// clearance @40, the sphere's cap @48 — 64 B.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuV3Src {
@@ -284,7 +285,10 @@ pub struct GpuV3Src {
     pub id: u32,
     pub vis: [f32; 3],
     pub norm: f32,
-    pub _p: [u32; 2],
+    /// v3.rs `Clearance::words`, and its cap.
+    pub clear: [u32; 2],
+    pub cap: f32,
+    pub _p: [u32; 3],
 }
 
 /// A below-grade air pocket. WGSL: bmin @0, bmax @16 — 32 B.
@@ -446,7 +450,7 @@ mod tests {
         let src = [Source { id: 3, pos: Vec3::new(0.0, 4.0, 3.0), weight: 1.0 }];
         let b = Budget { rays: 77, late_rays: 5, bounces: 2, ..Budget::default() };
         let rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let job = WalkJob::build(&w, Vec3::new(0.0, 0.0, 0.0), &src, b, rot, 5, false, &[[0.25; 3]], None);
+        let job = WalkJob::build(&w, Vec3::new(0.0, 0.0, 0.0), &src, b, rot, 5, false, &[[0.25; 3]], &[], None);
         let h: &GpuV3Job = bytemuck::from_bytes(bytemuck::cast_slice(job.header()));
         assert_eq!((h.n_early, h.n_late, h.bounces, h.n_sources, h.seed), (77, 5, 2, 1, 5));
         assert_eq!(h.off_panels as usize, SRC_WORDS);

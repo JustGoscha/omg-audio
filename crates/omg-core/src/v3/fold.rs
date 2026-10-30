@@ -31,8 +31,9 @@
 //!   28..31 edge bounds lo  31 off_edges   32..35 edge bounds hi
 //!   35 v4  36 a live walk's pass word (`slice_word`; 0 for a whole
 //!   walk)  37 state_off  38..40 reserved (0)
-//! scene: sources (SRC_WORDS = 12 each): pos xyz, weight, t_free, id,
-//!          direct visibility xyz, fixed-point norm, 0, 0
+//! scene: sources (SRC_WORDS = 16 each): pos xyz, weight, t_free, id,
+//!          direct visibility xyz, fixed-point norm, clearance (2 words:
+//!          `Clearance::words`), its sphere's cap, 0, 0, 0
 //!        panels (PANEL_WORDS = 16):  min xyz, scattering, max xyz, leaf
 //!          (1: a door's leaf in its aperture, v6.2), absorption xyz, 0,
 //!          transmission xyz, 0
@@ -80,7 +81,7 @@ pub const DENSE_WORDS: usize = DENSE_BINS * DENSE_SLOT;
 const _: () = assert!(DENSE_WORDS + 4 <= SOURCE_WORDS);
 pub const SKY_WORDS: usize = CELLS * SLOT;
 pub const HEADER_WORDS: usize = 40;
-pub const SRC_WORDS: usize = 12;
+pub const SRC_WORDS: usize = 16;
 pub const PANEL_WORDS: usize = 16;
 pub const POCKET_WORDS: usize = 8;
 /// Per-dispatch caps. A world beyond them traces on the CPU instead — a
@@ -139,6 +140,7 @@ impl WalkJob {
         seed: u32,
         debug: bool,
         vis: &[[f32; NBANDS]],
+        clear: &[Clearance],
         edges: Option<&EdgeSet>,
     ) -> Self {
         let f = |x: f32| x.to_bits();
@@ -172,7 +174,9 @@ impl WalkJob {
             // source's distance sets the scale its bins accumulate at
             let norm = (d * d).max(1.0);
             w.extend_from_slice(&[f(s.pos.x), f(s.pos.y), f(s.pos.z), f(s.weight), f(d / SPEED_OF_SOUND), s.id]);
-            w.extend_from_slice(&[f(v[0]), f(v[1]), f(v[2]), f(norm), 0, 0]);
+            let c = clear.get(si).copied().unwrap_or_default();
+            let cw = c.words();
+            w.extend_from_slice(&[f(v[0]), f(v[1]), f(v[2]), f(norm), cw[0], cw[1], f(c.cap), 0, 0, 0]);
         }
         w[26] = (w.len() - HEADER_WORDS) as u32;
         for (mn, mx, m) in world.panels {
@@ -383,13 +387,14 @@ impl Tracer {
         let (direct, vis, edge_taps) = self.prepare(world, listener, sources, budget);
         let rot = random_rotation(&mut self.rng);
         let seed = (self.rng.next_u64() >> 32) as u32;
+        let clear = self.clearances(world, sources);
         let edges = if budget.diffraction { self.edges.as_ref() } else { None };
         let job_budget = if cpu_late.is_some() { Budget { late_rays: 0, ..budget } } else { budget };
         // the GPU walk connects to where each source emitted its direct
         // sound (a moving source's echoes on the CPU reach further back)
         let at_emission: Vec<Source> =
             sources.iter().enumerate().map(|(si, s)| Source { pos: self.direct_from(si, s, listener).unwrap_or(s.pos), ..*s }).collect();
-        let mut job = WalkJob::build(world, listener, &at_emission, job_budget, rot, seed, self.debug, &vis, edges).v4(self.v4);
+        let mut job = WalkJob::build(world, listener, &at_emission, job_budget, rot, seed, self.debug, &vis, &clear, edges).v4(self.v4);
         job.epoch = self.epoch;
         let (walked, refused) = match walk(&job) {
             Walk::Refused => (None, true),
@@ -670,7 +675,7 @@ mod tests {
         let srcs = [Source { id: 7, pos: Vec3::new(3.0, 4.0, 0.0), weight: 2.0 }];
         let rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let b = Budget { rays: 100, late_rays: 10, bounces: 3, ..Budget::default() };
-        let job = WalkJob::build(&world, Vec3::new(0.0, 0.0, 0.0), &srcs, b, rot, 9, true, &[[0.5; 3]], None);
+        let job = WalkJob::build(&world, Vec3::new(0.0, 0.0, 0.0), &srcs, b, rot, 9, true, &[[0.5; 3]], &[], None);
         assert_eq!(job.n_rays(), 110);
         assert_eq!((job.n_sources(), job.n_panels(), job.n_pockets(), job.n_edges()), (1, 1, 1, 0));
         let sc = job.scene();

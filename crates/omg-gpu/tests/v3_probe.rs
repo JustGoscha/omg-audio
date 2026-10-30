@@ -24,7 +24,7 @@ fn v(x: f32, y: f32, z: f32) -> Vec3 {
 
 fn job(w: &World, es: &omg_core::v3::EdgeSet) -> WalkJob {
     let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    WalkJob::build(w, v(0.0, 0.0, 0.0), &[], Budget::default(), id, 1, false, &[], Some(es))
+    WalkJob::build(w, v(0.0, 0.0, 0.0), &[], Budget::default(), id, 1, false, &[], &[], Some(es))
 }
 
 fn check(name: &str, mesh: &Mesh, w: &World, segs: &[(Vec3, Vec3)]) {

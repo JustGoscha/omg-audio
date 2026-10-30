@@ -404,6 +404,132 @@ const SECOND_ORDER_RAY_COST: usize = 60;
 /// visibility per band, and the edge next-event taps.
 pub(crate) type Prepared = (Vec<Option<Tap>>, Vec<[f32; NBANDS]>, Vec<Vec<Tap>>);
 
+/// Points around the circle a sphere hit's reachable share is averaged
+/// over (`Clearance::share`).
+const CLEAR_CIRCLE: usize = 16;
+
+/// How much of a source's sphere (`Budget::k`: radius k·l at a path l
+/// long) a ray could cross. A sphere hit counts a ray whose closest
+/// approach to the source lies within the sphere — on the disk through
+/// the source across the ray's direction — weighted as if it could lie
+/// anywhere on that disk; where the disk reaches past a surface near the
+/// source, no ray's can: the hits read low (a source 0.3 m over a floor,
+/// its reflection heard 20 m off: −1.4 dB; a shoebox's late part against
+/// its image sources −1.1 dB at 100–200 ms, −6.4 dB at 300 ms, −12 dB by
+/// 0.7 s; `examples/shoebox_ref`). Each hit's weight is divided by the
+/// share of its disk in free space: the mean over the circle across its
+/// direction of min(free distance, r)² over r². The free distance comes
+/// from the source's clearance along ±x, ±y, ±z (`d`; ∞: none) as a box
+/// around it: exact for floors, walls and box rooms, near enough where
+/// surfaces stand square. The sphere stops growing where less than half
+/// of it is reachable (`cap`). Kept as the GPU walk reads it: each
+/// distance log₂(d / 1 cm) in 1/60ths, 10 bits (1023: none), packed in
+/// two words, and the cap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clearance {
+    pub d: [f32; 6],
+    /// The sphere's radius at most (`cap`).
+    pub cap: f32,
+}
+
+impl Default for Clearance {
+    /// Nothing near: the whole sphere reachable.
+    fn default() -> Self {
+        Self { d: [f32::MAX; 6], cap: f32::MAX }
+    }
+}
+
+impl Clearance {
+    /// Quantized as the GPU walk reads it (10 bits a distance).
+    fn code(d: f32) -> u32 {
+        if d >= 1e4 {
+            1023
+        } else {
+            ((d.max(0.01) / 0.01).log2() * 60.0).round().clamp(0.0, 1022.0) as u32
+        }
+    }
+
+    fn decode(c: u32) -> f32 {
+        if c >= 1023 {
+            f32::MAX
+        } else {
+            0.01 * (c as f32 / 60.0).exp2()
+        }
+    }
+
+    pub fn of(world: &World, p: Vec3) -> Self {
+        let axes = [(1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, -1.0)];
+        let mut c = Self { d: axes.map(|(x, y, z)| Self::decode(Self::code(world.raycast(p, Vec3::new(x, y, z)).map_or(f32::MAX, |h| h.t)))), cap: f32::MAX };
+        c.cap = c.cap();
+        c
+    }
+
+    /// The free distance from the source along `v` (unit), the box.
+    fn free(&self, v: Vec3) -> f32 {
+        let mut t = f32::MAX;
+        for (k, c) in [v.x, v.y, v.z].into_iter().enumerate() {
+            let (dd, along) = if c > 0.0 { (self.d[2 * k], c) } else { (self.d[2 * k + 1], -c) };
+            if along > 1e-6 && dd < f32::MAX {
+                t = t.min(dd / along);
+            }
+        }
+        t
+    }
+
+    /// The share of a sphere hit's disk (radius `r`, across `dir`) a ray
+    /// could cross.
+    pub fn share(&self, r: f32, dir: Vec3) -> f32 {
+        if r <= self.d.iter().copied().fold(f32::MAX, f32::min) {
+            return 1.0;
+        }
+        let a = if dir.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+        let u = dir.cross(a).normalize();
+        let w = dir.cross(u);
+        let mut acc = 0.0f32;
+        for k in 0..CLEAR_CIRCLE {
+            let ph = core::f32::consts::TAU * (k as f32 + 0.5) / CLEAR_CIRCLE as f32;
+            let x = self.free(u * ph.cos() + w * ph.sin()).min(r) / r;
+            acc += x * x;
+        }
+        (acc / CLEAR_CIRCLE as f32).max(1e-4)
+    }
+
+    /// The share of the whole sphere (radius `r`) a ray could cross: the
+    /// mean over directions of min(free distance, r)² over r².
+    fn share_all(&self, r: f32) -> f32 {
+        let dirs = fibonacci_sphere(64);
+        dirs.iter().map(|&v| (self.free(v).min(r) / r).powi(2)).sum::<f32>() / dirs.len() as f32
+    }
+
+    /// The largest sphere at least half of which a ray could cross —
+    /// what a hit's weight is divided by stays over ½ for any ray across
+    /// it: grown on past it, a sphere mostly behind walls counts rare
+    /// rays many times over (each unbiased, the sum spiky: a door's swing
+    /// heard through it clicked). Over an open floor the share never
+    /// falls under ½: no cap.
+    fn cap(&self) -> f32 {
+        if self.share_all(1e4) >= 0.5 {
+            return f32::MAX;
+        }
+        let (mut lo, mut hi) = (0.0f32, 1e4f32);
+        for _ in 0..40 {
+            let m = 0.5 * (lo + hi);
+            if self.share_all(m) >= 0.5 {
+                lo = m;
+            } else {
+                hi = m;
+            }
+        }
+        lo
+    }
+
+    /// The two words the GPU walk's source record carries it in.
+    pub fn words(&self) -> [u32; 2] {
+        let c = self.d.map(Self::code);
+        [c[0] | c[1] << 10 | c[2] << 20, c[3] | c[4] << 10 | c[5] << 20]
+    }
+}
+
 /// v6.2: entries of paths kept (`SourceState::paths`), each of
 /// `PATHS_KEEP` paths at most.
 const PATHS_TICKS: usize = 6;
@@ -2164,6 +2290,9 @@ pub struct Tracer {
     /// The early average's memory in ticks, (2 − α)/α (`prepare`): a
     /// change within it is the same motion going on.
     memory: u32,
+    /// Each source's `Clearance`, where it was and in which world
+    /// (`world_sig`) it was measured.
+    clear: HashMap<u32, (Vec3, u64, Clearance)>,
     /// Where `name_mirrors`' second-order sweep goes on (the large faces,
     /// in turn).
     second_at: usize,
@@ -2504,6 +2633,7 @@ impl Tracer {
             door_sig: 0,
             walk_stale: false,
             memory: 0,
+            clear: HashMap::default(),
             second_at: 0,
             edges: None,
             tick: 0,
@@ -2818,6 +2948,23 @@ impl Tracer {
         Some(core::array::from_fn(|part| core::array::from_fn(|b| now[part][b] / st.priced[part][b].max(1e-9))))
     }
 
+    /// Each source's `Clearance` — measured again when it moved (a
+    /// centimetre) or the world changed.
+    pub(crate) fn clearances(&mut self, world: &World, sources: &[Source]) -> Vec<Clearance> {
+        let sig = self.world_sig;
+        sources
+            .iter()
+            .map(|s| match self.clear.get(&s.id) {
+                Some(&(p, w, c)) if w == sig && (p - s.pos).length() < 0.01 => c,
+                _ => {
+                    let c = Clearance::of(world, s.pos);
+                    self.clear.insert(s.id, (s.pos, sig, c));
+                    c
+                }
+            })
+            .collect()
+    }
+
     /// v6.2 with an external walker: a door's leaf moved since last tick.
     /// The walker records no door paths and doesn't split at a leaf
     /// (`Aperture`), and the averages start over as a door starts moving
@@ -2944,6 +3091,7 @@ impl Tracer {
             })
             .map(|r| if r <= WALL_SPLIT_M { r } else { 0.0 })
             .collect();
+        let clear = self.clearances(world, sources);
         let cx = WalkCtx {
             world,
             listener,
@@ -2960,6 +3108,7 @@ impl Tracer {
             virtuals: self.rest < self.memory,
             v62: self.v62,
             rooms: &rooms,
+            clear: &clear,
         };
         for (fi, (dirs, lo, hi, segments, nee)) in fams.into_iter().enumerate() {
             if dirs.is_empty() || lo > hi {
@@ -3947,6 +4096,8 @@ struct WalkCtx<'a> {
     /// v6.2: per source, the size of the room it sounds in (the farthest
     /// of six walls around it), 0 when it isn't enclosed (outdoors).
     rooms: &'a [f32],
+    /// Per source, how much of its sphere the rays can reach.
+    clear: &'a [Clearance],
 }
 
 /// One family of rays (`walk_rays`): the reflection orders it counts,
@@ -4190,7 +4341,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 }
                 let seg = to.length();
                 let l_s = (length + seg).max(MIN_DIST);
-                let r = budget.k * l_s;
+                let r = (budget.k * l_s).min(cx.clear[si].cap);
                 let closest = (origin + dir * along - sp).length();
                 if closest > r {
                     continue;
@@ -4200,7 +4351,8 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 }
                 let t = world.transmission_free(origin, sp, &mut *hits);
                 let air = air_attenuation(l_s);
-                let w = 4.0 * inv_n / (budget.k * budget.k * l_s * l_s);
+                // over the share of the sphere the rays can reach
+                let w = 4.0 * inv_n / (r * r * cx.clear[si].share(r, dir));
                 // a bent path with no reflection is the DIRECT
                 // field around an edge: only what the straight
                 // ray doesn't already carry

@@ -270,11 +270,34 @@ fn a_door_shut_between_sounds_is_shut_for_the_next_one_v6() {
 /// swing's field for seconds (+14.9 dB 1.5–3 s after the swing). (The
 /// last gap closing drops the level ~25 dB in ~30 ms — physical; its
 /// treble reads ~−44 dB. Right after the restart where the door stops
-/// the young estimate reads low: the heavy tail, OPEN.md.)
+/// the young estimate reads low: the heavy tail, OPEN.md.) The club heard
+/// through its shut door is that heavy-tailed estimate: one seed's worst
+/// window or level is a draw (the same engine −43.7 … −55.5 dB treble,
+/// four seeds) — each claim holds for the median of three seeds.
 #[test]
 fn a_door_swinging_shut_takes_the_level_down_without_bursts_v6() {
+    let mut runs: Vec<[f32; 4]> = Vec::new();
+    for seed in [Config::default().seed, 1, 2] {
+        runs.push(door_swing_v6(seed));
+    }
+    let median = |k: usize| {
+        let mut v: Vec<f32> = runs.iter().map(|r| r[k]).collect();
+        v.sort_by(|a, b| a.total_cmp(b));
+        v[1]
+    };
+    let (climb, dip, clicks, after) = (median(0), median(1), median(2), median(3));
+    eprintln!("medians of three seeds: climbing back {climb:.1} dB, lowest {dip:+.1} dB from shut, treble at worst {clicks:.1} dB, 1.5–3 s after the swing {after:+.1} dB");
+    assert!(climb < 20.0, "the level climbed back {climb:.1} dB while the door closed");
+    assert!(dip > -20.0, "the level dipped {:.1} dB under the shut level", -dip);
+    assert!(clicks < -40.0, "clicks {clicks:.1} dB under the tone");
+    assert!(after.abs() < 4.0, "1.5–3 s after the swing {after:+.1} dB from the door shut all along");
+}
+
+/// One seed of `a_door_swinging_shut_takes_the_level_down_without_bursts_v6`:
+/// [climbing back, lowest from shut, treble at worst, after from shut] (dB).
+fn door_swing_v6(seed: u64) -> [f32; 4] {
     let run = |swing: bool| -> (Vec<f32>, Vec<f32>) {
-        let mut sim = Simulation::new(Config { quality: Quality::Level(3), compute: Compute::Cpu, v6: true, kernel_thread: false, kernel_step_samples: 1 << 24, ..Config::default() });
+        let mut sim = Simulation::new(Config { quality: Quality::Level(3), compute: Compute::Cpu, v6: true, kernel_thread: false, kernel_step_samples: 1 << 24, seed, ..Config::default() });
         let mut town = Town::new(&mut sim);
         let club = 2;
         only(&mut town, &mut sim, club);
@@ -336,11 +359,8 @@ fn a_door_swinging_shut_takes_the_level_down_without_bursts_v6() {
         let all: f32 = (a..b).map(|i| m[i] * m[i]).sum();
         clicks = clicks.max(db(hf / all.max(1e-30)));
     }
-    eprintln!("open {:.1} dB, shut all along {shut:.1} dB; the swing: lowest {:+.1} dB from it, climbing back {climb:.1} dB, treble at worst {clicks:.1} dB under the tone; 1.5–3 s after the swing {:+.1} dB", lev[350], lowest - shut, after - shut);
-    assert!(climb < 20.0, "the level climbed back {climb:.1} dB while the door closed");
-    assert!(lowest > shut - 20.0, "the level dipped {:.1} dB under the shut level", shut - lowest);
-    assert!(clicks < -40.0, "clicks {clicks:.1} dB under the tone");
-    assert!((after - shut).abs() < 4.0, "1.5–3 s after the swing {:+.1} dB from the door shut all along", after - shut);
+    eprintln!("seed {seed}: open {:.1} dB, shut all along {shut:.1} dB; the swing: lowest {:+.1} dB from it, climbing back {climb:.1} dB, treble at worst {clicks:.1} dB under the tone; 1.5–3 s after the swing {:+.1} dB", lev[350], lowest - shut, after - shut);
+    [climb, lowest - shut, clicks, after - shut]
 }
 
 fn door_shut_between_sounds(mut sim: Simulation, within_db: f32) {

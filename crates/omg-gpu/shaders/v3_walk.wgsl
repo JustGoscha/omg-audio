@@ -70,7 +70,7 @@ const DENSE_BIN_S: f32 = 0.002;
 const RESPONSE_MAX_S: f32 = 4.8;
 const SKY_WORDS: u32 = 384u; // N_CELLS * SLOT
 const MAX_SOURCES: u32 = 64u;
-const SRC_WORDS: u32 = 12u;
+const SRC_WORDS: u32 = 16u;
 const DEBUG_VERTS: u32 = 8u;
 const DEBUG_WORDS: u32 = 28u;
 const PROBE_WORDS: u32 = 20u;
@@ -212,6 +212,50 @@ fn src_weight(si: u32) -> f32 { return sf(si * SRC_WORDS + 3u); }
 fn src_t_free(si: u32) -> f32 { return sf(si * SRC_WORDS + 4u); }
 fn src_vis(si: u32) -> vec3<f32> { return sv3(si * SRC_WORDS + 6u); }
 fn src_norm(si: u32) -> f32 { return sf(si * SRC_WORDS + 9u); }
+// v3.rs `Clearance::cap`: the sphere's radius at most
+fn src_cap(si: u32) -> f32 { return sf(si * SRC_WORDS + 12u); }
+
+// v3.rs `Clearance`: the source's free distance along +x, −x, +y, −y,
+// +z, −z, each log2(d / 1 cm) in 1/60ths, 10 bits (1023: none), in the
+// record's words 10 and 11
+const CLEAR_NONE: f32 = 3.0e38;
+const CLEAR_CIRCLE: u32 = 16u;
+fn clear_d(si: u32, k: u32) -> f32 {
+    let word = scene[si * SRC_WORDS + 10u + k / 3u];
+    let c = (word >> (10u * (k % 3u))) & 1023u;
+    if (c >= 1023u) { return CLEAR_NONE; }
+    return 0.01 * exp2(f32(c) / 60.0);
+}
+// the free distance from the source along v (unit), the box
+fn clear_free(si: u32, v: vec3<f32>) -> f32 {
+    var t = CLEAR_NONE;
+    for (var k = 0u; k < 3u; k++) {
+        let c = v[k];
+        var dd = clear_d(si, 2u * k + 1u);
+        var along = -c;
+        if (c > 0.0) { dd = clear_d(si, 2u * k); along = c; }
+        if (along > 1e-6 && dd < CLEAR_NONE) { t = min(t, dd / along); }
+    }
+    return t;
+}
+// v3.rs `Clearance::share`: the share of a sphere hit's disk (radius r,
+// across dir) a ray could cross
+fn clear_share(si: u32, r: f32, dir: vec3<f32>) -> f32 {
+    var dmin = CLEAR_NONE;
+    for (var k = 0u; k < 6u; k++) { dmin = min(dmin, clear_d(si, k)); }
+    if (r <= dmin) { return 1.0; }
+    var a = vec3<f32>(0.0, 1.0, 0.0);
+    if (abs(dir.x) < 0.9) { a = vec3<f32>(1.0, 0.0, 0.0); }
+    let u = normalize(cross(dir, a));
+    let w = cross(dir, u);
+    var acc = 0.0;
+    for (var k = 0u; k < CLEAR_CIRCLE; k++) {
+        let ph = 6.2831855 * (f32(k) + 0.5) / f32(CLEAR_CIRCLE);
+        let x = min(clear_free(si, u * cos(ph) + w * sin(ph)), r) / r;
+        acc += x * x;
+    }
+    return max(acc / f32(CLEAR_CIRCLE), 1e-4);
+}
 
 struct Panel {
     pmin: vec3<f32>,
@@ -1111,7 +1155,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if (along <= 0.0 || along >= t_seg) { continue; }
                 let seg_len = length(to);
                 let l_s = max(length_m + seg_len, MIN_DIST);
-                let r = job.k * l_s;
+                let r = min(job.k * l_s, src_cap(si));
                 let closest = length(origin + dir * along - sp);
                 if (closest > r) { continue; }
                 // one edge, no reflection: the edge next-event path,
@@ -1124,7 +1168,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
                 let t = seg_transmission_free(origin, sp);
                 let a = air(l_s);
-                let w = 4.0 * inv_n / (job.k * job.k * l_s * l_s);
+                let w = 4.0 * inv_n / (r * r * clear_share(si, r, dir));
                 // a bent path only carries what the straight line from
                 // where it bent doesn't
                 var gate = vec3<f32>(1.0);
