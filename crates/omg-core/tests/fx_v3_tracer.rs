@@ -373,6 +373,28 @@ fn only_exposed_edges_diffract() {
     assert!(has(v(6.0, 0.0, 0.0), v(6.0, 0.0, 4.0)), "the wall's outside corner diffracts");
 }
 
+#[test]
+fn nothing_lying_on_the_ground_diffracts() {
+    // a level's ground is one sheet with nothing under it: below it is
+    // earth, not open air. The foot of a wall standing on it, and a paving
+    // slab lying on it, have a quarter or half of space around them —
+    // they bent every ray passing within metres (the probes going down
+    // found nothing in the way and read a wall's foot as an outside corner)
+    let mut mb = MeshBuilder::new();
+    let m = mb.material(flat_opaque(0.1, 0.1));
+    mb.quad(v(-50.0, -50.0, 0.0), v(50.0, -50.0, 0.0), v(50.0, 50.0, 0.0), v(-50.0, 50.0, 0.0), m);
+    mb.abox(v(0.0, 0.0, 0.0), v(6.0, 0.3, 4.0), m);
+    mb.abox(v(10.0, -2.0, 0.0), v(12.0, 2.0, 0.05), m);
+    let mesh = mb.build();
+    let es = omg_core::v3::EdgeSet::build(&mesh);
+    // (the sheet's own rim, at the world's end, is a free half-plane's edge)
+    let rim = |p: &Vec3| p.x.abs().max(p.y.abs()) > 49.0;
+    let low: Vec<_> = es.edges.iter().filter(|(a, b)| a.z.max(b.z) < 0.1 && !(rim(a) && rim(b))).collect();
+    assert!(low.is_empty(), "edges lying on the ground diffract: {low:?}");
+    let top = es.edges.iter().filter(|(a, b)| a.z.min(b.z) > 3.9).count();
+    assert!(top >= 2, "the wall's top edges still diffract ({top})");
+}
+
 /// Flying out THROUGH a wall: everything the averages hold was built from
 /// rays on the inside and none of them reaches the outside. The very
 /// next tick must sound like the outside — a fresh tracer's field there —

@@ -927,6 +927,10 @@ struct Branch {
     /// scattering (portals: a crossing it reaches is weighed against the
     /// connection that bounce made to the opening).
     last_diffuse: Option<(Vec3, f32)>,
+    /// Portals: its first touch from the ears was a diffuse bounce — what
+    /// reaches the ears that way through a source's portal is that
+    /// source's light tracing's (`portal::trace_source`), not this walk's.
+    lt: bool,
 }
 
 impl Branch {
@@ -955,6 +959,7 @@ impl Branch {
             s_refl: 0,
             s_rough: false,
             last_diffuse: None,
+            lt: false,
         }
     }
 }
@@ -3149,6 +3154,14 @@ impl Tracer {
         // leave the record's paths out)
         let portal_on = self.portals && self.v62 && !self.v4 && early && !world.apertures.is_empty();
         let portal: Vec<bool> = rooms.iter().map(|&r| portal_on && r > 0.0).collect();
+        // each source's portals as its records stand coming into this tick:
+        // the walk and the source's own rays to the ears go by the same
+        let portal_mask: Vec<u64> = sources
+            .iter()
+            .zip(&portal)
+            .map(|(s, &p)| if p { self.portal_state.get(&s.id).map_or(0, |st| st.mask(world.apertures)) } else { 0 })
+            .collect();
+        let portal_union = portal_mask.iter().fold(0u64, |a, &m| a | m);
         if portal_on {
             let clock = Stopwatch::start();
             if self.portal_ctab.is_empty() {
@@ -3163,11 +3176,13 @@ impl Tracer {
             let tick_seed = self.rng.next_u64();
             let which: Vec<usize> = (0..sources.len()).filter(|&si| portal[si]).collect();
             let (cells, ctab, edges_ref) = (&self.cells, &self.portal_ctab, edges.as_ref());
+            let masks = &portal_mask;
             let trace = |sc: &mut WalkScratch, si: usize| {
                 let mut rng = Rng::new(ray_seed(tick_seed ^ (si as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)));
-                portal::trace_source(world, edges_ref, &mut sc.marks, &mut sc.hits, cells, ctab, sources[si].pos, rays, budget.diffraction, &mut rng)
+                let lis = Some((listener, masks[si]));
+                portal::trace_source(world, edges_ref, &mut sc.marks, &mut sc.hits, cells, ctab, sources[si].pos, rays, budget.diffraction, lis, &mut rng)
             };
-            let mut fresh: Vec<(usize, portal::Fresh)> = Vec::new();
+            let mut fresh: Vec<(usize, (portal::Fresh, Vec<portal::Conn>))> = Vec::new();
             #[cfg(not(target_arch = "wasm32"))]
             if threads > 1 && which.len() > 1 {
                 let next = std::sync::atomic::AtomicUsize::new(0);
@@ -3198,17 +3213,14 @@ impl Tracer {
                 fresh = which.iter().map(|&si| (si, trace(sc, si))).collect();
             }
             fresh.sort_by_key(|f| f.0);
-            for (si, rec) in fresh {
+            for (si, (rec, conns)) in fresh {
                 self.portal_state.entry(sources[si].id).or_default().fold(rec, sources[si].pos, sig);
+                for (e, delay, dir) in conns {
+                    deposit(&mut accs[si], &self.cells, e, delay, dir);
+                }
             }
             self.costs.portals = clock.ms();
         }
-        let portal_mask: Vec<u64> = sources
-            .iter()
-            .zip(&portal)
-            .map(|(s, &p)| if p { self.portal_state.get(&s.id).map_or(0, |st| st.mask(world.apertures)) } else { 0 })
-            .collect();
-        let portal_union = portal_mask.iter().fold(0u64, |a, &m| a | m);
         let portal_aps = if portal_on { portal::portal_aps(world.apertures, sources, &portal_mask, &self.portal_state) } else { Vec::new() };
         // the walk's deposits at openings, gathered by opening, side and
         // cell (`portal::Hist`), laid over the records after the walk
@@ -4216,17 +4228,8 @@ impl Tracer {
             let clock2 = Stopwatch::start();
             let two = two_edge_paths(world, &es, ear_seen, &mut sv.1, &mut self.hits, listener, sp, vis[si]);
             self.costs.edges2 += clock2.ms();
-            // where the source's single bends are now: a string through
-            // one of them is that bend's path
-            let ones: Vec<Vec3> = self.edge_cache.get(&s.id).map_or(Vec::new(), |c| {
-                c.one.iter().map(|&ei| crate::paths::bend_point(es.edges[ei].0, es.edges[ei].1, sp, listener)).collect()
-            });
             let c = self.edge_cache.entry(s.id).or_default();
-            c.two = two
-                .into_iter()
-                .filter(|(_, _, pts)| !ones.iter().any(|q| (*q - pts[0]).length() < 1.0 || (*q - pts[1]).length() < 1.0))
-                .map(|(e1, e2, _)| (e1, e2))
-                .collect();
+            c.two = two.into_iter().map(|(e1, e2, _)| (e1, e2)).collect();
             c.two_at = Some((listener, sp, tick));
         }
 
@@ -4245,11 +4248,36 @@ impl Tracer {
                     c.points.push(vec![p]);
                 }
             }
+            // a string through a single bend's point whose other bend adds
+            // no detour (under half the top band's wavelength: one Fresnel
+            // zone — a second edge beside the first, a parapet over its
+            // slab) is one arrival with that bend: the stronger kept. (Its
+            // other bend may be all that keeps it out of a wall: round a
+            // church's west corners, the single bend at the first ran on
+            // 0.8 m inside the nave, −165 dB, the string along the wall
+            // −75 dB — dropped as the bend's, the bell south of the
+            // cathedral lost its path.)
+            let half_wave = SPEED_OF_SOUND / crate::diffraction::BAND_CENTER_HZ[NBANDS - 1] * 0.5;
+            let ones = c.taps.len();
             for &(e1, e2) in &c.two {
                 let (l, p1, p2) = refine_two(&es, e1, e2, listener, sp);
-                if let Some((tap, _)) = price_two(world, &es, &mut self.hits, e1, e2, l, p1, p2, listener, sp, vis[si]) {
-                    c.taps.push(tap);
-                    c.points.push(vec![p1, p2]);
+                let Some((tap, _)) = price_two(world, &es, &mut self.hits, e1, e2, l, p1, p2, listener, sp, vis[si]) else { continue };
+                let same = (0..ones).find(|&k| {
+                    let q = c.points[k][0];
+                    let l1 = (q - listener).length() + (sp - q).length();
+                    ((q - p1).length() < 1.0 || (q - p2).length() < 1.0) && l - l1 < half_wave
+                });
+                let e = |t: &Tap| t.gains.iter().map(|g| g * g).sum::<f32>();
+                match same {
+                    Some(k) if e(&c.taps[k]) >= e(&tap) => {}
+                    Some(k) => {
+                        c.taps[k] = tap;
+                        c.points[k] = vec![p1, p2];
+                    }
+                    None => {
+                        c.taps.push(tap);
+                        c.points.push(vec![p1, p2]);
+                    }
                 }
             }
             if debug {
@@ -4327,7 +4355,8 @@ fn price_one(world: &World, es: &EdgeSet, hits: &mut Vec<SegHit>, ei: usize, lis
     let det = d1 + d2 - (sp - listener).length().max(MIN_DIST);
     let ka = crate::diffraction::knife_edge_bands(det.max(1e-4));
     let air = air_attenuation(d1 + d2);
-    let gains: [f32; NBANDS] = core::array::from_fn(|b| ka[b] * t1[b] * t2[b] * air[b] / (d1 + d2) * (1.0 - vis[b]).clamp(0.0, 1.0).sqrt());
+    let open = es.open[ei].sqrt();
+    let gains: [f32; NBANDS] = core::array::from_fn(|b| ka[b] * t1[b] * t2[b] * air[b] / (d1 + d2) * (1.0 - vis[b]).clamp(0.0, 1.0).sqrt() * open);
     if gains.iter().all(|&g| g < 1e-7) {
         return None;
     }
@@ -4594,6 +4623,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         mut s_refl,
         mut s_rough,
         mut last_diffuse,
+        mut lt,
     } = br;
     let aps = world.apertures;
     if debug {
@@ -4667,6 +4697,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                     s_refl,
                     s_rough,
                     last_diffuse: None,
+                    lt,
                 });
             }
         }
@@ -4750,7 +4781,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         if !virt && !crossed && cx.portal_on {
             if let Some((q, k)) = first_crossing(aps, origin, origin + dir * t_seg.min(1e3)) {
                 let ap = &aps[k];
-                if counts(refl) && portal_any(cx, k) {
+                if counts(refl) && portal_any(cx, k) && !lt {
                     let mut d = portal_dep(cx, ap, k, q, origin, dir, length, thr, inv_n, first);
                     // left a diffuse bounce: the bounce also connected to
                     // the openings — this path either way, weighed by the
@@ -4907,7 +4938,10 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         // opening (one, picked by what it would bring), what the opening's
         // record holds leaving toward here taken from there — weighed
         // against the walk's own crossings by the odds of each
-        if cx.portal_on && !crossed && !virt && mat.scattering > 0.0 && counts(refl + 1) && !cx.portal_aps.is_empty() {
+        // (a first touch's diffuse share, or any bounce past one: light
+        // tracing's)
+        let first_touch = seg == 0 && refl == 0 && bends == 0;
+        if cx.portal_on && !crossed && !virt && !lt && !first_touch && mat.scattering > 0.0 && counts(refl + 1) && !cx.portal_aps.is_empty() {
             let off = p + normal * EPS;
             let sum = portal::pick_weights(aps, cx.portal_aps, off, normal, &mut *pweights);
             if sum > 0.0 {
@@ -5014,7 +5048,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
             let (mut t_crossed, mut t_first) = (crossed, first_ap);
             if !virt && !crossed && cx.portal_on {
                 if let Some((x, k)) = first_crossing(aps, p, beyond) {
-                    if counts(refl) && portal_any(cx, k) {
+                    if counts(refl) && portal_any(cx, k) && !lt {
                         let pre: [f32; NBANDS] = core::array::from_fn(|b| thr[b] / q);
                         out.portals.push(portal_dep(cx, &aps[k], k, x, p, dir, length, pre, inv_n, first));
                     }
@@ -5046,6 +5080,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 s_refl: if crossed { s_refl } else { 0 },
                 s_rough: t_crossed,
                 last_diffuse: None,
+                lt,
             });
         }
         // a surface that reflects nothing (a hanging drape: it passes or
@@ -5068,7 +5103,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
             let (t2, beyond) = world.through(p, dir, &mat, &mut *hits);
             if !virt && !crossed && cx.portal_on {
                 if let Some((x, k)) = first_crossing(aps, p, beyond) {
-                    if counts(refl) && portal_any(cx, k) {
+                    if counts(refl) && portal_any(cx, k) && !lt {
                         let pre: [f32; NBANDS] = core::array::from_fn(|b| thr[b] / pt);
                         out.portals.push(portal_dep(cx, &aps[k], k, x, p, dir, length, pre, inv_n, first));
                     }
@@ -5114,6 +5149,7 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         if thr.iter().all(|&e| e < LATE_FLOOR) {
             break;
         }
+        let was_first = seg == 0 && refl == 0 && bends == 0 && !crossed;
         refl += 1;
         if crossed {
             s_refl += 1;
@@ -5126,6 +5162,9 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 s_rough = true;
             }
             last_diffuse = Some((normal, mat.scattering));
+            if was_first && cx.portal_on && !virt {
+                lt = true;
+            }
             if seg == 0 && reusable {
                 first_bounce = Some((p, normal, length, -dir.dot(normal)));
             }
@@ -5409,7 +5448,8 @@ fn price_two(
     let lateral = p1.z.max(p2.z) < listener.z.max(src.z) + 0.5;
     let iso = crate::diffraction::iso9613_barrier_bands(z, 2, (p2 - p1).length(), (src - p2).length(), (p1 - listener).length(), direct, lateral);
     let air = air_attenuation(l);
-    let gains: [f32; NBANDS] = core::array::from_fn(|b| iso[b] * t1[b] * t12[b] * t2[b] * air[b] / l * (1.0 - vis[b]).clamp(0.0, 1.0).sqrt());
+    let open = (es.open[e1] * es.open[e2]).sqrt();
+    let gains: [f32; NBANDS] = core::array::from_fn(|b| iso[b] * t1[b] * t12[b] * t2[b] * air[b] / l * (1.0 - vis[b]).clamp(0.0, 1.0).sqrt() * open);
     if gains.iter().all(|&g| g < 1e-7) {
         return None;
     }
@@ -5698,6 +5738,10 @@ const EDGE_SEARCH: f32 = 120.0;
 /// see, hold until either moves this far (meanwhile the edges found are
 /// solved for where both are: `Tracer::edge_paths`).
 const EDGE_REUSE_M: f32 = 0.2;
+/// An edge with an overlay box (a leaf, a pane) this near counts as
+/// filled — its opening closed there: no bend (m); the exact paths over it
+/// fade in over as far again (`EdgeSet::open`).
+const FILL_M: f32 = 0.08;
 /// Deterministic single-edge direct paths kept per source.
 const EDGE_PATHS: usize = 3;
 /// Edges whose legs are checked per blocked source (best knife-edge
@@ -5750,6 +5794,13 @@ pub struct EdgeSet {
     /// Edges whose opening is FILLED this tick (a pane, a closed or ajar
     /// door leaf against the frame): not exposed, no diffraction.
     filled: Vec<bool>,
+    /// How open each edge stands for the exact paths over it (`price_one`,
+    /// `price_two`): 1 clear of every overlay box, 0 filled, and between
+    /// them as a box nears it — over the `FILL_M` beyond where it counts as
+    /// filled — so a door's jamb path fades as the leaf closes on it
+    /// instead of stopping (a −18 dB path on and off within a tick, the
+    /// swing's treble clicks).
+    open: Vec<f32>,
 }
 
 /// Words before the edges in `EdgeSet::flat`.
@@ -5832,6 +5883,7 @@ impl EdgeSet {
             lo: lo - r,
             hi: hi + r,
             filled: vec![false; n],
+            open: vec![1.0; n],
         }
     }
 
@@ -5875,15 +5927,21 @@ impl EdgeSet {
             // edges that never rise above the ground (wall bottoms, the
             // rim of a buried room): no shadow to bend into
             let on_ground = grade.is_some_and(|g| a.z.max(b.z) < g + 0.3);
-            self.filled[ei] = on_ground || panels.iter().any(|(mn, mx, _)| {
-                [0.25f32, 0.5, 0.75].iter().any(|f| {
-                    let p = *a + (*b - *a) * *f;
-                    let dx = (mn.x - p.x).max(p.x - mx.x).max(0.0);
-                    let dy = (mn.y - p.y).max(p.y - mx.y).max(0.0);
-                    let dz = (mn.z - p.z).max(p.z - mx.z).max(0.0);
-                    dx * dx + dy * dy + dz * dz < 0.08 * 0.08
+            // the nearest overlay box (a leaf, a pane) to the edge
+            let near = panels
+                .iter()
+                .flat_map(|(mn, mx, _)| {
+                    [0.25f32, 0.5, 0.75].into_iter().map(move |f| {
+                        let p = *a + (*b - *a) * f;
+                        let dx = (mn.x - p.x).max(p.x - mx.x).max(0.0);
+                        let dy = (mn.y - p.y).max(p.y - mx.y).max(0.0);
+                        let dz = (mn.z - p.z).max(p.z - mx.z).max(0.0);
+                        (dx * dx + dy * dy + dz * dz).sqrt()
+                    })
                 })
-            });
+                .fold(f32::MAX, f32::min);
+            self.filled[ei] = on_ground || near < FILL_M;
+            self.open[ei] = if on_ground { 0.0 } else { ((near - FILL_M) / FILL_M).clamp(0.0, 1.0) };
         }
     }
 
@@ -6001,7 +6059,7 @@ pub fn exposed(mesh: &Mesh, a: Vec3, b: Vec3) -> bool {
                 let th = k as f32 * core::f32::consts::TAU / N as f32;
                 let d = p1 * th.cos() + p2 * th.sin();
                 let o = m + d * 0.02;
-                !mesh.raycast(o, d).is_some_and(|(t, _)| t < R)
+                !mesh.raycast(o, d).is_some_and(|(t, _)| t < R) && !under_ground(mesh, o + d * (0.5 * R))
             })
             .collect();
         // longest circular run of free directions
@@ -6022,6 +6080,21 @@ pub fn exposed(mesh: &Mesh, a: Vec3, b: Vec3) -> bool {
     // outside corner or roof ridge ~270°+ — the strings over a building
     // cross its gables, so they are edges too
     best * 360 > 205 * N
+}
+
+/// Is `p` in the earth — a level surface within a metre above it and
+/// nothing at all below? Then a probe of `exposed` going there is
+/// blocked, not open air. A level's ground is a surface with nothing
+/// under it, and the probes going down found nothing in the way — so the
+/// foot of a wall standing on the ground, or a paving slab's border lying
+/// on it, read as an outside corner (270° free) and bent every ray passing
+/// within 3 m: the Godot level 229 such edges on the ground, the web town
+/// 441; on the bunker path the first bend of the club's loudest bursts.
+/// (By what lies below, not by the surface's facing: a host's winding
+/// may face its ground down. Under a ceiling a floor lies below.)
+fn under_ground(mesh: &Mesh, p: Vec3) -> bool {
+    mesh.raycast(p, Vec3::new(0.0, 0.0, 1.0)).is_some_and(|(t, tri)| t < 1.0 && mesh.tri_normal(tri).z.abs() > 0.5)
+        && mesh.raycast(p, Vec3::new(0.0, 0.0, -1.0)).is_none()
 }
 
 /// Where a path's legs are checked from at its bend point `p` on edge

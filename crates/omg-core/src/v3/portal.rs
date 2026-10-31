@@ -85,6 +85,10 @@ pub(super) struct PortalState {
 /// each holds.
 pub(super) type Fresh = HashMap<(u32, u8), (Record, u32)>;
 
+/// A source ray's diffuse bounce connected to the ears (light tracing):
+/// what it brings per band, when, and from where (from the ears).
+pub(super) type Conn = ([f32; NBANDS], f32, Vec3);
+
 impl PortalState {
     /// This tick's record into the running mean — over again where the
     /// source moved or the world changed.
@@ -194,17 +198,32 @@ pub(super) fn trace_source(
     pos: Vec3,
     rays: u32,
     diffraction: bool,
+    lis: Option<(Vec3, u64)>,
     rng: &mut Rng,
-) -> Fresh {
+) -> (Fresh, Vec<Conn>) {
     let aps = world.apertures;
     let mut out: Fresh = HashMap::default();
+    let mut conns: Vec<Conn> = Vec::new();
     if aps.is_empty() || rays == 0 {
-        return out;
+        return (out, conns);
     }
     let flux = 4.0 * core::f32::consts::PI / rays as f32;
-    let record = |out: &mut Fresh, a: Vec3, b: Vec3, length: f32, thr: [f32; NBANDS], dir: Vec3| {
-        for ap in aps {
+    // every crossing of a path that has reflected and been rough, into
+    // the records (`own`: else the walk's); and whether the last opening
+    // crossed (by index) makes what follows the source's to bring to the
+    // ears — one of its portals (`lis`' mask), crossed with such a past
+    let record = |out: &mut Fresh, a: Vec3, b: Vec3, length: f32, thr: [f32; NBANDS], dir: Vec3, own: bool, last: &mut Option<bool>| {
+        let mut far = -1.0f32;
+        for (k, ap) in aps.iter().enumerate() {
             let Some(x) = ap.crossed_by(a, b) else { continue };
+            let dk = (x - a).length();
+            if dk > far {
+                far = dk;
+                *last = Some(own && lis.is_some_and(|(_, m)| k < 64 && (m >> k) & 1 == 1));
+            }
+            if !own {
+                continue;
+            }
             let l = length + (x - a).length();
             let bin = (l / SPEED_OF_SOUND / PORTAL_BIN_S) as usize;
             if bin >= PORTAL_BINS {
@@ -234,6 +253,8 @@ pub(super) fn trace_source(
         let mut rough = false;
         let mut bends = 0u32;
         let mut last_edge: Option<usize> = None;
+        // the last opening crossed: the ears' share past it (`record`)
+        let mut last: Option<bool> = None;
         for _ in 0..LATE_MAX_SEGMENTS + MAX_BENDS {
             if world.in_earth(origin) {
                 break;
@@ -247,9 +268,7 @@ pub(super) fn trace_source(
                 None
             };
             let t_seg = edge.map_or(t_hit, |(te, _, _, _)| te);
-            if refl >= 1 && rough {
-                record(&mut out, origin, origin + dir * t_seg.min(1e3), length, thr, dir);
-            }
+            record(&mut out, origin, origin + dir * t_seg.min(1e3), length, thr, dir, refl >= 1 && rough, &mut last);
             if let Some((te, a, u, ei)) = edge {
                 last_edge = Some(ei);
                 let (eps, w) = sample_bend(rng, a);
@@ -290,11 +309,31 @@ pub(super) fn trace_source(
                 rough = true;
                 // through a leaf in an opening: what leaves it, the leaf's
                 // part paid
-                if refl >= 1 {
-                    record(&mut out, p, beyond, length, thr, dir);
-                }
+                record(&mut out, p, beyond, length, thr, dir, refl >= 1, &mut last);
                 origin = beyond;
                 continue;
+            }
+            // light tracing: past one of its portals, crossed with a rough
+            // past, this bounce's diffuse share straight to the ears where
+            // they see it (nothing between, no opening crossed): a path
+            // whose first touch from the ears is a diffuse bounce, the
+            // walk leaves to this (`walk_ray`'s `lt`)
+            if let (Some((ear, _)), Some(true)) = (lis, last) {
+                if mat.scattering > 0.0 {
+                    let off = p + normal * EPS;
+                    let to = ear - off;
+                    let r = to.length();
+                    if r > 1e-3 {
+                        let d = to * (1.0 / r);
+                        let cos_out = d.dot(normal);
+                        if cos_out > 0.0 && world.raycast(off, d).is_none_or(|h| h.t >= r - 1e-3) && super::first_crossing(aps, off, ear).is_none() {
+                            let air = air_attenuation(length + r);
+                            let g = mat.scattering * cos_out / (core::f32::consts::PI * r * r);
+                            let e: [f32; NBANDS] = core::array::from_fn(|b| thr[b] * keep[b] * g * air[b] * air[b]);
+                            conns.push((e, (length + r) / SPEED_OF_SOUND, d * -1.0));
+                        }
+                    }
+                }
             }
             for b in 0..NBANDS {
                 thr[b] *= keep[b] / (1.0 - pt);
@@ -325,7 +364,7 @@ pub(super) fn trace_source(
             origin = p + normal * EPS;
         }
     }
-    out
+    (out, conns)
 }
 
 /// The openings a walk connects to (`walk_ray`'s next-event to openings):
