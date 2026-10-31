@@ -10,22 +10,32 @@ against CLAUDE.md; measure before and after with impulses
 
 ## Known issues (measured, not fixed)
 
-### A moving listener's estimate is one tick's: the level steps up as the ears stop
+### What the tour still flags (Oct 31 morning)
 The tour with portals on (`docs/runs/2026-10-31/portals-on/`): the club's
 bursts are gone — nothing unexplained rises more than 23 dB (46.8 the
-night before) — and what is left is of one kind. At 209 s the tour stops
-on the road at (−13, −45): the club's bass, −52 dB while walking, steps
-to −32 within half a second and holds at ~−35. Moving, each tick's
-estimate stands alone (v6 averages only a still spell): the paths that
-carry the most are rare, so a tick usually reads far under the mean.
-Standing, the ticks are averaged and the rare ones arrive. Portals made
-the mean truer and louder (standing 300 ticks, the walk alone −54, −33,
-−51 dB on three seeds, portals −26, −26, −29), so the step grew while the
-bursts went. The cure: keep what still holds as the ears move — the
-portal records and pools do (they don't depend on the ears); the walk's
-own part would need its paths re-priced from where the ears are now
-(shift mapping) instead of thrown away, or more of the field from the
-sources' side.
+night before). What it still flags, by cause:
+- **A car appearing out of nothing, 900 m out (demo content).** At 209 s
+  the tour stops on the road and the bass steps from −52 to −32 dB, then
+  holds near −35: a car spawned along the road (the tour's own, or one of
+  the demo's at random). Recorded with every source stopped
+  (`record.gd --alone=nothing`), a car comes in from silence at −47 dB
+  the moment its motor starts, portals on or off; the club alone shows no
+  step there (−55…−58 dB walking and standing), nor headless (−45 / −43).
+  The engine is right — a 95 dB motor 900 m off arrives ~30 dB SPL, 7 dB
+  under the quiet road's loudness, inside the audible window (60 dB) —
+  the demo isn't: a car shouldn't come into being within earshot. Out of
+  earshot by the threshold of hearing (~22 dB SPL at 125 Hz) is ~6 km,
+  17 s of travel: cars that drive in from there (the tour's spawned
+  ahead of time to keep its timing), or a road that goes on.
+- **The walk's own heavy tail, smaller** — a few +15…+21 dB moments of
+  0.3–1 s in the field south of the town and on the bunker path, where
+  the club's field comes partly by the listener's rays finding its doors.
+- **The portals' pool is one sample, frozen.** Far from the club its
+  level is light tracing's: standing 600 ticks on the road, four seeds read
+  −38, −40, −32, −50 dB (the walk alone −77, −47, −63, −71). Growing a
+  full pool by a trickle (an eighth of a tick's rays a tick, to 256 ticks)
+  did not move those numbers (−38, −42, −32, −50) — reverted; why not is
+  open (the bounces that reach the road may be too rare in any pool).
 
 ### Tests that guard the legacy engine
 About half the test files drive the legacy engine (WorldSim, AutoPaths,

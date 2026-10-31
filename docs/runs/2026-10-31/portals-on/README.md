@@ -41,17 +41,17 @@ out of the cathedral's silence after its clap, the stage):
 
 The club's bursts — +40 to +47 dB in the field, the bunker path, the
 cathedral after its clap, the lane — are gone: nothing unexplained rises
-more than 23 dB. What is left is milder and of one kind: **a level that
-steps up as the ears stop**. At 209 s the tour stops on the road at
-(−13, −45): the club's bass, −52 dB while walking, steps to −32 within
-half a second and holds at about −35 (`../earth/`: −58 there). A moving
-listener's estimate is one tick's — usually far under its mean, the
-paths that carry the most being rare; standing, the ticks are averaged
-and the rare ones arrive. With portals the mean itself is the club's
-truer (louder) level — standing 300 ticks the walk alone reads it −54,
-−33, −51 dB on three seeds, portals −26, −26, −29 (`examples/portal_ab`)
-— so the step is larger. The cure is the open item in `OPEN.md`: a
-moving listener's young estimate.
+more than 23 dB. Of what is left, the longest is not the engine's: at
+209 s the tour stops on the road at (−13, −45) and the bass steps from
+−52 to −32 dB, then holds near −35 — a car appearing 900 m along the
+road (the demo spawns cars there). Recorded with every source stopped, a
+car comes in from silence at −47 dB as its motor starts, portals on or
+off; the club alone shows no step at that stop, in Godot or headless. A
+95 dB motor 900 m off is ~30 dB SPL, inside the engine's audible window
+on a quiet road: the engine hears what is there — the demo shouldn't make
+a car appear within earshot (`OPEN.md`). The rest: a few +15…+21 dB
+moments of 0.3–1 s in the field south of the town and on the bunker path
+(the walk's heavy tail, smaller), and the road toward the dome.
 
 ## Files
 
