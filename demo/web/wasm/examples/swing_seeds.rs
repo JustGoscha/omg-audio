@@ -1,5 +1,6 @@
 //! The club's inner door swinging shut (town_system's door test) over
 //! seeds: its climb back and worst treble per seed. SEEDS=n (6)
+//! MODE=v6.2: on v6.2 (else v6, as the test)  PORTALS=1: with portals
 use omg_audio::{clip, Compute, Config, Hrir, Mixer, Play, Quality, Simulation};
 use omg_web::town::Town;
 
@@ -18,7 +19,13 @@ fn only(town: &mut Town, sim: &mut Simulation, keep: usize) {
 
 fn swing(seed: u64) -> (f32, f32) {
     let run = |swing: bool| -> (Vec<f32>, Vec<f32>) {
-        let mut sim = Simulation::new(Config { quality: Quality::Level(3), compute: Compute::Cpu, v6: true, seed, kernel_thread: false, kernel_step_samples: 1 << 24, ..Config::default() });
+        let v62 = std::env::var("MODE").as_deref() == Ok("v6.2");
+        let portals = std::env::var("PORTALS").as_deref() == Ok("1");
+        let mut sim = Simulation::new(if v62 {
+            Config { quality: Quality::Level(3), compute: Compute::Cpu, v4: false, v5: false, v6: true, v61: true, v62: true, portals, seed, kernel_thread: false, kernel_step_samples: 1 << 24, ..Config::default() }
+        } else {
+            Config { quality: Quality::Level(3), compute: Compute::Cpu, v6: true, seed, kernel_thread: false, kernel_step_samples: 1 << 24, ..Config::default() }
+        });
         let mut town = Town::new(&mut sim);
         let club = 2;
         only(&mut town, &mut sim, club);

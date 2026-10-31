@@ -69,6 +69,13 @@ pub(super) fn slot(cell: usize, bin: usize) -> usize {
 /// is a heavy tail of its own — the walk keeps those paths.
 pub(super) const PORTAL_MIN_CROSSINGS: f32 = 4.0;
 
+/// ... and once its record holds this many ticks' rays: a record started
+/// over (a door moving starts every one over each tick) holds one tick's
+/// few rays in its direction cells and delay bins, a heavy tail of its
+/// own — the walk keeps those paths until it fills (a door's swing: the
+/// treble clicked −32 dB under the tone, −45 without portals).
+const PORTAL_MIN_TICKS: f32 = 8.0;
+
 /// One source's records, averaged while it and the world stand.
 #[derive(Default)]
 pub(super) struct PortalState {
@@ -175,9 +182,13 @@ impl PortalState {
     }
 
     /// The openings (bits by index in `aps`, the first 64) its rays cross
-    /// often enough to be its portals (`PORTAL_MIN_CROSSINGS`, either side).
+    /// often enough to be its portals (`PORTAL_MIN_CROSSINGS`, either side),
+    /// its records holding `PORTAL_MIN_TICKS` ticks.
     pub(super) fn mask(&self, aps: &[Aperture]) -> u64 {
         let mut m = 0u64;
+        if self.n < PORTAL_MIN_TICKS {
+            return m;
+        }
         for (k, ap) in aps.iter().enumerate().take(64) {
             let c = self.counts.get(&(ap.id, 0)).copied().unwrap_or(0.0) + self.counts.get(&(ap.id, 1)).copied().unwrap_or(0.0);
             if c >= PORTAL_MIN_CROSSINGS {

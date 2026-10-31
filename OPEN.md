@@ -98,6 +98,34 @@ off by default; what remains is guiding the walk toward openings past
 edges and mirrors, or the field from the sources' side all the way to
 the ears. Cost: 4 ms a tick for the club's four speakers (rays from
 each, Russian roulette, on the walk's threads) and ~2 ms gathering.
+Oct 31, late night. Two of the bunker path's worst bursts were not the
+estimator's: their first bend was an "edge" lying on the ground — a
+paving slab's border, a wall's foot — that `exposed` took for an outside
+corner, the probes going down finding nothing under the level's
+one-sided ground sheet (now: a probe in the earth is blocked; the Godot
+level's edges on the ground 229 → 25, the town's 441 → 54). The tour
+again (`docs/runs/2026-10-31/earth/`): the club's bursts in the
+cathedral, the lane, on the bunker path and in the field gone; replayed,
+the lane's 50 ms jumps of 6 dB+ halve and the typical tick sits 4–8 dB
+nearer the mean. Left: one at 114.4 s, a young estimate as the walk sets
+off. Portals got light tracing — the source's rays, past one of its
+openings, connect their diffuse bounces straight to the ears (the walk
+leaves paths whose first touch is diffuse to it) — and keep a still
+source's bounces instead of tracing again once its records hold 32
+ticks: 3.2 → 0.35 ms a tick. Standing 300 ticks (`examples/portal_ab`,
+three seeds), the walk alone is unconverged far off — at (26, 7) the
+club's bass −54 / −33 / −51 dB, rising toward the portals' −26 / −26 /
+−29 as its sphere shrinks — portals agree across seeds. An opening is a
+source's portal only once its records hold 8 ticks (a record started
+over holds one tick's few rays: a heavy tail of its own) and never on
+the tick the world changed under them. A door's swing over 31 seeds:
+the treble's worst click −39.3 dB with portals, −39.6 with every opening
+masked off (the same random stream), −41.4 without (another) — portals
+add nothing there. On by default in both demos since (`Config::portals`
+on v6.2; Godot `engine_portals`, the recorder's `--no-portals`). Left:
+a moving listener's young estimate (the walk's part), and the portals'
+first 32 ticks after a change (a door moving: every tick) trace afresh
+at full cost.
 The same shows right after a door shuts: the field through the shut
 door restarts as a young estimate. Across four seeds the click 50 ms to
 0.8 s after the shut lands on average 2.3 dB (early part, per band) and

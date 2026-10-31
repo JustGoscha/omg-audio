@@ -3154,12 +3154,16 @@ impl Tracer {
         // leave the record's paths out)
         let portal_on = self.portals && self.v62 && !self.v4 && early && !world.apertures.is_empty();
         let portal: Vec<bool> = rooms.iter().map(|&r| portal_on && r > 0.0).collect();
-        // each source's portals as its records stand coming into this tick:
-        // the walk and the source's own rays to the ears go by the same
+        // each source's portals as its records stand coming into this tick
+        // (none where they start over: they were another world's) — the
+        // walk and the source's own rays to the ears go by the same
         let portal_mask: Vec<u64> = sources
             .iter()
             .zip(&portal)
-            .map(|(s, &p)| if p { self.portal_state.get(&s.id).map_or(0, |st| st.mask(world.apertures)) } else { 0 })
+            .map(|(s, &p)| {
+                let st = self.portal_state.get(&s.id).filter(|st| p && !st.resets(s.pos, self.world_sig));
+                st.map_or(0, |st| st.mask(world.apertures))
+            })
             .collect();
         let portal_union = portal_mask.iter().fold(0u64, |a, &m| a | m);
         if portal_on {

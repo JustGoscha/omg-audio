@@ -535,10 +535,12 @@ pub struct OmgWorld {
     engine_v62: bool,
     /// Portals (on v6.2, the walk on the CPU): a source enclosed in a room
     /// heard through the room's openings (the `OmgDoor`s' holes) from its
-    /// own side — rays from it record what leaves each opening, the
-    /// listener's walk takes it from there. Off by default (experimental:
-    /// steadier near a loud room, a truer level; far off its bursts stay).
+    /// own side — rays from it record what leaves each opening and bring
+    /// their bounces past it to the ears, the listener's walk takes it
+    /// from there. A loud room heard from afar at its level, not in
+    /// bursts as the walk finds its door by chance. The default.
     #[export]
+    #[init(val = true)]
     engine_portals: bool,
     /// Record each tick's strongest traced paths for `paths()` (a debug
     /// view). Off: the tracer records nothing.

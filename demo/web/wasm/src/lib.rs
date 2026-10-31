@@ -129,6 +129,8 @@ pub extern "C" fn sim_setup(sample_rate: f32) {
         v6: true,
         v61: true,
         v62: true,
+        // a loud room heard through its openings from its sources' side
+        portals: true,
         sample_rate,
         // no threads in a worker's wasm: kernels a step a tick
         kernel_thread: false,
