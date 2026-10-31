@@ -36,10 +36,15 @@ const SURFACES := ["wood", "carpet", "concrete", "grass"]
 const RAIN_LEVELS := [0.0, 0.3, 0.65, 1.0]
 const RAIN_NAMES := ["off", "drizzle", "rain", "downpour"]
 const CAR_LANES := [-18.9, -17.1]
-# Cars start this far out (and up to twice it), heard by no one there —
-# their approach a fade-in from nothing (distance, air) — and their slot
-# is free again once they are as far past.
-const CAR_SPAWN_M := 900.0
+# A car starts where its motor is out of earshot — under the threshold of
+# hearing (~22 dB SPL at 125 Hz, ISO 226) with the ground's +3 dB, by
+# distance alone (air takes a little more) — and drives in from there;
+# its slot frees once it is as far past. From 900 m (as it was) a 95 dB
+# motor arrived ~30 dB SPL on a quiet road: a car out of nothing.
+const HEARING_DB := 22.0
+
+static func car_far_m(level_db: float) -> float:
+	return pow(10.0, (level_db + 3.0 - HEARING_DB) / 20.0)
 
 var world: OmgWorld
 var root: Node3D
@@ -341,10 +346,12 @@ func _spawn_car() -> void:
 	if not north:
 		body.rotation_degrees = Vector3(0, 180, 0)
 	root.add_child(body)
-	var y := (-1.0 if north else 1.0) * (CAR_SPAWN_M + randf() * CAR_SPAWN_M)
+	var base := 0.6 + randf()
+	var far := car_far_m(CAR_LEVEL + 20.0 * log(base) / log(10.0))
+	var y := (-1.0 if north else 1.0) * far * (1.0 + 0.25 * randf())
 	var motor := _motor_clip(randi() % 4, 0.85 + randf() * 0.4)
 	cars.append({"slot": free, "mesh": body, "x": CAR_LANES[1 if north else 0], "y": y, "north": north,
-		"vy": (1.0 if north else -1.0) * (12.0 + randf() * 12.0), "base": 0.6 + randf(), "motor": motor, "started": false})
+		"vy": (1.0 if north else -1.0) * (12.0 + randf() * 12.0), "base": base, "far": far, "motor": motor, "started": false})
 
 func _update_cars(dt: float) -> void:
 	var now := _now() - t0
@@ -368,7 +375,7 @@ func _update_cars(dt: float) -> void:
 		src.active = c["started"]
 		src.level_db = CAR_LEVEL + 20.0 * log(c["base"]) / log(10.0)
 		var past: bool = (c["y"] - me.y) * c["vy"] > 0.0
-		var gone: bool = past and d > CAR_SPAWN_M
+		var gone: bool = past and d > c["far"]
 		if gone:
 			(c["mesh"] as Node3D).queue_free()
 			src.active = false

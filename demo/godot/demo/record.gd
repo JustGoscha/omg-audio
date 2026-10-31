@@ -72,6 +72,9 @@ var at := Vector3(35.0, 10.0, -2.6) # --at=x,y,z: where the bunker scenario walk
 var video_fps := 0.0 # --video=fps: the tour's frames of the window
 var until_step := -1 # --until=n: the tour stops after step n
 var portals := true # --no-portals: the engine's portals off (Config::portals)
+# The tour's two cars pass its road stop this far into it (s): as they did
+# when they set out from 900 m at the stop.
+const TOUR_CAR_PASS := [242.0, 247.0]
 var clearance := false # --clearance: sphere hits by their reachable share (Config::clearance)
 var from_step := 0 # --from=n: the tour starts at step n
 var alone := "" # --alone=name: the tour with those sources only
@@ -417,12 +420,23 @@ func _tour(base: String) -> void:
 	var lv = demo.level
 	snd.wild = {"owl1": 1e9, "owl2": 1e9, "bells": 1e9}
 	snd.next_car = 1e9
+	# the road's two cars set out now, from out of earshot (6.7 km: further
+	# than any car is heard, `DemoSounds.car_far_m`), at 100 km/h to pass
+	# the road stop (y −45) when the tour stands there
+	if from_step == 0:
+		for k in 2:
+			var north := k == 0
+			snd._spawn_car()
+			var c: Dictionary = snd.cars.back()
+			c["x"] = DemoSounds.CAR_LANES[1] if north else DemoSounds.CAR_LANES[0]
+			c["vy"] = 27.8 if north else -27.8
+			c["y"] = -45.0 + (-1.0 if north else 1.0) * 27.8 * TOUR_CAR_PASS[k]
 	# [kind, args…, phase]: "go" x, y, z (feet) — walk there (straight:
 	# the legs keep clear of solids — through the kiosk the ears heard
 	# nothing for half a second, rightly); "wait" s;
 	# "door" i, open; "curtains"; "clap"; "bells"; "owl" source; "car"
-	# north (from CAR_SPAWN_M off — where cars start: heard by no one — at
-	# 100 km/h)
+	# north: a car passing the road stop (a marker: the two set out at the
+	# start from out of earshot, `TOUR_CAR_PASS`)
 	# the feet on the floors, the ears 1.6 m over them (the player's EYE),
 	# as a person's: 0.4 m up they rode at 2.0 m, the height of the
 	# doorways' lintels — walking through a door they grazed the lintel,
@@ -553,12 +567,7 @@ func _tour(base: String) -> void:
 				if alone == "":
 					snd.sources[st[1]].play_clip(snd.clip["owl0"], 1.0, 1.0)
 			"car":
-				snd._spawn_car()
-				var c: Dictionary = snd.cars.back()
-				var north: bool = st[1]
-				c["x"] = DemoSounds.CAR_LANES[1] if north else DemoSounds.CAR_LANES[0]
-				c["y"] = pos.y + (-1.0 if north else 1.0) * DemoSounds.CAR_SPAWN_M
-				c["vy"] = 27.8 if north else -27.8
+				pass # on its way since the start (`TOUR_CAR_PASS`)
 	log.close()
 	_stop(base)
 

@@ -1320,9 +1320,14 @@ function buildCathedralInterior() {
 // audibility, drive through, despawn — the pass-by fade and the Doppler
 // both come from the engine (distance loss + tap-delay glide).
 const CAR_LANES = [-18.9, -17.1]; // southbound, northbound
-// Cars start this far out (up to twice it), heard by no one there, and
-// free their slot once as far past.
-const CAR_SPAWN_M = 900;
+// A car starts where its motor is out of earshot — under the threshold of
+// hearing (~22 dB SPL at 125 Hz, ISO 226) with the ground's +3 dB, by
+// distance alone (air takes a little more) — and drives in from there; its
+// slot frees once it is as far past. From 900 m (as it was) a 95 dB motor
+// arrived ~30 dB SPL on a quiet road: a car out of nothing.
+const HEARING_DB = 22;
+const CAR_SPL = 90 + 20 * Math.log10(2.2) + 86 - 92; // the mixer's car at 1 m (MIXER 'cars')
+const carFarM = (baseVol) => 10 ** ((CAR_SPL + 20 * Math.log10(baseVol) + 3 - HEARING_DB) / 20);
 function spawnCar() {
   const free = [3, 4].find((slot) => !state.cars.some((c) => c.slot === slot));
   if (free === undefined) return;
@@ -1367,16 +1372,18 @@ function spawnCar() {
     }
     state.node.port.postMessage({ type: 'motor', src: free + 8, buf: out.buffer }, [out.buffer]);
   }
+  const baseVol = 0.6 + Math.random();
+  const far = carFarM(baseVol);
   state.cars.push({
     slot: free,
     mesh: body,
     x: CAR_LANES[north ? 1 : 0],
-    // spawn KILOMETERS out — genuinely inaudible, the approach is a
-    // true fade-in from nothing (distance loss + air absorption)
-    y: (north ? -1 : 1) * (CAR_SPAWN_M + Math.random() * CAR_SPAWN_M),
+    // out of earshot: the approach a fade-in from nothing (distance, air)
+    y: (north ? -1 : 1) * far * (1 + 0.25 * Math.random()),
+    far,
     north,
     vy: (north ? 1 : -1) * (12 + Math.random() * 12),
-    baseVol: 0.6 + Math.random(), // some cars are just louder
+    baseVol, // some cars are just louder
     vol: 0,
   });
 }
@@ -1398,7 +1405,7 @@ function updateCars(dt, now) {
     // free the slot once it is as far past as cars start out — heard by
     // no one there, as where it came from
     const d = Math.hypot(c.x - state.pose.x, c.y - state.pose.y);
-    const gone = (c.y - state.pose.y) * c.vy > 0 && d > CAR_SPAWN_M;
+    const gone = (c.y - state.pose.y) * c.vy > 0 && d > c.far;
     if (gone) scene.remove(c.mesh);
     return !gone;
   });
