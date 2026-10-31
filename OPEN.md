@@ -65,8 +65,15 @@ night before). What it still flags, by cause:
   cathedral 1 → 3 (the means' spread 10.1 → 4.4, 4.8 → 3.5, 13.6 →
   1.8, 3.5 → 4.0, 0.8 → 5.0 dB). A guide learnt where the ears were
   points elsewhere as they move, and the uniform rays left weigh more.
-  The far field standing is the guide's; walking it would need a guide
-  that moves with the ears (learnt per place, not per tick).
+  Guiding only while the ears stand (half a second still; walking, the
+  unguided walk, the bursts 30 vs 31 over ten seeds and five stretches)
+  was tried and reverted: standing in the cathedral the guide found a
+  rare way into the club through its portal and the still spell's
+  running mean held it — the club's bass −58 → −8 dB, then −10…−17 dB
+  for eight seconds (one seed of ten). A guide finds the heavy rare paths
+  sooner; while a running mean holds a sample for seconds, sooner is
+  louder for longer. The guide wants the estimate it feeds to forget as
+  fast as it learns — or the far field from the sources' side.
   The ground's mirror tried too: light tracing connecting each bounce to
   the ears' image under the level ground they stand on, the walk leaving
   it a first touch that mirrors off that ground and a diffuse touch next
