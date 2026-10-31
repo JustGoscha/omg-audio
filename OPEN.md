@@ -56,6 +56,17 @@ night before). What it still flags, by cause:
   field south 7 → 2 → 7. The smoothed guide's means agree across seeds
   (the bunker path −30.3 / −30.1 / −30.1 dB, unguided −35 / −35 / −41) —
   the estimate converging — but the bursts don't fall: still off.
+  Standing (300 ticks, four seeds, `examples/portal_ab GUIDE=1`) it is
+  what the far field needs — the club's bass in the field south of the
+  town −19 … −40 dB unguided, −31 … −32 guided; on the road 15 → 6 dB
+  apart — but walking, five stretches of the tour over five seeds, its
+  bursts (up 10 dB, back inside a second) 15 → 41: the south field
+  1 → 15, the bunker path 5 → 13, the road 8 → 8, the lane 0 → 2, the
+  cathedral 1 → 3 (the means' spread 10.1 → 4.4, 4.8 → 3.5, 13.6 →
+  1.8, 3.5 → 4.0, 0.8 → 5.0 dB). A guide learnt where the ears were
+  points elsewhere as they move, and the uniform rays left weigh more.
+  The far field standing is the guide's; walking it would need a guide
+  that moves with the ears (learnt per place, not per tick).
   The ground's mirror tried too: light tracing connecting each bounce to
   the ears' image under the level ground they stand on, the walk leaving
   it a first touch that mirrors off that ground and a diffuse touch next
