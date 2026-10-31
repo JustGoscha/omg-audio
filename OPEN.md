@@ -28,8 +28,16 @@ night before). What it still flags, by cause:
   17 s of travel: cars that drive in from there (the tour's spawned
   ahead of time to keep its timing), or a road that goes on.
 - **The walk's own heavy tail, smaller** — a few +15…+21 dB moments of
-  0.3–1 s in the field south of the town and on the bunker path, where
-  the club's field comes partly by the listener's rays finding its doors.
+  0.3–1 s in the field south of the town and on the bunker path. Replayed
+  (`tour_replay PORTALS=1 PATHS=1`, seed 2, 122.65 s at (23.3, −14.0)):
+  the club's bass −47 → −21 dB in one tick, the taps +30 dB — and the
+  same with light tracing off: a ray of the ears' that reached one of the
+  club's doors and took its record. Those are the paths light tracing
+  doesn't take: a first touch that is a mirror (the paving), an edge bend
+  or a wall passed through, then the long way to the door (bends weigh
+  the bass up to 3× each). The cure would be a second way to those paths
+  weighed against the walk's: the sources' bounces connected to the
+  ears' mirror image in the ground, or through an edge to the ears.
 - **The portals' pool is one sample, frozen.** Far from the club its
   level is light tracing's: standing 600 ticks on the road, four seeds read
   −38, −40, −32, −50 dB (the walk alone −77, −47, −63, −71). Growing a
