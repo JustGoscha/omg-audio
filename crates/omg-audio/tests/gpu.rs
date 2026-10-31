@@ -142,7 +142,10 @@ fn gpu_swing(mode: &str, ears: [f32; 3]) -> Option<f32> {
         let f = if b > 0.0 { (o.ln() - a.ln()) / (b.ln() - a.ln()) } else { (a - o) / a };
         truth[i - 1] + f.clamp(0.0, 1.0) * (truth[i] - truth[i - 1])
     };
-    let (mut sim, src, door) = doorway_scene(mode, Compute::Gpu, ears, 1.0);
+    // each tick's GPU walk landed before the next (`GpuSync`): the same
+    // walks every run — a live walk lands when the GPU is done, and under
+    // load (the suite's other tests compiling) it read a few dB worse once
+    let (mut sim, src, door) = doorway_scene(mode, Compute::GpuSync, ears, 1.0);
     if !sim.gpu_active() {
         return None;
     }
@@ -151,8 +154,6 @@ fn gpu_swing(mode: &str, ears: [f32; 3]) -> Option<f32> {
     let step = |sim: &mut Simulation, k: usize, t: f64| {
         sim.set_time(t);
         if k % 6 == 0 {
-            // a host's tick: the walk it queued last time has landed
-            std::thread::sleep(std::time::Duration::from_millis(12));
             Some(sim.tick())
         } else {
             sim.tick_exact()
@@ -196,7 +197,6 @@ fn a_door_swinging_shut_is_heard_where_it_is_on_the_gpu() {
         e62 += r62 / ears.len() as f32;
     }
     eprintln!("mean rms: v6.1 {e61:.1} dB, v6.2 {e62:.1} dB");
-    // (the live walk lands as the GPU finishes: a few dB run to run)
     assert!(e62 < 0.5 * e61, "v6.2 follows the door far closer than v6.1 on the GPU: {e62:.1} vs {e61:.1} dB");
     assert!(e62 < 5.0, "v6.2 within 5 dB rms of the door standing: {e62:.1} dB");
 }
