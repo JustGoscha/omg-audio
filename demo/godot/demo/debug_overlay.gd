@@ -3,7 +3,7 @@
 # — and the output spectrogram per ear: time running right to left (the
 # newest at the right edge), log frequency up, inferno colours; left above
 # right. Top right. Its columns are the output's own (the flight
-# recorder's minute, OmgWorld.flight_columns), one every 4 ms of audio
+# recorder's minute, OmgWorld.flight_columns), one every 5 ms of audio
 # whatever the frame rate, each band in a window as long as its frequency
 # needs, as the ear resolves it — 43 ms under 200 Hz, 21 to 800 Hz, 11 to
 # 3 kHz, 5 above: a click is a column wide.
@@ -11,7 +11,7 @@ class_name DemoDebug
 extends CanvasLayer
 
 const W := 680.0
-const SW := 1000.0      # the spectrogram's width
+const SW := W           # the spectrogram's width
 const H := 220.0
 const SH := 330.0       # the spectrum panel: two flame graphs
 const TOP := 36.0       # below the title
@@ -19,7 +19,7 @@ const N := 240          # samples kept (~4 s at 60 fps)
 const BANDS := 256      # log bands, 40 Hz – 16 kHz (0.4 semitone each)
 const COL_PX := 1.0     # a column's width on screen
 const COLS := int(SW / COL_PX)
-const COL_HZ := 250.0   # columns per second of audio (4 s shown)
+const COL_HZ := 200.0   # columns per second of audio (3.4 s shown)
 const F_LO := 40.0
 const F_HI := 16000.0
 
