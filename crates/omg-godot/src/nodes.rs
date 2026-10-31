@@ -986,6 +986,21 @@ impl OmgWorld {
         PackedByteArray::from(&v[..])
     }
 
+    /// The live spectrogram's new columns (`flight_spectrogram`'s look):
+    /// one every `hop` frames from frame `from`, as far as the minute has
+    /// been heard, at most `max` (the newest). {rgba: PackedByteArray —
+    /// the columns side by side, 2 · `bands` + 4 rows —, columns, next:
+    /// the frame to ask from next}.
+    #[func]
+    fn flight_columns(&self, from: i64, hop: i64, bands: i64, max: i64) -> Dictionary<Variant, Variant> {
+        let (v, k, next) = crate::backend::flight::columns(from.max(0) as u64, hop.max(1) as u64, bands.clamp(1, 1024) as usize, max.clamp(0, 8192) as usize);
+        let mut d = Dictionary::new();
+        d.set("rgba", &PackedByteArray::from(&v[..]));
+        d.set("columns", k as i64);
+        d.set("next", next as i64);
+        d
+    }
+
     #[func]
     fn set_ear(&self, on: bool) {
         if let Some(h) = host().as_ref() {

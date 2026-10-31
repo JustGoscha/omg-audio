@@ -1,8 +1,11 @@
 # Debug overlays (switched on in the settings screen): a performance graph
 # — frame time, the engine's sim tick, the audio render load, late audio
-# — and the output spectrogram per ear as the web demo draws it: time
-# running right to left (the newest at the right edge), log frequency
-# up, inferno colours; left above right. Top right.
+# — and the output spectrogram per ear: time running right to left (the
+# newest at the right edge), log frequency up, inferno colours; left above
+# right. Top right. Its columns are the output's own (the flight
+# recorder's minute, OmgWorld.flight_columns), one every 6.25 ms of audio
+# whatever the frame rate, each band in a window as long as its frequency
+# needs — 85 ms under 250 Hz, 5 ms over 4 kHz: a click is a column wide.
 class_name DemoDebug
 extends CanvasLayer
 
@@ -14,7 +17,7 @@ const N := 240          # samples kept (~4 s at 60 fps)
 const BANDS := 256      # log bands, 40 Hz – 16 kHz (0.4 semitone each)
 const COL_PX := 1.0     # a column's width on screen
 const COLS := int(W / COL_PX)
-const COL_HZ := 120.0   # columns per second (~5.7 s shown)
+const COL_HZ := 160.0   # columns per second of audio (4.25 s shown)
 const F_LO := 40.0
 const F_HI := 16000.0
 
@@ -28,12 +31,10 @@ var tick_ms := PackedFloat32Array()
 var load_pc := PackedFloat32Array()
 var late_last := 0
 var late_flags := PackedByteArray()
-var analyzer: AudioEffectSpectrumAnalyzerInstance
-var bands := [PackedFloat32Array(), PackedFloat32Array()]  # per ear: loudest per band since the last column
 var lut := PackedColorArray()
 var flame: Array[Image] = []
 var flame_tex: Array[ImageTexture] = []
-var col_t := 0.0
+var next_fr := -1         # the output frame the next column starts at
 
 func _init(w: OmgWorld) -> void:
 	world = w
@@ -44,8 +45,6 @@ func _ready() -> void:
 		a.resize(N)
 	late_flags.resize(N)
 	for ear in 2:
-		bands[ear].resize(BANDS)
-		bands[ear].fill(-120.0)
 		var img := Image.create(COLS, BANDS, false, Image.FORMAT_RGBA8)
 		img.fill(_inferno(0.0))
 		flame.append(img)
@@ -62,13 +61,9 @@ func set_perf(on: bool) -> void:
 
 func set_spectrum(on: bool) -> void:
 	spectrum_on = on
-	if on and analyzer == null:
-		# an analyser on the master bus (the engine plays through it)
-		var bus := AudioServer.get_bus_index("Master")
-		var fx := AudioEffectSpectrumAnalyzer.new()
-		fx.fft_size = AudioEffectSpectrumAnalyzer.FFT_SIZE_4096
-		AudioServer.add_bus_effect(bus, fx)
-		analyzer = AudioServer.get_bus_effect_instance(bus, AudioServer.get_bus_effect_count(bus) - 1)
+	if on:
+		world.flight_start()
+		next_fr = -1
 	_apply()
 
 func _apply() -> void:
@@ -100,30 +95,22 @@ func _process(dt: float) -> void:
 		late_flags.append(1 if late > late_last else 0)
 		late_last = late
 		perf.queue_redraw()
-	if spectrum_on and analyzer != null:
-		# log-spaced bands, dB, the loudest of each between two columns
-		for i in BANDS:
-			var f0 := F_LO * pow(F_HI / F_LO, float(i) / BANDS)
-			var f1 := F_LO * pow(F_HI / F_LO, float(i + 1) / BANDS)
-			var m := analyzer.get_magnitude_for_frequency_range(f0, f1, AudioEffectSpectrumAnalyzerInstance.MAGNITUDE_MAX)
-			bands[0][i] = maxf(bands[0][i], linear_to_db(m.x + 1e-9))
-			bands[1][i] = maxf(bands[1][i], linear_to_db(m.y + 1e-9))
-		col_t += dt
-		var k := mini(int(col_t * COL_HZ), COLS)
+	if spectrum_on:
+		# the columns the output has played since the last frame
+		var hop := maxi(1, int(world.flight_rate() / COL_HZ))
+		if next_fr < 0:
+			next_fr = maxi(0, world.flight_frames() - COLS * hop)
+		var r: Dictionary = world.flight_columns(next_fr, hop, BANDS, COLS)
+		var k: int = r["columns"]
+		next_fr = r["next"]
 		if k > 0:
-			col_t -= k / COL_HZ
+			var cols := Image.create_from_data(k, 2 * BANDS + 4, false, Image.FORMAT_RGBA8, r["rgba"])
 			# everything moves k columns left; the newest enter at the right
 			for ear in 2:
 				var img: Image = flame[ear]
-				var b: PackedFloat32Array = bands[ear]
 				if k < COLS:
 					img.blit_rect(img.get_region(Rect2i(k, 0, COLS - k, BANDS)), Rect2i(0, 0, COLS - k, BANDS), Vector2i.ZERO)
-				for i in BANDS:
-					# the web's scale: an analyser's −100 … −30 dB, a mild gamma
-					var c := _inferno(pow(clampf((b[i] + 100.0) / 70.0, 0.0, 1.0), 1.25))
-					for x in range(COLS - k, COLS):
-						img.set_pixel(x, BANDS - 1 - i, c)
-				b.fill(-120.0)
+				img.blit_rect(cols, Rect2i(0, ear * (BANDS + 4), k, BANDS), Vector2i(COLS - k, 0))
 				flame_tex[ear].update(img)
 			spec.queue_redraw()
 
