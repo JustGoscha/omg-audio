@@ -79,6 +79,8 @@ pub(super) struct PortalState {
     pub(super) recs: HashMap<(u32, u8), Record>,
     /// Crossings a tick recorded there (the running mean's).
     counts: HashMap<(u32, u8), f32>,
+    /// The bounces past the openings of the `n` ticks traced.
+    vpls: Vec<Vpl>,
 }
 
 /// A tick's trace of one source: the records and how many crossings
@@ -89,17 +91,34 @@ pub(super) type Fresh = HashMap<(u32, u8), (Record, u32)>;
 /// what it brings per band, when, and from where (from the ears).
 pub(super) type Conn = ([f32; NBANDS], f32, Vec3);
 
+/// A source ray's diffuse bounce past an opening it crossed with a rough
+/// past (light tracing's vertex), kept while the source and the world
+/// stand (`PortalState::vpls`) and connected to the ears every tick
+/// (`connect`): off its surface, its facing, what its diffuse share
+/// carries on (its throughput × what the surface keeps × scattering), its
+/// path from the source, and the opening the path crossed last (index).
+#[derive(Clone, Copy)]
+pub(super) struct Vpl {
+    p: Vec3,
+    normal: Vec3,
+    e: [f32; NBANDS],
+    length: f32,
+    ap: u8,
+}
+
 impl PortalState {
     /// This tick's record into the running mean — over again where the
     /// source moved or the world changed.
-    pub(super) fn fold(&mut self, fresh: Fresh, pos: Vec3, sig: u64) {
-        if self.at.is_none_or(|a| (a - pos).length() > STILL_M) || self.sig != sig {
+    pub(super) fn fold(&mut self, fresh: Fresh, vpls: Vec<Vpl>, pos: Vec3, sig: u64) {
+        if self.resets(pos, sig) {
             self.recs.clear();
             self.counts.clear();
+            self.vpls.clear();
             self.n = 0.0;
             self.at = Some(pos);
             self.sig = sig;
         }
+        self.vpls.extend(vpls);
         let a = 1.0 / (self.n + 1.0);
         for (k, c) in self.counts.iter_mut() {
             *c += a * (fresh.get(k).map_or(0.0, |f| f.1 as f32) - *c);
@@ -129,6 +148,30 @@ impl PortalState {
             self.recs.entry(k).or_insert_with(|| f.iter().map(|x| x.map(|v| v * a)).collect());
         }
         self.n = (self.n + 1.0).min(PORTAL_MEMORY);
+    }
+
+    /// Does a tick traced with the source at `pos` in world `sig` start
+    /// the records over (the source moved, the world changed)?
+    pub(super) fn resets(&self, pos: Vec3, sig: u64) -> bool {
+        self.at.is_none_or(|a| (a - pos).length() > STILL_M) || self.sig != sig
+    }
+
+    /// Are rays still wanted: the records start over, or don't yet hold
+    /// `PORTAL_MEMORY` ticks? Full, they are the mean of that many and
+    /// stay as they are while the source and the world stand — more rays
+    /// would only make them a running mean that forgets.
+    pub(super) fn wants_rays(&self, pos: Vec3, sig: u64) -> bool {
+        self.resets(pos, sig) || self.n < PORTAL_MEMORY
+    }
+
+    /// The bounces this tick's light tracing draws from, and how many
+    /// ticks' rays left them (none where the records start over).
+    pub(super) fn pool(&self, pos: Vec3, sig: u64) -> (&[Vpl], f32) {
+        if self.resets(pos, sig) {
+            (&[], 0.0)
+        } else {
+            (&self.vpls, self.n)
+        }
     }
 
     /// The openings (bits by index in `aps`, the first 64) its rays cross
@@ -186,7 +229,8 @@ pub(super) fn cos_tables(cells: &[Vec3]) -> Vec<Vec<f32>> {
 /// from `pos` (each a 4π/rays share of a unit source), walked as the
 /// listener's are — reflected, scattered, bent round edges, through walls
 /// and leaves by their draws — every crossing of a path that has
-/// reflected and been rough recorded (`Record`).
+/// reflected and been rough recorded (`Record`), and every diffuse bounce
+/// past such a crossing kept (`Vpl`).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn trace_source(
     world: &World,
@@ -198,28 +242,27 @@ pub(super) fn trace_source(
     pos: Vec3,
     rays: u32,
     diffraction: bool,
-    lis: Option<(Vec3, u64)>,
     rng: &mut Rng,
-) -> (Fresh, Vec<Conn>) {
+) -> (Fresh, Vec<Vpl>) {
     let aps = world.apertures;
     let mut out: Fresh = HashMap::default();
-    let mut conns: Vec<Conn> = Vec::new();
+    let mut vpls: Vec<Vpl> = Vec::new();
     if aps.is_empty() || rays == 0 {
-        return (out, conns);
+        return (out, vpls);
     }
     let flux = 4.0 * core::f32::consts::PI / rays as f32;
     // every crossing of a path that has reflected and been rough, into
-    // the records (`own`: else the walk's); and whether the last opening
-    // crossed (by index) makes what follows the source's to bring to the
-    // ears — one of its portals (`lis`' mask), crossed with such a past
-    let record = |out: &mut Fresh, a: Vec3, b: Vec3, length: f32, thr: [f32; NBANDS], dir: Vec3, own: bool, last: &mut Option<bool>| {
+    // the records (`own`: else the walk's); and the last opening crossed
+    // (by index), with such a past or not: what follows it is the
+    // source's to bring to the ears where it is one of its portals
+    let record = |out: &mut Fresh, a: Vec3, b: Vec3, length: f32, thr: [f32; NBANDS], dir: Vec3, own: bool, last: &mut Option<(bool, usize)>| {
         let mut far = -1.0f32;
         for (k, ap) in aps.iter().enumerate() {
             let Some(x) = ap.crossed_by(a, b) else { continue };
             let dk = (x - a).length();
             if dk > far {
                 far = dk;
-                *last = Some(own && lis.is_some_and(|(_, m)| k < 64 && (m >> k) & 1 == 1));
+                *last = Some((own, k));
             }
             if !own {
                 continue;
@@ -254,7 +297,7 @@ pub(super) fn trace_source(
         let mut bends = 0u32;
         let mut last_edge: Option<usize> = None;
         // the last opening crossed: the ears' share past it (`record`)
-        let mut last: Option<bool> = None;
+        let mut last: Option<(bool, usize)> = None;
         for _ in 0..LATE_MAX_SEGMENTS + MAX_BENDS {
             if world.in_earth(origin) {
                 break;
@@ -291,6 +334,17 @@ pub(super) fn trace_source(
             let mat = hit.material;
             let normal = hit.normal;
             let keep: [f32; NBANDS] = core::array::from_fn(|b| (1.0 - mat.absorption[b] - mat.transmission[b] * mat.transmission[b]).max(0.0));
+            // light tracing's vertex: past an opening crossed with a rough
+            // past, this bounce's diffuse share — kept whichever way the
+            // ray goes on (the draw below), connected to the ears later
+            if let Some((true, k)) = last {
+                if mat.scattering > 0.0 && k < 64 {
+                    let e: [f32; NBANDS] = core::array::from_fn(|b| thr[b] * keep[b] * mat.scattering);
+                    if e.iter().any(|&v| v > 0.0) {
+                        vpls.push(Vpl { p: p + normal * EPS, normal, e, length, ap: k as u8 });
+                    }
+                }
+            }
             // through (the walk's draw: importance-floored)
             let p_t = mat.transmission.iter().fold(0.0f32, |m, &t| m.max(t * t));
             let pure = p_t > 1e-5 && keep.iter().all(|&k| k < 1e-6);
@@ -312,28 +366,6 @@ pub(super) fn trace_source(
                 record(&mut out, p, beyond, length, thr, dir, refl >= 1, &mut last);
                 origin = beyond;
                 continue;
-            }
-            // light tracing: past one of its portals, crossed with a rough
-            // past, this bounce's diffuse share straight to the ears where
-            // they see it (nothing between, no opening crossed): a path
-            // whose first touch from the ears is a diffuse bounce, the
-            // walk leaves to this (`walk_ray`'s `lt`)
-            if let (Some((ear, _)), Some(true)) = (lis, last) {
-                if mat.scattering > 0.0 {
-                    let off = p + normal * EPS;
-                    let to = ear - off;
-                    let r = to.length();
-                    if r > 1e-3 {
-                        let d = to * (1.0 / r);
-                        let cos_out = d.dot(normal);
-                        if cos_out > 0.0 && world.raycast(off, d).is_none_or(|h| h.t >= r - 1e-3) && super::first_crossing(aps, off, ear).is_none() {
-                            let air = air_attenuation(length + r);
-                            let g = mat.scattering * cos_out / (core::f32::consts::PI * r * r);
-                            let e: [f32; NBANDS] = core::array::from_fn(|b| thr[b] * keep[b] * g * air[b] * air[b]);
-                            conns.push((e, (length + r) / SPEED_OF_SOUND, d * -1.0));
-                        }
-                    }
-                }
             }
             for b in 0..NBANDS {
                 thr[b] *= keep[b] / (1.0 - pt);
@@ -364,7 +396,46 @@ pub(super) fn trace_source(
             origin = p + normal * EPS;
         }
     }
-    (out, conns)
+    (out, vpls)
+}
+
+/// Light tracing from a source's pool — the bounces `kept` from the ticks
+/// before (`ticks` of them with this one) and this tick's `new` — as many
+/// drawn at random as one tick's rays leave, each connected straight to
+/// the ears where they see it (nothing between, no opening crossed) when
+/// the opening its path crossed last is one of the source's portals
+/// (`mask`): a path whose first touch from the ears is a diffuse bounce,
+/// the walk leaves to this (`walk_ray`'s `lt`). Each draw brings its
+/// bounce's share of one tick's rays.
+pub(super) fn connect(world: &World, kept: &[Vpl], new: &[Vpl], ticks: f32, mask: u64, ear: Vec3, rng: &mut Rng) -> Vec<Conn> {
+    let n = kept.len() + new.len();
+    let mut out: Vec<Conn> = Vec::new();
+    if n == 0 || ticks <= 0.0 {
+        return out;
+    }
+    let draws = ((n as f32 / ticks).round() as usize).max(1);
+    let w = n as f32 / (draws as f32 * ticks);
+    for _ in 0..draws {
+        let i = ((rng.next_f32() * n as f32) as usize).min(n - 1);
+        let v = if i < kept.len() { &kept[i] } else { &new[i - kept.len()] };
+        if (mask >> v.ap) & 1 == 0 {
+            continue;
+        }
+        let to = ear - v.p;
+        let r = to.length();
+        if r <= 1e-3 {
+            continue;
+        }
+        let d = to * (1.0 / r);
+        let cos_out = d.dot(v.normal);
+        if cos_out <= 0.0 || world.raycast(v.p, d).is_some_and(|h| h.t < r - 1e-3) || super::first_crossing(world.apertures, v.p, ear).is_some() {
+            continue;
+        }
+        let air = air_attenuation(v.length + r);
+        let g = w * cos_out / (core::f32::consts::PI * r * r);
+        out.push((core::array::from_fn(|b| v.e[b] * g * air[b] * air[b]), (v.length + r) / SPEED_OF_SOUND, d * -1.0));
+    }
+    out
 }
 
 /// The openings a walk connects to (`walk_ray`'s next-event to openings):

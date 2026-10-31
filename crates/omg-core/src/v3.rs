@@ -3177,12 +3177,22 @@ impl Tracer {
             let which: Vec<usize> = (0..sources.len()).filter(|&si| portal[si]).collect();
             let (cells, ctab, edges_ref) = (&self.cells, &self.portal_ctab, edges.as_ref());
             let masks = &portal_mask;
+            let states = &self.portal_state;
+            // a source's rays while its records want them (a source and
+            // the world standing, full ones stay as they are), then its
+            // pool of bounces past the openings connected to the ears
             let trace = |sc: &mut WalkScratch, si: usize| {
                 let mut rng = Rng::new(ray_seed(tick_seed ^ (si as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)));
-                let lis = Some((listener, masks[si]));
-                portal::trace_source(world, edges_ref, &mut sc.marks, &mut sc.hits, cells, ctab, sources[si].pos, rays, budget.diffraction, lis, &mut rng)
+                let (pos, st) = (sources[si].pos, states.get(&sources[si].id));
+                let fresh = st
+                    .is_none_or(|st| st.wants_rays(pos, sig))
+                    .then(|| portal::trace_source(world, edges_ref, &mut sc.marks, &mut sc.hits, cells, ctab, pos, rays, budget.diffraction, &mut rng));
+                let (kept, ticks) = st.map_or((&[][..], 0.0), |st| st.pool(pos, sig));
+                let new = fresh.as_ref().map_or(&[][..], |f| &f.1[..]);
+                let conns = portal::connect(world, kept, new, ticks + if fresh.is_some() { 1.0 } else { 0.0 }, masks[si], listener, &mut rng);
+                (fresh, conns)
             };
-            let mut fresh: Vec<(usize, (portal::Fresh, Vec<portal::Conn>))> = Vec::new();
+            let mut fresh: Vec<(usize, (Option<(portal::Fresh, Vec<portal::Vpl>)>, Vec<portal::Conn>))> = Vec::new();
             #[cfg(not(target_arch = "wasm32"))]
             if threads > 1 && which.len() > 1 {
                 let next = std::sync::atomic::AtomicUsize::new(0);
@@ -3213,8 +3223,10 @@ impl Tracer {
                 fresh = which.iter().map(|&si| (si, trace(sc, si))).collect();
             }
             fresh.sort_by_key(|f| f.0);
-            for (si, (rec, conns)) in fresh {
-                self.portal_state.entry(sources[si].id).or_default().fold(rec, sources[si].pos, sig);
+            for (si, (traced, conns)) in fresh {
+                if let Some((rec, vpls)) = traced {
+                    self.portal_state.entry(sources[si].id).or_default().fold(rec, vpls, sources[si].pos, sig);
+                }
                 for (e, delay, dir) in conns {
                     deposit(&mut accs[si], &self.cells, e, delay, dir);
                 }
