@@ -147,10 +147,17 @@ fn chain_finders(budget: Budget) -> usize {
 }
 /// Chains cached per source.
 const MAX_CHAINS: usize = 128;
+/// v6.4: chains cached per source — the strongest few (ranked as ever:
+/// the valid first). The town on the GPU path cached 300–700 a tick, ~14
+/// of them valid; the rest were solved, rejected and named again.
+const MAX_CHAINS_V64: usize = 16;
 /// Portals: rays an enclosed source traces a tick, per late ray of the
 /// listener's (and at least).
 const PORTAL_RAYS_PER_LATE: u32 = 1;
 const PORTAL_MIN_RAYS: u32 = 64;
+/// v6.4: what an enclosed source's records trace a tick at least while
+/// they fill: a room's door found by its rays a few times a tick, not one.
+const PORTAL_MIN_RAYS_V64: u32 = 256;
 /// The fewest chain solves a thread takes at a time (`solve_chain_work`).
 const CHAIN_SOLVES_PER_CHUNK: usize = 16;
 /// Salience: a solved chain plays as a tap when it is this many times
@@ -2532,6 +2539,16 @@ pub struct Tracer {
     /// (`Aperture`): the estimate follows a door every tick and every
     /// frame between (`reprice`); a ray splits at a leaf.
     pub v62: bool,
+    /// Engine v6.3 (on v6.2): a door's leaf moving restarts only the
+    /// sources whose paths cross it (`RESTART_SHARE`); each source's portal
+    /// records answer to the panels in their own reach
+    /// (`PortalState::local_sig`), not to every door of the level; the GPU
+    /// walk walks portals (`portal_job`). Off: v6.2 as of Oct 31 morning.
+    pub v63: bool,
+    /// Engine v6.4 (on v6.3; the random part's rise is the simulation's):
+    /// the strongest `MAX_CHAINS_V64` chains a source, named by finders at
+    /// the CPU's count on a GPU-walked tick too.
+    pub v64: bool,
     /// Portals (`portal.rs`; v6, the walk on the CPU): what reaches the
     /// listener from an enclosed source through an opening, estimated
     /// from the source's side — rays from it record what leaves each
@@ -2946,6 +2963,8 @@ impl Tracer {
             v6: false,
             v61: false,
             v62: false,
+            v63: false,
+            v64: false,
             portals: false,
             portal_state: HashMap::default(),
             portal_ctab: Vec::new(),
@@ -3344,18 +3363,37 @@ impl Tracer {
             .zip(&portal)
             .map(|(s, &p)| {
                 // (each record's own world: the panels in its rays' reach)
-                let st = self.portal_state.get(&s.id).filter(|st| p && !st.resets(s.pos, st.local_sig(world.panels, self.world_sig)));
-                st.map_or(0, |st| st.mask(world.apertures))
+                let st = self.portal_state.get(&s.id).filter(|st| p && !st.resets(s.pos, self.rec_sig(st, world.panels, self.world_sig)));
+                st.map_or(0, |st| st.mask(world.apertures, self.v64))
             })
             .collect();
         (portal, masks)
+    }
+
+    /// Chains cached per source (v6.4: the strongest few).
+    fn max_chains(&self) -> usize {
+        if self.v64 {
+            MAX_CHAINS_V64
+        } else {
+            MAX_CHAINS
+        }
+    }
+
+    /// The signature a source's portal records answer to: (v6.3) the
+    /// panels in their own reach, else the whole world's.
+    fn rec_sig(&self, st: &portal::PortalState, panels: &[(Vec3, Vec3, Material)], world: u64) -> u64 {
+        if self.v63 {
+            st.local_sig(panels, world)
+        } else {
+            world
+        }
     }
 
     /// A GPU walk with portals, as the CPU walk would take them: each
     /// source's mask and the openings the walk connects to, into `job`
     /// (none without portals, or past the kernel's apertures).
     fn portal_job(&self, world: &World, sources: &[Source], job: fold::WalkJob) -> fold::WalkJob {
-        if !self.portals_on(world) || world.apertures.len() > fold::MAX_APERTURES {
+        if !self.v63 || !self.portals_on(world) || world.apertures.len() > fold::MAX_APERTURES {
             return job;
         }
         let rooms = self.rooms(world, sources);
@@ -3489,7 +3527,7 @@ impl Tracer {
                 self.portal_air = portal::air_table();
             }
             let sig = self.world_sig;
-            let rays = (budget.late_rays * PORTAL_RAYS_PER_LATE).max(PORTAL_MIN_RAYS);
+            let rays = (budget.late_rays * PORTAL_RAYS_PER_LATE).max(if self.v64 { PORTAL_MIN_RAYS_V64 } else { PORTAL_MIN_RAYS });
             // each part of a source's rays on a thread of the walk's, its own
             // random numbers (from the tick's, the source's index and the
             // part's): the same records however many threads trace them
@@ -3503,12 +3541,13 @@ impl Tracer {
             // only once both stand a tick)
             // (each source's records answer to the panels in their reach —
             // `PortalState::local_sig` — not to every door of the level)
-            let lsig = |st: &portal::PortalState| st.local_sig(world.panels, sig);
+            let (v63, v64) = (self.v63, self.v64);
+            let lsig = |st: &portal::PortalState| if v63 { st.local_sig(world.panels, sig) } else { sig };
             let wants = |si: usize| {
                 let (pos, st) = (sources[si].pos, states.get(&sources[si].id));
                 st.is_none_or(|st| {
                     let l = lsig(st);
-                    st.wants_rays(pos, l) && (!st.resets(pos, l) || st.steady(pos, l))
+                    st.wants_rays(pos, l, v64) && (!st.resets(pos, l) || st.steady(pos, l))
                 })
             };
             // two sources a tick at most, their rays split over the walk's
@@ -3562,9 +3601,9 @@ impl Tracer {
             for (&si, conns) in which.iter().zip(conns) {
                 let st = self.portal_state.entry(sources[si].id).or_default();
                 if let Some((rec, vpls, reach)) = fresh[si].take() {
-                    st.fold(rec, vpls, reach, sources[si].pos, world.panels, sig);
+                    st.fold(rec, vpls, reach, sources[si].pos, world.panels, sig, self.v63);
                 }
-                let l = st.local_sig(world.panels, sig);
+                let l = if self.v63 { st.local_sig(world.panels, sig) } else { sig };
                 st.see(sources[si].pos, l);
                 for (e, delay, dir, p, ap) in conns {
                     deposit(&mut accs[si], &self.cells, e, delay, dir);
@@ -3829,7 +3868,7 @@ impl Tracer {
         }
         if let Some(c) = self.chains.get_mut(&key) {
             c.ttl = CHAIN_TTL;
-        } else if cached.get(&id).copied().unwrap_or(0) < 2 * MAX_CHAINS {
+        } else if cached.get(&id).copied().unwrap_or(0) < 2 * self.max_chains() {
             self.chains.insert(key, MirrorChain { planes: planes.to_vec(), ttl: CHAIN_TTL, energy: 0.0, grown_at: 0, solved: None });
             *cached.entry(id).or_default() += 1;
         }
@@ -4108,8 +4147,12 @@ impl Tracer {
     /// The CPU's share of an externally walked tick: name chains with a
     /// few mirror rays, solve every cached one, and return what they
     /// deposit (per source) — merged into the walk's bins by the fold.
-    fn walked_chains(&mut self, world: &World, listener: Vec3, sources: &[Source], budget: Budget) -> Vec<Acc> {
-        self.find_chains(world, listener, sources, budget, chain_finders(budget));
+    fn walked_chains(&mut self, world: &World, listener: Vec3, sources: &[Source], budget: Budget, cpu_budget: Budget) -> Vec<Acc> {
+        // v6.4: as many finders as the CPU's tick names chains with — the
+        // GPU's budget (8× the rays) made the CPU's chain work grow with
+        // every level the governor climbed
+        let finders = chain_finders(if self.v64 { cpu_budget } else { budget });
+        self.find_chains(world, listener, sources, budget, finders);
         let mut accs: Vec<Acc> = sources
             .iter()
             .enumerate()
@@ -4244,9 +4287,9 @@ impl Tracer {
             by_source.entry(k.0).or_default().push((*k, rank(k, c)));
         }
         for (_, mut v) in by_source {
-            if v.len() > MAX_CHAINS {
+            if v.len() > self.max_chains() {
                 v.sort_by(|a, b| b.1.total_cmp(&a.1));
-                for (k, _) in &v[MAX_CHAINS..] {
+                for (k, _) in &v[self.max_chains()..] {
                     self.chains.remove(k);
                     self.rejected.insert(*k, (tick, None));
                 }
@@ -4349,7 +4392,7 @@ impl Tracer {
                         continue;
                     }
                     // the source's cache full: nothing more is proposed
-                    if *count >= 2 * MAX_CHAINS {
+                    if *count >= 2 * self.max_chains() {
                         break 'families;
                     }
                     let k = (key.0, h);
@@ -4395,7 +4438,7 @@ impl Tracer {
         // flute +16 dB, the living room's piano +18 over their levels as
         // the hall's door was opened and shut — Godot, Oct 31)
         let fixed = if self.v62 { panels_sig(&world.panels.iter().filter(|(a, b, _)| !world.apertures.iter().any(|ap| ap.leaf == Some((*a, *b)))).copied().collect::<Vec<_>>()) } else { sig };
-        let leaves_only = self.v62 && changed && fixed == self.fixed_sig;
+        let leaves_only = self.v62 && self.v63 && changed && fixed == self.fixed_sig;
         self.fixed_sig = fixed;
         // the apertures whose leaf moved
         let mut moved_leaves: Vec<u32> = Vec::new();

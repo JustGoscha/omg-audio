@@ -129,6 +129,10 @@ pub extern "C" fn sim_setup(sample_rate: f32) {
         v6: true,
         v61: true,
         v62: true,
+        // v6.3 (Oct 31's door, record and GPU-portal changes) and v6.4 (the
+        // random part fades in); the page's v6.2 switch takes both off
+        v63: true,
+        v64: true,
         // a loud room heard through its openings from its sources' side
         portals: true,
         sample_rate,

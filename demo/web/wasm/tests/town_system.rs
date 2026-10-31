@@ -623,3 +623,41 @@ fn the_radar_dome_focuses_its_echo_back_to_its_centre() {
     assert!(n_c >= 8, "from every way: {n_c} taps");
     assert!(centre > off + 6.0, "and off the centre far weaker: {centre:+.1} vs {off:+.1} dB");
 }
+
+/// Standing on the street 25 m west of the club (Godot capture 18-49-57:
+/// "again what the heck"), its doors and the vestibule's open: the club is
+/// heard through them steadily — no lucky ray of the walk bursting in
+/// (v6.3, its records covering neither door: 15 dB within 0.15 s here on
+/// the CPU, 38–53 dB in the capture's replay on the GPU; v6.4, the records
+/// covering both and the random part fading in: 0.9 dB, the mean 5 dB up —
+/// the club through its doors, no longer only in bursts).
+#[test]
+fn the_club_heard_from_the_street_does_not_burst_v64() {
+    let run = |v64: bool| -> (f32, f32) {
+        let mut sim = Simulation::new(Config { quality: Quality::Level(0), compute: Compute::Cpu, v6: true, v61: true, v62: true, v63: true, v64, portals: true, kernel_thread: false, kernel_step_samples: 1 << 24, ..Config::default() });
+        let mut town = Town::new(&mut sim);
+        let club = town.defs.iter().position(|d| d.name == "club").expect("the club");
+        only(&mut town, &mut sim, club);
+        for (k, open) in [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0].into_iter().enumerate() {
+            town.set_door(&mut sim, k, open);
+        }
+        let mut lv = Vec::new();
+        for _ in 0..600 {
+            sim.set_listener([3.61, 36.40, 1.62], 0.0, 0.0, 0.0);
+            let f = sim.tick();
+            let e: f32 = town.sources[club]
+                .iter()
+                .filter_map(|&id| f.block(id))
+                .map(|pb| pb.taps.iter().map(|t| t.gains[1] * t.gains[1]).sum::<f32>() + pb.reverb.level[1] * pb.reverb.level[1] + pb.remote.map_or(0.0, |r| r.send[1] * r.send[1]) + pb.early.level[1] * pb.early.level[1])
+                .sum();
+            lv.push(db(e));
+        }
+        let jump = (200..lv.len()).map(|i| lv[i] - lv[i - 3..=i].iter().fold(f32::MAX, |a, &b| a.min(b))).fold(0.0f32, f32::max);
+        let mean = db(lv[200..].iter().map(|d| 10f32.powf(d / 10.0)).sum::<f32>() / (lv.len() - 200) as f32);
+        (jump, mean)
+    };
+    let (j63, m63) = run(false);
+    let (j64, m64) = run(true);
+    eprintln!("the club from the street: v6.3 jumps {j63:.1} dB (mean {m63:.1}), v6.4 {j64:.1} dB (mean {m64:.1})");
+    assert!(j64 < 6.0, "v6.4: the club jumped {j64:.1} dB within 0.15 s standing still");
+}

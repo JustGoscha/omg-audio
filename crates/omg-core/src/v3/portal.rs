@@ -76,6 +76,18 @@ pub(super) const PORTAL_MIN_CROSSINGS: f32 = 4.0;
 /// treble clicked −32 dB under the tone, −45 without portals).
 const PORTAL_MIN_TICKS: f32 = 8.0;
 
+/// v6.4: an opening is a source's portal once its record holds this many
+/// crossings over all its ticks (4 a tick over `PORTAL_MEMORY`'s 32) — a
+/// record is as good as the crossings it holds, however many ticks they
+/// took. The club's 64 rays a tick crossed its inner door 1.2 times a
+/// tick, the vestibule's outer one 0.5: never 4 a tick, never a portal —
+/// the walk alone found the club through them, a lucky ray now and then
+/// +20…+65 dB over its level (Godot, Oct 31).
+const PORTAL_MIN_TOTAL: f32 = 128.0;
+/// v6.4: records of an opening crossed seldom but steadily (enough to
+/// hold `PORTAL_MIN_TOTAL` by then) go on filling up to this many ticks.
+const PORTAL_MEMORY_MAX: f32 = 256.0;
+
 /// One source's records, averaged while it and the world stand.
 #[derive(Default)]
 pub(super) struct PortalState {
@@ -160,8 +172,12 @@ impl PortalState {
     /// This tick's record into the sum — over again where the source moved
     /// or the world changed. (No more are traced once it holds
     /// `PORTAL_MEMORY` ticks: the sum over `n` is their mean.)
-    pub(super) fn fold(&mut self, fresh: Fresh, vpls: Vec<Vpl>, reach: Option<(Vec3, Vec3)>, pos: Vec3, panels: &[(Vec3, Vec3, Material)], world: u64) {
-        if self.resets(pos, self.local_sig(panels, world)) {
+    /// `local` (v6.3): its records answer to the panels in their reach
+    /// (`local_sig`), else to the whole world's (`world`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn fold(&mut self, fresh: Fresh, vpls: Vec<Vpl>, reach: Option<(Vec3, Vec3)>, pos: Vec3, panels: &[(Vec3, Vec3, Material)], world: u64, local: bool) {
+        let sig = |st: &Self| if local { st.local_sig(panels, world) } else { world };
+        if self.resets(pos, sig(self)) {
             self.recs.clear();
             self.counts.clear();
             self.vpls.clear();
@@ -178,7 +194,7 @@ impl PortalState {
                 None => (a, b),
             });
         }
-        self.sig = self.local_sig(panels, world);
+        self.sig = sig(self);
         let mut acc = self.cum.last().copied().unwrap_or(0.0);
         for v in &vpls {
             acc += weight(v) as f64;
@@ -223,8 +239,18 @@ impl PortalState {
     /// `PORTAL_MEMORY` ticks? Full, they are the mean of that many and
     /// stay as they are while the source and the world stand — more rays
     /// would only make them a running mean that forgets.
-    pub(super) fn wants_rays(&self, pos: Vec3, sig: u64) -> bool {
-        self.resets(pos, sig) || self.n < PORTAL_MEMORY
+    pub(super) fn wants_rays(&self, pos: Vec3, sig: u64, v64: bool) -> bool {
+        self.resets(pos, sig) || self.n < PORTAL_MEMORY || (v64 && self.n < PORTAL_MEMORY_MAX && self.filling())
+    }
+
+    /// v6.4: an opening's record is short of `PORTAL_MIN_TOTAL` crossings
+    /// but crossed often enough to hold them by `PORTAL_MEMORY_MAX` ticks.
+    fn filling(&self) -> bool {
+        self.n > 0.0
+            && self.counts.iter().any(|(&(id, side), &c)| {
+                let both = c + self.counts.get(&(id, 1 - side)).copied().unwrap_or(0.0);
+                both < PORTAL_MIN_TOTAL && both / self.n * PORTAL_MEMORY_MAX >= PORTAL_MIN_TOTAL
+            })
     }
 
     /// The ticks its records hold for a tick traced with the source at
@@ -264,14 +290,15 @@ impl PortalState {
     /// The openings (bits by index in `aps`, the first 64) its rays cross
     /// often enough to be its portals (`PORTAL_MIN_CROSSINGS`, either side),
     /// its records holding `PORTAL_MIN_TICKS` ticks.
-    pub(super) fn mask(&self, aps: &[Aperture]) -> u64 {
+    pub(super) fn mask(&self, aps: &[Aperture], v64: bool) -> u64 {
         let mut m = 0u64;
         if self.n < PORTAL_MIN_TICKS {
             return m;
         }
         for (k, ap) in aps.iter().enumerate().take(64) {
-            let c = (self.counts.get(&(ap.id, 0)).copied().unwrap_or(0.0) + self.counts.get(&(ap.id, 1)).copied().unwrap_or(0.0)) * self.scale();
-            if c >= PORTAL_MIN_CROSSINGS {
+            let total = self.counts.get(&(ap.id, 0)).copied().unwrap_or(0.0) + self.counts.get(&(ap.id, 1)).copied().unwrap_or(0.0);
+            let enough = if v64 { total >= PORTAL_MIN_TOTAL } else { total * self.scale() >= PORTAL_MIN_CROSSINGS };
+            if enough {
                 m |= 1 << k;
             }
         }

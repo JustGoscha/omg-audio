@@ -546,6 +546,18 @@ pub struct OmgWorld {
     #[export]
     #[init(val = true)]
     engine_v62: bool,
+    /// Engine v6.3 (on v6.2, Oct 31): a door's leaf restarts only the
+    /// sources whose paths cross it, portal records keyed to their own
+    /// reach, the GPU walk with portals. Off: v6.2 as of that morning.
+    #[export]
+    #[init(val = true)]
+    engine_v63: bool,
+    /// Engine v6.4 (on v6.3): what the walk estimates by random rays rises
+    /// at most 30 dB a second (falls at once): no one-tick pops. The
+    /// default.
+    #[export]
+    #[init(val = true)]
+    engine_v64: bool,
     /// Portals (on v6.2, the walk on the CPU): a source enclosed in a room
     /// heard through the room's openings (the `OmgDoor`s' holes) from its
     /// own side — rays from it record what leaves each opening and bring
@@ -571,7 +583,7 @@ pub struct OmgWorld {
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 19],
+    sent: [f32; 21],
     #[init(val = LevelGovernor::new(LEVELS - 1))]
     auto_tier: LevelGovernor,
     auto_ticks: u32,
@@ -1073,6 +1085,8 @@ impl OmgWorld {
             v6: self.engine_v6,
             v61: self.engine_v6 && self.engine_v61,
             v62: self.engine_v6 && self.engine_v61 && self.engine_v62,
+            v63: self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_v63,
+            v64: self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_v63 && self.engine_v64,
             portals: self.portals(),
             clearance: self.engine_v6 && self.engine_clearance,
             sample_rate: engine_rate(),
@@ -1119,7 +1133,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 19];
+        self.sent = [f32::NAN; 21];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -1334,6 +1348,8 @@ impl OmgWorld {
             self.engine_v6 as i32 as f32,
             self.engine_v61 as i32 as f32,
             self.engine_v62 as i32 as f32,
+            self.engine_v63 as i32 as f32,
+            self.engine_v64 as i32 as f32,
             self.engine_portals as i32 as f32,
             self.engine_clearance as i32 as f32,
         ];

@@ -217,7 +217,7 @@ fn a_door_swinging_shut_is_heard_where_it_is_on_the_gpu() {
 #[test]
 fn the_gpu_walk_takes_portals_as_the_cpu_does() {
     let level = |compute: Compute, ears: [f32; 3]| -> Option<f32> {
-        let cfg = Config { compute, v6: true, v61: true, v62: true, portals: true, kernel_thread: false, ..Config::default() };
+        let cfg = Config { compute, v6: true, v61: true, v62: true, v63: true, portals: true, kernel_thread: false, ..Config::default() };
         let (mut sim, src, _) = doorway_scene_with(cfg, ears, 1.0);
         if compute != Compute::Cpu && !sim.gpu_active() {
             return None;

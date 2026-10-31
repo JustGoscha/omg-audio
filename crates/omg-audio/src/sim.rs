@@ -188,6 +188,20 @@ pub struct Config {
     /// sources say, not 1–4.5 dB low; a door's swing noisier. Off by
     /// default: to be judged by ear.
     pub clearance: bool,
+    /// Engine v6.3 (on v6.2, Oct 31): a door's leaf moving restarts only
+    /// the sources whose paths cross it; portal records answer to the
+    /// panels in their own reach; the GPU walk walks portals. Off: v6.2 as
+    /// it was that morning (`Tracer::v63`).
+    pub v63: bool,
+    /// Engine v6.4 (on v6.3): what the walk estimates by random rays — its
+    /// early bins, the dense early field, the late field — rises at most
+    /// `RISE_DB_PER_S` and falls at once; the exact paths (direct, edge
+    /// bends, mirror chains) as ever. One tick's lucky ray (a doorway's
+    /// jamb lit by the club, found by one ray in hundreds: +20…+65 dB over
+    /// the source's level, Godot captures Oct 31) fades in instead of
+    /// popping; a real change reaches its level within a fraction of a
+    /// second.
+    pub v64: bool,
     /// The mixer's sample rate (v4 builds its convolution kernels for it).
     pub sample_rate: f32,
     /// v4: build convolution kernels on a thread of their own (off the
@@ -258,6 +272,8 @@ impl Config {
         self.portals &= self.v62;
         self.guide &= self.v6;
         self.clearance &= self.v6;
+        self.v63 &= self.v62;
+        self.v64 &= self.v63;
         self
     }
 }
@@ -277,6 +293,8 @@ impl Default for Config {
             portals: false,
             guide: false,
             clearance: false,
+            v63: false,
+            v64: false,
             sample_rate: 48_000.0,
             kernel_thread: true,
             max_kernels: 64,
@@ -377,6 +395,9 @@ struct Src {
     /// until `ghost.1`; it emitted only before `until`.
     ghost: Option<(SourceId, f64)>,
     until: f64,
+    /// v6.4: the random part's energy (mid band) as last handed on, and
+    /// when (the simulation clock).
+    rand_shown: Option<(f32, f64)>,
 }
 
 struct Obj {
@@ -493,6 +514,42 @@ const GHOST_ID_SPAN: u32 = 0x1000_0000;
 /// How long after its last emission a source at `pos` still sounds at the
 /// listener (s): its direct sound's travel, then the longest response a
 /// path or kernel carries (`omg_dsp::dense::MAX_KERNEL_S`).
+/// v6.4: how fast the walk's random part may rise (dB a second): a door
+/// opening onto a loud room comes in within ~0.7 s, one tick's lucky ray
+/// adds at most 1.5 dB a tick (20 Hz) while it lasts.
+const RISE_DB_PER_S: f32 = 30.0;
+/// v6.4: a source's first estimate starts this far under itself and rises
+/// from there (its first tick is one tick's rays: the heaviest tail).
+const RISE_START_DB: f32 = 20.0;
+
+/// v6.4: the factor (amplitude) on a field's random part — its walk taps
+/// (`tap_kind` 3), dense early field and late field — that keeps its energy
+/// within `RISE_DB_PER_S` of where it was (`shown`: a reference energy and
+/// its clock); falling, it follows at once, and the reference falls after
+/// it no faster than it may rise again (a dip of a tick is no new start).
+fn rise_limit(f: &omg_core::v3::SourceField, shown: &mut Option<(f32, f64)>, now: f64) -> f32 {
+    let e = f.taps.iter().filter(|t| omg_core::v3::tap_kind(t.key) == 3).map(|t| t.gains[1] * t.gains[1]).sum::<f32>()
+        + f.early.level[1] * f.early.level[1]
+        + f.reverb.level[1] * f.reverb.level[1];
+    let (out, reference) = match *shown {
+        Some((r, at)) if r > 0.0 => {
+            let step = 10f32.powf(RISE_DB_PER_S * (now - at).max(0.0) as f32 / 10.0);
+            let out = e.min(r * step);
+            (out, out.max(r / step))
+        }
+        _ => {
+            let out = e * 10f32.powf(-RISE_START_DB / 10.0);
+            (out, out)
+        }
+    };
+    *shown = Some((reference, now));
+    if e > 0.0 {
+        (out / e).sqrt()
+    } else {
+        1.0
+    }
+}
+
 fn ring_out(pos: Vec3, ear: Vec3) -> f64 {
     ((pos - ear).length() / omg_core::SPEED_OF_SOUND) as f64 + omg_dsp::dense::MAX_KERNEL_S as f64 + 0.5
 }
@@ -588,6 +645,8 @@ impl Simulation {
                 t.v6 = cfg.v6;
                 t.v61 = cfg.v61;
                 t.v62 = cfg.v62;
+                t.v63 = cfg.v63;
+                t.v64 = cfg.v64;
                 t.portals = cfg.portals;
                 t.guide = cfg.guide;
                 t.clearance = cfg.clearance;
@@ -642,6 +701,8 @@ impl Simulation {
         self.tracer.v6 = cfg.v6;
         self.tracer.v61 = cfg.v61;
         self.tracer.v62 = cfg.v62;
+        self.tracer.v63 = cfg.v63;
+        self.tracer.v64 = cfg.v64;
         self.tracer.portals = cfg.portals;
         self.tracer.guide = cfg.guide;
         self.tracer.clearance = cfg.clearance;
@@ -664,6 +725,8 @@ impl Simulation {
         self.tracer.v6 = self.cfg.v6;
         self.tracer.v61 = self.cfg.v61;
         self.tracer.v62 = self.cfg.v62;
+        self.tracer.v63 = self.cfg.v63;
+        self.tracer.v64 = self.cfg.v64;
         self.tracer.portals = self.cfg.portals;
         self.tracer.guide = self.cfg.guide;
         self.tracer.clearance = self.cfg.clearance;
@@ -791,6 +854,7 @@ impl Simulation {
             off_at: (!desc.active).then_some(f64::NEG_INFINITY),
             ghost: None,
             until: f64::INFINITY,
+            rand_shown: None,
         });
     }
 
@@ -835,6 +899,7 @@ impl Simulation {
                 off_at: s.off_at,
                 ghost: Some((id, now + ring_out(s.pos, ear) as f64)),
                 until: now,
+                rand_shown: s.rand_shown,
             };
             s.track = VecDeque::from([(now, p)]);
             s.seen = (now, p);
@@ -1262,19 +1327,23 @@ impl Simulation {
 
         // fields → blocks (the generic half of the demo's WorldSim::v3_blocks)
         let mut first_traced = Vec::new();
+        let (v64, now) = (self.cfg.v64, self.clock);
         for ((&(_, i), f), onset_s) in self.picks.iter().zip(fields).zip(onsets) {
             let s = &mut self.sources[i];
             if s.traced.is_none() {
                 first_traced.push(s.id);
             }
             let g = s.gain;
+            // v6.4: the random part held to its rise (`Config::v64`)
+            let k = if v64 { rise_limit(&f, &mut s.rand_shown, now) } else { 1.0 };
             let mut pb = ParamBlock { version, onset_s, ..Default::default() };
             pb.taps.reserve(f.taps.len());
             for t in f.taps {
-                pb.taps.push(Tap { gains: core::array::from_fn(|b| t.gains[b] * g), ..t });
+                let kt = if omg_core::v3::tap_kind(t.key) == 3 { k } else { 1.0 };
+                pb.taps.push(Tap { gains: core::array::from_fn(|b| t.gains[b] * g * kt), ..t });
             }
             pb.reverb.rt60 = f.reverb.rt60;
-            let mut lv = f.reverb.level;
+            let mut lv = f.reverb.level.map(|l| l * k);
             if let Some(d) = f.dense {
                 // v4: the scattered response is convolved (`kernels`); the
                 // block also carries it as a parametric reverb for a mixer
@@ -1302,7 +1371,7 @@ impl Simulation {
                 });
             }
             // the dense early field (v6.2), at the source's gain
-            pb.early = omg_core::params::DenseEarly { level: f.early.level.map(|l| l * g), ..f.early };
+            pb.early = omg_core::params::DenseEarly { level: f.early.level.map(|l| l * g * k), ..f.early };
             s.block = pb;
             s.repriced = [[1.0; NBANDS]; 2];
             s.traced = Some((s.pos, tick));
@@ -1511,5 +1580,72 @@ impl Simulation {
             })
             .collect();
         crate::env::EnvContext { roof, windows }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omg_core::params::{DenseEarly, ReverbParams};
+    use omg_core::v3::SourceField;
+
+    /// A field whose random part (a walk tap, the late field) carries `e`
+    /// (mid band), its exact part (the direct path) 1.
+    fn field(e: f32) -> SourceField {
+        let a = (0.5 * e).sqrt();
+        SourceField {
+            taps: vec![
+                Tap { key: 1, delay_s: 0.01, dir: [1.0, 0.0, 0.0], gains: [1.0; NBANDS] },
+                Tap { key: 16 + 3 * 256, delay_s: 0.02, dir: [0.0, 1.0, 0.0], gains: [a; NBANDS] },
+            ],
+            dense: None,
+            reverb: ReverbParams { rt60: [1.0; NBANDS], level: [a; NBANDS] },
+            late_dir: [0.0; 3],
+            aniso: 0.0,
+            reflected: [0.0; NBANDS],
+            early: DenseEarly::default(),
+        }
+    }
+
+    fn db(x: f32) -> f32 {
+        10.0 * x.max(1e-30).log10()
+    }
+
+    /// v6.4: the walk's random part rises at most `RISE_DB_PER_S`, falls at
+    /// once. A one-tick lucky ray (+40 dB) adds 1.5 dB; a real step (+20 dB
+    /// that stays) is all there within 0.7 s; a fall follows the same tick.
+    #[test]
+    fn the_random_part_fades_in_and_falls_at_once() {
+        let dt = 0.05f64;
+        let mut shown = None;
+        let mut t = 0.0f64;
+        let mut step = |e: f32, shown: &mut Option<(f32, f64)>| {
+            t += dt;
+            let k = rise_limit(&field(e), shown, t);
+            e * k * k
+        };
+        // settled at 1e-4 (−40 dB)
+        for _ in 0..60 {
+            step(1e-4, &mut shown);
+        }
+        assert!((db(step(1e-4, &mut shown)) + 40.0).abs() < 0.01);
+        // a lucky ray: one tick at +40 dB
+        let spike = db(step(1.0, &mut shown));
+        assert!(spike < -40.0 + 1.6, "a one-tick +40 dB spike came in at {:+.1} dB", spike + 40.0);
+        assert!((db(step(1e-4, &mut shown)) + 40.0).abs() < 0.01, "and went at once");
+        // a real step: +20 dB that stays
+        let mut lv = Vec::new();
+        for _ in 0..20 {
+            lv.push(db(step(1e-2, &mut shown)));
+        }
+        let there = lv.iter().position(|&l| l > -20.0 - 0.01).map(|i| (i + 1) as f64 * dt);
+        assert!(there.is_some_and(|s| s <= 0.7 + 1e-9), "a +20 dB step took {there:?} s");
+        // a fall: the same tick
+        assert!((db(step(1e-6, &mut shown)) + 60.0).abs() < 0.01, "a fall followed at once");
+        // the exact part is never held: the direct tap's gain stays 1
+        let f = field(1.0);
+        let mut s2 = Some((1e-8, 0.0));
+        let k = rise_limit(&f, &mut s2, 0.05);
+        assert!(k < 0.01, "the random part held back");
     }
 }

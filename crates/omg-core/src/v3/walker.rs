@@ -55,7 +55,7 @@ pub fn trace_with(
         // the late family at the CPU's own count when the walker leaves it
         // — and with portals always: the kernel walks the early family's
         // part of them only (its deposits bounded by its rays' segments)
-        let cpu_late = (!w.walks_late() || tracer.portals).then_some(cpu_budget.late_rays);
+        let cpu_late = (!w.walks_late() || (tracer.portals && tracer.v63)).then_some(cpu_budget.late_rays);
         if let Some(fields) = tracer.trace_walked(world, listener, sources, budget, cpu_budget, cpu_late, &mut |job| w.walk(job)) {
             return fields;
         }

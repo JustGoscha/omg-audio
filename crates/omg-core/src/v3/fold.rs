@@ -489,7 +489,14 @@ impl Tracer {
         self.costs = TickCosts::default();
         // v6.2: a door's leaf moved: the walks in flight price no door
         self.doors_moved(world);
+        // (each part's cost as the CPU's tick books it: the governor takes
+        // the direct paths, the chains and the portals for what costs the
+        // same on every level — unbooked, a landed walk's whole tick, its
+        // chains 10+ ms of 15–18, scaled with the level: auto never climbed
+        // off 0 on the GPU, Godot Oct 31)
+        let clock = Stopwatch::start();
         let (direct, vis, edge_taps) = self.prepare(world, listener, sources, budget);
+        self.costs.direct = clock.ms() - self.costs.edges;
         let rot = random_rotation(&mut self.rng);
         let seed = (self.rng.next_u64() >> 32) as u32;
         let edges = if budget.diffraction { self.edges.as_ref() } else { None };
@@ -529,7 +536,9 @@ impl Tracer {
         self.burst = self.burst.saturating_sub(1);
         // the mirror chains the kernel leaves to the CPU (named by a few
         // mirror rays here, solved exactly), folded in with a fresh walk
-        let chains = walked.as_ref().map(|_| self.walked_chains(world, listener, sources, budget));
+        let clock = Stopwatch::start();
+        let chains = walked.as_ref().map(|_| self.walked_chains(world, listener, sources, budget, cpu_budget));
+        self.costs.chains = clock.ms();
         // and the late family, when the walker leaves it to the CPU — with
         // portals the records' part too (their rays, their connections to
         // the ears, and the early walk's deposits at openings laid over
@@ -549,7 +558,10 @@ impl Tracer {
             }
             _ => None,
         };
-        Some(self.fold_walked(listener, sources, budget, direct, edge_taps, dbg, walked, chains, late, world.apertures))
+        let clock = Stopwatch::start();
+        let out = self.fold_walked(listener, sources, budget, direct, edge_taps, dbg, walked, chains, late, world.apertures);
+        self.costs.fold = clock.ms();
+        Some(out)
     }
 
     /// Fold a walk's binned contributions (or none, while one is in
