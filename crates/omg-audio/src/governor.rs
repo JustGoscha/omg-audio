@@ -116,13 +116,14 @@ impl Governor {
 
 /// The part of a tick (ms) the quality ladder doesn't scale, from its
 /// parts (`omg_core::v3::TickCosts::parts`: direct, one-edge, two-edge,
-/// early, late, chains, fold): the direct paths (never shed) and the
-/// exactly solved mirror chains (named off the faces and a fixed few
+/// early, late, chains, fold, portals): the direct paths (never shed),
+/// the exactly solved mirror chains (named off the faces and a fixed few
 /// mirror rays up to the middle levels, every cached one solved each
-/// tick). The rest — the rays, the edge searches, the fold of what they
+/// tick) and the portals' source rays (a floor of them on the lower
+/// levels). The rest — the rays, the edge searches, the fold of what they
 /// found — counts as scaling (climbing, the safe side).
-pub fn fixed_ms(parts: &[f32; 7]) -> f32 {
-    parts[0] + parts[5]
+pub fn fixed_ms(parts: &[f32; 8]) -> f32 {
+    parts[0] + parts[5] + parts[7]
 }
 
 /// The simulation's quality level (`sim::LADDER`), walked by what a tick

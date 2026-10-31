@@ -219,8 +219,8 @@ impl Out {
 pub struct Stats {
     pub tick_ms: f32,
     /// The last tick by part (ms): direct, one-edge, two-edge, early,
-    /// late, chains, fold.
-    pub tick_parts: [f32; 7],
+    /// late, chains, fold, portals.
+    pub tick_parts: [f32; 8],
     /// The last tick traced a world change's extra rays (a door moved).
     pub tick_burst: bool,
     /// The last GPU walk, submit to read-back (ms; 0 on the CPU).

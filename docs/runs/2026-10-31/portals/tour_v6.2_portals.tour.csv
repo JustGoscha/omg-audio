@@ -1,0 +1,46 @@
+t_s,step,kind,phase
+0.000,12,go,square
+1.016,13,go,square
+3.720,14,wait,square
+5.732,15,go,entrance
+8.576,16,go,entrance
+9.391,17,door,entrance
+9.391,18,wait,entrance
+11.406,19,go,club
+13.057,20,go,club
+14.073,21,wait,club
+19.089,22,go,entrance
+21.703,23,go,square
+22.716,24,go,square
+24.765,25,go,square
+26.857,26,go,path
+30.807,27,go,portal
+32.740,28,door,portal
+32.740,29,wait,portal
+34.756,30,go,cathedral
+36.839,31,go,cathedral
+39.240,32,owl,cathedral
+39.241,33,curtains,cathedral
+39.241,34,wait,cathedral
+43.256,35,clap,cathedral
+43.256,36,wait,cathedral
+48.256,37,go,portal
+51.859,38,go,path
+54.663,39,go,square
+59.508,40,go,lane
+63.599,41,go,lane
+67.049,42,go,bunker path
+71.655,43,go,bunker path
+75.122,44,go,blockhouse
+76.006,45,go,stair
+77.272,46,go,bunker
+77.855,47,go,bunker
+78.739,48,wait,bunker
+83.756,49,go,bunker
+84.639,50,go,stair
+85.223,51,go,blockhouse
+86.490,52,go,bunker path
+87.373,53,go,bunker path
+89.190,54,wait,bunker path
+92.206,55,go,south
+111.163,56,go,canyon

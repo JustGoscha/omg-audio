@@ -59,9 +59,9 @@ pub struct TickCosts {
 
 impl TickCosts {
     /// By part (ms): direct, one-edge, two-edge, early, late, chains,
-    /// fold.
-    pub fn parts(&self) -> [f32; 7] {
-        [self.direct, self.edges - self.edges2, self.edges2, self.early, self.late, self.chains, self.fold]
+    /// fold, portals.
+    pub fn parts(&self) -> [f32; 8] {
+        [self.direct, self.edges - self.edges2, self.edges2, self.early, self.late, self.chains, self.fold, self.portals]
     }
 }
 

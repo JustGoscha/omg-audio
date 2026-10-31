@@ -185,7 +185,7 @@ struct Stats {
     walk_us: AtomicU32,
     /// The last tick by part (µs): direct, one-edge, two-edge, early,
     /// late, chains, fold (`TickCosts`).
-    parts_us: [AtomicU32; 7],
+    parts_us: [AtomicU32; 8],
     /// The last tick traced a world change's extra rays (`TickCosts::burst`).
     burst: AtomicBool,
 }
@@ -462,8 +462,8 @@ impl Engine {
     }
 
     /// The last tick by part (ms): direct, one-edge, two-edge, early,
-    /// late, chains, fold.
-    pub fn tick_parts(&self) -> [f32; 7] {
+    /// late, chains, fold, portals.
+    pub fn tick_parts(&self) -> [f32; 8] {
         core::array::from_fn(|i| self.stats.parts_us[i].load(Ordering::Relaxed) as f32 / 1000.0)
     }
 
