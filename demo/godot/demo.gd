@@ -58,6 +58,10 @@ var stats_t := 0.0
 signal loaded
 
 func _ready() -> void:
+	# the game at 60 fps: what it doesn't draw is the sound's (quality auto
+	# climbs while it holds 60; `-- --uncapped` to measure headroom)
+	if not "--uncapped" in OS.get_cmdline_user_args():
+		Engine.max_fps = 60
 	_environment()
 	_viewport()
 	var level_root := Node3D.new()

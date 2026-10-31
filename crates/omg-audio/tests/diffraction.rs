@@ -32,7 +32,7 @@ fn walk_past(obstacle: ([f32; 3], [f32; 3]), source: [f32; 3], until: f32, v64: 
         let y = -21.5 + 8.0 * (k / 5) as f32;
         sim.add_source(SourceDesc::at([x, y, 1.5]));
     }
-    let mut level = |sim: &mut Simulation| -> f32 {
+    let level = |sim: &mut Simulation| -> f32 {
         let f = sim.tick();
         db(f.block(src).map_or(0.0, |pb| pb.taps.iter().filter(|t| omg_core::v3::tap_kind(t.key) != 3).map(|t| t.gains[1] * t.gains[1]).sum()))
     };

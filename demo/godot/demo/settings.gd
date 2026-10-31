@@ -80,7 +80,8 @@ func _ready() -> void:
 
 	_section(v, "engine modules")
 	# v6.2: as of Oct 31 morning; v6.3: that day's door, record and GPU
-	# portal changes; v6.4: the random part fades in (no one-tick pops)
+	# portal changes; v6.4: the random part fades in (no one-tick pops);
+	# v6.5: the late rays on the GPU, the reverb following a moving listener
 	var at := 0
 	if world.engine_v6:
 		at = 3
@@ -89,15 +90,18 @@ func _ready() -> void:
 			if world.engine_v62:
 				at = 5
 				if world.engine_v63:
-					at = 7 if world.engine_v64 else 6
+					at = 6
+					if world.engine_v64:
+						at = 8 if world.engine_v65 else 7
 	elif world.engine_v4:
 		at = 2 if world.engine_v5 else 1
-	_row(v, "engine", _choice_box("engine", ["v3", "v4", "v5.5", "v6", "v6.1", "v6.2", "v6.3", "v6.4"], at, func(i: int) -> void:
+	_row(v, "engine", _choice_box("engine", ["v3", "v4", "v5.5", "v6", "v6.1", "v6.2", "v6.3", "v6.4", "v6.5"], at, func(i: int) -> void:
 		world.engine_v6 = i >= 3
 		world.engine_v61 = i >= 4
 		world.engine_v62 = i >= 5
 		world.engine_v63 = i >= 6
 		world.engine_v64 = i >= 7
+		world.engine_v65 = i >= 8
 		world.engine_v4 = i == 1 or i == 2
 		world.engine_v5 = i == 2))
 	var web := OS.has_feature("web")

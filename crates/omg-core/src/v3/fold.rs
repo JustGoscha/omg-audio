@@ -114,6 +114,11 @@ pub const PORTAL_HEAD: usize = 8;
 pub const AP_WORDS: usize = 20;
 pub const PAP_WORDS: usize = 4;
 pub const DEP_WORDS: usize = 8;
+/// Deposits at openings a late ray leaves at most (v3_walk.wgsl: it
+/// connects to an opening once, and crosses one once).
+pub const LATE_PORTAL_DEPS: u32 = 2;
+/// v6.5: the late rays a GPU walk takes, per the CPU's.
+pub const GPU_LATE_FACTOR: u32 = 8;
 pub const DEBUG_VERTS: usize = 8;
 pub const DEBUG_WORDS: usize = 4 + DEBUG_VERTS * 3;
 /// Words per sliced ray's state in the kernel's `dbg` buffer: the ray's
@@ -265,7 +270,9 @@ impl WalkJob {
         let union = masks.iter().fold(0u64, |a, &m| a | m);
         self.words[38] = (self.words.len() - HEADER_WORDS) as u32;
         let segments = self.words[11] + 1 + MAX_BENDS;
-        self.words[39] = self.n_early().max(1) * (segments + 1);
+        // an early ray: a deposit at most a segment and its crossing; a late
+        // one (v6.5): one connection to an opening and its crossing
+        self.words[39] = self.n_early().max(1) * (segments + 1) + self.n_late() * LATE_PORTAL_DEPS;
         self.words.extend_from_slice(&[aps.len() as u32, paps.len() as u32, union as u32, (union >> 32) as u32, 0, 0, 0, 0]);
         for ap in aps {
             let (lo, hi, has) = match ap.leaf {
@@ -479,6 +486,7 @@ impl Tracer {
         budget: Budget,
         cpu_budget: Budget,
         cpu_late: Option<u32>,
+        late_on_gpu: bool,
         walk: &mut dyn FnMut(&WalkJob) -> Walk,
     ) -> Option<Vec<SourceField>> {
         if sources.len() > MAX_SOURCES || world.panels.len() > MAX_PANELS || world.pockets.len() > MAX_POCKETS {
@@ -500,7 +508,15 @@ impl Tracer {
         let rot = random_rotation(&mut self.rng);
         let seed = (self.rng.next_u64() >> 32) as u32;
         let edges = if budget.diffraction { self.edges.as_ref() } else { None };
-        let job_budget = if cpu_late.is_some() { Budget { late_rays: 0, ..budget } } else { budget };
+        // v6.5: the late rays the GPU's (`GPU_LATE_FACTOR`× the CPU's);
+        // else the CPU's when it walks them, the walker's own when not
+        let job_budget = if late_on_gpu {
+            Budget { late_rays: cpu_budget.late_rays * GPU_LATE_FACTOR, ..budget }
+        } else if cpu_late.is_some() {
+            Budget { late_rays: 0, ..budget }
+        } else {
+            budget
+        };
         // the GPU walk connects to where each source emitted its direct
         // sound (a moving source's echoes on the CPU reach further back)
         let at_emission: Vec<Source> =
@@ -657,7 +673,7 @@ impl Tracer {
                 } else {
                     // traced from where the walk was launched
                     let launched = walked.as_ref().map_or(listener, |w| w.listener);
-                    st.fold(acc.early, acc.echo, budget, self.v6, listener, s.pos, launched, self.tick);
+                    st.fold(acc.early, acc.echo, budget, self.v6, self.v65, listener, s.pos, launched, self.tick);
                     if let Some(aps) = aps {
                         st.fold_paths(acc.paths, acc.walked, aps, (self.tick as f32 * 0.618_034).fract());
                     }
@@ -781,14 +797,14 @@ mod tests {
         // no rays here: what lands is the walker's alone
         let cpu = Budget { rays: 0, late_rays: 0, ..budget };
         for _ in 0..3 {
-            let f = tracer.trace_walked(&world, near, &src, budget, cpu, None, &mut walk(false)).unwrap();
+            let f = tracer.trace_walked(&world, near, &src, budget, cpu, None, false, &mut walk(false)).unwrap();
             assert!(early(&f[0]) > 0, "a fresh walk on this side lands");
         }
         // fly through the wall: this tick's answer is the old side's job
         let far = Vec3::new(-3.0, 0.0, 1.6);
-        let f = tracer.trace_walked(&world, far, &src, budget, cpu, None, &mut walk(true)).unwrap();
+        let f = tracer.trace_walked(&world, far, &src, budget, cpu, None, false, &mut walk(true)).unwrap();
         assert_eq!(early(&f[0]), 0, "the walk from the other side of the wall was folded in");
-        let f = tracer.trace_walked(&world, far, &src, budget, cpu, None, &mut walk(false)).unwrap();
+        let f = tracer.trace_walked(&world, far, &src, budget, cpu, None, false, &mut walk(false)).unwrap();
         assert!(early(&f[0]) > 0, "the next walk, from this side, lands again");
     }
 

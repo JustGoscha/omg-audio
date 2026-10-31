@@ -39,7 +39,7 @@ use godot::classes::{
 use godot::meta::conv::RawPtr;
 use godot::prelude::*;
 
-use omg_audio::governor::{fixed_ms, LevelGovernor};
+use omg_audio::governor::LevelGovernor;
 use omg_audio::sim::LEVELS;
 use omg_audio::{from_y_up, to_y_up, Compute, Config, Geometry, Material, MaterialId, ObjectId, Play, Quality, SourceDesc, SourceId, VoiceId};
 
@@ -498,12 +498,20 @@ pub struct OmgWorld {
     #[export]
     #[init(val = -1)]
     quality: i32,
-    /// Quality auto: what a simulation tick may cost (ms). It runs on a
-    /// thread of its own, but shares the machine with the game: 16 ms is
-    /// a 60 Hz frame.
+    /// Quality auto: a tick over this (ms) — a level down at once. The
+    /// tick runs on a thread of its own every 50 ms (20 Hz).
     #[export]
-    #[init(val = 16.0)]
+    #[init(val = 30.0)]
     tick_target_ms: f32,
+    /// Quality auto: the mean tick over 2 s under this (ms) with the game
+    /// at `climb_fps` — a level up.
+    #[export]
+    #[init(val = 12.0)]
+    climb_tick_ms: f32,
+    /// Quality auto: the frame rate the game must hold to climb.
+    #[export]
+    #[init(val = 58.0)]
+    climb_fps: f32,
     /// Pin single levers of the tracer budget over the quality tier
     /// (0 = the tier's own): rays from the listener per tick, early
     /// reflections per ray, late (reverb) rays per tick.
@@ -558,6 +566,11 @@ pub struct OmgWorld {
     #[export]
     #[init(val = true)]
     engine_v64: bool,
+    /// Engine v6.5 (on v6.4): the GPU walks the late rays too; a moving
+    /// listener's reverb follows as quick as the early sound. The default.
+    #[export]
+    #[init(val = true)]
+    engine_v65: bool,
     /// Portals (on v6.2, the walk on the CPU): a source enclosed in a room
     /// heard through the room's openings (the `OmgDoor`s' holes) from its
     /// own side — rays from it record what leaves each opening and bring
@@ -583,7 +596,7 @@ pub struct OmgWorld {
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 21],
+    sent: [f32; 22],
     #[init(val = LevelGovernor::new(LEVELS - 1))]
     auto_tier: LevelGovernor,
     auto_ticks: u32,
@@ -799,7 +812,8 @@ impl OmgWorld {
         self.auto_ticks = s.ticks;
         // a door moved: the extra rays are the change's cost, not the level's
         if !s.tick_burst {
-            self.auto_tier.report(s.tick_ms, fixed_ms(&s.tick_parts), self.tick_target_ms, s.load);
+            let fps = godot::classes::Engine::singleton().get_frames_per_second() as f32;
+            self.auto_tier.report(s.tick_ms, self.tick_target_ms, self.climb_tick_ms, fps >= self.climb_fps, s.load);
         }
     }
 
@@ -1087,6 +1101,7 @@ impl OmgWorld {
             v62: self.engine_v6 && self.engine_v61 && self.engine_v62,
             v63: self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_v63,
             v64: self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_v63 && self.engine_v64,
+            v65: self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_v63 && self.engine_v64 && self.engine_v65,
             portals: self.portals(),
             clearance: self.engine_v6 && self.engine_clearance,
             sample_rate: engine_rate(),
@@ -1133,7 +1148,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 21];
+        self.sent = [f32::NAN; 22];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -1350,6 +1365,7 @@ impl OmgWorld {
             self.engine_v62 as i32 as f32,
             self.engine_v63 as i32 as f32,
             self.engine_v64 as i32 as f32,
+            self.engine_v65 as i32 as f32,
             self.engine_portals as i32 as f32,
             self.engine_clearance as i32 as f32,
         ];

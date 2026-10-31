@@ -17,7 +17,7 @@
 
 pub mod town;
 
-use omg_audio::governor::{fixed_ms, Governor, LevelGovernor};
+use omg_audio::governor::{Governor, LevelGovernor};
 use omg_audio::sim::LEVELS;
 use omg_core::v3::fold::{self as walkfmt, LiveWalk, Walk, WalkJob, Walked};
 use omg_audio::{clip, normalize, Clip, Compute, Config, Frame, Hrir, Mixer, Play, Quality, Simulation, SourceId, VoiceId};
@@ -133,6 +133,8 @@ pub extern "C" fn sim_setup(sample_rate: f32) {
         // random part fades in); the page's v6.2 switch takes both off
         v63: true,
         v64: true,
+        // v6.5: the late rays on the GPU (with WebGPU), the reverb following
+        v65: true,
         // a loud room heard through its openings from its sources' side
         portals: true,
         sample_rate,
@@ -192,9 +194,12 @@ pub extern "C" fn sim_set_quality(tier: u32) {
     h.reconfigure();
 }
 
-/// What a tick may cost under quality auto (ms): the worker shares the
-/// machine with the page's frames.
-const TICK_TARGET_MS: f32 = 16.0;
+/// What a tick may cost under quality auto (ms): the worker ticks every
+/// 50 ms on a thread of its own, 60 % of that (the governor judges a
+/// window, `LevelGovernor`).
+const TICK_TARGET_MS: f32 = 30.0;
+/// ... and the mean tick over 2 s under which it climbs.
+const CLIMB_TICK_MS: f32 = 12.0;
 
 /// Quality auto: the level governor walks the ladder from here on.
 #[no_mangle]
@@ -215,7 +220,8 @@ pub extern "C" fn sim_govern(tick_ms: f32, load: f32) -> i32 {
     }
     // a door moved: the extra rays are the change's cost, not the level's
     let costs = h.sim.tick_costs();
-    if !costs.burst && h.gov.report(tick_ms, fixed_ms(&costs.parts()), TICK_TARGET_MS, load).is_some() {
+    // (the page's frames are the main thread's: the worker can't see them)
+    if !costs.burst && h.gov.report(tick_ms, TICK_TARGET_MS, CLIMB_TICK_MS, true, load).is_some() {
         h.reconfigure();
     }
     h.gov.level() as i32

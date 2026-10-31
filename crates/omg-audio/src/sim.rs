@@ -202,6 +202,11 @@ pub struct Config {
     /// popping; a real change reaches its level within a fraction of a
     /// second.
     pub v64: bool,
+    /// Engine v6.5 (on v6.4): the GPU walks the late rays too (8× the
+    /// CPU's), the CPU walking none on a walked tick; the late average
+    /// follows a moving listener as quick as the early one (out of a room
+    /// its reverb goes as fast as its paths). `Tracer::v65`.
+    pub v65: bool,
     /// The mixer's sample rate (v4 builds its convolution kernels for it).
     pub sample_rate: f32,
     /// v4: build convolution kernels on a thread of their own (off the
@@ -274,6 +279,7 @@ impl Config {
         self.clearance &= self.v6;
         self.v63 &= self.v62;
         self.v64 &= self.v63;
+        self.v65 &= self.v64;
         self
     }
 }
@@ -295,6 +301,7 @@ impl Default for Config {
             clearance: false,
             v63: false,
             v64: false,
+            v65: false,
             sample_rate: 48_000.0,
             kernel_thread: true,
             max_kernels: 64,
@@ -647,6 +654,7 @@ impl Simulation {
                 t.v62 = cfg.v62;
                 t.v63 = cfg.v63;
                 t.v64 = cfg.v64;
+                t.v65 = cfg.v65;
                 t.portals = cfg.portals;
                 t.guide = cfg.guide;
                 t.clearance = cfg.clearance;
@@ -703,6 +711,7 @@ impl Simulation {
         self.tracer.v62 = cfg.v62;
         self.tracer.v63 = cfg.v63;
         self.tracer.v64 = cfg.v64;
+        self.tracer.v65 = cfg.v65;
         self.tracer.portals = cfg.portals;
         self.tracer.guide = cfg.guide;
         self.tracer.clearance = cfg.clearance;
@@ -727,6 +736,7 @@ impl Simulation {
         self.tracer.v62 = self.cfg.v62;
         self.tracer.v63 = self.cfg.v63;
         self.tracer.v64 = self.cfg.v64;
+        self.tracer.v65 = self.cfg.v65;
         self.tracer.portals = self.cfg.portals;
         self.tracer.guide = self.cfg.guide;
         self.tracer.clearance = self.cfg.clearance;

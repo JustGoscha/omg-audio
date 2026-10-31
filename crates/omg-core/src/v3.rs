@@ -1443,12 +1443,14 @@ impl SourceState {
     /// Step 5a, shared by `trace` and the externally walked fold: smooth
     /// one tick's binned contributions into the running state.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn fold(
         &mut self,
         early: HashMap<u32, Bin>,
         echo: Echogram,
         budget: Budget,
         v6: bool,
+        fast_late: bool,
         listener: Vec3,
         source: Vec3,
         launched: Vec3,
@@ -1503,7 +1505,14 @@ impl SourceState {
             let ticks = tick.saturating_sub(self.folded_at).max(1).min(64) as i32;
             self.folded_at = tick;
             let per = |ema: f32| 1.0 - (1.0 - ema.clamp(0.0, 1.0)).powi(ticks);
-            let emas = [per(budget.ema), per(if world_moved { budget.ema } else { budget.late_ema })];
+            // (v6.5, `fast_late`: the late average as quick while either
+            // end moves — out of a room its reverb goes as fast as its
+            // paths: running from the living room onto the square the
+            // piano's reverb there was +18 dB over its level on arrival,
+            // +11 a second later, +4 after five; a young estimate's
+            // scatter no longer pops in, the random part's rise is held:
+            // `sim::rise_limit`)
+            let emas = [per(budget.ema), per(if world_moved || (fast_late && moved) { budget.ema } else { budget.late_ema })];
             let mut alphas = [0.0f32; 2];
             for ((a, n), ema) in alphas.iter_mut().zip(self.held.iter_mut()).zip(emas) {
                 let mean = 1.0 / (*n + 1.0);
@@ -2549,6 +2558,10 @@ pub struct Tracer {
     /// the strongest `MAX_CHAINS_V64` chains a source, named by finders at
     /// the CPU's count on a GPU-walked tick too.
     pub v64: bool,
+    /// Engine v6.5 (on v6.4): the GPU walks the late rays too (`trace_with`:
+    /// `GPU_LATE_FACTOR`× the CPU's), and the late average follows a moving
+    /// listener as quick as the early one (`SourceState::fold`).
+    pub v65: bool,
     /// Portals (`portal.rs`; v6, the walk on the CPU): what reaches the
     /// listener from an enclosed source through an opening, estimated
     /// from the source's side — rays from it record what leaves each
@@ -2965,6 +2978,7 @@ impl Tracer {
             v62: false,
             v63: false,
             v64: false,
+            v65: false,
             portals: false,
             portal_state: HashMap::default(),
             portal_ctab: Vec::new(),
@@ -3233,7 +3247,7 @@ impl Tracer {
                 st.fold_v4(acc, budget, listener, s.pos);
                 out.push(st.field_v4(t_free, direct[si], &mut edge_taps[si], total, shared, fit));
             } else {
-                st.fold(acc.early, acc.echo, budget, self.v6, listener, s.pos, listener, self.tick);
+                st.fold(acc.early, acc.echo, budget, self.v6, self.v65, listener, s.pos, listener, self.tick);
                 let aps = self.v62.then_some(world.apertures);
                 if let Some(aps) = aps {
                     st.fold_paths(acc.paths, acc.walked, aps, (self.tick as f32 * 0.618_034).fract());

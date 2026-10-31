@@ -153,6 +153,19 @@ WebGPU driver (`gpu.js`) carries the deposits too but is untested in a
 browser; the kernel still lacks v6.2's aperture tags, the wall split at a
 sounding room and the clearance (its early family priced as v6.1's).
 
+### GPU mode: what is still the CPU's (Oct 31, v6.5)
+v6.5 walks the late rays on the GPU too (8× the CPU's: 128 at level 0
+instead of 16; `gpu.rs::the_gpu_walks_the_late_rays_v65`: the room's
+late field and RT60 the CPU's to 0.1 dB, the doorway room's within 0.8
+dB). The live walk's tick in the town 12 % cheaper, its worst 3 ms lower
+(level 3: mean 5.5 → 4.9 ms, max 16.3 → 13.1). Still the CPU's on a
+landed walk, the rest of its spike: the portal records' rays
+(`trace_source`, ~1 ms while they fill — plain ray walks, next for the
+GPU), the mirror chains' finding and solving (1–3 ms; the old engine
+found them on the GPU, its K3 kernel), the fold (0.3–0.6 ms). The late
+paths the GPU walks are not tagged by aperture (v6.2's door pricing of
+the late field is the CPU's alone): watch a door swinging on the GPU.
+
 ### Exact paths stepping in motion (Oct 31, v6.4)
 Done in v6.4 (`diffraction.rs::passing_a_corner_the_bend_is_there_at_once_v64`):
 corners looked ahead (Schissler, Mückl & Calamia 2021 §5.2.2: the edge

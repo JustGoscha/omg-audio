@@ -127,89 +127,95 @@ pub fn fixed_ms(parts: &[f32; 8]) -> f32 {
 }
 
 /// The simulation's quality level (`sim::LADDER`), walked by what a tick
-/// costs against a target (the host's: 16 ms leaves a 60 Hz game its
-/// frame — the tick shares the machine with it): starts at the lowest
-/// level and earns its way up, one level after `CALM_TICKS` ticks under
-/// `CLIMB` of the target with the audio thread under `LOAD`; sheds at
-/// once when two ticks in a row run over the target — as many levels as
-/// the lesser overrun asks, each about `sim::LEVEL_STEP`× the one below
-/// (one tick alone over it is the machine's hiccup, not the level's
-/// cost) — and one level after `HOT_TICKS` ticks with the audio thread
-/// over `LOAD`. Only part of a tick scales with the level (`fixed_ms`:
-/// the rest is the same on every level): the next level up costs the
-/// fixed part and `LEVEL_STEP`× the rest. Taking the whole tick for
-/// scaling held the tour of the Godot town on the bottom levels (128–256
-/// rays) while its mirror chains — 6–7 ms of an ~11 ms tick — cost the
-/// same on every level.
+/// costs (the tick runs on a thread of its own every 50 ms): starts at
+/// the lowest level and earns its way up.
+/// - **Down:** a tick over `shed_ms` (30 ms) — a level down at once; that
+///   level stays out of reach for `HOLD_S` (no flip-flop round it).
+/// - **Up:** the window's mean tick (`WINDOW`: 2 s) under `climb_ms` (12)
+///   with the game holding its frame rate and the audio thread under
+///   `LOAD` — a level up, after `CALM_TICKS` at this one.
+/// - The audio thread over `LOAD` for `HOT_TICKS`: a level down.
+///
+/// On the GPU a tick is 2–6 ms until a walk lands, 15–18 the tick it does:
+/// judged tick by tick against a 16 ms target the governor sat at 0/10 on
+/// a machine that plays level 8 at 17–19 ms a tick and 107 fps (Godot,
+/// Oct 31). The mean keeps the landed walks' share; a tick past 30 ms is
+/// one that matters.
 pub struct LevelGovernor {
     level: usize,
     top: usize,
     calm: u32,
     hot: u32,
-    /// The last tick's cost (ms).
-    last: f32,
+    /// The last ticks' costs (ms).
+    recent: std::collections::VecDeque<f32>,
+    /// A level shed from, and the ticks left before it may be climbed to.
+    held: Option<(usize, u32)>,
 }
 
-const CLIMB: f32 = 0.6;
 const LOAD: f32 = 0.8;
-const CALM_TICKS: u32 = 40;
+/// Ticks at a level before it may climb (1 s at 20 Hz).
+const CALM_TICKS: u32 = 20;
 const HOT_TICKS: u32 = 20;
+/// The window the mean is taken over (2 s at 20 Hz).
+const WINDOW: usize = 40;
+/// A level shed from stays out of reach this many ticks (10 s at 20 Hz).
+const HOLD_TICKS: u32 = 200;
 
 impl LevelGovernor {
     /// Levels 0 (lowest) … `top`.
     pub fn new(top: usize) -> Self {
-        Self { level: 0, top, calm: 0, hot: 0, last: 0.0 }
+        Self { level: 0, top, calm: 0, hot: 0, recent: std::collections::VecDeque::new(), held: None }
     }
 
     pub fn level(&self) -> usize {
         self.level
     }
 
-    /// One tick took `tick_ms` — `fixed_ms` of it the same on every
-    /// level (`fixed_ms`) — against `target_ms`, with the audio thread at
-    /// `load` (render time over audio time): the new level if it moves.
-    pub fn report(&mut self, tick_ms: f32, fixed_ms: f32, target_ms: f32, load: f32) -> Option<usize> {
-        let step = crate::sim::LEVEL_STEP;
-        let fixed = fixed_ms.clamp(0.0, tick_ms);
-        let both = tick_ms.min(self.last);
-        self.last = tick_ms;
-        if tick_ms > target_ms {
-            self.calm = 0;
+    /// One tick took `tick_ms`; over `shed_ms` sheds, a window's mean
+    /// under `climb_ms` with the game's frames held (`frames_ok`) and the
+    /// audio thread at `load` (render time over audio time) under `LOAD`
+    /// climbs: the new level if it moves.
+    pub fn report(&mut self, tick_ms: f32, shed_ms: f32, climb_ms: f32, frames_ok: bool, load: f32) -> Option<usize> {
+        self.recent.push_back(tick_ms);
+        while self.recent.len() > WINDOW {
+            self.recent.pop_front();
         }
-        if both > target_ms && self.level > 0 {
-            // as many levels as bring the scaled part under what the
-            // fixed one leaves (all of the target gone to it: by the whole)
-            let ratio = if target_ms > fixed + 1e-3 { (both - fixed).max(1e-3) / (target_ms - fixed) } else { both / target_ms };
-            let over = (ratio.ln() / step.ln()).ceil().max(1.0) as usize;
-            self.level = self.level.saturating_sub(over);
-            self.calm = 0;
-            self.hot = 0;
-            return Some(self.level);
+        if let Some((l, left)) = self.held {
+            self.held = (left > 1).then_some((l, left - 1));
+        }
+        if tick_ms > shed_ms && self.level > 0 {
+            self.held = Some((self.level, HOLD_TICKS));
+            return Some(self.moved(self.level - 1));
         }
         if load > LOAD {
             self.calm = 0;
             self.hot += 1;
             if self.hot >= HOT_TICKS && self.level > 0 {
-                self.hot = 0;
-                self.level -= 1;
-                return Some(self.level);
+                return Some(self.moved(self.level - 1));
             }
             return None;
         }
         self.hot = 0;
-        // the next level: the fixed part, and `step`× the rest
-        let next = fixed + (tick_ms - fixed) * step;
-        if next < CLIMB * step * target_ms && self.level < self.top {
-            self.calm += 1;
-            if self.calm >= CALM_TICKS {
-                self.calm = 0;
-                self.level += 1;
-                return Some(self.level);
-            }
-        } else {
+        if !frames_ok {
             self.calm = 0;
+            return None;
         }
-        None
+        self.calm += 1;
+        let next = self.level + 1;
+        if self.calm < CALM_TICKS || next > self.top || self.recent.len() < CALM_TICKS as usize || self.held.is_some_and(|(l, _)| next >= l) {
+            return None;
+        }
+        let mean = self.recent.iter().sum::<f32>() / self.recent.len() as f32;
+        (mean < climb_ms).then(|| self.moved(next))
+    }
+
+    /// Now at `level`: what the window held was another level's.
+    fn moved(&mut self, level: usize) -> usize {
+        self.level = level;
+        self.calm = 0;
+        self.hot = 0;
+        self.recent.clear();
+        level
     }
 }
 
@@ -217,55 +223,62 @@ impl LevelGovernor {
 mod tests {
     use super::LevelGovernor;
 
+    const SHED: f32 = 30.0;
+    const CLIMB: f32 = 12.0;
+
+    /// Calm ticks: a level a second; a tick over 30 ms: a level down at
+    /// once, and not back up to the level shed from for 10 s.
     #[test]
-    fn the_level_climbs_when_calm_and_sheds_at_once() {
+    fn up_while_the_mean_is_low_down_at_a_slow_tick() {
         let mut g = LevelGovernor::new(7);
-        for l in 1..=4 {
-            for _ in 0..39 {
-                assert_eq!(g.report(5.0, 0.0, 16.0, 0.2), None);
-            }
-            assert_eq!(g.report(5.0, 0.0, 16.0, 0.2), Some(l));
+        for _ in 0..80 {
+            g.report(5.0, SHED, CLIMB, true, 0.2);
         }
-        // one tick over the target alone: a hiccup
-        assert_eq!(g.report(40.0, 0.0, 16.0, 0.2), None);
-        assert_eq!(g.report(5.0, 0.0, 16.0, 0.2), None);
-        // two in a row just over it: one level down, now
-        assert_eq!(g.report(17.0, 0.0, 16.0, 0.2), None);
-        assert_eq!(g.report(17.0, 0.0, 16.0, 0.2), Some(3));
-        // three times over, twice: as many levels as that takes
-        assert_eq!(g.report(48.0, 0.0, 16.0, 0.2), Some(2));
-        assert_eq!(g.report(48.0, 0.0, 16.0, 0.2), Some(0));
-        // the audio thread pressed for a second of ticks: no climb, and
-        // at the floor nothing to shed
-        for _ in 0..400 {
-            assert_eq!(g.report(5.0, 0.0, 16.0, 0.9), None);
+        assert_eq!(g.level(), 4, "a level a second while calm");
+        assert_eq!(g.report(31.0, SHED, CLIMB, true, 0.2), Some(3), "a tick over 30 ms: down at once");
+        for _ in 0..180 {
+            g.report(5.0, SHED, CLIMB, true, 0.2);
         }
-        assert_eq!(g.level(), 0);
+        assert_eq!(g.level(), 3, "not back to the level shed from within 10 s");
+        for _ in 0..60 {
+            g.report(5.0, SHED, CLIMB, true, 0.2);
+        }
+        assert!(g.level() >= 4, "after 10 s it may: {}", g.level());
     }
 
-    /// A tick 6 ms of which cost the same on every level (the town's
-    /// mirror chains): 10.5 ms, over the 60 % the whole-tick rule climbs
-    /// under, yet the next level costs 6 + 4.5 × 1.45 ≈ 12.5 ms — under
-    /// the target with the same room the rule leaves. It climbs; at 12.5
-    /// it stays (6 + 6.5 × 1.45 ≈ 15.4). Over the target, it sheds as
-    /// many levels as the scaled part needs.
+    /// The GPU's ticks: 3 ms until a walk lands, 17 the tick it does —
+    /// every fourth (mean 6.5): it climbs, a level a second.
     #[test]
-    fn a_fixed_part_of_the_tick_does_not_hold_the_level_down() {
+    fn the_gpus_landed_walks_do_not_hold_the_level_down() {
+        let mut g = LevelGovernor::new(10);
+        for i in 0..100 {
+            g.report(if i % 4 == 3 { 17.0 } else { 3.0 }, SHED, CLIMB, true, 0.2);
+        }
+        assert!(g.level() >= 4, "the landed walks held auto at {}", g.level());
+    }
+
+    /// No climb while the game misses its frames or the audio thread is
+    /// pressed (that one sheds, a level a second); a mean over 12 ms holds.
+    #[test]
+    fn frames_audio_and_a_high_mean_hold_it() {
         let mut g = LevelGovernor::new(7);
-        for _ in 0..39 {
-            assert_eq!(g.report(10.5, 0.0, 16.0, 0.2), None);
-        }
-        assert_eq!(g.report(10.5, 0.0, 16.0, 0.2), None, "all of it scaled: no climb");
-        for _ in 0..39 {
-            assert_eq!(g.report(10.5, 6.0, 16.0, 0.2), None);
-        }
-        assert_eq!(g.report(10.5, 6.0, 16.0, 0.2), Some(1));
         for _ in 0..100 {
-            assert_eq!(g.report(12.5, 6.0, 16.0, 0.2), None);
+            g.report(5.0, SHED, CLIMB, false, 0.2);
         }
-        // 6 fixed, 22 scaling into the 10 ms left: ⌈ln 2.2 / ln 1.45⌉ = 3
-        // levels down (from 1: to 0)
-        assert_eq!(g.report(28.0, 6.0, 16.0, 0.2), None);
-        assert_eq!(g.report(28.0, 6.0, 16.0, 0.2), Some(0));
+        assert_eq!(g.level(), 0, "the game under its frame rate: no climb");
+        let mut h = LevelGovernor::new(7);
+        for _ in 0..100 {
+            h.report(14.0, SHED, CLIMB, true, 0.2);
+        }
+        assert_eq!(h.level(), 0, "a mean over 12 ms: no climb");
+        for _ in 0..40 {
+            g.report(5.0, SHED, CLIMB, true, 0.2);
+        }
+        let up = g.level();
+        assert!(up >= 1);
+        for _ in 0..40 {
+            g.report(5.0, SHED, CLIMB, true, 0.9);
+        }
+        assert!(g.level() < up, "the audio thread pressed: down");
     }
 }

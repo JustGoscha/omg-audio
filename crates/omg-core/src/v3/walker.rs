@@ -55,8 +55,17 @@ pub fn trace_with(
         // the late family at the CPU's own count when the walker leaves it
         // — and with portals always: the kernel walks the early family's
         // part of them only (its deposits bounded by its rays' segments)
-        let cpu_late = (!w.walks_late() || (tracer.portals && tracer.v63)).then_some(cpu_budget.late_rays);
-        if let Some(fields) = tracer.trace_walked(world, listener, sources, budget, cpu_budget, cpu_late, &mut |job| w.walk(job)) {
+        // v6.5: the GPU walks the late rays too — a live walk whole in its
+        // first dispatch, `GPU_LATE_FACTOR`× the CPU's (16 a tick on the
+        // CPU at the lowest level, the reverb's estimate young and heavy-
+        // tailed); the CPU walks none, its portal records' part only
+        let late_on_gpu = tracer.v65;
+        let cpu_late = if late_on_gpu {
+            tracer.portals.then_some(0)
+        } else {
+            (!w.walks_late() || (tracer.portals && tracer.v63)).then_some(cpu_budget.late_rays)
+        };
+        if let Some(fields) = tracer.trace_walked(world, listener, sources, budget, cpu_budget, cpu_late, late_on_gpu, &mut |job| w.walk(job)) {
             return fields;
         }
     }

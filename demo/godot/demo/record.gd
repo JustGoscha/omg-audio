@@ -124,9 +124,10 @@ func run() -> void:
 		await demo.loaded
 	world.engine_v6 = engine.begins_with("v6")
 	world.engine_v61 = engine == "v6.1" or engine == "v6.2"
-	world.engine_v62 = engine in ["v6.2", "v6.3", "v6.4"]
-	world.engine_v63 = engine in ["v6.3", "v6.4"]
-	world.engine_v64 = engine == "v6.4"
+	world.engine_v62 = engine in ["v6.2", "v6.3", "v6.4", "v6.5"]
+	world.engine_v63 = engine in ["v6.3", "v6.4", "v6.5"]
+	world.engine_v64 = engine in ["v6.4", "v6.5"]
+	world.engine_v65 = engine == "v6.5"
 	world.engine_portals = portals
 	world.engine_clearance = clearance
 	world.engine_v4 = engine == "v4" or engine == "v5"

@@ -242,3 +242,67 @@ fn the_gpu_walk_takes_portals_as_the_cpu_does() {
         assert!((on_gpu - on_cpu).abs() < 1.5, "from {ears:?}: GPU {on_gpu:.2} dB, CPU {on_cpu:.2} dB");
     }
 }
+
+/// v6.5: the GPU walks the late rays too (8× the CPU's; the live walk
+/// whole in its first dispatch). A closed room's reverb, its level and
+/// time, on the GPU (synchronous and live, as Godot runs it) against the
+/// CPU's — and the doorway's room heard from outside, portals on.
+#[test]
+fn the_gpu_walks_the_late_rays_v65() {
+    let v65 = |compute: Compute| Config { compute, v4: false, v5: false, v6: true, v61: true, v62: true, v63: true, v64: true, v65: true, kernel_thread: false, ..Config::default() };
+    let room = |compute: Compute| -> Option<([f32; 3], f32)> {
+        let mut sim = Simulation::new(v65(compute));
+        sim.set_geometry(shoebox());
+        let src = sim.add_source(SourceDesc::at([2.0, 2.0, 1.5]));
+        sim.set_listener([5.5, 4.0, 1.6], 0.0, 0.0, 0.0);
+        if compute != Compute::Cpu && !sim.gpu_active() {
+            return None;
+        }
+        let live = compute == Compute::Gpu;
+        let (mut late, mut rt, mut n) = ([0.0f32; 3], 0.0f32, 0);
+        for k in 0..160 {
+            if live {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let f = sim.tick();
+            if k >= 80 {
+                let pb = f.block(src).unwrap();
+                for b in 0..3 {
+                    late[b] += pb.reverb.level[b] * pb.reverb.level[b] + pb.remote.map_or(0.0, |r| r.send[b] * r.send[b]);
+                }
+                rt += pb.reverb.rt60[1];
+                n += 1;
+            }
+        }
+        Some((late.map(|x| 10.0 * (x / n as f32).max(1e-30).log10()), rt / n as f32))
+    };
+    let Some((gl, grt)) = room(Compute::GpuSync) else {
+        eprintln!("no GPU adapter — skipped");
+        return;
+    };
+    let (cl, crt) = room(Compute::Cpu).unwrap();
+    let (ll, lrt) = room(Compute::Gpu).unwrap();
+    eprintln!("the room's late field: GPU {gl:.1?} dB rt60 {grt:.2} s, live GPU {ll:.1?} dB {lrt:.2} s, CPU {cl:.1?} dB {crt:.2} s");
+    for b in 0..3 {
+        assert!((gl[b] - cl[b]).abs() < 1.5, "band {b}: the GPU's late field {:.1} dB, the CPU's {:.1}", gl[b], cl[b]);
+        assert!((ll[b] - cl[b]).abs() < 2.0, "band {b}: the live GPU's late field {:.1} dB, the CPU's {:.1}", ll[b], cl[b]);
+    }
+    assert!((grt / crt - 1.0).abs() < 0.15 && (lrt / crt - 1.0).abs() < 0.2, "rt60: GPU {grt:.2}, live {lrt:.2}, CPU {crt:.2} s");
+    // the doorway's room from outside, portals on
+    let outside = |compute: Compute, ears: [f32; 3]| -> f32 {
+        let (mut sim, src, _) = doorway_scene_with(Config { portals: true, ..v65(compute) }, ears, 1.0);
+        for _ in 0..60 {
+            sim.tick();
+        }
+        let mut e = 0.0f32;
+        for _ in 0..80 {
+            e += sim.tick().block(src).map_or(0.0, |pb| energy(pb)[1]);
+        }
+        10.0 * (e / 80.0).max(1e-30).log10()
+    };
+    for ears in [[10.0, 0.5, 1.6], [12.0, 6.0, 1.6], [8.0, -3.0, 1.6]] {
+        let (g, c) = (outside(Compute::GpuSync, ears), outside(Compute::Cpu, ears));
+        eprintln!("the room from {ears:?}, portals on: GPU {g:.2} dB, CPU {c:.2} dB");
+        assert!((g - c).abs() < 1.5, "from {ears:?}: GPU {g:.2} dB, CPU {c:.2} dB");
+    }
+}

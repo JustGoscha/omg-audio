@@ -1200,6 +1200,12 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
     var ld_n = vec3<f32>(0.0);
     var ld_s = 0.0;
     var lt = false;
+    // (v6.5) the connections to openings a ray may make: an early ray one
+    // a bounce, a late one once (its deposits bounded: fold.rs
+    // LATE_PORTAL_DEPS); whether its last diffuse bounce made one — a
+    // crossing past it is weighed against that connection only then
+    var nee_open_left = select(0xFFFFFFFFu, 1u, late);
+    var ld_nee = false;
 
     // a sliced ray starts in pass 0, goes on where the last dispatch left
     // it and, once done, sits out the tick's later passes
@@ -1232,6 +1238,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
         s_rough = (flags & 256u) != 0u;
         ld_on = (flags & 512u) != 0u;
         lt = (flags & 1024u) != 0u;
+        ld_nee = (flags & 2048u) != 0u;
         first_ap = dbg[so + 24u] & 0xFFu;
         s_refl = dbg[so + 24u] >> 8u;
         ld_n = vec3<f32>(bitcast<f32>(dbg[so + 25u]), bitcast<f32>(dbg[so + 26u]), bitcast<f32>(dbg[so + 28u]));
@@ -1272,7 +1279,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             dbg[so + 11u] = select(0u, 1u, specular) | select(0u, 2u, mirror_only) | select(0u, 4u, loud)
                 | select(0u, 8u, bent) | select(0u, 16u, have_bend_from) | select(0u, 32u, split)
                 | select(0u, 64u, mirrored) | select(0u, 128u, crossed) | select(0u, 256u, s_rough)
-                | select(0u, 512u, ld_on) | select(0u, 1024u, lt);
+                | select(0u, 512u, ld_on) | select(0u, 1024u, lt) | select(0u, 2048u, ld_nee);
             dbg[so + 12u] = bitcast<u32>(mirror_thr);
             dbg[so + 13u] = bends;
             dbg[so + 14u] = bitcast<u32>(bend_from.x);
@@ -1383,7 +1390,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
                     // the openings — this path either way, weighed by the
                     // odds of each (balance heuristic)
                     var m = 1.0;
-                    if (ld_on) {
+                    if (ld_on && ld_nee) {
                         let pb = ld_s * max(dot(dir, ld_n), 0.0) / PI;
                         var pn = 0.0;
                         let i = pap_of(k);
@@ -1526,10 +1533,13 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
         // against the walk's own crossings by the odds of each (a first
         // touch's diffuse share, or any bounce past one: light tracing's)
         let first_touch = seg == 0u && refl == 0u && bends == 0u;
-        if (portal_on() && !crossed && !lt && !first_touch && hit.scattering > 0.0 && refl + 1u >= lo && refl + 1u <= hi && n_paps() > 0u) {
+        var did_nee = false;
+        if (portal_on() && !crossed && !lt && !first_touch && hit.scattering > 0.0 && refl + 1u >= lo && refl + 1u <= hi && n_paps() > 0u && nee_open_left > 0u) {
             let off = p + normal * EPS;
             let sum = pick_weights(off, normal);
             if (sum > 0.0) {
+                nee_open_left -= 1u;
+                did_nee = true;
                 var u = rand_f32() * sum;
                 var pick = n_paps() - 1u;
                 for (var i = 0u; i < n_paps(); i++) {
@@ -1649,6 +1659,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             mirrored = false;
             if (crossed) { s_rough = true; }
             ld_on = true;
+            ld_nee = did_nee;
             ld_n = normal;
             ld_s = hit.scattering;
             if (was_first && portal_on()) { lt = true; }
