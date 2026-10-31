@@ -11,7 +11,8 @@
 //!     AT=x,y;x,y (24.2,-7.4;26,7;-14,20;8,46)  TICKS=n (240)  SEEDS=n (4)
 //!     SOURCE=name (club)  OPEN=i,j (4)  GEOMETRY=<file>  LEVEL=n (else High)
 //!     K=k: the walk's sphere radius per metre of path (the rung's)
-//!     RAW=1: what the walk deposits a tick (unaveraged) instead of the field
+//!     RAW=1: what the walk deposits a tick (unaveraged) instead of the field,
+//!     its mean over every tick past the first ten, and its spread
 use omg_audio::{Config, Frame, Quality, Simulation, SourceId};
 use omg_web::town::Town;
 
@@ -69,6 +70,8 @@ fn main() {
         let ids = town.sources[src].clone();
         sim.set_listener([p[0], p[1], 1.6], 0.0, 0.0, 0.0);
         let (mut acc, mut n, mut jumps, mut prev) = ([0.0f64; 2], 0usize, 0usize, f64::NAN);
+        let raw = env("RAW").as_deref() == Some("1");
+        let mut lows: Vec<f64> = Vec::new();
         let clock = std::time::Instant::now();
         for k in 0..ticks {
             let f = sim.tick();
@@ -84,13 +87,21 @@ fn main() {
                 jumps += 1;
             }
             prev = lv;
-            if k >= ticks / 2 {
+            if k >= ticks / 2 || (raw && k >= 10) {
                 acc[0] += e[0];
                 acc[1] += e[1];
                 n += 1;
+                if raw {
+                    lows.push(e[0]);
+                }
             }
         }
         let ms = clock.elapsed().as_secs_f64() * 1e3 / ticks as f64;
+        if raw && !lows.is_empty() {
+            lows.sort_by(|a, b| a.total_cmp(b));
+            let q = |f: f64| db(lows[((lows.len() - 1) as f64 * f) as usize]);
+            eprintln!("      raw low: median {:.1}, p90 {:.1}, p99 {:.1}, max {:.1}; mean {:.1} dB over {} ticks", q(0.5), q(0.9), q(0.99), q(1.0), db(lows.iter().sum::<f64>() / lows.len() as f64), lows.len());
+        }
         if env("COSTS").as_deref() == Some("1") {
             let c = sim.tick_costs();
             eprintln!("      last tick: early {:.1} late {:.1} portals {:.1} chains {:.1} fold {:.1} ms", c.early, c.late, c.portals, c.chains, c.fold);

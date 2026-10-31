@@ -75,12 +75,29 @@ field, the seeds' spread falls from 14–21 to 4.5–6 dB. But walking, the
 bursts stay: a listener's ray still has to find the door from 27 m away
 round a corner (an edge bend weighing the bass up to 3×), and when it
 does it now brings the club's whole field at once (`examples/tour_replay
-PORTALS=1`, the bunker path: −53 → −12 dB). Next: connect the walk's
-diffuse bounces to the openings (next-event estimation to apertures,
-weighed against the walk's own crossings by MIS), so a door is reached
-from every lit facade and patch of square, not by chance. Cost: 4 ms a
-tick for the club's four speakers (rays from each, Russian roulette, on
-the walk's threads).
+PORTALS=1`, the bunker path: −53 → −12 dB). Then (same night): the
+walk's diffuse bounces connect to the openings (next-event to an
+aperture picked by what it would bring, weighed against the walk's own
+crossings by the balance heuristic), an opening is a source's portal only
+where its rays cross it four times a tick or more (a record of a few
+rare crossings — the club's at the blockhouse door — was a heavy tail of
+its own), and the walk's deposits are gathered per opening and cell and
+laid under the records once a tick. Raw per-tick estimates of the club
+(`examples/portal_ab RAW=1`, rung 4): at the entrance (18, 31) the median
+−14 → −7 dB, its mean −8.8 → −6.2, six-dB jumps 366 → 78 in 790 ticks; on
+the bunker path (25.6, 3.9) the mean the same (−41.0 / −41.7) but the
+median −78 → −60 — the tail shorter by half, not gone: a late ray that
+finds the club's door from 26 m round the buildings (four mirror
+bounces, three bends, a split through a wall) still brings its whole
+field in one tick. Walking there (`tour_replay`) the bursts stay, from a
+higher (truer) level. Bends sampled in the shares the path carries
+(the bass's 3× compounding over bends: 12–14× on the bunker's stair) cut
+those weights to 4–6× but weighed a band carried less up to 20×: the
+door swing's treble clicked (−24 dB under its tone) — reverted. Still
+off by default; what remains is guiding the walk toward openings past
+edges and mirrors, or the field from the sources' side all the way to
+the ears. Cost: 4 ms a tick for the club's four speakers (rays from
+each, Russian roulette, on the walk's threads) and ~2 ms gathering.
 The same shows right after a door shuts: the field through the shut
 door restarts as a young estimate. Across four seeds the click 50 ms to
 0.8 s after the shut lands on average 2.3 dB (early part, per band) and
