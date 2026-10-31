@@ -14,19 +14,12 @@ against CLAUDE.md; measure before and after with impulses
 The tour with portals on (`docs/runs/2026-10-31/portals-on/`): the club's
 bursts are gone — nothing unexplained rises more than 23 dB (46.8 the
 night before). What it still flags, by cause:
-- **A car appearing out of nothing, 900 m out (demo content).** At 209 s
-  the tour stops on the road and the bass steps from −52 to −32 dB, then
-  holds near −35: a car spawned along the road (the tour's own, or one of
-  the demo's at random). Recorded with every source stopped
-  (`record.gd --alone=nothing`), a car comes in from silence at −47 dB
-  the moment its motor starts, portals on or off; the club alone shows no
-  step there (−55…−58 dB walking and standing), nor headless (−45 / −43).
-  The engine is right — a 95 dB motor 900 m off arrives ~30 dB SPL, 7 dB
-  under the quiet road's loudness, inside the audible window (60 dB) —
-  the demo isn't: a car shouldn't come into being within earshot. Out of
-  earshot by the threshold of hearing (~22 dB SPL at 125 Hz) is ~6 km,
-  17 s of travel: cars that drive in from there (the tour's spawned
-  ahead of time to keep its timing), or a road that goes on.
+- **A car appearing out of nothing, 900 m out — solved (365a18c).** At
+  the tour's road stop the bass stepped −52 → −32 dB as its car started
+  900 m off (a 95 dB motor arrives ~30 dB SPL there). Cars now start where
+  their motor is under the threshold of hearing (2.3–6.3 km) in both
+  demos; the tour's set out at its start (`docs/runs/2026-10-31/
+  cars-far/`: the stop −51 … −60 dB, the cars come in from 231 s).
 - **The walk's own heavy tail, smaller** — a few +15…+21 dB moments of
   0.3–1 s in the field south of the town and on the bunker path. Replayed
   (`tour_replay PORTALS=1 PATHS=1`, seed 2, 122.65 s at (23.3, −14.0)):
