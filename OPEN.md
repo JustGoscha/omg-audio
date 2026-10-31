@@ -108,10 +108,34 @@ panels (Oct 31) died and `club_boom` read exactly 0 in the Old House. The
 panels stay out of WorldSim's legacy late field (`world.rs`); the live
 engine takes the ray out the far side (`World::through`, CPU and GPU).
 Measured on the live engine with impulses (`assess still SRC=club
-SPOT=inside`): the club's tail 1.31 / 1.05 / 0.82 s → 0.66 / 0.61 / 0.48 s
-(T20, low / mid / high), the late energy −11…−12 dB — Sabine's estimate
-for 97 m² of 10 cm wool on top of the room's own absorption gives
-0.47–0.65 s.
+SPOT=inside MODE=v6.2`, portals on as the demos run it): the club's tail
+1.65 / 1.47 / 0.79 s → 0.52 / 0.44 / 0.31 s (T20, low / mid / high), the
+late energy −15 dB — Sabine's estimate for 97 m² of 10 cm wool on top of
+the room's own absorption gives 0.47–0.65 s (v5, measured first by
+mistake: 1.31 / 1.05 / 0.82 → 0.66 / 0.61 / 0.48 s). The crowd of 15 on
+its dance floor: 0.51 / 0.42 / 0.30 s, the late −0.5…−1.5 dB.
+
+### Auto quality held at the bottom by the mirror chains (Oct 31)
+In Godot `auto` stays at 0–2/10 in the club and the cathedral, the frame
+rate fine (the tick runs on its own thread). The governor climbs when
+the next level's tick — the fixed part plus `LEVEL_STEP`× the rest —
+stays under 60 % of its step over the 16 ms target (~14 ms); the exactly
+solved mirror chains cost 4.3–6.5 ms a tick on every level (headless,
+Oct 31: the square 10.7 ms of which chains 4.3 → 4/10; the club 15.2 /
+6.5 → 2/10; the cathedral 14.3 / 5.3, portals 1.8 → 0/10). Cheaper chain
+solves (fewer re-solved a tick, the solved ones reused while neither end
+moves) or chains that scale with the level would let it climb.
+
+### People shadow their voices' bass and mids too much
+The narrator, the flautist and the singer are geometry (Oct 31: a body
+to the shoulders and a head), their voices at their mouths. Measured on
+v6.2, the voice 1.5 m away re in front: beside −1 / −2 / −3 dB (a talker:
+0 / −2 / −5), behind −7 / −10.5 / −13 dB with the room (a talker: −1 /
+−5 / −14). Edge diffraction prices a body's edges as a wall's (a
+knife-edge, its paths round each side summed as energies); round an
+object much smaller than the wavelength (46 cm at 125 Hz: 2.7 m) the
+field barely shadows. The paths round a small object's sides arrive
+nearly together at long wavelengths and add with their phases.
 
 ### The club's door swinging shut: clicks and a burst (v6.2)
 `town_system::a_door_swinging_shut_takes_the_level_down_without_bursts_v6`

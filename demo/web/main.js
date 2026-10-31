@@ -56,6 +56,8 @@ const LAYOUT = await fetch('../assets/demo/layout.json')
   .catch(() => null);
 if (!LAYOUT) console.warn('layout.json missing: interiors stay empty');
 const PIECES = LAYOUT ? LAYOUT.rooms.flatMap((r) => r.furniture) : [];
+// the club's dancers' groups, jumped by `updateCrowd`
+const CROWD = [];
 // paved outdoor ground (square, paths, street, kerbs): drawn below,
 // and what the footsteps land on; the sim's ground mesh has the same
 const GROUND = LAYOUT && LAYOUT.ground ? LAYOUT.ground : [];
@@ -2042,7 +2044,16 @@ function buildWorld() {
   scene.add(pit);
   // furniture: the traced early engine's occluders, made visible
   for (const p of PIECES) {
-    if (p.kind !== 'pillar') scene.add(buildPiece(p)); // columns: buildCathedralInterior
+    if (p.kind === 'pillar') continue; // columns: buildCathedralInterior
+    const g = buildPiece(p);
+    scene.add(g);
+    // the club's dancers jump to the beat (their look only: the sim hears
+    // them standing)
+    const [cx, cy] = p.pos;
+    if ((p.kind === 'person' || p.kind === 'head') && cx > 26 && cx < 36 && cy > 26 && cy < 38) {
+      const who = Math.abs(Math.round(cx * 100) * 7919 + Math.round(cy * 100));
+      CROWD.push({ g, base: g.position.y, phase: (who % 5 === 0 ? 0.5 : 0) + ((who % 97) / 97) * 0.12 });
+    }
   }
   // stairs down the shaft (walkable height stays the smooth ramp)
   const stepMat = new THREE.MeshLambertMaterial({ color: 0x40453f });
@@ -2393,10 +2404,19 @@ async function startAudio() {
     y.set(x);
     return y;
   };
+  // the club's track fades in and out over a second (a DJ's, not a cut)
+  const faded = (x, s = 1) => {
+    const n = Math.min(Math.round(s * audio.sampleRate), x.length >> 1);
+    for (let i = 0; i < n; i++) {
+      x[i] *= i / n;
+      x[x.length - 1 - i] *= i / n;
+    }
+    return x;
+  };
   const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops, m0, m1, m2, m3, ambience, fountain] = await Promise.all([
     decodeMono(ariaRaw).then(gapped),
     decodeMono(aliceRaw).then(gapped),
-    decodeMono(clubRaw).then(gapped),
+    decodeMono(clubRaw).then((x) => gapped(faded(x))),
     decodeMono(fluteRaw).then(gapped),
     decodeMono(radioRaw).then(gapped),
     Promise.resolve(makeWoosh(audio.sampleRate)), // fx 0: the ball woosh
@@ -3351,7 +3371,16 @@ function updateWildlife(t) {
 
 const mm = document.getElementById('minimap').getContext('2d');
 
+// the club's dancers: a hop a beat (124 BPM), in the air for half of it
+function updateCrowd(t) {
+  for (const d of CROWD) {
+    const u = (((t / 1000) * 124) / 60 + d.phase) % 1;
+    d.g.position.y = d.base + (u < 0.5 ? 0.26 * 4 * (u / 0.5) * (1 - u / 0.5) : 0);
+  }
+}
+
 function frame(t) {
+  updateCrowd(t);
   if (!state.running) {
     // idle flyover while the start overlay is up
     const a = t / 12000;

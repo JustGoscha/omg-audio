@@ -228,6 +228,10 @@ pub struct OmgSource {
     /// rings out, and starts again (0: back to back).
     #[export]
     loop_gap: f32,
+    /// Seconds `file` fades in at its start and out at its end (a track
+    /// that stops for `loop_gap` and starts again: not cut off).
+    #[export]
+    loop_fade: f32,
     /// A mixer fader over `level_db` (dB), for the listener's own mix:
     /// the scene's levels stay what the script sets.
     #[export]
@@ -415,6 +419,7 @@ struct SourceRec {
     volume_db: f32,
     file: GString,
     gap: f32,
+    fade: f32,
     file_clip: Option<usize>,
     /// What loops now: (clip id, voice).
     looping: Option<(usize, VoiceId)>,
@@ -858,6 +863,25 @@ impl OmgWorld {
         d
     }
 
+    /// What the engine handed the mixer in its last frame, summed per
+    /// source: {version, time, rows: PackedFloat32Array — 18 a source:
+    /// id, taps, the strongest tap's kind (0 direct, 1 bend, 2 mirror
+    /// chain, 3 the walk's field, 4 other), key, delay s, mid energy; then
+    /// low / mid / high energy of the taps, the dense early field, the late
+    /// field, the coupled room's}. For a debug recorder.
+    #[func]
+    fn blocks(&self) -> Dictionary<Variant, Variant> {
+        let mut d = Dictionary::new();
+        if let Some(h) = host().as_ref() {
+            let (v, t, rows) = h.blocks();
+            d.set("version", v as i64);
+            d.set("time", t);
+            let flat: Vec<f32> = rows.iter().flatten().copied().collect();
+            d.set("rows", &PackedFloat32Array::from(&flat[..]));
+        }
+        d
+    }
+
     /// The traced paths (with `debug_paths` on; empty otherwise),
     /// strongest first: each {source: the OmgSource node (null if gone),
     /// energy: mid-band, relative, points: PackedVector3Array from the
@@ -1122,9 +1146,9 @@ impl OmgWorld {
             let key = src.instance_id();
             let pos = eng(src.get_global_position());
             let on = src.bind().active && !src.bind().muted && src.is_visible_in_tree();
-            let (file, gap, level_db, volume_db, playing) = {
+            let (file, gap, fade, level_db, volume_db, playing) = {
                 let b = src.bind();
-                (b.file.clone(), b.loop_gap.max(0.0), b.level_db, b.volume_db, b.playing)
+                (b.file.clone(), b.loop_gap.max(0.0), b.loop_fade.max(0.0), b.level_db, b.volume_db, b.playing)
             };
             if !self.sources.contains_key(&key) {
                 let id = {
@@ -1134,7 +1158,7 @@ impl OmgWorld {
                 };
                 self.sources.insert(
                     key,
-                    SourceRec { id, level_db, volume_db: 0.0, file: GString::new(), gap: 0.0, file_clip: None, looping: None, seen: frame },
+                    SourceRec { id, level_db, volume_db: 0.0, file: GString::new(), gap: 0.0, fade: 0.0, file_clip: None, looping: None, seen: frame },
                 );
                 // plays queued before the source was linked
                 let pending = {
@@ -1166,10 +1190,11 @@ impl OmgWorld {
                 rec.volume_db = vol;
                 h.engine.set_volume(rec.id, if muted { 0.0 } else { db(volume_db) });
             }
-            if file != rec.file || gap != rec.gap {
+            if file != rec.file || gap != rec.gap || fade != rec.fade {
                 rec.file = file.clone();
                 rec.gap = gap;
-                let opts = ClipOptions { pad_s: gap, ..Default::default() };
+                rec.fade = fade;
+                let opts = ClipOptions { pad_s: gap, fade_in_s: fade, fade_out_s: fade, ..Default::default() };
                 rec.file_clip = (!file.is_empty()).then(|| clips::load(clip_source(&file), sr, Import { opts, normalize_rms: true }));
             }
             // what should loop: the script's loop clip, else the file

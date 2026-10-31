@@ -112,6 +112,8 @@ func setup(w: OmgWorld, r: Node3D, l: DemoLevel, pl: DemoPlayer) -> void:
 	for s in DemoLevel.CLUB_SPEAKERS:
 		sources["club%d" % i] = _src("club%d" % i, s, 1.9, "club48.ogg", CLUB_LEVEL)
 		sources["club%d" % i].loop_gap = LOOP_GAP_S
+		# the track fades in and out over a second (a DJ's, not a cut)
+		sources["club%d" % i].loop_fade = 1.0
 		i += 1
 	for k in 3:
 		balls.append(_src("ball%d" % k, Vector2.ZERO, 1.5, "", BALL_LEVEL, false))

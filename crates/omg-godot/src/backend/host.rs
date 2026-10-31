@@ -65,7 +65,16 @@ struct Shared {
     /// RMS) per source, the output (ambience and rain included) as
     /// `u32::MAX`.
     meters: Mutex<Vec<(u32, f32, f32)>>,
+    /// What the engine handed the mixer, every frame (`BlockRow`s): the
+    /// frame's version and time, a row a source — for a debug recorder.
+    blocks: Mutex<(u64, f64, Vec<BlockRow>)>,
 }
+
+/// One source's parameters in a frame, summed for a debug recorder:
+/// [id, taps, the strongest tap's kind (`omg_core::v3::tap_kind`), key,
+/// delay (s), mid energy, then per band (low, mid, high) the energy of
+/// the taps, the dense early field, the late field, the coupled room's].
+pub type BlockRow = [f32; 18];
 
 /// The consumer end of the output ring (Godot's audio thread).
 #[derive(Clone)]
@@ -121,6 +130,7 @@ struct Out {
     rx: Receiver<OutCmd>,
     sr: f32,
     frame_seen: u64,
+    block_rows: Vec<BlockRow>,
     l: Vec<f32>,
     r: Vec<f32>,
     gov: Governor,
@@ -165,6 +175,32 @@ impl Out {
                     }
                 }
                 sh.rt60.store(best.1.to_bits(), Ordering::Relaxed);
+                self.block_rows.clear();
+                for (id, b) in &f.blocks {
+                    let mut row: BlockRow = [0.0; 18];
+                    let top = b.taps.iter().max_by(|x, y| x.gains[1].total_cmp(&y.gains[1]));
+                    row[0] = id.0 as f32;
+                    row[1] = b.taps.len() as f32;
+                    if let Some(t) = top {
+                        row[2] = omg_audio::tap_kind(t.key) as f32;
+                        row[3] = t.key as f32;
+                        row[4] = t.delay_s;
+                        row[5] = t.gains[1] * t.gains[1];
+                    }
+                    for k in 0..3 {
+                        row[6 + k] = b.taps.iter().map(|t| t.gains[k] * t.gains[k]).sum();
+                        row[9 + k] = b.early.level[k] * b.early.level[k];
+                        row[12 + k] = b.reverb.level[k] * b.reverb.level[k];
+                        row[15 + k] = b.remote.as_ref().map_or(0.0, |r| r.send[k] * r.send[k]);
+                    }
+                    self.block_rows.push(row);
+                }
+                if let Ok(mut g) = sh.blocks.try_lock() {
+                    g.0 = f.version;
+                    g.1 = f.time.unwrap_or(-1.0);
+                    g.2.clear();
+                    g.2.extend_from_slice(&self.block_rows);
+                }
             }
         }
         let mut peak = 0.0f32;
@@ -273,6 +309,7 @@ impl Host {
             rx,
             sr: sample_rate,
             frame_seen: 0,
+            block_rows: Vec::new(),
             l: Vec::with_capacity(4096),
             r: Vec::with_capacity(4096),
             gov: Governor::new(sample_rate),
@@ -370,6 +407,12 @@ impl Host {
     /// `u32::MAX`, the ambience bed `u32::MAX - 1`, the rain `u32::MAX - 2`.
     pub fn meters(&self) -> Vec<(u32, f32, f32)> {
         self.sh.meters.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// The last frame's parameters, summed per source (`BlockRow`): its
+    /// version, its time, the rows.
+    pub fn blocks(&self) -> (u64, f64, Vec<BlockRow>) {
+        self.sh.blocks.lock().map(|b| b.clone()).unwrap_or_default()
     }
 
     pub fn stats(&self) -> Stats {

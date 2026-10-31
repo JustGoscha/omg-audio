@@ -1083,6 +1083,17 @@ func _piece(it: Dictionary) -> void:
 	node.position = v((mn.x + mx.x) * 0.5, (mn.y + mx.y) * 0.5, mn.z)
 	node.rotation.y = float(it["yaw"])
 	root.add_child(node)
+	# the club's dancers jump to the beat (demo.gd): their look only — the
+	# engine hears them standing
+	var cx := (mn.x + mx.x) * 0.5
+	var cy := (mn.y + mx.y) * 0.5
+	if (kind == "person" or kind == "head") and cx > 26.0 and cx < 36.0 and cy > 26.0 and cy < 38.0:
+		var who := absi(hash(Vector2i(roundi(cx * 100.0), roundi(cy * 100.0))))
+		# most on the beat, every fifth on the off-beat, a little loose
+		var phase := (0.5 if who % 5 == 0 else 0.0) + float(who % 97) / 97.0 * 0.12
+		if not markers.has("crowd"):
+			markers["crowd"] = []
+		markers["crowd"].append([node, node.position.y, phase])
 	var decor := Node3D.new()
 	decor.set_meta("omg_material", "none") # trims, screens, legs
 	node.add_child(decor)

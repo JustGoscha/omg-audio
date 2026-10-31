@@ -231,6 +231,8 @@ impl Rig {
             v5: mode == "v5",
             v6: mode.starts_with("v6"),
             v61: mode == "v6.1" || mode == "v6.2", v62: mode == "v6.2",
+            // v6.2 as the demos run it: portals on (PORTALS=0: off)
+            portals: mode == "v6.2" && env("PORTALS").as_deref() != Some("0"),
             sample_rate: SR,
             ..Config::default()
         };

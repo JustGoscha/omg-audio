@@ -175,10 +175,11 @@ fn a_source_switched_off_still_delivers_what_it_emitted() {
 /// north of it (through its walls and windows) is the same truth sampled
 /// tick after tick: the estimate settles and stays (it wandered ±2.5 dB
 /// for as long as one stood there, rare strong paths restarting or
-/// pulling a short average).
+/// pulling a short average). On the demos' engine (v6.2, portals; v5
+/// until Oct 31, when the club's crowd moved it 1.01 dB there).
 #[test]
 fn standing_still_the_estimate_settles_and_stays() {
-    let mut sim = sim();
+    let mut sim = Simulation::new(Config { quality: Quality::High, compute: Compute::Cpu, v6: true, v61: true, v62: true, portals: true, kernel_thread: false, kernel_step_samples: 1 << 24, ..Config::default() });
     let mut town = Town::new(&mut sim);
     let club = 2;
     only(&mut town, &mut sim, club);
@@ -467,7 +468,7 @@ fn a_click_repeated_is_the_same_click() {
 #[test]
 fn standing_still_the_reverb_settles_v6() {
     let spread = |v6: bool| {
-        let mut sim = Simulation::new(Config { quality: Quality::Level(3), compute: Compute::Cpu, v4: false, v5: false, v6, ..Config::default() });
+        let mut sim = Simulation::new(Config { quality: Quality::Level(3), compute: Compute::Cpu, v4: false, v5: false, v6, v61: v6, v62: v6, portals: v6, ..Config::default() });
         let mut town = Town::new(&mut sim);
         let club = 2;
         only(&mut town, &mut sim, club);

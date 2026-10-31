@@ -488,27 +488,28 @@ fn every_kind_is_used_sensibly() {
     }
 }
 
-/// Every person sounds a voice from their mouth: a source's emitter 6 cm
-/// before the middle of their front face, `MOUTH_Z` up (the room's pieces
-/// room-local, the dome's singer in the world).
+/// The voices come from people's mouths — the narrator's, the
+/// flautist's, the singer's: 5 cm before the face, `MOUTH_Z` up (the
+/// rooms' people room-local, the dome's singer in the world; the club's
+/// dancers are silent).
 #[test]
 fn voices_come_from_mouths() {
     let rooms = walkthrough::rooms();
     let srcs = walkthrough::sources();
-    let mut mouths: Vec<(String, (f32, f32, f32))> = Vec::new();
+    let mut mouths: Vec<(f32, f32, f32)> = Vec::new();
     for ri in furnished_rooms() {
         let r = &rooms[ri];
         for p in walkthrough::layout(ri).iter().filter(|p| p.kind == Kind::Person) {
             let m = p.mouth();
-            mouths.push((r.name.to_string(), (m.0 + r.min.0, m.1 + r.min.1, m.2 + r.floor_z)));
+            mouths.push((m.0 + r.min.0, m.1 + r.min.1, m.2 + r.floor_z));
         }
     }
-    mouths.push(("radar dome".into(), walkthrough::STAGE_SINGER.mouth()));
-    assert_eq!(mouths.len(), 3, "the narrator, the flautist, the singer");
-    for (where_, m) in mouths {
-        let ok = srcs.iter().any(|s| {
-            (s.z - m.2).abs() < 0.01 && s.emitters.iter().any(|e| (e.0 - m.0).abs() < 0.01 && (e.1 - m.1).abs() < 0.01)
+    mouths.push(walkthrough::STAGE_SINGER.mouth());
+    for name in ["voice", "flute", "stage"] {
+        let s = srcs.iter().find(|s| s.name == name).expect("the voice is a source");
+        let ok = mouths.iter().any(|m| {
+            (s.z - m.2).abs() < 0.01 && s.emitters.iter().all(|e| (e.0 - m.0).abs() < 0.01 && (e.1 - m.1).abs() < 0.01)
         });
-        assert!(ok, "no voice at the mouth of the person in the {where_}: {m:?}");
+        assert!(ok, "{name} sounds from no one's mouth: {:?} at {}", s.emitters, s.z);
     }
 }

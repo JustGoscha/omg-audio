@@ -185,6 +185,19 @@ const LEGACY_UNITS: f32 = 1.0 / 16.0;
 /// Tap key of the direct path; early bins start above it.
 pub const KEY_DIRECT: u32 = 1;
 
+/// What a tap is, by its key (for a debug view; as `DebugPath`'s kinds):
+/// 0 the direct path, 1 an edge bend, 2 a solved mirror chain, 3 the
+/// walk's sampled field (an early bin), 4 anything else.
+pub fn tap_kind(key: u32) -> u8 {
+    match key {
+        KEY_DIRECT => 0,
+        k if k >= KEY_CHAIN_BASE && k < KEY_CHAIN_BASE + KEY_CHAIN_SPAN => 2,
+        k if k >= KEY_EDGE_BASE && k < KEY_CHAIN_BASE => 1,
+        k if k >= KEY_EARLY_BASE && k < KEY_EDGE_BASE => 3,
+        _ => 4,
+    }
+}
+
 // ---- Engine v4 (ENGINE_V4.md): the traced response, rendered as traced.
 // No early/late split in time: every arrival is kept, at any delay, and
 // split by KIND — coherent arrivals (the direct path, edge bends, exact

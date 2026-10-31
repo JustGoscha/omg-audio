@@ -753,6 +753,11 @@ func _process(dt: float) -> void:
 	t_flicker += dt
 	for c in level.markers.get("candles", []):
 		(c as OmniLight3D).light_energy = 3.6 + 0.5 * sin(t_flicker * 13.0 + c.position.x) + 0.3 * sin(t_flicker * 7.3)
+	# the club's dancers: a hop a beat (124 BPM), in the air for half of it
+	for d in level.markers.get("crowd", []):
+		var u := fposmod(t_flicker * 124.0 / 60.0 + float(d[2]), 1.0)
+		var hop := 0.26 * 4.0 * (u / 0.5) * (1.0 - u / 0.5) if u < 0.5 else 0.0
+		(d[0] as Node3D).position.y = float(d[1]) + hop
 	var i := 0
 	for l in level.markers.get("club_lights", []):
 		(l as OmniLight3D).light_energy = 2.0 + 1.6 * maxf(0.0, sin(t_flicker * TAU * 124.0 / 60.0 + i * PI / 2.0))

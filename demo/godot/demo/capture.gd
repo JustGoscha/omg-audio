@@ -12,8 +12,8 @@ extends CanvasLayer
 
 const KEEP_S := 60.0
 const SRC_HZ := 10.0
-const PATH_HZ := 4.0
-const PATHS_MAX := 48
+const PATH_HZ := 8.0
+const PATHS_PER_SOURCE := 6 # the strongest of each source (a far car's too)
 const MARGIN_S := 2.0
 const BANDS := 160
 
@@ -24,6 +24,8 @@ var open := false
 var frames := []    # [frame, x, y, z, yaw°, pitch°, room, tick_ms, load, late, paths, rendering, fps]
 var src_log := []   # [frame, name, x, y, z, active, peak dB, rms dB]
 var path_log := []  # [frame, JSON of [{source, kind, key, energy, points}]]
+var block_log := [] # [frame, version, frame time, PackedFloat32Array of rows (OmgWorld.blocks)]
+var block_seen := -1
 var events := []    # [frame, what, detail]
 var src_t := 0.0
 var path_t := 0.0
@@ -142,6 +144,7 @@ func _process(dt: float) -> void:
 			frames.clear()
 			src_log.clear()
 			path_log.clear()
+			block_log.clear()
 			events.clear()
 	if not recording:
 		return
@@ -149,7 +152,7 @@ func _process(dt: float) -> void:
 	var fr: int = world.flight_frames()
 	var r: int = maxi(1, world.flight_rate())
 	var cut: int = fr - int((KEEP_S + MARGIN_S) * r)
-	for rows in [frames, src_log, path_log, events]:
+	for rows in [frames, src_log, path_log, block_log, events]:
 		while not rows.is_empty() and rows[0][0] < cut:
 			rows.pop_front()
 	var cam: Camera3D = demo.player.cam
@@ -160,7 +163,15 @@ func _process(dt: float) -> void:
 	frames.append([fr, snappedf(at.x, 0.001), snappedf(at.y, 0.001), snappedf(at.z, 0.001),
 		snappedf(rad_to_deg(atan2(-fwd.z, fwd.x)), 0.1), snappedf(rad_to_deg(asin(clampf(fwd.y, -1.0, 1.0))), 0.1), room,
 		snappedf(st.get("tick_ms", 0.0), 0.01), snappedf(st.get("load", 0.0), 0.001), st.get("late", 0), st.get("paths", 0),
-		st.get("rendering", 0), Engine.get_frames_per_second()])
+		st.get("rendering", 0), Engine.get_frames_per_second(), "gpu" if st.get("gpu", false) else "cpu",
+		" ".join(Array(st.get("tick_parts", PackedFloat32Array())).map(func(x): return "%.2f" % x)),
+		" ".join(demo.level.door_nodes.map(func(d): return "%.2f" % float(d["open"])))])
+	# what the engine handed the mixer, each frame it sent
+	var b: Dictionary = world.blocks()
+	var ver: int = b.get("version", -1)
+	if ver != block_seen:
+		block_seen = ver
+		block_log.append([fr, ver, float(b.get("time", -1.0)), b.get("rows", PackedFloat32Array())])
 	var q: String = world.quality_label()
 	if q != last_quality:
 		event("quality", q)
@@ -178,12 +189,17 @@ func _process(dt: float) -> void:
 	if path_t >= 1.0 / PATH_HZ:
 		path_t = 0.0
 		var snap := []
-		for p in world.paths().slice(0, PATHS_MAX):
+		var per := {}
+		for p in world.paths(): # strongest first
+			var src = p["source"]
+			var k: int = src.get_instance_id() if src != null else 0
+			per[k] = per.get(k, 0) + 1
+			if per[k] > PATHS_PER_SOURCE:
+				continue
 			var pts := []
 			for q3 in p["points"]:
 				var pp := _plan(q3)
 				pts.append([snappedf(pp.x, 0.01), snappedf(pp.y, 0.01), snappedf(pp.z, 0.01)])
-			var src = p["source"]
 			snap.append({"source": String(src.name) if src != null else "", "kind": p["kind"], "key": p["key"], "energy": snappedf(p["energy"], 1e-6), "points": pts})
 		path_log.append([fr, JSON.stringify(snap)])
 
@@ -364,7 +380,8 @@ func save() -> void:
 		for y in simg.get_height():
 			simg.set_pixel(x, y, Color(1, 1, 1))
 	simg.save_png(dir.path_join("selection.png"))
-	_csv(dir.path_join("ears.csv"), "t_s,frame,x,y,z,yaw_deg,pitch_deg,room,tick_ms,load,late,paths,rendering,fps", frames)
+	_csv(dir.path_join("ears.csv"), "t_s,frame,x,y,z,yaw_deg,pitch_deg,room,tick_ms,load,late,paths,rendering,fps,walk,tick_parts_ms,doors_open", frames)
+	_blocks(dir.path_join("blocks.csv"))
 	_csv(dir.path_join("sources.csv"), "t_s,frame,source,x,y,z,active,peak_db,rms_db", src_log)
 	_csv(dir.path_join("events.csv"), "t_s,frame,what,detail", events)
 	var pf := FileAccess.open(dir.path_join("paths.jsonl"), FileAccess.WRITE)
@@ -375,6 +392,28 @@ func save() -> void:
 	_notes(dir, s0, s1, f0, f1, a, b)
 	status.text = "saved → %s" % dir
 	print("capture: saved ", dir)
+
+# blocks.csv: a row a source a frame the engine sent — what it handed the
+# mixer (energies in dB; the strongest tap's kind and delay)
+func _blocks(path: String) -> void:
+	var names := {}
+	for s in get_tree().get_nodes_in_group("omg_source"):
+		names[(s as OmgSource).source_id()] = String(s.name)
+	var kinds := ["direct", "bend", "chain", "walk", "other"]
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_line("t_s,frame,version,frame_time_s,source,taps,top_kind,top_key,top_delay_ms,top_mid_db,taps_lo_db,taps_mid_db,taps_hi_db,early_lo_db,early_mid_db,early_hi_db,late_lo_db,late_mid_db,late_hi_db,remote_lo_db,remote_mid_db,remote_hi_db")
+	var e := func(x: float) -> String: return "%.1f" % (10.0 * log(maxf(x, 1e-30)) / log(10.0))
+	for bl in block_log:
+		if bl[0] < start_fr:
+			continue
+		var rows: PackedFloat32Array = bl[3]
+		for i in range(0, rows.size() - 17, 18):
+			var c := ["%.3f" % _t(bl[0]), str(bl[0]), str(bl[1]), "%.3f" % bl[2], names.get(int(rows[i]), str(int(rows[i]))),
+				str(int(rows[i + 1])), kinds[clampi(int(rows[i + 2]), 0, 4)], str(int(rows[i + 3])), "%.1f" % (rows[i + 4] * 1000.0), e.call(rows[i + 5])]
+			for k in range(6, 18):
+				c.append(e.call(rows[i + k]))
+			f.store_line(",".join(c))
+	f.close()
 
 func _csv(path: String, header: String, rows: Array) -> void:
 	var f := FileAccess.open(path, FileAccess.WRITE)
@@ -409,9 +448,10 @@ func _notes(dir: String, s0: float, s1: float, f0: int, f1: int, a: int, b: int)
 	t += "## Files\n\n"
 	t += "- minute.wav: the whole minute as played (float stereo); selection.wav: the stretch with %.0f s either side\n" % MARGIN_S
 	t += "- minute.png: the minute's spectrogram (left ear over right, 40 Hz – 16 kHz), the stretch between white lines; selection.png: the stretch's own\n"
-	t += "- ears.csv: every frame — where the ears were (plan x east, y north, z up, m), where they looked, the room, the engine's tick, load, late frames\n"
+	t += "- ears.csv: every frame — where the ears were (plan x east, y north, z up, m), where they looked, the room, the engine's tick, load, late frames; the walk (gpu/cpu), the tick's parts (ms: direct, one-edge, two-edge, early, late, chains, fold, portals), every door's openness (DemoLevel.DOORS order)\n"
+	t += "- blocks.csv: every frame the engine sent, every source: what it handed the mixer — the taps (how many, the strongest's kind, key, delay, mid level) and per band the energy of the taps, the dense early field, the late field, the coupled room's (dB) — a burst shows which part of which source it came from\n"
 	t += "- sources.csv: every source %d× a second — where, sounding or not, its meter (peak, RMS dB)\n" % int(SRC_HZ)
-	t += "- paths.jsonl: the %d strongest traced paths %d× a second (kind 0 direct, 1 edge bend, 2 mirror chain, 3 sampled), points ears → source in plan coordinates; energy is the path's relative mid-band gain — what it would carry, not what its source is playing (sources.csv has that)\n" % [PATHS_MAX, int(PATH_HZ)]
+	t += "- paths.jsonl: each source's %d strongest traced paths %d× a second (kind 0 direct, 1 edge bend, 2 mirror chain, 3 sampled, 4 through an opening), points ears → source in plan coordinates; energy is the path's relative mid-band gain — what it would carry, not what its source is playing (sources.csv has that)\n" % [PATHS_PER_SOURCE, int(PATH_HZ)]
 	t += "- events.csv: what the player did (keys, doors, the quality)\n"
 	t += "- t_s in every file: seconds into the minute (frames / %d from frame %d)\n" % [rate, start_fr]
 	var f := FileAccess.open(dir.path_join("README.md"), FileAccess.WRITE)
