@@ -372,6 +372,21 @@ pub fn radome(b: &mut MeshBuilder) {
         b.tri(top, a, bb, wood);
         b.quad(at(k, 0.0), at(k + 1, 0.0), bb, a, wood);
     }
+    // the singer standing on it (`walkthrough::STAGE_SINGER`): their body
+    // is in their voice's way behind them
+    let p = crate::walkthrough::STAGE_SINGER;
+    let body = b.material(p.mat.material());
+    let v = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
+    for piece in [p, p.head()] {
+        let (mn, mx) = piece.local_box();
+        let (a, z) = (v(mn[0], mn[1], mn[2]), v(mx[0], mx[1], mx[2]));
+        b.begin_surface();
+        b.quad(v(a.x, a.y, a.z), v(a.x, z.y, a.z), v(a.x, z.y, z.z), v(a.x, a.y, z.z), body);
+        b.quad(v(z.x, a.y, a.z), v(z.x, a.y, z.z), v(z.x, z.y, z.z), v(z.x, z.y, a.z), body);
+        b.quad(v(a.x, a.y, a.z), v(a.x, a.y, z.z), v(z.x, a.y, z.z), v(z.x, a.y, a.z), body);
+        b.quad(v(a.x, z.y, a.z), v(z.x, z.y, a.z), v(z.x, z.y, z.z), v(a.x, z.y, z.z), body);
+        b.quad(v(a.x, a.y, z.z), v(a.x, z.y, z.z), v(z.x, z.y, z.z), v(z.x, a.y, z.z), body);
+    }
 }
 
 /// A unit icosphere: the icosahedron with every facet split in four

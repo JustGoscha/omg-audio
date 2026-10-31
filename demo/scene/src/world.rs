@@ -2175,7 +2175,7 @@ mod tests {
     #[test]
     fn doorway_contrast_walking_past() {
         let mut w = WorldSim::new();
-        const VOICE: usize = 1; // in the Great Hall at (10.5, 20.5)
+        const VOICE: usize = 1; // in the Great Hall at the narrator's mouth (10.25, 20.5)
         let level_at = |w: &mut WorldSim, x: f32, y: f32| -> f32 {
             for _ in 0..24 {
                 let _ = w.tick_at(x, y, 0.0);

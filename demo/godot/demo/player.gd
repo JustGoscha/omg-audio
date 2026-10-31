@@ -39,9 +39,39 @@ func _init() -> void:
 	add_child(cam)
 	var ears := OmgListener.new()
 	cam.add_child(ears)
+	_body()
 	floor_max_angle = deg_to_rad(62.0)
 	floor_snap_length = 0.45
 	safe_margin = 0.02
+
+# A blocky body under the eyes (seen looking down): legs, torso, arms —
+# no head (the eyes are in it). Not acoustic: the engine hears from one
+# point in the middle of the head, which a head around it would wall in.
+var body: Node3D
+
+func _body() -> void:
+	body = Node3D.new()
+	body.set_meta("omg_material", "none")
+	add_child(body)
+	var shirt := StandardMaterial3D.new()
+	shirt.albedo_color = Color(0.22, 0.3, 0.42)
+	shirt.roughness = 0.9
+	var cloth := StandardMaterial3D.new()
+	cloth.albedo_color = Color(0.13, 0.13, 0.16)
+	cloth.roughness = 0.9
+	# (x right, y up, z back: the player faces −z)
+	for b in [[Vector3(-0.17, 0.0, -0.08), Vector3(-0.03, 0.84, 0.08), cloth], [Vector3(0.03, 0.0, -0.08), Vector3(0.17, 0.84, 0.08), cloth],
+			[Vector3(-0.19, 0.84, -0.12), Vector3(0.19, 1.42, 0.12), shirt],
+			[Vector3(-0.23, 0.86, -0.06), Vector3(-0.19, 1.4, 0.06), shirt], [Vector3(0.19, 0.86, -0.06), Vector3(0.23, 1.4, 0.06), shirt]]:
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		var a: Vector3 = b[0]
+		var c: Vector3 = b[1]
+		bm.size = c - a
+		mi.mesh = bm
+		mi.material_override = b[2]
+		mi.position = (a + c) * 0.5
+		body.add_child(mi)
 
 # heading as the web uses it: world math angle, π/2 = facing north (+y)
 func heading() -> float:
@@ -136,4 +166,5 @@ func _physics_process(dt: float) -> void:
 			global_position = Vector3(3, 0.1, -3)
 			velocity = Vector3.ZERO
 	cam.position.y = EYE - 0.7 * crouch
+	body.scale.y = (EYE - 0.7 * crouch) / EYE
 	cam.rotation.x = pitch

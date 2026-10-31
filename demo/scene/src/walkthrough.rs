@@ -688,11 +688,11 @@ pub fn sources() -> [SourceDef; 16] {
         },
         SourceDef {
             name: "voice",
-            z: 1.5,
-            pos: (10.5, 20.5),
+            z: NARRATOR_MOUTH.2,
+            pos: (NARRATOR_MOUTH.0, NARRATOR_MOUTH.1),
             room: HALL,
             gain: 0.5,
-            emitters: &[(10.5, 20.5)],
+            emitters: &[(NARRATOR_MOUTH.0, NARRATOR_MOUTH.1)],
         },
         SourceDef {
             name: "club",
@@ -706,11 +706,11 @@ pub fn sources() -> [SourceDef; 16] {
         },
         SourceDef {
             name: "flute",
-            z: 1.5,
-            pos: (8.0, 66.0),
+            z: FLAUTIST_MOUTH.2,
+            pos: (FLAUTIST_MOUTH.0, FLAUTIST_MOUTH.1),
             room: CATHEDRAL,
             gain: 1.0,
-            emitters: &[(8.0, 66.0)],
+            emitters: &[(FLAUTIST_MOUTH.0, FLAUTIST_MOUTH.1)],
         },
         SourceDef {
             name: "radio",
@@ -783,11 +783,11 @@ pub fn sources() -> [SourceDef; 16] {
         // a speaker standing on it, projecting.
         SourceDef {
             name: "stage",
-            pos: RADOME.center,
+            pos: (SINGER_MOUTH.0, SINGER_MOUTH.1),
             room: OUTSIDE,
             gain: 1.0,
-            z: RADOME.stage_h + 1.6,
-            emitters: &[RADOME.center],
+            z: SINGER_MOUTH.2,
+            emitters: &[(SINGER_MOUTH.0, SINGER_MOUTH.1)],
         },
     ]
 }
@@ -918,6 +918,13 @@ pub enum Kind {
     /// A fabric-wrapped mineral-wool panel hung on a wall (a room's
     /// acoustic treatment): its back to the wall.
     AbsorberPanel,
+    /// A person standing, to the shoulders (`PERSON`): legs, torso and
+    /// arms; its head (`Kind::Head`) on top. Its front where it faces; a
+    /// voice it sounds comes from its mouth (`Piece::mouth`).
+    Person,
+    /// A person's head (`HEAD`), on their shoulders: narrow — over the
+    /// shoulders a voice passes round it.
+    Head,
 }
 
 /// How a piece must stand relative to the room's walls.
@@ -982,6 +989,8 @@ impl Kind {
             Font => "font",
             Barrel => "barrel",
             AbsorberPanel => "absorber_panel",
+            Person => "person",
+            Head => "head",
         }
     }
 
@@ -1045,6 +1054,8 @@ impl Kind {
             Locker => 0x48523e,
             CoatRack => 0x3a2a1e,
             AbsorberPanel => 0x2c2833,
+            Person => 0x4a5a78,
+            Head => 0xc89a78,
         }
     }
 }
@@ -1065,6 +1076,12 @@ pub enum FurnMat {
     Panel,
     /// Acoustic treatment: 10 cm of mineral wool (`Material::ABSORBER`).
     Absorber,
+    /// A person (`Kind::Person`): a standing, lightly clad person absorbs
+    /// ~0.15 / 0.45 / 0.6 m² (125 Hz / 1 kHz / 4 kHz; the per-person
+    /// tables of Beranek and Kuttruff) — over the box's 2.9 m², 0.05 /
+    /// 0.15 / 0.2; nothing worth hearing passes through a body (≥ 40 dB:
+    /// 250 kg/m² of water), it goes round.
+    Body,
 }
 
 impl FurnMat {
@@ -1077,6 +1094,7 @@ impl FurnMat {
             FurnMat::Books => "books",
             FurnMat::Panel => "panel",
             FurnMat::Absorber => "absorber",
+            FurnMat::Body => "body",
         }
     }
 
@@ -1118,6 +1136,11 @@ impl FurnMat {
                 transmission: [0.4, 0.2, 0.08],
             },
             FurnMat::Absorber => Material::ABSORBER,
+            FurnMat::Body => Material {
+                absorption: [0.05, 0.15, 0.2],
+                scattering: 0.5,
+                transmission: [0.01, 0.001, 0.0001],
+            },
         }
     }
 }
@@ -1171,6 +1194,25 @@ impl Piece {
         )
     }
 
+    /// Where a person's voice comes from (`Kind::Person`; room-local, or
+    /// world for a piece in world coordinates): 5 cm before the middle of
+    /// their face (the head's front, `HEAD`), `MOUTH_Z` over their feet.
+    pub const fn mouth(&self) -> (f32, f32, f32) {
+        let (fx, fy) = match self.yaw.rem_euclid(360) {
+            0 => (0.0, 1.0),
+            90 => (-1.0, 0.0),
+            180 => (0.0, -1.0),
+            _ => (1.0, 0.0),
+        };
+        let r = 0.5 * HEAD.1 + 0.05;
+        (self.c.0 + fx * r, self.c.1 + fy * r, self.z0 + MOUTH_Z)
+    }
+
+    /// A person's head on their shoulders (`Kind::Person`'s other piece).
+    pub const fn head(&self) -> Piece {
+        Piece { kind: Kind::Head, c: self.c, size: HEAD, yaw: self.yaw, z0: self.z0 + PERSON.2, mat: self.mat }
+    }
+
     /// The tracer's box (room-local) with the material's transmission.
     pub fn aabb(&self) -> omg_core::pt::Aabb {
         let (a, b) = self.local_box();
@@ -1181,6 +1223,30 @@ impl Piece {
         }
     }
 }
+
+/// A person standing: shoulders, chest and shoulder height (m).
+pub const PERSON: (f32, f32, f32) = (0.46, 0.28, 1.44);
+/// Their head on top: width, depth, height (1.72 m tall in all).
+pub const HEAD: (f32, f32, f32) = (0.18, 0.22, 0.28);
+/// A person's mouth over their feet (m): ~0.91 of their height.
+pub const MOUTH_Z: f32 = 1.56;
+
+/// The narrator behind the Great Hall's lectern, facing the seats (west):
+/// room-local; the voice comes from their mouth.
+const NARRATOR: Piece = pc(Kind::Person, 10.45, 6.5, PERSON.0, PERSON.1, PERSON.2, FACE_W, FurnMat::Body);
+/// The flautist in the cathedral's chancel, facing the nave (south).
+const FLAUTIST: Piece = pc(Kind::Person, 8.0, 14.4, PERSON.0, PERSON.1, PERSON.2, FACE_S, FurnMat::Body);
+/// The singer on the radar dome's stage, facing its doorway (east) — in
+/// WORLD coordinates (the dome is no room: `dome::radome` builds it with
+/// the stage).
+pub const STAGE_SINGER: Piece = up(Kind::Person, RADOME.center.0 - 0.1, RADOME.center.1, PERSON.0, PERSON.1, PERSON.2, FACE_E, RADOME.stage_h, FurnMat::Body);
+const fn world_mouth(p: Piece, room_min: (f32, f32)) -> (f32, f32, f32) {
+    let m = p.mouth();
+    (m.0 + room_min.0, m.1 + room_min.1, m.2)
+}
+const NARRATOR_MOUTH: (f32, f32, f32) = world_mouth(NARRATOR, (0.0, 14.0));
+const FLAUTIST_MOUTH: (f32, f32, f32) = world_mouth(FLAUTIST, (0.0, 52.0));
+const SINGER_MOUTH: (f32, f32, f32) = STAGE_SINGER.mouth();
 
 /// A floor-standing piece: kind, centre (x, y), size (w, d, h), yaw, material.
 #[allow(clippy::too_many_arguments)]
@@ -1272,6 +1338,8 @@ pub fn layout(room: usize) -> &'static [Piece] {
         pc(SeatRow, 3.225, 5.0, 1.6, 0.45, 0.85, E, Wood),
         pc(SeatRow, 3.225, 8.0, 1.6, 0.45, 0.85, E, Wood),
         pc(Lectern, 9.75, 6.5, 0.6, 0.5, 1.15, W, Cabinet),
+        NARRATOR,
+        NARRATOR.head(),
         up(Whiteboard, 13.86, 6.5, 3.0, 0.12, 1.2, W, 0.9, Panel),
         pc(Whiteboard, 13.72, 9.2, 0.7, 0.4, 1.7, W, Panel),
         pc(Desk, 12.9, 3.0, 1.6, 0.72, 0.75, E, Wood),
@@ -1390,6 +1458,8 @@ pub fn layout(room: usize) -> &'static [Piece] {
     // flautist plays in the open chancel between the front pews and the
     // altar.
     static CATHEDRAL_L: &[Piece] = &[
+        FLAUTIST,
+        FLAUTIST.head(),
         pc(Pillar, 4.0, 3.0, 0.9, 0.9, 8.5, N, Stone),
         pc(Pillar, 4.0, 6.2, 0.9, 0.9, 8.5, N, Stone),
         pc(Pillar, 4.0, 9.4, 0.9, 0.9, 8.5, N, Stone),
@@ -1568,6 +1638,24 @@ pub fn layout_json() -> String {
     fn arr(v: &[f32]) -> String {
         format!("[{}]", v.iter().map(|&x| n(x)).collect::<Vec<_>>().join(", "))
     }
+    // one piece, offset into the world
+    let piece_json = |p: &Piece, ox: f32, oy: f32, oz: f32| -> String {
+        let (a, b) = p.local_box();
+        let f = p.facing();
+        format!(
+            "{{ \"kind\": \"{}\", \"pos\": {}, \"size\": {}, \"yaw\": {}, \"facing\": {}, \"min\": {}, \"max\": {}, \"material\": \"{}\", \"acoustic\": {}, \"color\": \"#{:06x}\" }}",
+            p.kind.name(),
+            arr(&[p.c.0 + ox, p.c.1 + oy, p.z0 + oz]),
+            arr(&[p.size.0, p.size.1, p.size.2]),
+            p.yaw.rem_euclid(360),
+            arr(&[f.0, f.1]),
+            arr(&[a[0] + ox, a[1] + oy, a[2] + oz]),
+            arr(&[b[0] + ox, b[1] + oy, b[2] + oz]),
+            p.mat.name(),
+            p.kind.acoustic(),
+            p.kind.color(),
+        )
+    };
     let rooms = rooms();
     let mut o = String::new();
     o.push_str("{\n");
@@ -1612,22 +1700,8 @@ pub fn layout_json() -> String {
         o.push_str("      \"furniture\": [");
         let pieces = layout(ri);
         for (j, p) in pieces.iter().enumerate() {
-            let (a, b) = p.local_box();
-            let f = p.facing();
-            o.push_str(if j == 0 { "\n" } else { ",\n" });
-            o.push_str(&format!(
-                "        {{ \"kind\": \"{}\", \"pos\": {}, \"size\": {}, \"yaw\": {}, \"facing\": {}, \"min\": {}, \"max\": {}, \"material\": \"{}\", \"acoustic\": {}, \"color\": \"#{:06x}\" }}",
-                p.kind.name(),
-                arr(&[p.c.0 + ox, p.c.1 + oy, p.z0 + oz]),
-                arr(&[p.size.0, p.size.1, p.size.2]),
-                p.yaw.rem_euclid(360),
-                arr(&[f.0, f.1]),
-                arr(&[a[0] + ox, a[1] + oy, a[2] + oz]),
-                arr(&[b[0] + ox, b[1] + oy, b[2] + oz]),
-                p.mat.name(),
-                p.kind.acoustic(),
-                p.kind.color(),
-            ));
+            o.push_str(if j == 0 { "\n        " } else { ",\n        " });
+            o.push_str(&piece_json(p, ox, oy, oz));
         }
         o.push_str(if pieces.is_empty() { "]\n" } else { "\n      ]\n" });
         o.push_str(if k + 1 == listed.len() { "    }\n" } else { "    },\n" });
@@ -1643,7 +1717,7 @@ pub fn layout_json() -> String {
             .join(", ")
     ));
     o.push_str(&format!(
-        "  \"radome\": {{ \"center\": {}, \"radius\": {}, \"center_z\": {}, \"door_w\": {}, \"door_h\": {}, \"stage_r\": {}, \"stage_h\": {}, \"subdiv\": {}, \"material\": \"radome\" }},\n",
+        "  \"radome\": {{ \"center\": {}, \"radius\": {}, \"center_z\": {}, \"door_w\": {}, \"door_h\": {}, \"stage_r\": {}, \"stage_h\": {}, \"subdiv\": {}, \"material\": \"radome\", \"singer\": {} }},\n",
         arr(&[RADOME.center.0, RADOME.center.1]),
         n(RADOME.radius),
         n(RADOME.center_z),
@@ -1651,7 +1725,8 @@ pub fn layout_json() -> String {
         n(RADOME.door_h),
         n(RADOME.stage_r),
         n(RADOME.stage_h),
-        RADOME.subdiv
+        RADOME.subdiv,
+        format!("{}, \"singer_head\": {}", piece_json(&STAGE_SINGER, 0.0, 0.0, 0.0), piece_json(&STAGE_SINGER.head(), 0.0, 0.0, 0.0))
     ));
     o.push_str("  \"ground\": [\n");
     let out = rooms.iter().find(|r| r.outdoor).expect("an outdoor room");

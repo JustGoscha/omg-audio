@@ -17,8 +17,10 @@ static func spl(authored_gain: float, anchor: float, fader: float) -> float:
 # name, plan position, z, loop file, level (dB SPL @ 1 m)
 var STATIC := [
 	["music", Vector2(2, 3), 1.5, "aria48.ogg", spl(1.0, 90, 72)],
-	["voice", Vector2(10.5, 20.5), 1.5, "alice48.ogg", spl(0.5, 84, 65)],
-	["flute", Vector2(8, 66), 1.5, "flute48.ogg", spl(1.0, 88, 76)],
+	# the people's voices at their mouths (layout.json's persons: 6 cm
+	# before the chest, 1.56 m up)
+	["voice", Vector2(10.25, 20.5), 1.56, "alice48.ogg", spl(0.5, 84, 65)],
+	["flute", Vector2(8, 66.2), 1.56, "flute48.ogg", spl(1.0, 88, 76)],
 	["radio", Vector2(37.5, 12.5), -1.5, "radio48.ogg", spl(0.5, 80, 56)],
 	["owl·cathedral", Vector2(4, 53), 24.25, "", spl(1.6, 74, 66)],
 	["owl·house", Vector2(27.5, 19.5), 6.3, "", spl(1.4, 74, 66)],
@@ -26,7 +28,7 @@ var STATIC := [
 	["fountain", DemoLevel.FOUNTAIN, 0.8, "fountain48.ogg", spl(0.2, 76, 76)],
 	# a woman humming quietly on the radar dome's stage (layout.json
 	# "radome"; a dry take: the dome's echo is the engine's) — 60 dB at 1 m
-	["stage", Vector2(-42, 30), 2.4, "hum48.ogg", spl(1.0, 84, 54)],
+	["stage", Vector2(-41.9, 30), 2.36, "hum48.ogg", spl(1.0, 84, 54)],
 ]
 # The recordings that loop take a break after each pass: they play, ring
 # out through the town, and start again (the fountain runs on).

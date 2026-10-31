@@ -74,10 +74,12 @@ const WINDOWS = [
 ];
 const SOURCES = [
   { name: 'music', pos: [2, 3], color: 0xffaa3c },
-  { name: 'voice', pos: [10.5, 20.5], color: 0x6ee0a0 },
+  // the people's voices at their mouths (layout.json's persons: 6 cm
+  // before the chest, 1.56 m up)
+  { name: 'voice', pos: [10.25, 20.5], z: 1.56, color: 0x6ee0a0 },
   { name: 'club', pos: [31, 32], color: 0xff5a9e,
     emitters: [[27.5, 27.5], [34.5, 27.5], [27.5, 36.5], [34.5, 36.5]] },
-  { name: 'flute', pos: [8, 66], color: 0x9ad2ff },
+  { name: 'flute', pos: [8, 66.2], z: 1.56, color: 0x9ad2ff },
   { name: 'radio', pos: [37.5, 12.5], z: -2.1, color: 0xd2b06e },
   { name: 'owl', pos: [4, 53], z: 24.25, color: 0xcfd8e6 }, // on the nave roof
   { name: 'owl', pos: [27.5, 19.5], z: 5.6, color: 0xcfd8e6 },
@@ -85,7 +87,7 @@ const SOURCES = [
   // appended after the sim's dynamic slots (balls, cars, feet = 8..13)
   { name: 'fountain', index: 14, pos: [14.2, 199], z: 0.8, color: 0x7fd8ff },
   // a voice on the radar dome's stage (walkthrough::RADOME, layout.json "radome")
-  { name: 'stage', index: 15, pos: [-42, 30], z: 2.4, color: 0xe8e0ff },
+  { name: 'stage', index: 15, pos: [-41.9, 30], z: 2.36, color: 0xe8e0ff },
 ];
 // the room sources stand where the layout puts them (the piano, the
 // lectern, the bunker table …); index-aligned with the sim's sources()
@@ -909,6 +911,12 @@ function buildRadome(rd) {
   const light = new THREE.PointLight(0xfff2dd, 1.6, rd.radius * 2.2);
   light.position.copy(v3(cx, cy, rd.center_z + rd.radius * 0.6));
   scene.add(light);
+  // the singer on the stage (a person: the voice at their mouth)
+  for (const p of [rd.singer, rd.singer_head]) {
+    if (!p) continue;
+    scene.add(buildPiece(p));
+    FURNITURE.push([...p.min, ...p.max]);
+  }
 }
 
 function addBox(cx, cy, cz, sx, sy, sz, mat = wallMat) {
@@ -1892,6 +1900,29 @@ function buildPiece(p) {
         const cw = Math.min(0.17, w / coats.length / 2 - 0.01);
         part(u - cw, -D + 0.04, 0.85, u + cw, -D + 0.26, 1.5, c);
       });
+      break;
+    }
+    case 'person': {
+      // a blocky person to the shoulders, front +v: legs, torso, arms (the
+      // head is its own piece) — their body in their voice's way behind
+      // them (acoustic: the sim's "body" boxes)
+      const k = Math.abs(Math.round(p.pos[0]) * 31 + Math.round(p.pos[1]));
+      const shirt = [0x8c2e33, 0x33528c, 0x40734d, 0x806b33][k % 4];
+      part(-W + 0.06, -0.08, 0, -0.03, 0.08, 0.84, 0x1f1f26);
+      part(0.03, -0.08, 0, W - 0.06, 0.08, 0.84, 0x1f1f26);
+      part(-W + 0.04, -D + 0.02, 0.84, W - 0.04, D - 0.02, h, shirt);
+      part(-W, -0.06, 0.86, -W + 0.04, 0.06, h - 0.02, shirt);
+      part(W - 0.04, -0.06, 0.86, W, 0.06, h - 0.02, shirt);
+      break;
+    }
+    case 'head': {
+      // neck, head, hair, a mouth on its front (+v)
+      const k = Math.abs(Math.round(p.pos[0]) * 31 + Math.round(p.pos[1]));
+      const skin = [0xdbb08f, 0x9e7354, 0x6b4d38][k % 3];
+      part(-0.05, -0.05, 0, 0.05, 0.05, 0.05, skin);
+      part(-W, -D, 0.05, W, D, h, skin);
+      part(-W - 0.005, -D - 0.005, h - 0.06, W + 0.005, 0.04, h + 0.01, 0x1a120d);
+      part(-0.035, D, 0.115, 0.035, D + 0.005, 0.13, 0x5a1f1f);
       break;
     }
     case 'absorber_panel':

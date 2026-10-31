@@ -95,14 +95,14 @@ fn batched_solve_matches_cpu_records() {
     // three listener contexts: hall interior, corridor near a door,
     // outside on the square — different chain populations
     let spots = [
-        Vec3::new(10.5, 20.5, 1.6),
+        Vec3::new(9.5, 19.5, 1.6),
         Vec3::new(4.4, 7.5, 1.6),
         Vec3::new(7.0, 27.0, 1.6),
     ];
     // a spread of sources: real emitter spots + heights, some through
     // walls, some co-located with the listener's room
     let srcs: Vec<(u16, Vec3)> = vec![
-        (8, Vec3::new(10.5, 20.5, 1.2)),
+        (8, Vec3::new(10.25, 20.5, 1.56)),
         (16, Vec3::new(2.0, 2.0, 1.0)),
         (24, Vec3::new(31.5, 18.0, 1.4)),
         (32, Vec3::new(7.0, 30.0, 1.7)),

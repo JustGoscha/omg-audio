@@ -28,7 +28,7 @@ fn db(v: f32) -> f32 {
 fn doorway_walk_in_is_continuous() {
     quality::set_early(1);
     let mut w = WorldSim::new();
-    const VOICE: usize = 1; // Great Hall, (10.5, 20.5)
+    const VOICE: usize = 1; // Great Hall, the narrator's mouth (10.25, 20.5)
     let mut prev = f32::NAN;
     let mut y = 27.0f32;
     while y >= 17.0 {

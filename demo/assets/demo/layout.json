@@ -67,6 +67,8 @@
         { "kind": "seat_row", "pos": [3.225, 19, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [3, 18.2, 0], "max": [3.45, 19.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
         { "kind": "seat_row", "pos": [3.225, 22, 0], "size": [1.6, 0.45, 0.85], "yaw": 270, "facing": [1, 0], "min": [3, 21.2, 0], "max": [3.45, 22.8, 0.85], "material": "wood", "acoustic": true, "color": "#35404f" },
         { "kind": "lectern", "pos": [9.75, 20.5, 0], "size": [0.6, 0.5, 1.15], "yaw": 90, "facing": [-1, 0], "min": [9.5, 20.2, 0], "max": [10, 20.8, 1.15], "material": "cabinet", "acoustic": true, "color": "#5a4530" },
+        { "kind": "person", "pos": [10.45, 20.5, 0], "size": [0.46, 0.28, 1.44], "yaw": 90, "facing": [-1, 0], "min": [10.31, 20.27, 0], "max": [10.59, 20.73, 1.44], "material": "body", "acoustic": true, "color": "#4a5a78" },
+        { "kind": "head", "pos": [10.45, 20.5, 1.44], "size": [0.18, 0.22, 0.28], "yaw": 90, "facing": [-1, 0], "min": [10.34, 20.41, 1.44], "max": [10.56, 20.59, 1.72], "material": "body", "acoustic": true, "color": "#c89a78" },
         { "kind": "whiteboard", "pos": [13.86, 20.5, 0.9], "size": [3, 0.12, 1.2], "yaw": 90, "facing": [-1, 0], "min": [13.8, 19, 0.9], "max": [13.92, 22, 2.1], "material": "panel", "acoustic": true, "color": "#d8d8d0" },
         { "kind": "whiteboard", "pos": [13.72, 23.2, 0], "size": [0.7, 0.4, 1.7], "yaw": 90, "facing": [-1, 0], "min": [13.52, 22.85, 0], "max": [13.92, 23.55, 1.7], "material": "panel", "acoustic": true, "color": "#d8d8d0" },
         { "kind": "desk", "pos": [12.9, 17, 0], "size": [1.6, 0.72, 0.75], "yaw": 270, "facing": [1, 0], "min": [12.54, 16.2, 0], "max": [13.26, 17.8, 0.75], "material": "wood", "acoustic": true, "color": "#4a3626" },
@@ -203,6 +205,8 @@
       "keep_clear": [{ "name": "chancel", "min": [5, 63], "max": [11, 67.5] }],
       "spots": [{ "name": "hub", "pos": [8, 64] }],
       "furniture": [
+        { "kind": "person", "pos": [8, 66.4, 0], "size": [0.46, 0.28, 1.44], "yaw": 180, "facing": [0, -1], "min": [7.77, 66.26, 0], "max": [8.23, 66.54, 1.44], "material": "body", "acoustic": true, "color": "#4a5a78" },
+        { "kind": "head", "pos": [8, 66.4, 1.44], "size": [0.18, 0.22, 0.28], "yaw": 180, "facing": [0, -1], "min": [7.91, 66.29, 1.44], "max": [8.09, 66.51, 1.72], "material": "body", "acoustic": true, "color": "#c89a78" },
         { "kind": "pillar", "pos": [4, 55, 0], "size": [0.9, 0.9, 8.5], "yaw": 0, "facing": [0, 1], "min": [3.55, 54.55, 0], "max": [4.45, 55.45, 8.5], "material": "stone", "acoustic": true, "color": "#4c4c58" },
         { "kind": "pillar", "pos": [4, 58.2, 0], "size": [0.9, 0.9, 8.5], "yaw": 0, "facing": [0, 1], "min": [3.55, 57.75, 0], "max": [4.45, 58.65, 8.5], "material": "stone", "acoustic": true, "color": "#4c4c58" },
         { "kind": "pillar", "pos": [4, 61.4, 0], "size": [0.9, 0.9, 8.5], "yaw": 0, "facing": [0, 1], "min": [3.55, 60.95, 0], "max": [4.45, 61.85, 8.5], "material": "stone", "acoustic": true, "color": "#4c4c58" },
@@ -255,7 +259,7 @@
     }
   ],
   "canyon": { "height": 24, "material": "rock", "cliffs": [{ "min": [-12, -120], "max": [-6, -70] }, { "min": [34, -120], "max": [40, -70] }] },
-  "radome": { "center": [-42, 30], "radius": 12, "center_z": 4, "door_w": 3, "door_h": 3.2, "stage_r": 2.5, "stage_h": 0.8, "subdiv": 4, "material": "radome" },
+  "radome": { "center": [-42, 30], "radius": 12, "center_z": 4, "door_w": 3, "door_h": 3.2, "stage_r": 2.5, "stage_h": 0.8, "subdiv": 4, "material": "radome", "singer": { "kind": "person", "pos": [-42.1, 30, 0.8], "size": [0.46, 0.28, 1.44], "yaw": 270, "facing": [1, 0], "min": [-42.24, 29.77, 0.8], "max": [-41.96, 30.23, 2.24], "material": "body", "acoustic": true, "color": "#4a5a78" }, "singer_head": { "kind": "head", "pos": [-42.1, 30, 2.24], "size": [0.18, 0.22, 0.28], "yaw": 270, "facing": [1, 0], "min": [-42.21, 29.91, 2.24], "max": [-41.99, 30.09, 2.52], "material": "body", "acoustic": true, "color": "#c89a78" } },
   "ground": [
     { "name": "square", "surface": "paving", "min": [5.5, 24.2], "max": [21.5, 44] },
     { "name": "lane to the old house", "surface": "paving", "min": [21.5, 23.2], "max": [34.5, 26] },
@@ -273,14 +277,14 @@
   ],
   "sources": [
     { "index": 0, "name": "music", "room": 0, "pos": [2, 3, 1.5], "emitters": [[2, 3]] },
-    { "index": 1, "name": "voice", "room": 2, "pos": [10.5, 20.5, 1.5], "emitters": [[10.5, 20.5]] },
+    { "index": 1, "name": "voice", "room": 2, "pos": [10.29, 20.5, 1.56], "emitters": [[10.29, 20.5]] },
     { "index": 2, "name": "club", "room": 4, "pos": [31, 32, 1.5], "emitters": [[27.5, 27.5], [34.5, 27.5], [27.5, 36.5], [34.5, 36.5]] },
-    { "index": 3, "name": "flute", "room": 9, "pos": [8, 66, 1.5], "emitters": [[8, 66]] },
+    { "index": 3, "name": "flute", "room": 9, "pos": [8, 66.24, 1.56], "emitters": [[8, 66.24]] },
     { "index": 4, "name": "radio", "room": 10, "pos": [37.5, 12.5, -2.1], "emitters": [[37.5, 12.5]] },
     { "index": 5, "name": "owl·cathedral", "room": 15, "pos": [4, 53, 24.25], "emitters": [[4, 53]] },
     { "index": 6, "name": "owl·house", "room": 15, "pos": [27.5, 19.5, 6.3], "emitters": [[27.5, 19.5]] },
     { "index": 7, "name": "bells", "room": 15, "pos": [10, 321, 25.5], "emitters": [[10, 321]] },
     { "index": 14, "name": "fountain", "room": 15, "pos": [14.2, 199, 0.8], "emitters": [[14.2, 199]] },
-    { "index": 15, "name": "stage", "room": 15, "pos": [-42, 30, 2.4], "emitters": [[-42, 30]] }
+    { "index": 15, "name": "stage", "room": 15, "pos": [-41.94, 30, 2.36], "emitters": [[-41.94, 30]] }
   ]
 }

@@ -1068,6 +1068,10 @@ func _part(parent: Node3D, x0: float, y0: float, z0: float, x1: float, y1: float
 
 # One piece: a root at the footprint's centre (turned by yaw), a
 # low-poly mesh per kind; the acoustic material rides on the root.
+# Which person (a head and a body alike): from where they stand.
+static func _who(mn: Vector3) -> int:
+	return absi(hash(Vector2i(roundi(mn.x), roundi(mn.y))))
+
 func _piece(it: Dictionary) -> void:
 	var mn: Vector3 = it["min"]
 	var mx: Vector3 = it["max"]
@@ -1168,6 +1172,26 @@ func _piece(it: Dictionary) -> void:
 		"lectern":
 			_part(node, -hx, -hy, 0.0, hx, hy, h, dark)
 			_part(decor, -hx - 0.05, -hy - 0.05, h, hx + 0.05, hy + 0.05, h + 0.05, dark, false)
+		"person":
+			# a blocky person to the shoulders, front +y: legs, torso, arms
+			# (the head is its own piece) — their body in their voice's way
+			# behind them (acoustic: "body")
+			var shirts := [Color(0.55, 0.18, 0.2), Color(0.2, 0.32, 0.55), Color(0.25, 0.45, 0.3), Color(0.5, 0.42, 0.2)]
+			var shirt := DemoMats.plain(shirts[_who(mn) % shirts.size()], 0.9)
+			var cloth := DemoMats.plain(Color(0.12, 0.12, 0.15), 0.9)
+			_part(node, -hx + 0.06, -0.08, 0.0, -0.03, 0.08, 0.84, cloth)
+			_part(node, 0.03, -0.08, 0.0, hx - 0.06, 0.08, 0.84, cloth)
+			_part(node, -hx + 0.04, -hy + 0.02, 0.84, hx - 0.04, hy - 0.02, h, shirt)
+			_part(node, -hx, -0.06, 0.86, -hx + 0.04, 0.06, h - 0.02, shirt)
+			_part(node, hx - 0.04, -0.06, 0.86, hx, 0.06, h - 0.02, shirt)
+		"head":
+			# neck, head, hair, a mouth on its front (+y)
+			var skins := [Color(0.86, 0.69, 0.56), Color(0.62, 0.45, 0.33), Color(0.42, 0.3, 0.22)]
+			var skin := DemoMats.plain(skins[_who(mn) % skins.size()], 0.7)
+			_part(node, -0.05, -0.05, 0.0, 0.05, 0.05, 0.05, skin)
+			_part(node, -hx, -hy, 0.05, hx, hy, h, skin)
+			_part(decor, -hx - 0.005, -hy - 0.005, h - 0.06, hx + 0.005, 0.04, h + 0.01, DemoMats.plain(Color(0.1, 0.07, 0.05), 0.9), false)
+			_part(decor, -0.035, hy, 0.115, 0.035, hy + 0.005, 0.13, DemoMats.plain(Color(0.35, 0.12, 0.12), 0.8), false)
 		"absorber_panel":
 			# fabric over mineral wool in a slim black frame, its front +y
 			var cloth := DemoMats.plain(Color(0.2, 0.13, 0.24), 1.0)
@@ -1222,9 +1246,7 @@ func _props() -> void:
 	geo.B(DemoMats.planks(Color(0.6, 0.5, 0.35))).box(37.1, 12.1, -3.0, 37.9, 12.9, -2.2)
 	geo.B(DemoMats.plain(Color(0.45, 0.3, 0.18), 0.5), "", false, false, "radio set: the radio source sits in it").box(37.25, 12.3, -2.2, 37.75, 12.65, -1.88)
 	geo.B(DemoMats.glow(Color(1.0, 0.7, 0.3), 2.0), "", false).box(37.3, 12.29, -2.1, 37.5, 12.3, -2.0)
-	# figures: the narrator behind her lectern, the flautist in the nave
-	_figure(Vector2(10.5, 20.6), 0.0, Color(0.25, 0.35, 0.3))
-	_figure(Vector2(8.0, 66.4), 0.0, Color(0.3, 0.28, 0.4))
+	# (the narrator and the flautist are layout.json's persons: _piece)
 	# lamps inside: warm pools in every room
 	for l in [[Vector3(4, 3, 2.4), Color(1.0, 0.78, 0.5), 2.2, 7.0, true], [Vector3(4, 10, 2.2), Color(1.0, 0.85, 0.65), 1.0, 5.0, false],
 			[Vector3(27, 19.5, 2.5), Color(1.0, 0.75, 0.5), 2.0, 7.0, true],
@@ -1307,18 +1329,6 @@ func _hall_lights() -> void:
 	fill.set_meta("no_shadow", true)
 	fill.set_meta("no_halo", true)
 	root.add_child(fill)
-
-func _figure(at: Vector2, _yaw: float, c: Color) -> void:
-	var body := geo.B(DemoMats.fabric(c))
-	body.box(at.x - 0.2, at.y - 0.13, 0.0, at.x + 0.2, at.y + 0.13, 1.45)
-	var head := MeshInstance3D.new()
-	var s := SphereMesh.new()
-	s.radius = 0.12
-	s.height = 0.26
-	head.mesh = s
-	head.material_override = DemoMats.plain(Color(0.75, 0.6, 0.5), 0.6)
-	head.position = v(at.x, at.y, 1.6)
-	root.add_child(head)
 
 # -------------------------------------------------------- windows & doors
 
@@ -1690,6 +1700,15 @@ func _radome() -> void:
 		if (p[1] - p[0]).cross(p[2] - p[0]).length() < 1e-4:
 			continue # flattened onto the grade
 		skin.tri(p[0], p[1], p[2], (m - c).normalized())
+	# the singer on the stage (a person: their voice at their mouth)
+	for key in ["singer", "singer_head"]:
+		var sg: Dictionary = rd.get(key, {})
+		if sg.is_empty():
+			continue
+		var sc := Vector3(float(sg["pos"][0]), float(sg["pos"][1]), float(sg["pos"][2]))
+		var sz := Vector3(float(sg["size"][0]), float(sg["size"][1]), float(sg["size"][2]))
+		_piece({"kind": str(sg["kind"]), "acoustic": str(sg.get("material", "body")), "yaw": deg_to_rad(float(sg.get("yaw", 0.0))),
+			"min": Vector3(sc.x - sz.x * 0.5, sc.y - sz.y * 0.5, sc.z), "max": Vector3(sc.x + sz.x * 0.5, sc.y + sz.y * 0.5, sc.z + sz.z)})
 	# the stage: a 16-sided wooden drum
 	var sr := float(rd["stage_r"])
 	var sh := float(rd["stage_h"])

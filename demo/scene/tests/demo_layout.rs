@@ -152,7 +152,8 @@ fn pieces_stand_inside_their_rooms_and_never_intersect() {
                 }
             }
             for z in walkthrough::keep_clear(ri) {
-                if rects_overlap(rect_of(p), (z.min, z.max)) {
+                // (a person stands where they play: the flautist in the chancel)
+                if !matches!(p.kind, Kind::Person | Kind::Head) && rects_overlap(rect_of(p), (z.min, z.max)) {
                     errs.push(format!("{tag} stands in the keep-clear zone '{}'", z.name));
                 }
             }
@@ -484,5 +485,30 @@ fn every_kind_is_used_sensibly() {
             };
             assert!(front_gap > 0.4, "{}: a {} faces the wall {front_gap} m away", r.name, p.kind.name());
         }
+    }
+}
+
+/// Every person sounds a voice from their mouth: a source's emitter 6 cm
+/// before the middle of their front face, `MOUTH_Z` up (the room's pieces
+/// room-local, the dome's singer in the world).
+#[test]
+fn voices_come_from_mouths() {
+    let rooms = walkthrough::rooms();
+    let srcs = walkthrough::sources();
+    let mut mouths: Vec<(String, (f32, f32, f32))> = Vec::new();
+    for ri in furnished_rooms() {
+        let r = &rooms[ri];
+        for p in walkthrough::layout(ri).iter().filter(|p| p.kind == Kind::Person) {
+            let m = p.mouth();
+            mouths.push((r.name.to_string(), (m.0 + r.min.0, m.1 + r.min.1, m.2 + r.floor_z)));
+        }
+    }
+    mouths.push(("radar dome".into(), walkthrough::STAGE_SINGER.mouth()));
+    assert_eq!(mouths.len(), 3, "the narrator, the flautist, the singer");
+    for (where_, m) in mouths {
+        let ok = srcs.iter().any(|s| {
+            (s.z - m.2).abs() < 0.01 && s.emitters.iter().any(|e| (e.0 - m.0).abs() < 0.01 && (e.1 - m.1).abs() < 0.01)
+        });
+        assert!(ok, "no voice at the mouth of the person in the {where_}: {m:?}");
     }
 }
