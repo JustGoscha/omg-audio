@@ -47,6 +47,8 @@ pub struct TickCosts {
     pub chains: f32,
     /// Of `chains`, naming them (the mirror rays and the named mirrors).
     pub naming: f32,
+    /// Portals: the enclosed sources' rays (`portal.rs`).
+    pub portals: f32,
     /// The tick's estimates folded into each source's field.
     pub fold: f32,
     /// The world had just changed: this tick traced extra rays for the
@@ -92,6 +94,7 @@ impl Stopwatch {
 
 /// V3.3: the walk run elsewhere (the GPU kernel), folded back here.
 pub mod fold;
+mod portal;
 /// V3.3: the seam an external walker (the GPU kernel) plugs into.
 pub mod walker;
 
@@ -144,6 +147,10 @@ fn chain_finders(budget: Budget) -> usize {
 }
 /// Chains cached per source.
 const MAX_CHAINS: usize = 128;
+/// Portals: rays an enclosed source traces a tick, per late ray of the
+/// listener's (and at least).
+const PORTAL_RAYS_PER_LATE: u32 = 1;
+const PORTAL_MIN_RAYS: u32 = 64;
 /// The fewest chain solves a thread takes at a time (`solve_chain_work`).
 const CHAIN_SOLVES_PER_CHUNK: usize = 16;
 /// Salience: a solved chain plays as a tap when it is this many times
@@ -905,6 +912,13 @@ struct Branch {
     /// walks on from a leaf that wasn't there (`VIRTUAL_P`).
     ev: Events,
     virt: bool,
+    /// Portals (`portal.rs`): crossed an opening already — and since its
+    /// first crossing, how often it reflected and whether it was rough
+    /// (scattered, bent, through a wall or a leaf): a path on from there
+    /// that has both is the record's, not the walk's.
+    crossed: bool,
+    s_refl: u32,
+    s_rough: bool,
 }
 
 impl Branch {
@@ -928,6 +942,9 @@ impl Branch {
             split: false,
             ev: Events::NONE,
             virt: false,
+            crossed: false,
+            s_refl: 0,
+            s_rough: false,
         }
     }
 }
@@ -2326,6 +2343,19 @@ pub struct Tracer {
     /// (`Aperture`): the estimate follows a door every tick and every
     /// frame between (`reprice`); a ray splits at a leaf.
     pub v62: bool,
+    /// Portals (`portal.rs`; v6, the walk on the CPU): what reaches the
+    /// listener from an enclosed source through an opening, estimated
+    /// from the source's side — rays from it record what leaves each
+    /// opening; the listener's walk takes it from there.
+    pub portals: bool,
+    /// Portals: each enclosed source's records (by id), the rays it
+    /// traces a tick, and ∫cos over each direction cell per axis side.
+    portal_state: HashMap<u32, portal::PortalState>,
+    portal_ctab: Vec<Vec<f32>>,
+    portal_air: Vec<[f32; NBANDS]>,
+    /// What the last tick's walk deposited per source (id, per band: the
+    /// estimate before averaging — tests compare estimators by it).
+    pub walked: Vec<(u32, [f32; NBANDS])>,
     /// The last tick's cost by part.
     pub costs: TickCosts,
     /// Threads the ray walk is spread over (1: the tick's own; wasm walks
@@ -2695,6 +2725,11 @@ impl Tracer {
             v6: false,
             v61: false,
             v62: false,
+            portals: false,
+            portal_state: HashMap::default(),
+            portal_ctab: Vec::new(),
+            portal_air: Vec::new(),
+            walked: Vec::new(),
             costs: TickCosts::default(),
             late_pool: std::collections::VecDeque::new(),
             late_pool_sig: 0,
@@ -2912,6 +2947,7 @@ impl Tracer {
 
         // 2. the ray walk, both families
         let sky_acc = self.walk_rays(world, listener, sources, budget, &vis, true, &mut accs, &mut dbg);
+        self.walked = sources.iter().zip(&accs).map(|(s, a)| (s.id, a.total)).collect();
 
         if debug {
             dbg.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -3097,6 +3133,67 @@ impl Tracer {
             })
             .map(|r| if r <= WALL_SPLIT_M { r } else { 0.0 })
             .collect();
+        // portals: an enclosed source's records of what leaves the
+        // openings, this tick's rays into its running mean — only with
+        // both families walked here (a GPU walk's early family doesn't
+        // leave the record's paths out)
+        let portal_on = self.portals && self.v62 && !self.v4 && early && !world.apertures.is_empty();
+        let portal: Vec<bool> = rooms.iter().map(|&r| portal_on && r > 0.0).collect();
+        if portal_on {
+            let clock = Stopwatch::start();
+            if self.portal_ctab.is_empty() {
+                self.portal_ctab = portal::cos_tables(&self.cells);
+                self.portal_air = portal::air_table();
+            }
+            let sig = self.world_sig;
+            let rays = (budget.late_rays * PORTAL_RAYS_PER_LATE).max(PORTAL_MIN_RAYS);
+            // each source on a thread of the walk's, its own random
+            // numbers (from the tick's and its index): the same records
+            // however many threads trace them
+            let tick_seed = self.rng.next_u64();
+            let which: Vec<usize> = (0..sources.len()).filter(|&si| portal[si]).collect();
+            let (cells, ctab, edges_ref) = (&self.cells, &self.portal_ctab, edges.as_ref());
+            let trace = |sc: &mut WalkScratch, si: usize| {
+                let mut rng = Rng::new(ray_seed(tick_seed ^ (si as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)));
+                portal::trace_source(world, edges_ref, &mut sc.marks, &mut sc.hits, cells, ctab, sources[si].pos, rays, budget.diffraction, &mut rng)
+            };
+            let mut fresh: Vec<(usize, HashMap<(u32, u8), portal::Record>)> = Vec::new();
+            #[cfg(not(target_arch = "wasm32"))]
+            if threads > 1 && which.len() > 1 {
+                let next = std::sync::atomic::AtomicUsize::new(0);
+                let (trace, next, which) = (&trace, &next, &which);
+                fresh = std::thread::scope(|s| {
+                    let workers: Vec<_> = self.scratch[..threads]
+                        .iter_mut()
+                        .take(which.len())
+                        .map(|sc| {
+                            s.spawn(move || {
+                                let mut mine = Vec::new();
+                                loop {
+                                    let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    if k >= which.len() {
+                                        break;
+                                    }
+                                    mine.push((which[k], trace(sc, which[k])));
+                                }
+                                mine
+                            })
+                        })
+                        .collect();
+                    workers.into_iter().flat_map(|w| w.join().expect("a portal thread panicked")).collect()
+                });
+            }
+            if fresh.is_empty() {
+                let sc = &mut self.scratch[0];
+                fresh = which.iter().map(|&si| (si, trace(sc, si))).collect();
+            }
+            fresh.sort_by_key(|f| f.0);
+            for (si, rec) in fresh {
+                self.portal_state.entry(sources[si].id).or_default().fold(rec, sources[si].pos, sig);
+            }
+            self.costs.portals = clock.ms();
+        }
+        self.portal_state.retain(|id, _| sources.iter().zip(&portal).any(|(s, &p)| p && s.id == *id));
         let cx = WalkCtx {
             world,
             listener,
@@ -3113,6 +3210,8 @@ impl Tracer {
             virtuals: self.rest < self.memory,
             v62: self.v62,
             rooms: &rooms,
+            portal_on,
+            portal: &portal,
         };
         for (fi, (dirs, lo, hi, segments, nee)) in fams.into_iter().enumerate() {
             if dirs.is_empty() || lo > hi {
@@ -3153,6 +3252,17 @@ impl Tracer {
                         }
                         if n > 0 && n != OVERFLOW {
                             accs[si as usize].record(e, delay, &out.evs[at as usize..at as usize + n as usize], world.apertures, virt);
+                        }
+                    }
+                    // portals: each crossing, what the opening's record
+                    // brings each enclosed source
+                    for d in &out.portals {
+                        for (si, s) in sources.iter().enumerate() {
+                            if !portal[si] {
+                                continue;
+                            }
+                            let Some(rec) = self.portal_state.get(&s.id).and_then(|st| st.recs.get(&(d.ap, d.side))) else { continue };
+                            portal::deposit_portal(&mut accs[si], cx.cells, &self.portal_air, rec, d.cell as usize, d.w, d.delay, d.first);
                         }
                     }
                 }
@@ -4207,6 +4317,10 @@ struct WalkCtx<'a> {
     /// v6.2: per source, the size of the room it sounds in (the farthest
     /// of six walls around it), 0 when it isn't enclosed (outdoors).
     rooms: &'a [f32],
+    /// Portals: on this walk, and per source whether a record carries
+    /// what reaches it through openings (enclosed sources).
+    portal_on: bool,
+    portal: &'a [bool],
 }
 
 /// One family of rays (`walk_rays`): the reflection orders it counts,
@@ -4251,6 +4365,53 @@ struct ChunkOut {
     rays: Vec<(bool, u32, Option<LateRecord>)>,
     /// Debug: the paths found (source id, mid energy, vertices, end).
     dbg: Vec<(u32, f32, Vec<Vec3>, Vec3)>,
+    /// Portals: first crossings (`PortalDep`).
+    portals: Vec<PortalDep>,
+}
+
+/// A walk's first crossing of an opening (portals): the aperture's id,
+/// the side its record leaves toward (the walk's), the direction cell
+/// of what comes from it, the walk's weight there (throughput, its share
+/// 4π/n: the air is paid on the whole path), the delay to there, the
+/// ray's first direction.
+#[derive(Clone, Copy)]
+struct PortalDep {
+    ap: u32,
+    side: u8,
+    cell: u16,
+    w: [f32; NBANDS],
+    delay: f32,
+    first: Vec3,
+}
+
+/// The first opening the segment a→b passes, and where.
+fn first_crossing(aps: &[Aperture], a: Vec3, b: Vec3) -> Option<(Vec3, &Aperture)> {
+    let mut best: Option<(Vec3, &Aperture)> = None;
+    for ap in aps {
+        if let Some(x) = ap.crossed_by(a, b) {
+            if best.is_none_or(|(y, _)| (x - a).length() < (y - a).length()) {
+                best = Some((x, ap));
+            }
+        }
+    }
+    best
+}
+
+/// A walk crossing `ap` at `x` on its way from `from` along `dir`
+/// (`length` behind it there, throughput `thr`): its portal deposit.
+#[allow(clippy::too_many_arguments)]
+fn portal_dep(cx: &WalkCtx, ap: &Aperture, x: Vec3, from: Vec3, dir: Vec3, length: f32, thr: [f32; NBANDS], inv_n: f32, first: Vec3) -> PortalDep {
+    let l = length + (x - from).length();
+    let share = 4.0 * core::f32::consts::PI * inv_n;
+    let back = dir * -1.0;
+    PortalDep {
+        ap: ap.id,
+        side: portal::side_of(ap, back),
+        cell: cell_index(cx.cells, back) as u16,
+        w: core::array::from_fn(|b| thr[b] * share),
+        delay: l / SPEED_OF_SOUND,
+        first,
+    }
 }
 
 /// Chunks per walking thread (`walk_chunks`): long late rays balance
@@ -4367,6 +4528,9 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         mut split,
         mut ev,
         virt,
+        mut crossed,
+        mut s_refl,
+        mut s_rough,
     } = br;
     let aps = world.apertures;
     if debug {
@@ -4435,6 +4599,9 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                     split,
                     ev: vev,
                     virt: true,
+                    crossed,
+                    s_refl,
+                    s_rough,
                 });
             }
         }
@@ -4443,6 +4610,10 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
         // source's REAL position — except the exact solver's own
         if (specular || bent) && counts(refl) {
             for (si, s) in sources.iter().enumerate() {
+                // past an opening, reflected and rough: the record's
+                if crossed && s_refl >= 1 && s_rough && cx.portal[si] {
+                    continue;
+                }
                 // where it emitted what this path brings now
                 let Some(sp) = cx.motion.emit(si, s.pos, origin, length) else { continue };
                 let to = sp - origin;
@@ -4508,11 +4679,26 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
             }
         }
 
+        // portals: the first opening this segment passes (its open part:
+        // a leaf stops the segment) — what comes through it from there is
+        // the record's (`portal.rs`)
+        if !virt && !crossed && cx.portal_on {
+            if let Some((q, ap)) = first_crossing(aps, origin, origin + dir * t_seg.min(1e3)) {
+                if counts(refl) {
+                    out.portals.push(portal_dep(cx, ap, q, origin, dir, length, thr, inv_n, first));
+                }
+                crossed = true;
+            }
+        }
+
         if let Some((te, a, u, ei)) = edge {
             if seg == 0 {
                 reusable = false;
             }
             last_edge = Some(ei);
+            if crossed {
+                s_rough = true;
+            }
             // bend around the edge at the closest approach
             if bend_from.is_none() {
                 bend_from = Some(origin);
@@ -4578,6 +4764,10 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
             // emitted what this connection brings now
             picks.clear();
             for (si, s) in sources.iter().enumerate() {
+                // past an opening: a scattering bounce, the record's
+                if crossed && cx.portal[si] {
+                    continue;
+                }
                 let Some(sp) = cx.motion.emit(si, s.pos, off, length) else { continue };
                 let to = sp - off;
                 let along = to.dot(normal);
@@ -4675,6 +4865,18 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
             let (t2, beyond) = world.through(p, dir, &mat, &mut *hits);
             let t_thr: [f32; NBANDS] = core::array::from_fn(|b| thr[b] * t2[b] / q);
             let t_mirror = mirror_thr * t2[1];
+            // through a leaf in an opening: the first crossing — the
+            // record's from there, its leaf too (the walk's share 1/q)
+            let mut t_crossed = crossed;
+            if !virt && !crossed && cx.portal_on {
+                if let Some((x, ap)) = first_crossing(aps, p, beyond) {
+                    if counts(refl) {
+                        let pre: [f32; NBANDS] = core::array::from_fn(|b| thr[b] / q);
+                        out.portals.push(portal_dep(cx, ap, x, p, dir, length, pre, inv_n, first));
+                    }
+                    t_crossed = true;
+                }
+            }
             branches.push(Branch {
                 origin: beyond,
                 dir,
@@ -4694,6 +4896,9 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 split: true,
                 ev: ev.crossing(aps, p, beyond),
                 virt,
+                crossed: t_crossed,
+                s_refl: if crossed { s_refl } else { 0 },
+                s_rough: t_crossed,
             });
         }
         // a surface that reflects nothing (a hanging drape: it passes or
@@ -4714,6 +4919,18 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
                 reusable = false;
             }
             let (t2, beyond) = world.through(p, dir, &mat, &mut *hits);
+            if !virt && !crossed && cx.portal_on {
+                if let Some((x, ap)) = first_crossing(aps, p, beyond) {
+                    if counts(refl) {
+                        let pre: [f32; NBANDS] = core::array::from_fn(|b| thr[b] / pt);
+                        out.portals.push(portal_dep(cx, ap, x, p, dir, length, pre, inv_n, first));
+                    }
+                    crossed = true;
+                }
+            }
+            if crossed {
+                s_rough = true;
+            }
             for b in 0..NBANDS {
                 thr[b] *= t2[b] / pt;
             }
@@ -4749,10 +4966,16 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
             break;
         }
         refl += 1;
+        if crossed {
+            s_refl += 1;
+        }
         bend_from = None;
         mirror_thr *= keep[1] * (1.0 - mat.scattering);
         loud &= mirror_thr >= COHERENT_FLOOR;
         if rng.next_f32() < mat.scattering {
+            if crossed {
+                s_rough = true;
+            }
             if seg == 0 && reusable {
                 first_bounce = Some((p, normal, length, -dir.dot(normal)));
             }

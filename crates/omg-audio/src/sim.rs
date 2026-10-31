@@ -172,6 +172,13 @@ pub struct Config {
     /// it is covered now — the reverb and the early field behind a door
     /// follow it every tick and every frame between, not the averages.
     pub v62: bool,
+    /// Portals (on v6.2, the walk on the CPU): what reaches the listener
+    /// from a source enclosed in a room through the room's openings (the
+    /// apertures: `set_object_aperture`) estimated from the source's side
+    /// — rays from it record what leaves each opening, the listener's walk
+    /// takes it from where it first crosses one. A loud room heard from
+    /// outside comes steady instead of in bursts (its rare paths in).
+    pub portals: bool,
     /// The mixer's sample rate (v4 builds its convolution kernels for it).
     pub sample_rate: f32,
     /// v4: build convolution kernels on a thread of their own (off the
@@ -233,6 +240,7 @@ impl Config {
         self.v5 &= self.v4;
         self.v61 &= self.v6;
         self.v62 &= self.v61;
+        self.portals &= self.v62;
         self
     }
 }
@@ -249,6 +257,7 @@ impl Default for Config {
             v6: false,
             v61: false,
             v62: false,
+            portals: false,
             sample_rate: 48_000.0,
             kernel_thread: true,
             max_kernels: 64,
@@ -556,6 +565,7 @@ impl Simulation {
                 t.v6 = cfg.v6;
                 t.v61 = cfg.v61;
                 t.v62 = cfg.v62;
+                t.portals = cfg.portals;
                 t.threads = cfg.walk_threads;
                 t
             },
@@ -607,6 +617,7 @@ impl Simulation {
         self.tracer.v6 = cfg.v6;
         self.tracer.v61 = cfg.v61;
         self.tracer.v62 = cfg.v62;
+        self.tracer.portals = cfg.portals;
         self.tracer.threads = cfg.walk_threads;
         if rebuild {
             self.make_walker();
@@ -626,6 +637,7 @@ impl Simulation {
         self.tracer.v6 = self.cfg.v6;
         self.tracer.v61 = self.cfg.v61;
         self.tracer.v62 = self.cfg.v62;
+        self.tracer.portals = self.cfg.portals;
         self.tracer.threads = self.cfg.walk_threads;
         self.tracer.debug = self.debug_paths;
         for s in &mut self.sources {
@@ -991,6 +1003,13 @@ impl Simulation {
     /// The last tick's tracer cost by part (ms; zeros in wasm).
     pub fn tick_costs(&self) -> omg_core::v3::TickCosts {
         self.tracer.costs
+    }
+
+    /// What the last tick's ray walk deposited for `id` (per band, before
+    /// any averaging over ticks): the raw estimate, for comparing
+    /// estimators (CPU walks; None for an unknown source).
+    pub fn walked_energy(&self, id: SourceId) -> Option<[f32; omg_core::NBANDS]> {
+        self.tracer.walked.iter().find(|(s, _)| *s == id.0).map(|(_, e)| *e)
     }
 
     pub fn dense_response(&self, id: SourceId) -> Option<&DenseResponse> {

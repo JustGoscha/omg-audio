@@ -7,6 +7,7 @@
 //!     cargo run --release -p omg-web --example club_spike
 //!     AT=x,y,z (38,40,1.6)  SEED=n  TICKS=n (60)  GEOMETRY=<file>
 //!     SOURCE=name (club): another of the town's sources alone  OPEN=i,j (doors)
+//!     PORTALS=1: the field through openings from the source's side
 use omg_audio::{Config, PathKind, Quality, Simulation};
 use omg_web::town::Town;
 
@@ -14,7 +15,9 @@ fn main() {
     let env = |k: &str| std::env::var(k).ok();
     let at: Vec<f32> = env("AT").map_or(vec![38.0, 40.0, 1.6], |s| s.split(',').filter_map(|x| x.parse().ok()).collect());
     let seed: u64 = env("SEED").and_then(|v| v.parse().ok()).unwrap_or(1);
-    let cfg = Config { quality: Quality::High, v4: false, v5: false, v6: true, v61: true, v62: true, seed, kernel_thread: false, ..Config::default() };
+    // PORTALS=1: what reaches the ears through openings from the source's side
+    let portals = env("PORTALS").as_deref() == Some("1");
+    let cfg = Config { quality: Quality::High, v4: false, v5: false, v6: true, v61: true, v62: true, portals, seed, kernel_thread: false, ..Config::default() };
     let mut sim = Simulation::new(cfg);
     let mut town = Town::new(&mut sim);
     if let Some(path) = env("GEOMETRY") {

@@ -15,6 +15,7 @@
 //!     demo's feet (1.4 m under them) and hands (0.4 m)
 //!     GEOMETRY=<file>: the host's dumped level   COMPUTE=gpu   PACE=1
 //!     THREADS=n: the walk's threads (the machine's default)
+//!     PORTALS=1: enclosed sources heard through openings from their side
 //!     MIX=1: rendered through the mixer too (no HRIR; the source plays
 //!     bass-heavy noise, or CLIP=<raw f32 mono 48 kHz>): the output's
 //!     level under 250 Hz and in all (dBFS) per 50 ms, after the ear (and
@@ -99,6 +100,7 @@ fn main() {
         v6: mode.starts_with("v6"),
         v61: mode == "v6.1" || mode == "v6.2",
         v62: mode == "v6.2",
+        portals: env("PORTALS").as_deref() == Some("1"),
         seed: env("SEED").and_then(|v| v.parse().ok()).unwrap_or(1),
         kernel_thread: false,
         compute: if env("COMPUTE").as_deref() == Some("gpu") { Compute::Gpu } else { Compute::Cpu },
