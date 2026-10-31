@@ -124,8 +124,27 @@ masked off (the same random stream), −41.4 without (another) — portals
 add nothing there. On by default in both demos since (`Config::portals`
 on v6.2; Godot `engine_portals`, the recorder's `--no-portals`). Left:
 a moving listener's young estimate (the walk's part), and the portals'
-first 32 ticks after a change (a door moving: every tick) trace afresh
-at full cost.
+first 32 ticks after a change trace afresh at full cost (records that
+would start over are traced only once the source and the world stand a
+tick: a door or a curtain moving no longer retraces every enclosed
+source each tick for nothing). The pool's bounces are drawn by what each
+carries, evenly along their running sum: a bounce whose ray came through
+a wall by the draw (× 50) brought all of a tick's light-traced bass now
+and then — in the canyon, 100 m from the club, the per-tick spread's
+coefficient of variation 3.5 → 1.2, the largest tick 45 → 11× the mean.
+And not as many as a tick's rays leave — a dozen a ray past an opening:
+1.37 ms a tick in Godot's rooms, eleven enclosed sources, most of them
+connections thrown away at an opening — but eight a traced ray: 0.46 ms,
+the canyon's spread 0.80, its largest tick 9× the mean. After a change
+every enclosed source starts over: in Godot eleven at once, each tracing
+on a thread of its own, 4–8 ms a tick for half a second — the governor
+shed to its lowest rungs for ten seconds. Now two sources a tick at
+most (the least filled, then the nearest), their rays split over the
+walk's threads, a tick's trace kept as the few hundred slots it touched
+and the records as sums: ~2 ms a tick for a few seconds after a door or
+a curtain, the walk keeping those sources' paths meanwhile. Left: in
+Godot a source's 64 rays cost ~4 ms on a thread (40 segments a ray, the
+game's threads competing) — refills are what portals cost now.
 The same shows right after a door shuts: the field through the shut
 door restarts as a young estimate. Across four seeds the click 50 ms to
 0.8 s after the shut lands on average 2.3 dB (early part, per band) and

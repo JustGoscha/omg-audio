@@ -28,8 +28,8 @@ use super::*;
 /// A record's delay bins (s): what leaves an opening, from its emission.
 pub(super) const PORTAL_BIN_S: f32 = 0.02;
 pub(super) const PORTAL_BINS: usize = (MAX_TIME / PORTAL_BIN_S) as usize;
-/// A record's running mean holds at most this many ticks (a source and
-/// the world standing still): ~0.5 s at 60 ticks a second.
+/// A record is the mean of this many ticks' rays (a source and the world
+/// standing still; then no more are traced): ~0.5 s at 60 ticks a second.
 const PORTAL_MEMORY: f32 = 32.0;
 /// A source ray under this share of what it set out with goes on only as
 /// often as it carries (Russian roulette: the survivor carries the
@@ -82,17 +82,24 @@ pub(super) struct PortalState {
     at: Option<Vec3>,
     sig: u64,
     n: f32,
-    /// By (aperture id, side it leaves toward: 0 +axis, 1 −axis).
+    /// By (aperture id, side it leaves toward: 0 +axis, 1 −axis): the sum
+    /// of the `n` ticks' records (their mean: × `scale`).
     pub(super) recs: HashMap<(u32, u8), Record>,
-    /// Crossings a tick recorded there (the running mean's).
+    /// The crossings the `n` ticks recorded there.
     counts: HashMap<(u32, u8), f32>,
-    /// The bounces past the openings of the `n` ticks traced.
+    /// The bounces past the openings of the `n` ticks traced, and the
+    /// running sum of what they carry (`weight`), for drawing them.
     vpls: Vec<Vpl>,
+    cum: Vec<f64>,
+    /// Where the source was and the world's signature, last tick.
+    seen: Option<(Vec3, u64)>,
 }
 
-/// A tick's trace of one source: the records and how many crossings
-/// each holds.
-pub(super) type Fresh = HashMap<(u32, u8), (Record, u32)>;
+/// A tick's trace of one source: per record, what its rays left in which
+/// slots (a few hundred of a record's 9,600: a tick's records in full
+/// were allocated, zeroed and averaged in whole, per part of the rays),
+/// and how many crossings.
+pub(super) type Fresh = HashMap<(u32, u8), (Vec<(u32, [f32; NBANDS])>, u32)>;
 
 /// A source ray's diffuse bounce connected to the ears (light tracing):
 /// what it brings per band, when, and from where (from the ears).
@@ -114,47 +121,45 @@ pub(super) struct Vpl {
 }
 
 impl PortalState {
-    /// This tick's record into the running mean — over again where the
-    /// source moved or the world changed.
+    /// This tick's record into the sum — over again where the source moved
+    /// or the world changed. (No more are traced once it holds
+    /// `PORTAL_MEMORY` ticks: the sum over `n` is their mean.)
     pub(super) fn fold(&mut self, fresh: Fresh, vpls: Vec<Vpl>, pos: Vec3, sig: u64) {
         if self.resets(pos, sig) {
             self.recs.clear();
             self.counts.clear();
             self.vpls.clear();
+            self.cum.clear();
             self.n = 0.0;
             self.at = Some(pos);
             self.sig = sig;
         }
+        let mut acc = self.cum.last().copied().unwrap_or(0.0);
+        for v in &vpls {
+            acc += weight(v) as f64;
+            self.cum.push(acc);
+        }
         self.vpls.extend(vpls);
-        let a = 1.0 / (self.n + 1.0);
-        for (k, c) in self.counts.iter_mut() {
-            *c += a * (fresh.get(k).map_or(0.0, |f| f.1 as f32) - *c);
-        }
-        for (k, f) in &fresh {
-            self.counts.entry(*k).or_insert(a * f.1 as f32);
-        }
-        for (k, rec) in self.recs.iter_mut() {
-            match fresh.get(k).map(|f| &f.0) {
-                Some(f) => {
-                    for (r, x) in rec.iter_mut().zip(f) {
-                        for b in 0..NBANDS {
-                            r[b] += a * (x[b] - r[b]);
-                        }
-                    }
-                }
-                None => {
-                    for r in rec.iter_mut() {
-                        for v in r.iter_mut() {
-                            *v *= 1.0 - a;
-                        }
-                    }
+        for (k, (deps, crossings)) in fresh {
+            *self.counts.entry(k).or_insert(0.0) += crossings as f32;
+            let rec = self.recs.entry(k).or_insert_with(|| vec![[0.0; NBANDS]; N_CELLS * PORTAL_BINS]);
+            for (at, e) in deps {
+                let r = &mut rec[at as usize];
+                for b in 0..NBANDS {
+                    r[b] += e[b];
                 }
             }
         }
-        for (k, (f, _)) in fresh {
-            self.recs.entry(k).or_insert_with(|| f.iter().map(|x| x.map(|v| v * a)).collect());
+        self.n += 1.0;
+    }
+
+    /// What the sums are scaled by to the ticks' mean.
+    pub(super) fn scale(&self) -> f32 {
+        if self.n > 0.0 {
+            1.0 / self.n
+        } else {
+            0.0
         }
-        self.n = (self.n + 1.0).min(PORTAL_MEMORY);
     }
 
     /// Does a tick traced with the source at `pos` in world `sig` start
@@ -171,13 +176,37 @@ impl PortalState {
         self.resets(pos, sig) || self.n < PORTAL_MEMORY
     }
 
+    /// The ticks its records hold for a tick traced with the source at
+    /// `pos` in world `sig` (none where they start over).
+    pub(super) fn held(&self, pos: Vec3, sig: u64) -> f32 {
+        if self.resets(pos, sig) {
+            0.0
+        } else {
+            self.n
+        }
+    }
+
+    /// Are the source and the world as they were last tick? Records
+    /// started over while either moves would be the next tick's to start
+    /// over again (no portal till they hold `PORTAL_MIN_TICKS`): rays
+    /// traced then are thrown away — a door or a curtain moving started
+    /// every enclosed source's over each tick, 2–5 ms a tick for nothing.
+    pub(super) fn steady(&self, pos: Vec3, sig: u64) -> bool {
+        self.seen.is_some_and(|(p, s)| (p - pos).length() <= STILL_M && s == sig)
+    }
+
+    /// This tick's source and world, for `steady` next tick.
+    pub(super) fn see(&mut self, pos: Vec3, sig: u64) {
+        self.seen = Some((pos, sig));
+    }
+
     /// The bounces this tick's light tracing draws from, and how many
     /// ticks' rays left them (none where the records start over).
-    pub(super) fn pool(&self, pos: Vec3, sig: u64) -> (&[Vpl], f32) {
+    pub(super) fn pool(&self, pos: Vec3, sig: u64) -> (&[Vpl], &[f64], f32) {
         if self.resets(pos, sig) {
-            (&[], 0.0)
+            (&[], &[], 0.0)
         } else {
-            (&self.vpls, self.n)
+            (&self.vpls, &self.cum, self.n)
         }
     }
 
@@ -190,7 +219,7 @@ impl PortalState {
             return m;
         }
         for (k, ap) in aps.iter().enumerate().take(64) {
-            let c = self.counts.get(&(ap.id, 0)).copied().unwrap_or(0.0) + self.counts.get(&(ap.id, 1)).copied().unwrap_or(0.0);
+            let c = (self.counts.get(&(ap.id, 0)).copied().unwrap_or(0.0) + self.counts.get(&(ap.id, 1)).copied().unwrap_or(0.0)) * self.scale();
             if c >= PORTAL_MIN_CROSSINGS {
                 m |= 1 << k;
             }
@@ -237,7 +266,8 @@ pub(super) fn cos_tables(cells: &[Vec3]) -> Vec<Vec<f32>> {
 }
 
 /// What a source's paths leave through the openings this tick: `rays`
-/// from `pos` (each a 4π/rays share of a unit source), walked as the
+/// from `pos` (each a 4π/`all` share of a unit source: a part of the
+/// tick's `all` rays, the parts' records added up — `merge`), walked as the
 /// listener's are — reflected, scattered, bent round edges, through walls
 /// and leaves by their draws — every crossing of a path that has
 /// reflected and been rough recorded (`Record`), and every diffuse bounce
@@ -252,6 +282,7 @@ pub(super) fn trace_source(
     ctab: &[Vec<f32>],
     pos: Vec3,
     rays: u32,
+    all: u32,
     diffraction: bool,
     rng: &mut Rng,
 ) -> (Fresh, Vec<Vpl>) {
@@ -261,7 +292,7 @@ pub(super) fn trace_source(
     if aps.is_empty() || rays == 0 {
         return (out, vpls);
     }
-    let flux = 4.0 * core::f32::consts::PI / rays as f32;
+    let flux = 4.0 * core::f32::consts::PI / all.max(1) as f32;
     // every crossing of a path that has reflected and been rough, into
     // the records (`own`: else the walk's); and the last opening crossed
     // (by index), with such a past or not: what follows it is the
@@ -290,12 +321,9 @@ pub(super) fn trace_source(
                 continue;
             }
             let k = 1.0 / (area(ap) * c);
-            let (rec, n) = out.entry((ap.id, side)).or_insert_with(|| (vec![[0.0; NBANDS]; cells.len() * PORTAL_BINS], 0));
+            let (deps, n) = out.entry((ap.id, side)).or_default();
             *n += 1;
-            let r = &mut rec[slot(cell, bin)];
-            for b in 0..NBANDS {
-                r[b] += thr[b] * k;
-            }
+            deps.push((slot(cell, bin) as u32, thr.map(|t| t * k)));
         }
     };
     for _ in 0..rays {
@@ -410,25 +438,61 @@ pub(super) fn trace_source(
     (out, vpls)
 }
 
+/// What a bounce is drawn by: the most it carries in a band.
+fn weight(v: &Vpl) -> f32 {
+    v.e.iter().fold(0.0f32, |m, &x| m.max(x))
+}
+
+/// Light tracing's draws from a source's pool a tick, per ray it traces a
+/// tick. Any number is unbiased; fewer cost less and spread more (the
+/// club's light-traced bass in the canyon, per tick: 1 a ray cv 2.41 and
+/// the largest tick 48× the mean, 4: 1.07 and 17×, 8: 0.80 and 9×; as
+/// many as a tick's rays leave bounces past an opening — a dozen a ray —
+/// cost 1.37 ms a tick in Godot's rooms, 8 a ray 0.46).
+const DRAWS_PER_RAY: usize = 8;
+
 /// Light tracing from a source's pool — the bounces `kept` from the ticks
-/// before (`ticks` of them with this one) and this tick's `new` — as many
-/// drawn at random as one tick's rays leave, each connected straight to
-/// the ears where they see it (nothing between, no opening crossed) when
-/// the opening its path crossed last is one of the source's portals
-/// (`mask`): a path whose first touch from the ears is a diffuse bounce,
-/// the walk leaves to this (`walk_ray`'s `lt`). Each draw brings its
-/// bounce's share of one tick's rays.
-pub(super) fn connect(world: &World, kept: &[Vpl], new: &[Vpl], ticks: f32, mask: u64, ear: Vec3, rng: &mut Rng) -> Vec<Conn> {
+/// before (`ticks` of them with this one) and this tick's `new` —
+/// `DRAWS_PER_RAY` draws for each of the tick's `rays`, each connected
+/// straight to the ears where they see it (nothing between, no opening crossed) when the
+/// opening its path crossed last is one of the source's portals (`mask`):
+/// a path whose first touch from the ears is a diffuse bounce, the walk
+/// leaves to this (`walk_ray`'s `lt`). Drawn by what each carries,
+/// evenly along their running sum (one random offset): a bounce carrying
+/// many times the others' (a ray through a wall by the draw, × 50) is
+/// drawn as often as it carries and brings its share every tick — drawn
+/// uniformly, it came as all of a tick's energy now and then (a burst).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn connect(world: &World, kept: &[Vpl], kept_cum: &[f64], new: &[Vpl], ticks: f32, rays: usize, mask: u64, ear: Vec3, rng: &mut Rng) -> Vec<Conn> {
     let n = kept.len() + new.len();
     let mut out: Vec<Conn> = Vec::new();
     if n == 0 || ticks <= 0.0 {
         return out;
     }
-    let draws = ((n as f32 / ticks).round() as usize).max(1);
-    let w = n as f32 / (draws as f32 * ticks);
+    // the kept bounces' running sum is kept with them; this tick's after it
+    let base = kept_cum.last().copied().unwrap_or(0.0);
+    let mut sum = base;
+    let new_cum: Vec<f64> = new
+        .iter()
+        .map(|v| {
+            sum += weight(v) as f64;
+            sum
+        })
+        .collect();
+    if sum <= 0.0 {
+        return out;
+    }
+    let draws = (rays * DRAWS_PER_RAY).max(1);
+    let step = sum / draws as f64;
+    let mut u = rng.next_f32() as f64 * step;
     for _ in 0..draws {
-        let i = ((rng.next_f32() * n as f32) as usize).min(n - 1);
-        let v = if i < kept.len() { &kept[i] } else { &new[i - kept.len()] };
+        // the first bounce whose running sum passes u
+        let v = if (u < base || new.is_empty()) && !kept.is_empty() {
+            &kept[kept_cum.partition_point(|&c| c <= u).min(kept.len() - 1)]
+        } else {
+            &new[new_cum.partition_point(|&c| c <= u).min(new.len() - 1)]
+        };
+        u += step;
         if (mask >> v.ap) & 1 == 0 {
             continue;
         }
@@ -439,14 +503,28 @@ pub(super) fn connect(world: &World, kept: &[Vpl], new: &[Vpl], ticks: f32, mask
         }
         let d = to * (1.0 / r);
         let cos_out = d.dot(v.normal);
-        if cos_out <= 0.0 || world.raycast(v.p, d).is_some_and(|h| h.t < r - 1e-3) || super::first_crossing(world.apertures, v.p, ear).is_some() {
+        // the openings first: from inside the source's room every bounce
+        // outside is an opening away, and a cast is the dear test
+        if cos_out <= 0.0 || super::first_crossing(world.apertures, v.p, ear).is_some() || world.raycast(v.p, d).is_some_and(|h| h.t < r - 1e-3) {
             continue;
         }
         let air = air_attenuation(v.length + r);
+        // its odds weight(v) / sum a draw, of `draws`, over `ticks` ticks
+        let w = (sum / (draws as f64 * weight(v) as f64 * ticks as f64)) as f32;
         let g = w * cos_out / (core::f32::consts::PI * r * r);
         out.push((core::array::from_fn(|b| v.e[b] * g * air[b] * air[b]), (v.length + r) / SPEED_OF_SOUND, d * -1.0));
     }
     out
+}
+
+/// A part of a tick's trace into the rest of it: the records and their
+/// crossings added up.
+pub(super) fn merge(into: &mut Fresh, part: Fresh) {
+    for (k, (deps, n)) in part {
+        let (d0, n0) = into.entry(k).or_default();
+        d0.extend(deps);
+        *n0 += n;
+    }
 }
 
 /// The openings a walk connects to (`walk_ray`'s next-event to openings):
@@ -468,7 +546,7 @@ pub(super) fn portal_aps(aps: &[Aperture], sources: &[Source], masks: &[u64], st
             let Some(st) = states.get(&s.id) else { continue };
             for side in 0..2u8 {
                 if let Some(rec) = st.recs.get(&(ap.id, side)) {
-                    tot[side as usize] += rec.iter().map(|r| r[1]).sum::<f32>();
+                    tot[side as usize] += rec.iter().map(|r| r[1]).sum::<f32>() * st.scale();
                 }
             }
         }
@@ -546,7 +624,7 @@ impl Hist {
 /// cell) × the air over the joined path, into `acc`: the echogram's bins
 /// directly, the early part (`EARLY_S`) through `deposit`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn convolve(acc: &mut Acc, cells: &[Vec3], air: &[[f32; NBANDS]], h: &Hist, rec: &Record, cell: usize) {
+pub(super) fn convolve(acc: &mut Acc, cells: &[Vec3], air: &[[f32; NBANDS]], h: &Hist, rec: &Record, scale: f32, cell: usize) {
     let r0 = slot(cell, 0);
     let rbins = &rec[r0..r0 + PORTAL_BINS];
     let nz: Vec<usize> = (0..PORTAL_BINS).filter(|&j| rbins[j][1] > 0.0 || rbins[j][0] > 0.0 || rbins[j][2] > 0.0).collect();
@@ -565,7 +643,7 @@ pub(super) fn convolve(acc: &mut Acc, cells: &[Vec3], air: &[[f32; NBANDS]], h: 
             let delay = t_i + (j as f32 + 0.5) * PORTAL_BIN_S;
             let a = air[((delay / AIR_STEP_S).round() as usize).min(AIR_STEPS - 1)];
             let r = rbins[j];
-            let e: [f32; NBANDS] = core::array::from_fn(|b| w[b] * r[b] * a[b]);
+            let e: [f32; NBANDS] = core::array::from_fn(|b| w[b] * r[b] * scale * a[b]);
             let rel = (delay - acc.t_free).max(0.0);
             if rel < EARLY_S {
                 deposit_spread(acc, cells, e, delay, dir, 0.5 * PORTAL_BIN_S);

@@ -3174,63 +3174,69 @@ impl Tracer {
             }
             let sig = self.world_sig;
             let rays = (budget.late_rays * PORTAL_RAYS_PER_LATE).max(PORTAL_MIN_RAYS);
-            // each source on a thread of the walk's, its own random
-            // numbers (from the tick's and its index): the same records
-            // however many threads trace them
+            // each part of a source's rays on a thread of the walk's, its own
+            // random numbers (from the tick's, the source's index and the
+            // part's): the same records however many threads trace them
             let tick_seed = self.rng.next_u64();
             let which: Vec<usize> = (0..sources.len()).filter(|&si| portal[si]).collect();
             let (cells, ctab, edges_ref) = (&self.cells, &self.portal_ctab, edges.as_ref());
             let masks = &portal_mask;
             let states = &self.portal_state;
             // a source's rays while its records want them (a source and
-            // the world standing, full ones stay as they are), then its
-            // pool of bounces past the openings connected to the ears
-            let trace = |sc: &mut WalkScratch, si: usize| {
+            // the world standing, full ones stay as they are; started over
+            // only once both stand a tick)
+            let wants = |si: usize| {
+                let (pos, st) = (sources[si].pos, states.get(&sources[si].id));
+                st.is_none_or(|st| st.wants_rays(pos, sig) && (!st.resets(pos, sig) || st.steady(pos, sig)))
+            };
+            // two sources a tick at most, their rays split over the walk's
+            // threads: after a change every enclosed source starts over at
+            // once — eleven in Godot's rooms, each tracing its rays on a
+            // thread of its own, 4–8 ms a tick for half a second and the
+            // governor shed to its lowest rungs for ten seconds after. The
+            // least filled first, then the nearest; the rest wait, the walk
+            // keeping their paths till they hold `PORTAL_MIN_TICKS`
+            let held = |si: usize| states.get(&sources[si].id).map_or(0.0, |st| st.held(sources[si].pos, sig));
+            let mut eager: Vec<usize> = which.iter().copied().filter(|&si| wants(si)).collect();
+            eager.sort_by(|&a, &b| held(a).total_cmp(&held(b)).then((sources[a].pos - listener).length().total_cmp(&(sources[b].pos - listener).length())));
+            eager.truncate(2);
+            let parts = (threads / eager.len().max(1)).max(1) as u32;
+            let jobs: Vec<(usize, u32)> = eager.iter().flat_map(|&si| (0..parts).map(move |c| (si, c))).collect();
+            let part_rays = |c: u32| rays / parts + u32::from(c < rays % parts);
+            let traced = par_jobs(&mut self.scratch[..threads], jobs.len(), &|sc: &mut WalkScratch, j: usize| {
+                let (si, c) = jobs[j];
+                let mut rng = Rng::new(ray_seed(tick_seed ^ (si as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (c as u64 + 1).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)));
+                portal::trace_source(world, edges_ref, &mut sc.marks, &mut sc.hits, cells, ctab, sources[si].pos, part_rays(c), rays, budget.diffraction, &mut rng)
+            });
+            // a source's parts as one tick's trace, in order
+            let mut fresh: Vec<Option<(portal::Fresh, Vec<portal::Vpl>)>> = (0..sources.len()).map(|_| None).collect();
+            for (&(si, _), (rec, vpls)) in jobs.iter().zip(traced) {
+                match &mut fresh[si] {
+                    Some((r0, v0)) => {
+                        portal::merge(r0, rec);
+                        v0.extend(vpls);
+                    }
+                    none => *none = Some((rec, vpls)),
+                }
+            }
+            // then each source's pool of bounces past the openings
+            // connected to the ears
+            let fresh_ref = &fresh;
+            let conns = par_jobs(&mut self.scratch[..threads], which.len(), &|_: &mut WalkScratch, j: usize| {
+                let si = which[j];
                 let mut rng = Rng::new(ray_seed(tick_seed ^ (si as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)));
                 let (pos, st) = (sources[si].pos, states.get(&sources[si].id));
-                let fresh = st
-                    .is_none_or(|st| st.wants_rays(pos, sig))
-                    .then(|| portal::trace_source(world, edges_ref, &mut sc.marks, &mut sc.hits, cells, ctab, pos, rays, budget.diffraction, &mut rng));
-                let (kept, ticks) = st.map_or((&[][..], 0.0), |st| st.pool(pos, sig));
-                let new = fresh.as_ref().map_or(&[][..], |f| &f.1[..]);
-                let conns = portal::connect(world, kept, new, ticks + if fresh.is_some() { 1.0 } else { 0.0 }, masks[si], listener, &mut rng);
-                (fresh, conns)
-            };
-            let mut fresh: Vec<(usize, (Option<(portal::Fresh, Vec<portal::Vpl>)>, Vec<portal::Conn>))> = Vec::new();
-            #[cfg(not(target_arch = "wasm32"))]
-            if threads > 1 && which.len() > 1 {
-                let next = std::sync::atomic::AtomicUsize::new(0);
-                let (trace, next, which) = (&trace, &next, &which);
-                fresh = std::thread::scope(|s| {
-                    let workers: Vec<_> = self.scratch[..threads]
-                        .iter_mut()
-                        .take(which.len())
-                        .map(|sc| {
-                            s.spawn(move || {
-                                let mut mine = Vec::new();
-                                loop {
-                                    let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    if k >= which.len() {
-                                        break;
-                                    }
-                                    mine.push((which[k], trace(sc, which[k])));
-                                }
-                                mine
-                            })
-                        })
-                        .collect();
-                    workers.into_iter().flat_map(|w| w.join().expect("a portal thread panicked")).collect()
-                });
-            }
-            if fresh.is_empty() {
-                let sc = &mut self.scratch[0];
-                fresh = which.iter().map(|&si| (si, trace(sc, si))).collect();
-            }
-            fresh.sort_by_key(|f| f.0);
-            for (si, (traced, conns)) in fresh {
-                if let Some((rec, vpls)) = traced {
-                    self.portal_state.entry(sources[si].id).or_default().fold(rec, vpls, sources[si].pos, sig);
+                let (kept, kept_cum, ticks) = st.map_or((&[][..], &[][..], 0.0), |st| st.pool(pos, sig));
+                let f = fresh_ref[si].as_ref();
+                let new = f.map_or(&[][..], |f| &f.1[..]);
+                portal::connect(world, kept, kept_cum, new, ticks + if f.is_some() { 1.0 } else { 0.0 }, rays as usize, masks[si], listener, &mut rng)
+            });
+            for (&si, conns) in which.iter().zip(conns) {
+                let st = self.portal_state.entry(sources[si].id).or_default();
+                if let Some((rec, vpls)) = fresh[si].take() {
+                    st.fold(rec, vpls, sources[si].pos, sig);
                 }
+                st.see(sources[si].pos, sig);
                 for (e, delay, dir) in conns {
                     deposit(&mut accs[si], &self.cells, e, delay, dir);
                 }
@@ -3335,7 +3341,7 @@ impl Tracer {
                         continue;
                     }
                     if let Some(rec) = st.recs.get(&(world.apertures[k as usize].id, side)) {
-                        portal::convolve(&mut accs[si], &self.cells, &self.portal_air, h, rec, cell as usize);
+                        portal::convolve(&mut accs[si], &self.cells, &self.portal_air, h, rec, st.scale(), cell as usize);
                     }
                 }
             }
@@ -4480,6 +4486,40 @@ struct PortalDep {
 }
 
 /// The first opening the segment a→b passes (its index), and where.
+/// `f` over jobs `0..n` on the walk's threads (each with a scratch of its
+/// own), the results in the jobs' order.
+fn par_jobs<T: Send>(scratch: &mut [WalkScratch], n: usize, f: &(dyn Fn(&mut WalkScratch, usize) -> T + Sync)) -> Vec<T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if scratch.len() > 1 && n > 1 {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let next = &next;
+        let mut out: Vec<(usize, T)> = std::thread::scope(|s| {
+            let workers: Vec<_> = scratch
+                .iter_mut()
+                .take(n)
+                .map(|sc| {
+                    s.spawn(move || {
+                        let mut mine = Vec::new();
+                        loop {
+                            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if k >= n {
+                                break;
+                            }
+                            mine.push((k, f(sc, k)));
+                        }
+                        mine
+                    })
+                })
+                .collect();
+            workers.into_iter().flat_map(|w| w.join().expect("a portal thread panicked")).collect()
+        });
+        out.sort_by_key(|o| o.0);
+        return out.into_iter().map(|o| o.1).collect();
+    }
+    let sc = &mut scratch[0];
+    (0..n).map(|k| f(sc, k)).collect()
+}
+
 fn first_crossing(aps: &[Aperture], a: Vec3, b: Vec3) -> Option<(Vec3, usize)> {
     let mut best: Option<(Vec3, usize)> = None;
     for (k, ap) in aps.iter().enumerate() {
