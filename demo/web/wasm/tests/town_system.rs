@@ -522,7 +522,9 @@ fn standing_still_the_reverb_settles_v6() {
     let (v3, v6) = (spread(false), spread(true));
     eprintln!("the club's reverb in the square, click to click: v3 sd {v3:.2} dB, v6 sd {v6:.2} dB");
     assert!(v6 < 3.0, "v6: the reverb scatters {v6:.2} dB click to click standing still");
-    assert!(v6 < 0.5 * v3, "v6 {v6:.2} dB against v3 {v3:.2} dB");
+    // (v3 scattered 5.7 dB here until the Great Hall was lined with wood
+    // panelling, Oct 31 — less of its reverb in the square — and 4.1 since)
+    assert!(v6 < 0.6 * v3, "v6 {v6:.2} dB against v3 {v3:.2} dB");
 }
 
 /// Walking behind a building never cuts a source off: east–west at y = 12

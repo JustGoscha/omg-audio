@@ -162,12 +162,15 @@ func _living_corridor_hall() -> void:
 	geo.slab(3.2, 6, 4.8, 14, 2.4, 2.6, [], geo.B(DemoMats.plaster(Color(0.9, 0.9, 0.9), "concrete")),
 		geo.B(DemoMats.concrete(Color(0.45, 0.45, 0.47)), "concrete"))
 
-	# great hall: 7 m concrete hall (seminar room)
+	# great hall: a 7 m seminar room, its concrete walls lined with wood
+	# panelling inside (the panel on battens: the bass it takes, its own
+	# leaf before the concrete's)
 	t = 0.3
-	geo.wall(1, 14, 0, 14, 0, 7.4, t, [door.call(4.0)], conc_in, conc_out, 1)
-	geo.wall(0, 0, 14, 24, 0, 7.4, t, [], conc_in, conc_out, 1)
-	geo.wall(0, 14, 14, 24, 0, 7.4, t, [], conc_in, conc_out, -1)
-	geo.wall(1, 24, 0, 14, 0, 7.4, t, [door.call(7.0)], conc_in, conc_out, -1)
+	var panelled := geo.B(DemoMats.planks(Color(0.78, 0.6, 0.44), "wood_panel"))
+	geo.wall(1, 14, 0, 14, 0, 7.4, t, [door.call(4.0)], panelled, conc_out, 1)
+	geo.wall(0, 0, 14, 24, 0, 7.4, t, [], panelled, conc_out, 1)
+	geo.wall(0, 14, 14, 24, 0, 7.4, t, [], panelled, conc_out, -1)
+	geo.wall(1, 24, 0, 14, 0, 7.4, t, [door.call(7.0)], panelled, conc_out, -1)
 	geo.B(DemoMats.concrete(Color(0.6, 0.58, 0.55)), "concrete").box(0, 14, -0.1, 14, 24, 0.02)
 	geo.slab(0, 14, 14, 24, 7.0, 7.2, [], conc_in, geo.B(DemoMats.concrete(Color(0.45, 0.45, 0.47)), "concrete"))
 	_cornice(0, 14, 14, 24, 7.4)

@@ -28,6 +28,7 @@ pub const PRESETS: &[(&str, Material)] = &[
     ("grass", Material::GRASS),
     ("earth", Material::EARTH),
     ("acoustic_tile", Material::ACOUSTIC_TILE),
+    ("wood_panel", Material::WOOD_PANEL),
     ("asphalt", Material::ASPHALT),
     ("rock", Material::ROCK),
     ("paving", Material::PAVING),

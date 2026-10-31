@@ -269,8 +269,16 @@ mod tests {
                 r.name,
                 f[ri]
             );
+            // bass-heavier indoors (mass law) — unless the room takes the
+            // bass itself (the Great Hall's wood panelling absorbs more
+            // lows than highs)
+            let absorbed = |b: usize| {
+                (r.max.0 - r.min.0) * (r.max.1 - r.min.1) * r.walls[4].absorption[b]
+                    + r.ceiling_area() * r.walls[5].absorption[b]
+                    + (0..4).map(|wi| r.wall_area(wi) * r.walls[wi].absorption[b]).sum::<f32>()
+            };
             assert!(
-                f[ri][0] > f[ri][2],
+                f[ri][0] > f[ri][2] || absorbed(0) > absorbed(2),
                 "{}: indoors must favor lows: {:?}",
                 r.name,
                 f[ri]

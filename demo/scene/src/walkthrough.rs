@@ -187,6 +187,10 @@ impl RoomDef {
     }
 }
 
+/// Concrete lined with wood panelling (the Great Hall's walls): the
+/// panel's surface, the concrete's transmission.
+const PANELLED: Material = Material::new(Material::WOOD_PANEL.absorption, Material::WOOD_PANEL.scattering, Material::CONCRETE.transmission);
+
 pub fn rooms() -> Vec<RoomDef> {
     vec![
         RoomDef {
@@ -227,7 +231,10 @@ pub fn rooms() -> Vec<RoomDef> {
             height: 7.0,
             barrier_height: 7.4,
             floor_z: 0.0,
-            walls: [Material::CONCRETE; 6],
+            // a seminar room: concrete walls lined with wood panelling
+            // inside (one surface a wall here: the panel's absorption and
+            // scattering, the concrete's transmission)
+            walls: [PANELLED, PANELLED, PANELLED, PANELLED, Material::CONCRETE, Material::CONCRETE],
             wall_thickness: 0.30,
             outdoor: false,
             roof: Roof::Flat,
