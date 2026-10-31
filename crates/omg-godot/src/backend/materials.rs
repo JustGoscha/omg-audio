@@ -22,6 +22,7 @@ pub const PRESETS: &[(&str, Material)] = &[
     ("carpet", Material::CARPET),
     ("curtain", Material::CURTAIN),
     ("drape", Material::DRAPE),
+    ("absorber", Material::ABSORBER),
     ("drywall", Material::DRYWALL),
     ("metal", Material::METAL),
     ("grass", Material::GRASS),

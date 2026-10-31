@@ -542,6 +542,53 @@ impl Rig {
         (self.energy(a - 0.002, a + EARLY), self.energy(a + EARLY, a + len))
     }
 
+    /// Click `k`'s tail decay per band, as RT60 (s): the least-squares
+    /// slope of its backward-integrated energy (both ears, Schroeder) from
+    /// −5 to −25 dB, from the end of its early part (`EARLY` after its
+    /// arrival — near the speakers the direct sound would make it the
+    /// early part's fall) to `len` s after its arrival. NaN: no −25 dB.
+    fn t20(&mut self, k: usize, len: f32) -> [f64; 3] {
+        let a = self.arrival(k);
+        let i0 = ((a + EARLY).max(0.0) * SR) as usize;
+        let s = self.split();
+        let i1 = (((a + len) * SR) as usize).min(s[0].len());
+        core::array::from_fn(|b| {
+            let mut sch = vec![0.0f64; i1.saturating_sub(i0)];
+            let mut acc = 0.0f64;
+            for i in (i0..i1).rev() {
+                acc += (s[0][i][b] * s[0][i][b] + s[1][i][b] * s[1][i][b]) as f64;
+                sch[i - i0] = acc;
+            }
+            let total = sch.first().copied().unwrap_or(0.0);
+            if total <= 0.0 {
+                return f64::NAN;
+            }
+            let (mut n, mut st, mut sl, mut stt, mut stl) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
+            let mut reached = false;
+            for (j, &e) in sch.iter().enumerate() {
+                let l = 10.0 * (e / total).max(1e-30).log10();
+                if l > -5.0 {
+                    continue;
+                }
+                if l < -25.0 {
+                    reached = true;
+                    break;
+                }
+                let t = j as f64 / SR as f64;
+                n += 1.0;
+                st += t;
+                sl += l;
+                stt += t * t;
+                stl += t * l;
+            }
+            let slope = (n * stl - st * sl) / (n * stt - st * st);
+            if !reached || !(slope < 0.0) {
+                return f64::NAN;
+            }
+            -60.0 / slope
+        })
+    }
+
     fn wav(&self, name: &str) {
         let Some(dir) = env("WAV") else { return };
         let path = format!("{dir}/{name}.wav");
@@ -584,7 +631,7 @@ fn door() {
     rig.only(&[CLUB]);
     rig.town.set_door(&mut rig.sim, 3, 1.0);
     rig.town.set_door(&mut rig.sim, CLUB_DOOR, 1.0);
-    rig.pos = [21.0, 30.2, 1.6];
+    rig.pos = [25.0, 30.6, 1.6];
     let delta: f32 = env("DELTA").and_then(|d| d.parse().ok()).unwrap_or(0.1);
     rig.run(2.0);
     rig.click(CLUB, 1.0);
@@ -623,9 +670,9 @@ fn still() {
     rig.pos = match spot.as_str() {
         "field" => [20.0, 60.0, 1.6],
         "hall" => [10.0, 19.0, 1.6],
-        "entrance" => [21.0, 30.2, 1.6],
+        "entrance" => [25.0, 30.6, 1.6],
         "north" => [27.0, 48.0, 1.6],
-        "inside" => [27.0, 30.0, 1.6],
+        "inside" => [31.0, 30.0, 1.6],
         "cathedral" => [8.0, 60.0, 1.6],
         _ => [15.0, 32.0, 1.6],
     };
@@ -644,9 +691,14 @@ fn still() {
     let mut early = Vec::new();
     let mut late = Vec::new();
     let mut kurt = [0.0f64; 3];
+    let mut rt = [0.0f64; 3];
     for k in 0..n {
         let (e, l) = rig.response(k, period - 0.1);
-        println!("   click {k:2}  early {}  late {}", bands_db(e), bands_db(l));
+        let t = rig.t20(k, period - 0.1);
+        println!("   click {k:2}  early {}  late {}  T20 {:5.2} {:5.2} {:5.2} s", bands_db(e), bands_db(l), t[0], t[1], t[2]);
+        for b in 0..3 {
+            rt[b] += t[b] / n as f64;
+        }
         early.push(e);
         late.push(l);
         // the tail's grain: from the end of the early part over the next
@@ -658,6 +710,7 @@ fn still() {
         }
     }
     println!("   tail kurtosis (noise ≈ 3)  low {:5.1}  mid {:5.1}  high {:5.1}", kurt[0], kurt[1], kurt[2]);
+    println!("   tail T20 (as RT60)         low {:5.2}  mid {:5.2}  high {:5.2} s", rt[0], rt[1], rt[2]);
     let spread = |v: &[[f64; 3]], b: usize| -> (f32, f32) {
         let d: Vec<f32> = v.iter().map(|e| db(e[b])).collect();
         let m = d.iter().sum::<f32>() / d.len() as f32;
@@ -708,9 +761,9 @@ fn crowd() {
     let spot = env("SPOT").unwrap_or_else(|| "square".into());
     rig.pos = match spot.as_str() {
         "field" => [20.0, 60.0, 1.6],
-        "entrance" => [21.0, 30.2, 1.6],
+        "entrance" => [25.0, 30.6, 1.6],
         "north" => [27.0, 48.0, 1.6],
-        "inside" => [27.0, 36.0, 1.6],
+        "inside" => [31.0, 36.0, 1.6],
         _ => [15.0, 32.0, 1.6],
     };
     rig.watch = rig.ids[CLUB].clone();

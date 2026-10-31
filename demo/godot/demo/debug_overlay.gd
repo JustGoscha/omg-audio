@@ -11,10 +11,10 @@ const H := 220.0
 const SH := 330.0       # the spectrum panel: two flame graphs
 const TOP := 36.0       # below the title
 const N := 240          # samples kept (~4 s at 60 fps)
-const BANDS := 120
-const COL_PX := 2.0     # a column's width on screen (the web's)
+const BANDS := 256      # log bands, 40 Hz – 16 kHz (0.4 semitone each)
+const COL_PX := 1.0     # a column's width on screen
 const COLS := int(W / COL_PX)
-const COL_HZ := 60.0    # columns per second (~5.7 s shown)
+const COL_HZ := 120.0   # columns per second (~5.7 s shown)
 const F_LO := 40.0
 const F_HI := 16000.0
 
@@ -52,6 +52,8 @@ func _ready() -> void:
 		flame_tex.append(ImageTexture.create_from_image(img))
 	perf = _panel(Vector2(-W - 16, 16), H, _draw_perf)
 	spec = _panel(Vector2(-W - 16, 16 + H + 16), SH, _draw_spectrum)
+	# the image smoothed onto the panel, not blown up into blocks
+	spec.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	_apply()
 
 func set_perf(on: bool) -> void:
@@ -64,7 +66,7 @@ func set_spectrum(on: bool) -> void:
 		# an analyser on the master bus (the engine plays through it)
 		var bus := AudioServer.get_bus_index("Master")
 		var fx := AudioEffectSpectrumAnalyzer.new()
-		fx.fft_size = AudioEffectSpectrumAnalyzer.FFT_SIZE_2048
+		fx.fft_size = AudioEffectSpectrumAnalyzer.FFT_SIZE_4096
 		AudioServer.add_bus_effect(bus, fx)
 		analyzer = AudioServer.get_bus_effect_instance(bus, AudioServer.get_bus_effect_count(bus) - 1)
 	_apply()

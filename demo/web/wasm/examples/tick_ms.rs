@@ -10,7 +10,7 @@ use std::time::Instant;
 fn run(name: &str, cfg: Config) {
     let mut sim = Simulation::new(cfg);
     let _town = Town::new(&mut sim);
-    let path = [(3.0f32, 3.0f32), (8.0, 20.0), (18.0, 30.0), (27.0, 32.0), (8.0, 60.0)];
+    let path = [(3.0f32, 3.0f32), (8.0, 20.0), (18.0, 30.0), (31.0, 32.0), (8.0, 60.0)];
     let (mut ms, mut n) = (0.0f64, 0);
     for k in 0..200 {
         let a = path[(k / 40) % path.len()];

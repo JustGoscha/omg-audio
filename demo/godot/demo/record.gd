@@ -27,7 +27,7 @@
 #         pulled down (~3 s); the RT60 the engine fits, every second
 #   bunker  down in the bunker (floor 3 m below grade), walking back and
 #         forth along it at 1.5 m/s for 8 s (--view=1|2: the paths view,
-#         exact or all, a screenshot a second)
+#         directions or every path, a screenshot a second)
 #   tour  the whole level, one predictable walk (the final render of an
 #         engine change): from the piano through the corridor into the
 #         seminar (its door shut behind, curtains down, a clap), out to the
@@ -67,14 +67,15 @@ var engine := "v6"
 var tone := false
 var quality := -2 # unset: the demo's (auto)
 var log_paths := false # --paths: the scenario source's exact paths per frame
-var shots := -1 # --view=0|1|2: the paths view off/exact/all, a screenshot a second
+var shots := -1 # --view=0|1|2: the paths view off/directions/every path, a screenshot a second
 var at := Vector3(35.0, 10.0, -2.6) # --at=x,y,z: where the bunker scenario walks (feet)
 var video_fps := 0.0 # --video=fps: the tour's frames of the window
 var until_step := -1 # --until=n: the tour stops after step n
 var portals := true # --no-portals: the engine's portals off (Config::portals)
 # The tour's two cars pass its road stop this far into it (s): as they did
-# when they set out from 900 m at the stop.
-const TOUR_CAR_PASS := [242.0, 247.0]
+# when they set out from 900 m at the stop (+3.2 s since the club's
+# entrance grew to 6 m: 8 m more walked there and back).
+const TOUR_CAR_PASS := [245.2, 250.2]
 var clearance := false # --clearance: sphere hits by their reachable share (Config::clearance)
 var from_step := 0 # --from=n: the tour starts at step n
 var alone := "" # --alone=name: the tour with those sources only
@@ -301,7 +302,7 @@ func _door(base: String) -> void:
 		_alone("club0")
 	var door: Dictionary = demo.level.door_nodes[4] # the club's inner door
 	door["target"] = 0.0
-	_place(21.0, 31.0, 0.4)
+	_place(25.0, 31.0, 0.4)
 	player.set_heading(0.0) # facing the club (east)
 	await get_tree().create_timer(4.0).timeout
 	if not _start(base):
@@ -315,7 +316,7 @@ func _door(base: String) -> void:
 		elif t >= 6.0:
 			door["target"] = 0.0
 		phase = "closed" if t < 2.0 else ("opening" if t < 3.0 else ("open" if t < 6.0 else ("shutting" if t < 7.0 else "shut")))
-		_frame_log(t * 1000.0, 21.0, 31.0)
+		_frame_log(t * 1000.0, 25.0, 31.0)
 	_stop(base)
 
 # Doppler in the field (see carfar, walk): a car 30 m off at 100 km/h past
@@ -449,9 +450,9 @@ func _tour(base: String) -> void:
 		["go", 4.0, 6.0, g, "corridor"], ["go", 4.0, 13.5, g, "corridor"], ["go", 5.5, 17.0, g, "seminar"],
 		["door", 1, false, "seminar"], ["curtains", "seminar"], ["wait", 4.0, "seminar"], ["clap", "seminar"], ["wait", 3.0, "seminar"],
 		["go", 7.0, 23.0, g, "seminar"], ["go", 7.0, 25.5, g, "square"], ["go", 12.0, 30.0, g, "square"], ["wait", 2.0, "square"],
-		["go", 19.0, 31.0, g, "entrance"], ["go", 21.0, 31.0, g, "entrance"], ["door", 4, true, "entrance"], ["wait", 2.0, "entrance"],
-		["go", 25.0, 32.0, g, "club"], ["go", 27.0, 33.5, g, "club"], ["wait", 5.0, "club"],
-		["go", 21.0, 31.0, g, "entrance"], ["go", 18.5, 31.0, g, "square"], ["go", 13.5, 32.0, g, "square"], ["go", 12.0, 37.0, g, "square"], ["go", 8.0, 46.0, g, "path"],
+		["go", 19.0, 31.0, g, "entrance"], ["go", 21.0, 31.0, g, "entrance"], ["go", 25.0, 31.0, g, "entrance"], ["door", 4, true, "entrance"], ["wait", 2.0, "entrance"],
+		["go", 29.0, 32.0, g, "club"], ["go", 31.0, 33.5, g, "club"], ["wait", 5.0, "club"],
+		["go", 25.0, 31.0, g, "entrance"], ["go", 21.0, 31.0, g, "entrance"], ["go", 18.5, 31.0, g, "square"], ["go", 13.5, 32.0, g, "square"], ["go", 12.0, 37.0, g, "square"], ["go", 8.0, 46.0, g, "path"],
 		["go", 8.0, 50.8, g, "portal"], ["door", 6, true, "portal"], ["wait", 2.0, "portal"],
 		["go", 8.0, 56.0, g, "cathedral"], ["go", 8.0, 62.0, g, "cathedral"], ["owl", "owl·cathedral", "cathedral"],
 		["curtains", "cathedral"], ["wait", 4.0, "cathedral"], ["clap", "cathedral"], ["wait", 5.0, "cathedral"],

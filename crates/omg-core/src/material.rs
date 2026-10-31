@@ -178,6 +178,32 @@ impl Material {
         transmission: [0.968, 0.809, 0.773],
     };
 
+    /// A porous absorber panel, 10 cm of glass/mineral wool (~48 kg/m³,
+    /// fabric-wrapped), mounted on a wall — the treatment of a studio or
+    /// a club: per pass, like `DRAPE`. Installed on a rigid wall it
+    /// absorbs 0.84 / 0.99 / 0.97 at 125 Hz / 0.8 kHz / 5.6 kHz (Owens
+    /// Corning 703, 4", ASTM C423 mounting A: 0.84 at 125 Hz, 1.08–1.24
+    /// from 250 Hz to 1 kHz — edge effects, taken as 0.99 — and 0.97 at
+    /// 4 kHz). It reflects nothing: what passes it, the wall behind sends
+    /// back through it (98 %), so the energy through one pass is
+    /// √((1 − α)/0.98) = 0.404 / 0.101 / 0.175 (amplitude 0.636 / 0.318 /
+    /// 0.418). Sound leaving the room through a treated wall pays one
+    /// pass more than the bare wall.
+    pub const ABSORBER: Material = Material {
+        absorption: [1.0 - 0.636 * 0.636, 1.0 - 0.318 * 0.318, 1.0 - 0.418 * 0.418],
+        scattering: 0.0,
+        transmission: [0.636, 0.318, 0.418],
+    };
+
+    /// Reflects nothing: in every band what isn't absorbed in it goes
+    /// through (`DRAPE`, `ABSORBER`). Such a layer is no mass-law
+    /// partition — its transmission is the layer's own, one pass,
+    /// whatever thickness the geometry gives it (`MeshBuilder::material`
+    /// prices it at `REF_THICKNESS_M`).
+    pub fn reflects_nothing(&self) -> bool {
+        (0..NBANDS).all(|b| self.absorption[b] + self.transmission[b] * self.transmission[b] >= 1.0 - 1e-5)
+    }
+
     /// A material from its parts: per-band energy absorption (0..1),
     /// scattering fraction (0..1) and per-band amplitude transmission
     /// through a `REF_THICKNESS_M` (15 cm) wall of it.

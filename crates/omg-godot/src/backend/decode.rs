@@ -119,6 +119,9 @@ pub struct ClipOptions {
     pub fade_out_s: f32,
     /// Linear fade-in over the first seconds (0 = off).
     pub fade_in_s: f32,
+    /// Silence appended (seconds, 0 = none): looped, a break after each
+    /// pass in which what it played rings out.
+    pub pad_s: f32,
 }
 
 /// Linear resample of interleaved audio from `from` Hz to `to` Hz.
@@ -211,6 +214,7 @@ pub fn import(pcm: &Pcm, sr: f32, o: &ClipOptions) -> Vec<f32> {
             y[(n - 1 - i) * och + c] *= g;
         }
     }
+    y.resize(y.len() + (o.pad_s.max(0.0) * sr) as usize * och, 0.0);
     y
 }
 

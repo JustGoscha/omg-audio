@@ -37,7 +37,7 @@ fn doorway_tick_within_budget_of_open_square() {
     let mut w = WorldSim::new();
     let open = ms_per_tick(&mut w, 12.0, 12.0); // open square
     let door = ms_per_tick(&mut w, 7.0, 24.0); // hall door, mid-blend
-    let club = ms_per_tick(&mut w, 22.5, 31.0); // club vestibule door
+    let club = ms_per_tick(&mut w, 26.5, 31.0); // club vestibule door
     eprintln!(
         "traced tick: open {open:.2} ms, hall door {door:.2} ms ({:.2}×), club door {club:.2} ms ({:.2}×)",
         door / open,

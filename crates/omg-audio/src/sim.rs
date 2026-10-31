@@ -335,6 +335,10 @@ pub enum PathKind {
     Mirror,
     /// A sampled path of the walk (a different set every tick).
     Sampled,
+    /// Light-traced through an opening (portals): ears → a source ray's
+    /// bounce past the opening → the opening → the source (a different
+    /// set every tick).
+    Portal,
 }
 
 struct Src {
@@ -996,6 +1000,13 @@ impl Simulation {
             energy: *e,
             points: pts(v),
             kind: PathKind::Sampled,
+            key: 0,
+        }));
+        out.extend(self.tracer.debug_lit.iter().map(|(id, e, v)| DebugPath {
+            source: SourceId(*id),
+            energy: *e,
+            points: pts(v),
+            kind: PathKind::Portal,
             key: 0,
         }));
         out.sort_by(|a, b| b.energy.total_cmp(&a.energy));

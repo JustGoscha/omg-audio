@@ -134,6 +134,7 @@ fn options_of(d: &Dictionary<Variant, Variant>) -> Import {
             max_seconds: f("max_seconds"),
             fade_out_s: f("fade_out"),
             fade_in_s: f("fade_in"),
+            pad_s: f("pad"),
         },
         normalize_rms: b("normalize"),
     }
@@ -223,6 +224,10 @@ pub struct OmgSource {
     #[export]
     #[init(val = true)]
     active: bool,
+    /// Seconds of silence after each pass of `file`'s loop: it plays,
+    /// rings out, and starts again (0: back to back).
+    #[export]
+    loop_gap: f32,
     /// A mixer fader over `level_db` (dB), for the listener's own mix:
     /// the scene's levels stay what the script sets.
     #[export]
@@ -391,6 +396,8 @@ impl IAudioStreamPlayback for OmgOutputPlayback {
             r.read(&mut self.scratch);
             // a recording (OmgWorld.start_recording): exactly what Godot plays
             crate::backend::record::push(&self.scratch, t0.elapsed().as_micros() as u32, (r.late() - late0) as u32);
+            // and the last minute of it (OmgWorld.flight_start)
+            crate::backend::flight::push(&self.scratch);
         }
         for (o, (l, r)) in out.iter_mut().zip(&self.scratch) {
             o.left = *l;
@@ -407,6 +414,7 @@ struct SourceRec {
     level_db: f32,
     volume_db: f32,
     file: GString,
+    gap: f32,
     file_clip: Option<usize>,
     /// What loops now: (clip id, voice).
     looping: Option<(usize, VoiceId)>,
@@ -938,6 +946,46 @@ impl OmgWorld {
         crate::backend::record::stop() as i64
     }
 
+    /// Keep the last minute of what Godot plays (the flight recorder),
+    /// from now on: frames numbered from the first kept (`flight_frames`).
+    #[func]
+    fn flight_start(&self) {
+        crate::backend::flight::start(AudioServer::singleton().get_mix_rate() as u32);
+    }
+
+    /// Stop keeping it: the minute holds still to be read.
+    #[func]
+    fn flight_freeze(&self) {
+        crate::backend::flight::freeze();
+    }
+
+    /// Frames kept so far: the minute ends at this frame.
+    #[func]
+    fn flight_frames(&self) -> i64 {
+        crate::backend::flight::frames() as i64
+    }
+
+    #[func]
+    fn flight_rate(&self) -> i64 {
+        crate::backend::flight::rate() as i64
+    }
+
+    /// Frames `from`..`to` of the minute (clamped to what is kept) to
+    /// `path` as a float stereo WAV; how many frames it wrote (−1: the
+    /// file could not be written).
+    #[func]
+    fn flight_save(&self, path: GString, from: i64, to: i64) -> i64 {
+        crate::backend::flight::save(&path.to_string(), from.max(0) as u64, to.max(0) as u64).map_or(-1, |n| n as i64)
+    }
+
+    /// The spectrogram of frames `from`..`to` as RGBA8 bytes, `width` ×
+    /// (2 · `bands` + 4): the left ear over the right, 40 Hz – 16 kHz.
+    #[func]
+    fn flight_spectrogram(&self, from: i64, to: i64, width: i64, bands: i64) -> PackedByteArray {
+        let v = crate::backend::flight::spectrogram(from.max(0) as u64, to.max(0) as u64, width.clamp(1, 8192) as usize, bands.clamp(1, 1024) as usize);
+        PackedByteArray::from(&v[..])
+    }
+
     #[func]
     fn set_ear(&self, on: bool) {
         if let Some(h) = host().as_ref() {
@@ -1059,9 +1107,9 @@ impl OmgWorld {
             let key = src.instance_id();
             let pos = eng(src.get_global_position());
             let on = src.bind().active && !src.bind().muted && src.is_visible_in_tree();
-            let (file, level_db, volume_db, playing) = {
+            let (file, gap, level_db, volume_db, playing) = {
                 let b = src.bind();
-                (b.file.clone(), b.level_db, b.volume_db, b.playing)
+                (b.file.clone(), b.loop_gap.max(0.0), b.level_db, b.volume_db, b.playing)
             };
             if !self.sources.contains_key(&key) {
                 let id = {
@@ -1071,7 +1119,7 @@ impl OmgWorld {
                 };
                 self.sources.insert(
                     key,
-                    SourceRec { id, level_db, volume_db: 0.0, file: GString::new(), file_clip: None, looping: None, seen: frame },
+                    SourceRec { id, level_db, volume_db: 0.0, file: GString::new(), gap: 0.0, file_clip: None, looping: None, seen: frame },
                 );
                 // plays queued before the source was linked
                 let pending = {
@@ -1103,10 +1151,11 @@ impl OmgWorld {
                 rec.volume_db = vol;
                 h.engine.set_volume(rec.id, if muted { 0.0 } else { db(volume_db) });
             }
-            if file != rec.file {
+            if file != rec.file || gap != rec.gap {
                 rec.file = file.clone();
-                rec.file_clip = (!file.is_empty())
-                    .then(|| clips::load(clip_source(&file), sr, Import { normalize_rms: true, ..Default::default() }));
+                rec.gap = gap;
+                let opts = ClipOptions { pad_s: gap, ..Default::default() };
+                rec.file_clip = (!file.is_empty()).then(|| clips::load(clip_source(&file), sr, Import { opts, normalize_rms: true }));
             }
             // what should loop: the script's loop clip, else the file
             let want = if playing { loop_clip.map(|c| c as usize).or(rec.file_clip) } else { None };

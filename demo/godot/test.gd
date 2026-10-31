@@ -168,7 +168,7 @@ func _run() -> String:
 	world.set_render_budget(-1)
 
 	# ---- 4. walls: the club heard from outside its closed door is muffled
-	var club_in := _listen(world, player, Vector3(27, 30, 0.05))
+	var club_in := _listen(world, player, Vector3(31, 30, 0.05))
 	var club_out := _listen(world, player, Vector3(17, 31, 0.05))
 	print("club inside %.4f · outside the closed inner door %.4f" % [club_in, club_out])
 	if club_out >= club_in * 0.7: return "walls do not attenuate the club"

@@ -30,7 +30,7 @@ fn run(mode: &str) {
     };
     let mut sim = Simulation::new(cfg);
     let mut town = Town::new(&mut sim);
-    sim.set_listener([21.0, 30.2, 1.6], 0.0, 0.0, 0.0);
+    sim.set_listener([25.0, 30.6, 1.6], 0.0, 0.0, 0.0);
     let (mut tick, mut exact) = ([0.0f64; 2], [0.0f64; 2]);
     let (mut nt, mut nx) = ([0usize; 2], [0usize; 2]);
     let frame = 1.0 / 120.0;

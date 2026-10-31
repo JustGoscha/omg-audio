@@ -4,7 +4,8 @@
 # geometry and traces it — what you see is what the engine hears.
 #
 # Click: capture mouse / throw a ball · WASD walk · Shift run · Space jump
-# C crouch · F fly · E door · B bells · V whisper · K clap · R rain · L labels
+# C crouch · F fly · E door · B bells · V whisper · K clap · J whistle · R rain · L labels
+# M mark a moment (with the spectrogram on: the last minute saved to captures/)
 # Q sound quality · G graphics (pixel ⇄ fine) · [ ] pixel height · H hud
 # Esc release mouse.
 #
@@ -30,7 +31,9 @@ var hint: Control
 var torch: SpotLight3D
 var settings: DemoSettings
 var debug: DemoDebug
+var capture: DemoCapture
 var paths_view: DemoPathsView
+var orbs: DemoSourceOrbs
 var halos := [] # [halo node, lamp position]
 var labels: Array[Label3D] = []
 var rain_name := "off"
@@ -118,8 +121,12 @@ func _ready() -> void:
 	_labels()
 	debug = DemoDebug.new(world)
 	add_child(debug)
+	capture = DemoCapture.new(self, world)
+	add_child(capture)
 	paths_view = DemoPathsView.new(world)
 	add_child(paths_view)
+	orbs = DemoSourceOrbs.new(world)
+	add_child(orbs)
 	settings = DemoSettings.new(self, world)
 	add_child(settings)
 	_load()
@@ -206,8 +213,8 @@ const SHOT_ROOMS := {
 	"living_room": [Rect2(0, 0, 8, 6), 2.6, 0.0, [[Vector3(4, 5.5, 1.6), -90.0, -12.0], [Vector3(6.4, 5.6, 1.6), 210.0, -15.0]]],
 	"corridor": [Rect2(3.2, 6, 1.6, 8), 2.3, 0.0, [[Vector3(4, 6.4, 1.6), 90.0, -5.0]]],
 	"great_hall": [Rect2(0, 14, 14, 10), 6.9, 0.0, [[Vector3(4, 14.5, 1.6), 50.0, -8.0], [Vector3(1.0, 23.3, 1.7), -13.0, -10.0]]],
-	"entrance": [Rect2(20, 28, 2, 6), 2.5, 0.0, [[Vector3(21.0, 28.7, 1.6), 90.0, -14.0]]],
-	"club": [Rect2(22, 26, 10, 12), 4.4, 0.0, [[Vector3(22.6, 31, 1.6), -35.0, -8.0], [Vector3(31.5, 37.5, 1.6), 220.0, -12.0]]],
+	"entrance": [Rect2(20, 29.5, 6, 3), 2.5, 0.0, [[Vector3(20.4, 30.0, 1.6), 10.0, -8.0]]],
+	"club": [Rect2(26, 26, 10, 12), 4.4, 0.0, [[Vector3(26.6, 31, 1.6), -35.0, -8.0], [Vector3(35.5, 37.5, 1.6), 220.0, -12.0]]],
 	"old_house": [Rect2(24, 16, 7, 7), 2.7, 0.0, [[Vector3(26.5, 22.6, 1.6), -90.0, -12.0], [Vector3(30.6, 22.6, 1.6), 220.0, -15.0]]],
 	"old_house_upper": [Rect2(24, 16, 7, 7), 5.5, 3.0, [[Vector3(25.0, 22.4, 4.6), -40.0, -15.0], [Vector3(30.6, 22.6, 4.6), 220.0, -15.0]]],
 	"cathedral": [Rect2(0, 52, 16, 22), 14.5, 0.0, [[Vector3(8, 52.6, 1.7), 90.0, 8.0], [Vector3(6.6, 53.2, 1.7), 85.5, -2.0]]],
@@ -639,7 +646,7 @@ func _hud() -> void:
 	panel.add_child(grid)
 	for row in [["WASD", "walk"], ["mouse", "look (click to capture)"], ["Shift", "run"], ["click", "throw a ball"],
 			["Space", "jump"], ["E", "open the door ahead"], ["C", "crouch"], ["T", "flashlight"],
-			["F", "fly"], ["B", "ring the bells"], ["R", "rain"], ["V", "whisper"], ["K", "clap (echoes)"],
+			["F", "fly"], ["B", "ring the bells"], ["R", "rain"], ["V", "whisper"], ["K", "clap (echoes)"], ["J", "whistle"], ["M", "mark a moment (spectrogram on)"],
 			["Q", "sound quality"], ["L", "source labels"], ["G", "graphics"], ["[ ]", "pixel size"],
 			["H", "hide the panels"], ["Esc", "settings"]]:
 		var k := Label.new()
@@ -689,8 +696,12 @@ func _unhandled_input(e: InputEvent) -> void:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		else:
 			sounds.throw_ball()
+			capture.event("throw")
 	elif e is InputEventKey and e.pressed and not e.echo:
+		capture.event(OS.get_keycode_string(e.keycode))
 		match e.keycode:
+			KEY_M:
+				capture.mark()
 			KEY_E:
 				var p := player.plan()
 				var ld := player.look_dir()
@@ -703,6 +714,8 @@ func _unhandled_input(e: InputEvent) -> void:
 				sounds.whisper()
 			KEY_K:
 				sounds.clap()
+			KEY_J:
+				sounds.whistle()
 			KEY_R:
 				rain_name = sounds.cycle_rain()
 			KEY_L:

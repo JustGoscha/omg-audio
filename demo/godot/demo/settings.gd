@@ -121,8 +121,10 @@ func _ready() -> void:
 		demo.debug.set_perf(i == 1)))
 	_row(v, "spectrum", _choice_box("spectrum", ["off", "on"], 0, func(i: int) -> void:
 		demo.debug.set_spectrum(i == 1)))
-	_row(v, "sound paths", _choice_box("paths", ["off", "exact", "all"], 0, func(i: int) -> void:
+	_row(v, "sound paths", _choice_box("paths", ["off", "directions", "every path"], 0, func(i: int) -> void:
 		demo.paths_view.set_mode(i)))
+	_row(v, "source spheres", _choice_box("orbs", ["off", "on"], 0, func(i: int) -> void:
+		demo.orbs.set_enabled(i == 1)))
 
 	# the live stats, under every tab
 	stats_label = _label("", SMALL, INK)
@@ -155,8 +157,8 @@ func _mixer(v: VBoxContainer) -> void:
 			club.append(src[k])
 	for ch in [["music", [src["music"]]], ["voice", [src["voice"]]], ["club", club], ["flute", [src["flute"]]],
 			["radio", [src["radio"]]], ["owls", [src["owl·cathedral"], src["owl·house"]]], ["bells", [src["bells"]]],
-			["fountain", [src["fountain"]]], ["balls", snd.balls], ["cars", snd.cars_src], ["steps", [snd.feet]],
-			["clap", [snd.hands]]]:
+			["fountain", [src["fountain"]]], ["stage", [src["stage"]]], ["balls", snd.balls], ["cars", snd.cars_src],
+			["steps", [snd.feet]], ["clap", [snd.hands]], ["whistle", [snd.mouth]]]:
 		var srcs: Array = ch[1]
 		_strip(v, ch[0], srcs, -40.0, 12.0, srcs[0].volume_db, func(x: float, mute: bool) -> String:
 			for o in srcs:

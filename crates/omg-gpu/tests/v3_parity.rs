@@ -509,12 +509,12 @@ fn v3_demo_world_fields_match_cpu() {
     let (mesh, _) = omg_scene::dome::build_world_mesh(&rooms, &doors);
     let Some(mut g) = gpu(&mesh, "v3_demo_world") else { return };
     let w = World { grade: Some(0.0), ..World::new(&mesh, &[]) };
-    let lis = v(22.5, 31.0, 1.6);
+    let lis = v(26.5, 31.0, 1.6);
     let srcs: Vec<Source> = (0..6)
         .map(|i| {
             let a = i as f32 * 1.1;
             let r = 5.0 + 6.0 * i as f32;
-            Source { id: i, pos: v(22.5 + r * a.cos(), 31.0 + r * a.sin(), 1.6), weight: 1.0 }
+            Source { id: i, pos: v(26.5 + r * a.cos(), 31.0 + r * a.sin(), 1.6), weight: 1.0 }
         })
         .collect();
     let b = Budget { rays: 2048, bounces: 6, k: 0.06, ema: 0.35, nee: 4, late_rays: 1024, late_ema: 0.1, late_nee: 1, diffraction: true, ..Budget::default() };
@@ -552,9 +552,11 @@ fn v3_demo_world_fields_match_cpu() {
         );
         // the strong sources pin to 1 dB; a far, walled-off one's few
         // early bins carry the Monte Carlo spread of its rare paths (two
-        // CPU seeds differ by up to 2 dB there too)
-        if db_e(c) < -40.0 {
-            continue; // −40 dB re a unit source at 1 m: printed, not pinned
+        // CPU seeds differ by up to 2 dB at −30 dB; with the ears at the
+        // club's door since it moved east, by 10 dB at −39: source 5,
+        // seeds 1 and 2, −38.6 / −49.0 dB)
+        if db_e(c) < -35.0 {
+            continue; // −35 dB re a unit source at 1 m: printed, not pinned
         }
         let tol = if db_e(c) > -20.0 { 1.0 } else { 2.5 };
         assert!((db_e(gg) - db_e(c)).abs() < tol, "source {i} tap energy");
@@ -631,11 +633,11 @@ fn v3_walk_speed_probe() {
     let (mesh, _) = omg_scene::dome::build_world_mesh(&rooms, &doors);
     let Some(mut g) = gpu(&mesh, "v3_speed") else { return };
     let w = World { grade: Some(0.0), ..World::new(&mesh, &[]) };
-    let lis = v(22.5, 31.0, 1.6);
+    let lis = v(26.5, 31.0, 1.6);
     let srcs: Vec<Source> = (0..16)
         .map(|i| {
             let a = i as f32 * 0.7;
-            Source { id: i, pos: v(22.5 + (8.0 + 3.0 * i as f32) * a.cos(), 31.0 + (8.0 + 3.0 * i as f32) * a.sin(), 1.6), weight: 1.0 }
+            Source { id: i, pos: v(26.5 + (8.0 + 3.0 * i as f32) * a.cos(), 31.0 + (8.0 + 3.0 * i as f32) * a.sin(), 1.6), weight: 1.0 }
         })
         .collect();
     let cpu_b = Budget { rays: 1024, bounces: 6, late_rays: 128, ema: 0.35, late_ema: 0.1, ..Budget::default() };

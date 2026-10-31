@@ -169,6 +169,8 @@ const ECHO_SLOT_S: f32 = 0.012;
 /// tap (the ear hears one arrival; the cap counts arrivals).
 const ECHO_MERGE_S: f32 = 0.0015;
 const ECHO_MERGE_COS: f32 = 0.9;
+/// Light-traced connections kept for a debug view a tick (the strongest).
+const DEBUG_LIT_MAX: usize = 64;
 /// Distances below this are clamped (a source on a wall is not infinite).
 const MIN_DIST: f32 = 0.3;
 const EPS: f32 = 1e-3;
@@ -2534,6 +2536,11 @@ pub struct Tracer {
     /// (source id, mid energy, polyline ears → bounces → source),
     /// strongest first.
     pub debug_paths: Vec<(u32, f32, Vec<Vec3>)>,
+    /// Last tick's strongest light-traced connections (portals: a source
+    /// ray's bounce past an opening, connected to the ears): (source id,
+    /// mid energy, ears → the bounce → the opening → the source),
+    /// strongest first.
+    pub debug_lit: Vec<(u32, f32, Vec<Vec3>)>,
     /// The exactly solved paths (with `debug`): direct and edge bends of
     /// the last tick, mirror chains of the last solve. See `exact_paths`.
     exact: Vec<ExactPath>,
@@ -2838,6 +2845,7 @@ impl Tracer {
     /// Forget every recorded debug path.
     pub fn clear_debug_paths(&mut self) {
         self.debug_paths.clear();
+        self.debug_lit.clear();
         self.exact.clear();
         self.exact_mirrors.clear();
     }
@@ -2895,6 +2903,7 @@ impl Tracer {
             moved_for: 0,
             debug: false,
             debug_paths: Vec::new(),
+            debug_lit: Vec::new(),
             exact: Vec::new(),
             exact_mirrors: Vec::new(),
             motion: Motion::default(),
@@ -3441,17 +3450,32 @@ impl Tracer {
                 let new = f.map_or(&[][..], |f| &f.1[..]);
                 portal::connect(world, kept, kept_cum, new, ticks + if f.is_some() { 1.0 } else { 0.0 }, rays as usize, masks[si], listener, &mut rng)
             });
+            let mut lit: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
             for (&si, conns) in which.iter().zip(conns) {
                 let st = self.portal_state.entry(sources[si].id).or_default();
                 if let Some((rec, vpls)) = fresh[si].take() {
                     st.fold(rec, vpls, sources[si].pos, sig);
                 }
                 st.see(sources[si].pos, sig);
-                for (e, delay, dir) in conns {
+                for (e, delay, dir, p, ap) in conns {
                     deposit(&mut accs[si], &self.cells, e, delay, dir);
+                    if self.debug {
+                        // drawn as ears → the bounce → the opening it came
+                        // through → the source (the source's side of it is
+                        // the record's, not a traced line)
+                        let o = world.apertures.get(ap as usize).map_or(p, |a| (a.min + a.max) * 0.5);
+                        lit.push((sources[si].id, e[1], vec![listener, p, o, sources[si].pos]));
+                    }
                 }
             }
+            if self.debug {
+                lit.sort_by(|a, b| b.1.total_cmp(&a.1));
+                lit.truncate(DEBUG_LIT_MAX);
+                self.debug_lit = lit;
+            }
             self.costs.portals = clock.ms();
+        } else if self.debug {
+            self.debug_lit.clear();
         }
         let portal_aps = if portal_on { portal::portal_aps(world.apertures, sources, &portal_mask, &self.portal_state) } else { Vec::new() };
         let clear = self.clearance.then(|| self.clearances(world, sources));

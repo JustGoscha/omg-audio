@@ -12,15 +12,15 @@ use omg_audio::{Compute, Config, Quality, Simulation};
 use omg_web::town::Town;
 
 const PLACES: [(&str, f32, f32); 13] = [
-    ("P0 dance floor", 27.0, 32.0),
-    ("P1 lobby", 21.0, 31.0),
+    ("P0 dance floor", 31.0, 32.0),
+    ("P1 lobby", 23.0, 31.0),
     ("P2 street at the lobby", 18.0, 31.0),
-    ("P3 2 m E of the window", 34.0, 32.0),
+    ("P3 2 m E of the window", 38.0, 32.0),
     ("P4 20 m W", 0.0, 31.0),
     ("P5 40 m W", -20.0, 31.0),
-    ("P6 20 m N", 27.0, 58.0),
-    ("P7 50 m N", 27.0, 88.0),
-    ("P8 100 m N", 27.0, 138.0),
+    ("P6 20 m N", 31.0, 58.0),
+    ("P7 50 m N", 31.0, 88.0),
+    ("P8 100 m N", 31.0, 138.0),
     ("P9 outside the portal", 8.0, 50.0),
     ("P10 church", 8.0, 64.0),
     ("P11 outside the seminar door", 7.0, 26.0),

@@ -1,5 +1,5 @@
 //! The club's inner door swinging shut (the town test's scenario: the
-//! ears at (21, 31), door 4 closing from 4 s at 7/s): per tick from 3.9 s
+//! ears at (25, 31), door 4 closing from 4 s at 7/s): per tick from 3.9 s
 //! the club's taps — key, delay, mid gain — that appear, go, or step in
 //! delay or gain from the tick before, to find what clicks.
 use omg_audio::{Compute, Config, Quality, Simulation};
@@ -28,7 +28,7 @@ fn main() {
             }
             town.set_door(&mut sim, 4, open);
         }
-        sim.set_listener([21.0, 31.0, 1.6], 0.0, 0.0, 0.0);
+        sim.set_listener([25.0, 31.0, 1.6], 0.0, 0.0, 0.0);
         if b % 6 != 0 {
             continue;
         }

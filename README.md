@@ -365,6 +365,11 @@ Code: Apache-2.0. Acoustic data and demo media:
   by KVV_Audio, ["Motor Loop"](https://freesound.org/people/soundjoao/sounds/325808/)
   by soundjoao — all CC0, loopified via `tools/make_motors.py`.
 - Club track, projectile FX: synthesized by this repo's tools (CC0).
+- Dome stage humming: ["Woman humming a nondescript tune"](https://commons.wikimedia.org/wiki/File:Woman_humming_a_nondescript_tune.wav)
+  by PSsoundproject — CC0, looped and gated via `tools/make_hum_loop.py`.
+- The listener's clap (K): one clap from ["Palmas sevillanas (flamenco clapping), 160 BPM"](https://commons.wikimedia.org/wiki/File:Palmas_sevillanas_(flamenco_clapping),_160_BPM.ogg)
+  by Santiago Sánchez Cifuentes — CC0; the whistle (J): ["Human whistling"](https://commons.wikimedia.org/wiki/File:Human_whistling.ogg)
+  by TwoWings — public domain; both cut via `tools/make_recorded_fx.py`.
 - Rain splat bank: 22 hits sliced from CC0 freesound recordings
   (sources listed in `tools/make_drops.py`).
 

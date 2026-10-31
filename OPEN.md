@@ -101,6 +101,38 @@ engine; ported (`town_system::shadow_boundaries_are_continuous`), the
 live engine failed it too — a 31 dB spike of a two-edge path at one
 spot — and fixed (ENGINE_V6.md, "Edge paths that leaked"); the legacy
 copy retired.
+The legacy late tracer (`omg_core::tracer`) can't pass a layer that
+reflects nothing: it steps a transmitted ray 2·WALL_EPS on and meets the
+box again from inside, so every ray that touches the club's absorber
+panels (Oct 31) died and `club_boom` read exactly 0 in the Old House. The
+panels stay out of WorldSim's legacy late field (`world.rs`); the live
+engine takes the ray out the far side (`World::through`, CPU and GPU).
+Measured on the live engine with impulses (`assess still SRC=club
+SPOT=inside`): the club's tail 1.31 / 1.05 / 0.82 s → 0.66 / 0.61 / 0.48 s
+(T20, low / mid / high), the late energy −11…−12 dB — Sabine's estimate
+for 97 m² of 10 cm wool on top of the room's own absorption gives
+0.47–0.65 s.
+
+### The club's door swinging shut: clicks and a burst (v6.2)
+`town_system::a_door_swinging_shut_takes_the_level_down_without_bursts_v6`
+(ignored since Oct 31): the club plays a 500 Hz tone, the inner door
+eases shut (openness × e^(−7 t)), the ears 1 m before it. It ran on plain
+v6; on the demos' engine (v6.2, portals) it fails before and after the
+club moved east into its 6 m entrance and got its panels — three seeds,
+the swing's worst treble under the tone and how far the level climbed
+back while the door closed:
+
+| layout | worst clicks (dB) | median | climbed back (dB) |
+|---|---|---|---|
+| old (b427c4a) | −27.6 / −32.8 / −46.2 | −32.8 | 3.4 / 9.1 / 5.3 |
+| new, no panels | −36.3 / −36.1 / −40.4 | −36.3 | 20.1 / 14.4 / 7.7 |
+| new, panels | −38.7 / −36.5 / −27.6 | −36.5 | 9.4 / 47.4 / 5.3 |
+
+(the test asks ≤ −38 each, ≤ −45 median, < 20 climbing.) Plain v6 in the
+new layout: −37.9 / −46.7 / −41.2, the level 1.5–3 s on +5.1 dB over the
+shut one (< 4 asked). The 47 dB climb is the door bursts' heavy tail
+(the walk's rare paths into an opening, above). Fix it on v6.2 and
+un-ignore the test there.
 
 ### v3 mode is slow and noisy — v6 answers both
 Exponential averages (EMA 0.35 / 0.1): the club door took seconds to

@@ -13,7 +13,7 @@ fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
 }
 
-const SPOTS: [[f32; 3]; 5] = [[15.0, 32.0, 1.6], [27.0, 48.0, 1.6], [10.0, 19.0, 1.6], [20.0, 60.0, 1.6], [27.0, 36.0, 1.6]];
+const SPOTS: [[f32; 3]; 5] = [[15.0, 32.0, 1.6], [27.0, 48.0, 1.6], [10.0, 19.0, 1.6], [20.0, 60.0, 1.6], [31.0, 36.0, 1.6]];
 
 /// Per spot, per engine source: [early low, mid, high, late low, mid, high].
 fn run(seed: u64, ticks: usize) -> Vec<Vec<[f64; 6]>> {

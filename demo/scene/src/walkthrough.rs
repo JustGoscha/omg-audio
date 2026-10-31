@@ -234,20 +234,28 @@ pub fn rooms() -> Vec<RoomDef> {
         },
         RoomDef {
             name: "Entrance",
-            min: (20.0, 28.0),
-            max: (22.0, 34.0),
+            min: (20.0, 29.5),
+            max: (26.0, 32.5),
             height: 2.6,
             barrier_height: 3.0,
             floor_z: 0.0,
-            walls: [Material::CONCRETE; 6],
+            // carpeted wall to wall (walls, walls, walls, walls, floor, ceiling)
+            walls: [
+                Material::CONCRETE,
+                Material::CONCRETE,
+                Material::CONCRETE,
+                Material::CONCRETE,
+                Material::CARPET,
+                Material::CONCRETE,
+            ],
             wall_thickness: 0.20,
             outdoor: false,
             roof: Roof::Flat,
         },
         RoomDef {
             name: "Club",
-            min: (22.0, 26.0),
-            max: (32.0, 38.0),
+            min: (26.0, 26.0),
+            max: (36.0, 38.0),
             height: 4.5,
             barrier_height: 4.9,
             floor_z: 0.0,
@@ -507,7 +515,7 @@ pub fn doors() -> Vec<Door> {
         // the club's sound-lock: both vestibule doors are heavy
         // acoustic doors — closed, they seal like the bunker's
         Door { rooms: (OUTSIDE, ENTRANCE), pos: (20.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: true },
-        Door { rooms: (ENTRANCE, CLUB), pos: (22.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 0.0, heavy: true },
+        Door { rooms: (ENTRANCE, CLUB), pos: (26.0, 31.0), axis: 0, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 0.0, heavy: true },
         Door { rooms: (OUTSIDE, HOUSE), pos: (26.5, 23.0), axis: 1, half: 0.55, height: 2.0, zc: 1.0, glass: false, openness: 1.0, heavy: false },
         // cathedral portal: a tall bronze-clad double door (E-toggleable,
         // index 6) — closed, it transmits like the blast door, not wood
@@ -517,8 +525,8 @@ pub fn doors() -> Vec<Door> {
         // windows
         Door { rooms: (LIVING, OUTSIDE), pos: (3.0, 0.0), axis: 1, half: 1.3, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
         // club windows are laminated glazing: the boom passes, the hiss dies
-        Door { rooms: (CLUB, OUTSIDE), pos: (32.0, 32.0), axis: 0, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: true },
-        Door { rooms: (CLUB, OUTSIDE), pos: (26.0, 38.0), axis: 1, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: true },
+        Door { rooms: (CLUB, OUTSIDE), pos: (36.0, 32.0), axis: 0, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: true },
+        Door { rooms: (CLUB, OUTSIDE), pos: (30.0, 38.0), axis: 1, half: 1.8, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: true },
         // house windows look out onto the square, club and hall
         Door { rooms: (HOUSE, OUTSIDE), pos: (29.3, 23.0), axis: 1, half: 1.4, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
         Door { rooms: (HOUSE, OUTSIDE), pos: (24.0, 19.5), axis: 0, half: 1.4, height: 1.4, zc: 1.5, glass: true, openness: 1.0, heavy: false },
@@ -664,7 +672,7 @@ pub struct SourceDef {
 
 /// Club PA: four corner speakers.
 pub const CLUB_SPEAKERS: [(f32, f32); 4] =
-    [(23.5, 27.5), (30.5, 27.5), (23.5, 36.5), (30.5, 36.5)];
+    [(27.5, 27.5), (34.5, 27.5), (27.5, 36.5), (34.5, 36.5)];
 
 pub fn sources() -> [SourceDef; 16] {
     [
@@ -689,7 +697,7 @@ pub fn sources() -> [SourceDef; 16] {
         SourceDef {
             name: "club",
             z: 1.5,
-            pos: (27.0, 32.0),
+            pos: (31.0, 32.0),
             room: CLUB,
             // realistic PA level: far above speech/piano; the ear-adaptation
             // stage (acoustic reflex) is what keeps it listenable inside.
@@ -907,6 +915,9 @@ pub enum Kind {
     Font,
     /// A water barrel / drum.
     Barrel,
+    /// A fabric-wrapped mineral-wool panel hung on a wall (a room's
+    /// acoustic treatment): its back to the wall.
+    AbsorberPanel,
 }
 
 /// How a piece must stand relative to the room's walls.
@@ -970,6 +981,7 @@ impl Kind {
             CandleStand => "candle_stand",
             Font => "font",
             Barrel => "barrel",
+            AbsorberPanel => "absorber_panel",
         }
     }
 
@@ -978,7 +990,8 @@ impl Kind {
         match self {
             // (desks may stand free: the seminar presenter's faces the room)
             Piano | Bookshelf | Sideboard | Tv | TvStand | Bed | Nightstand | Wardrobe | Dresser
-            | KitchenCounter | Fridge | Whiteboard | BackBar | Shelf | Locker | CoatRack => {
+            | KitchenCounter | Fridge | Whiteboard | BackBar | Shelf | Locker | CoatRack
+            | AbsorberPanel => {
                 WallRule::Back
             }
             Divider | BunkBed | Booth | Stage => WallRule::Any,
@@ -1031,6 +1044,7 @@ impl Kind {
             Crate => 0x5a5236,
             Locker => 0x48523e,
             CoatRack => 0x3a2a1e,
+            AbsorberPanel => 0x2c2833,
         }
     }
 }
@@ -1049,6 +1063,8 @@ pub enum FurnMat {
     Books,
     /// Whiteboards, TVs.
     Panel,
+    /// Acoustic treatment: 10 cm of mineral wool (`Material::ABSORBER`).
+    Absorber,
 }
 
 impl FurnMat {
@@ -1060,6 +1076,7 @@ impl FurnMat {
             FurnMat::Cabinet => "cabinet",
             FurnMat::Books => "books",
             FurnMat::Panel => "panel",
+            FurnMat::Absorber => "absorber",
         }
     }
 
@@ -1100,6 +1117,7 @@ impl FurnMat {
                 scattering: 0.15,
                 transmission: [0.4, 0.2, 0.08],
             },
+            FurnMat::Absorber => Material::ABSORBER,
         }
     }
 }
@@ -1260,13 +1278,15 @@ pub fn layout(room: usize) -> &'static [Piece] {
         pc(Chair, 13.5, 3.0, 0.45, 0.45, 0.9, W, Wood),
         pc(Sideboard, 9.5, 0.33, 1.8, 0.5, 0.9, N, Cabinet),
     ];
-    // Entrance (2 × 6): the club's sound-lock — a bench at the south
-    // end, coats on a wall rack at the north end, the door axis free
-    // but for a doormat between the two doors.
+    // Entrance (6 × 3, carpeted): the club's sound-lock, a corridor from
+    // the street door east to the club's — a bench and a coat rack along
+    // the south wall, the coat-check counter on the north, a runner
+    // between the two doors.
     static ENTRANCE_L: &[Piece] = &[
-        pc(Bench, 1.0, 0.29, 1.4, 0.42, 0.45, N, Wood),
-        pc(CoatRack, 1.0, 5.77, 1.0, 0.3, 1.8, S, Wood),
-        pc(Rug, 1.0, 3.0, 1.0, 0.6, 0.01, W, Soft),
+        pc(Bench, 1.9, 0.29, 1.4, 0.42, 0.45, N, Wood),
+        pc(CoatRack, 4.1, 0.23, 1.2, 0.3, 1.8, N, Wood),
+        pc(Bar, 3.2, 2.62, 2.2, 0.6, 1.05, S, Cabinet),
+        pc(Rug, 3.0, 1.5, 1.1, 4.0, 0.01, E, Soft),
     ];
     // Club (10 × 12 × 4.5). The stage along the south wall with the DJ
     // deck on it, flanked by the two main PA stacks; two fill stacks in
@@ -1295,6 +1315,35 @@ pub fn layout(room: usize) -> &'static [Piece] {
         pc(Booth, 9.26, 8.25, 1.32, 0.5, 1.1, N, Soft),
         pc(Table, 9.36, 8.85, 1.12, 0.6, 0.75, N, Wood),
         pc(Booth, 9.26, 9.45, 1.32, 0.5, 1.1, S, Soft),
+        // the treatment: 10 cm mineral-wool panels around the walls, 1 to
+        // 4.2 m up, 20 cm off each wall plane (2.5 cm off the 35 cm
+        // walls' inner faces) — above the bar, the booths and the
+        // windows, beside the door
+        up(AbsorberPanel, 1.05, 0.25, 1.4, 0.1, 3.2, N, 1.0, Absorber),
+        up(AbsorberPanel, 2.63, 0.25, 1.4, 0.1, 3.2, N, 1.0, Absorber),
+        up(AbsorberPanel, 4.21, 0.25, 1.4, 0.1, 3.2, N, 1.0, Absorber),
+        up(AbsorberPanel, 5.79, 0.25, 1.4, 0.1, 3.2, N, 1.0, Absorber),
+        up(AbsorberPanel, 7.37, 0.25, 1.4, 0.1, 3.2, N, 1.0, Absorber),
+        up(AbsorberPanel, 8.95, 0.25, 1.4, 0.1, 3.2, N, 1.0, Absorber),
+        up(AbsorberPanel, 1.05, 11.75, 1.4, 0.1, 3.2, S, 1.0, Absorber),
+        up(AbsorberPanel, 2.63, 11.75, 1.4, 0.1, 1.8, S, 2.4, Absorber),
+        up(AbsorberPanel, 4.21, 11.75, 1.4, 0.1, 1.8, S, 2.4, Absorber),
+        up(AbsorberPanel, 5.79, 11.75, 1.4, 0.1, 1.8, S, 2.4, Absorber),
+        up(AbsorberPanel, 7.37, 11.75, 1.4, 0.1, 3.2, S, 1.0, Absorber),
+        up(AbsorberPanel, 8.95, 11.75, 1.4, 0.1, 3.2, S, 1.0, Absorber),
+        up(AbsorberPanel, 0.25, 1.05, 1.4, 0.1, 3.2, E, 1.0, Absorber),
+        up(AbsorberPanel, 0.25, 2.75, 1.4, 0.1, 3.2, E, 1.0, Absorber),
+        up(AbsorberPanel, 0.25, 6.55, 1.4, 0.1, 2.0, E, 2.2, Absorber),
+        up(AbsorberPanel, 0.25, 8.15, 1.4, 0.1, 2.0, E, 2.2, Absorber),
+        up(AbsorberPanel, 0.25, 9.75, 1.4, 0.1, 2.0, E, 2.2, Absorber),
+        up(AbsorberPanel, 0.25, 11.125, 1.05, 0.1, 3.2, E, 1.0, Absorber),
+        up(AbsorberPanel, 9.75, 1.05, 1.4, 0.1, 3.0, W, 1.2, Absorber),
+        up(AbsorberPanel, 9.75, 2.75, 1.4, 0.1, 3.0, W, 1.2, Absorber),
+        up(AbsorberPanel, 9.75, 4.45, 1.4, 0.1, 1.8, W, 2.4, Absorber),
+        up(AbsorberPanel, 9.75, 6.0, 1.4, 0.1, 1.8, W, 2.4, Absorber),
+        up(AbsorberPanel, 9.75, 7.55, 1.4, 0.1, 1.8, W, 2.4, Absorber),
+        up(AbsorberPanel, 9.75, 9.25, 1.4, 0.1, 3.0, W, 1.2, Absorber),
+        up(AbsorberPanel, 9.75, 10.95, 1.4, 0.1, 3.0, W, 1.2, Absorber),
     ];
     // Old House ground floor (7 × 7 × 2.8), open plan. The stairs run up
     // the west wall (kept clear). Kitchen along the south wall (counter,
@@ -1435,7 +1484,7 @@ pub fn spots(room: usize) -> &'static [(&'static str, (f32, f32))] {
         LIVING => &[("hub", (3.2, 4.7)), ("nook", (6.4, 1.6))],
         CORRIDOR => &[("hub", (0.8, 4.0))],
         HALL => &[("hub", (9.0, 3.0)), ("aisle", (5.0, 6.5))],
-        ENTRANCE => &[("hub", (1.0, 3.0))],
+        ENTRANCE => &[("hub", (3.0, 1.5))],
         CLUB => &[("hub", (5.0, 6.0)), ("bar", (3.0, 8.0))],
         HOUSE => &[("hub", (2.6, 3.5)), ("stair foot", (1.9, 1.0)), ("kitchen", (4.8, 1.15))],
         HOUSE_UP => &[("hub", (3.5, 4.2)), ("landing", (1.2, 5.6))],
@@ -1639,7 +1688,7 @@ pub fn layout_json() -> String {
 /// (time s, x, y) — piecewise-linear listener path.
 /// Lingers near the music, walks the corridor, pauses at the narrator,
 /// then leaves through the exterior door into open air.
-const WAYPOINTS: [(f32, f32, f32); 20] = [
+const WAYPOINTS: [(f32, f32, f32); 21] = [
     (0.0, 3.0, 3.0),
     (6.0, 6.0, 2.5),
     (11.0, 5.5, 4.8),
@@ -1657,9 +1706,10 @@ const WAYPOINTS: [(f32, f32, f32); 20] = [
     (68.0, 12.0, 35.0),
     (76.0, 18.5, 31.5),
     (81.0, 20.8, 31.0),
-    (85.0, 22.8, 31.0),
-    (92.0, 28.0, 32.0),
-    (98.0, 28.5, 32.5),
+    (86.0, 24.5, 31.0),
+    (89.0, 26.8, 31.0),
+    (95.0, 32.0, 32.0),
+    (98.0, 32.5, 32.5),
 ];
 
 pub const DURATION_S: f32 = 98.0;

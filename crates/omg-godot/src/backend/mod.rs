@@ -4,6 +4,7 @@
 
 pub mod clips;
 pub mod decode;
+pub mod flight;
 pub mod host;
 pub mod materials;
 pub mod record;

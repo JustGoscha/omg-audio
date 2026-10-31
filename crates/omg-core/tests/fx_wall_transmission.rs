@@ -232,3 +232,36 @@ fn authored_thickness_overrides_the_geometry() {
     assert_eq!(build(0.3, false).material_thickness(0), Some(0.3));
     assert_eq!(build(0.0, false).material_thickness(0), None);
 }
+
+// ------------------------------------------------ porous layers
+
+/// A layer that reflects nothing (a drape, a mineral-wool panel) is no
+/// mass-law partition: a 10 cm absorber box in a mesh costs its own
+/// transmission, one pass — not the mass law's × 1.5 for a wall thinner
+/// than 15 cm — and in front of a concrete wall the two passes give the
+/// panel's installed absorption, 0.84 / 0.99 / 0.97.
+#[test]
+fn absorber_panel_is_priced_per_pass() {
+    use omg_core::mesh::MeshBuilder;
+    use omg_core::paths::segment_transmission;
+    assert!(Material::ABSORBER.reflects_nothing() && Material::DRAPE.reflects_nothing());
+    assert!(!Material::CONCRETE.reflects_nothing() && !Material::CURTAIN.reflects_nothing());
+    let mut b = MeshBuilder::new();
+    let m = b.material(Material::ABSORBER);
+    // a 10 cm panel across x = 0 … 0.1
+    let p = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
+    for x in [0.0f32, 0.1] {
+        b.begin_surface();
+        b.quad(p(x, -2.0, -2.0), p(x, 2.0, -2.0), p(x, 2.0, 2.0), p(x, -2.0, 2.0), m);
+    }
+    let mesh = b.build();
+    let mut hits = Vec::new();
+    let t = segment_transmission(&mesh, p(-1.0, 0.0, 0.0), p(1.0, 0.0, 0.0), &mut hits);
+    let installed = [0.84f32, 0.99, 0.97];
+    for k in 0..NBANDS {
+        assert!((t[k] - Material::ABSORBER.transmission[k]).abs() < 1e-6, "band {k}: {t:?}");
+        let e = t[k] * t[k];
+        let alpha = 1.0 - e * 0.98 * e;
+        assert!((alpha - installed[k]).abs() < 0.005, "band {k}: installed α {alpha}");
+    }
+}

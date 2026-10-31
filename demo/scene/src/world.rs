@@ -468,11 +468,16 @@ impl WorldSim {
             // real absorption/scattering, so furnished rooms decay
             // faster and more diffusely. Only pieces big enough to
             // matter statistically (chairs shadow the early field but
-            // don't bend a decay curve).
+            // don't bend a decay curve). Not a layer that reflects
+            // nothing (the club's absorber panels): this tracer steps a
+            // transmitted ray 2·WALL_EPS on and meets the box again from
+            // inside — it never gets through 10 cm of wool, every ray
+            // that touches one dies (the v3 walk takes it out the far
+            // side, `World::through`, as the demos' engine does)
             if crate::quality::furniture_on() {
                 for (mn, mx, m) in &self.furn_full {
                     let d = *mx - *mn;
-                    if d.x * d.y * d.z > walkthrough::FURN_REFLECTOR_MIN_VOL {
+                    if d.x * d.y * d.z > walkthrough::FURN_REFLECTOR_MIN_VOL && !m.reflects_nothing() {
                         self.late_panels.push((*mn, *mx, *m));
                     }
                 }

@@ -102,6 +102,14 @@ pub struct SegHit {
     pub material: u16,
 }
 
+/// The thickness a material is priced at unless the host says otherwise:
+/// a layer that reflects nothing (a drape, a porous absorber) at its own
+/// transmission, one pass (`Material::reflects_nothing`); a wall by the
+/// geometry (0: inferred).
+fn own_thickness(m: &Material) -> f32 {
+    if m.reflects_nothing() { crate::material::REF_THICKNESS_M } else { 0.0 }
+}
+
 /// Incremental mesh assembly with vertex dedup (quantized to 0.1 mm).
 #[derive(Default)]
 pub struct MeshBuilder {
@@ -129,7 +137,7 @@ impl MeshBuilder {
 
     pub fn material(&mut self, m: Material) -> u16 {
         self.materials.push(m);
-        self.thickness.push(0.0);
+        self.thickness.push(own_thickness(&m));
         (self.materials.len() - 1) as u16
     }
 
@@ -258,7 +266,7 @@ impl Mesh {
         assert_eq!(indices.len(), tri_material.len());
         assert_eq!(indices.len(), tri_surface.len());
         assert_eq!(indices.len(), tri_max_edge.len());
-        let thickness = vec![0.0; materials.len()];
+        let thickness = materials.iter().map(own_thickness).collect();
         let mut mesh = Self {
             positions,
             indices,

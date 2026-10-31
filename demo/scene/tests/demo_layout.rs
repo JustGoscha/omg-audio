@@ -172,9 +172,12 @@ fn wall_pieces_stand_against_a_wall() {
             let (a, b) = p.local_box();
             // gap to each wall: x-min, x-max, y-min, y-max
             let gaps = [a[0], w - b[0], a[1], d - b[1]];
+            // against a wall: within a hand of its inner face (thicker
+            // walls than the 15 cm the frontends assume reach further in)
+            let touch = WALL_TOUCH.max(0.5 * r.wall_thickness + WALL_HALF);
             let ok = match p.kind.wall_rule() {
                 WallRule::Free => true,
-                WallRule::Any => gaps.iter().any(|&g| g <= WALL_TOUCH),
+                WallRule::Any => gaps.iter().any(|&g| g <= touch),
                 WallRule::Back => {
                     let (fx, fy) = p.facing();
                     // the back is opposite the facing
@@ -187,7 +190,7 @@ fn wall_pieces_stand_against_a_wall() {
                     } else {
                         gaps[3]
                     };
-                    g <= WALL_TOUCH
+                    g <= touch
                 }
             };
             if !ok {
@@ -258,11 +261,13 @@ fn doorways_and_windows_stay_clear() {
             let Some(n) = n else { continue };
             if dr.glass {
                 // nothing taller than the sill right in front of a window
+                // (above its head is fine: a panel over it)
                 let sill = dr.zc - 0.5 * dr.height - r.floor_z;
+                let head = dr.zc + 0.5 * dr.height - r.floor_z;
                 let strip = front_strip(p, n, dr.half, 0.5, dr.axis);
                 for (i, q) in walkthrough::layout(ri).iter().enumerate() {
                     let top = q.z0 + q.size.2;
-                    if top > sill + 0.02 && rects_overlap(rect_of(q), strip) {
+                    if top > sill + 0.02 && q.z0 < head - 0.02 && rects_overlap(rect_of(q), strip) {
                         errs.push(format!(
                             "{} #{i} {} ({top} m tall) blocks the window at {:?} (sill {sill} m)",
                             r.name,

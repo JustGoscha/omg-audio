@@ -38,8 +38,8 @@ fn main() {
     }
     let pos = match env("SPOT").as_deref() {
         Some("north") => [27.0, 48.0, 1.6],
-        Some("entrance") => [21.0, 30.2, 1.6],
-        Some("inside") => [27.0, 36.0, 1.6],
+        Some("entrance") => [25.0, 30.6, 1.6],
+        Some("inside") => [31.0, 36.0, 1.6],
         _ => [15.0, 32.0, 1.6],
     };
     let ticks: usize = env("TICKS").and_then(|n| n.parse().ok()).unwrap_or(600);

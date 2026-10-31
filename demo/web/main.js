@@ -13,8 +13,8 @@ const ROOMS = [
   { name: 'Living Room', min: [0, 0], max: [8, 6], h: 2.7, floor: 0x4a3b2e },
   { name: 'Corridor', min: [3.2, 6], max: [4.8, 14], h: 2.4, floor: 0x323844 },
   { name: 'Great Hall', min: [0, 14], max: [14, 24], h: 7, floor: 0x2a3140 },
-  { name: 'Entrance', min: [20, 28], max: [22, 34], h: 2.6, floor: 0x3a2a3a },
-  { name: 'Club', min: [22, 26], max: [32, 38], h: 4.5, floor: 0x2e1f33 },
+  { name: 'Entrance', min: [20, 29.5], max: [26, 32.5], h: 2.6, floor: 0x4a1622 }, // carpeted
+  { name: 'Club', min: [26, 26], max: [36, 38], h: 4.5, floor: 0x2e1f33 },
   { name: 'Old House', min: [24, 16], max: [31, 23], h: 5.6, floor: 0x39322a }, // 2 storeys
   { name: 'Colonnade', min: [16, 15], max: [16.5, 21], h: 2.5, solid: true },
   { name: 'Kiosk', min: [14.5, 34], max: [16.5, 36], h: 2.7, solid: true },
@@ -40,7 +40,7 @@ const DOORS = [
   { pos: [4, 14], axis: 1 },
   { pos: [7, 24], axis: 1 },
   { pos: [20, 31], axis: 0 },
-  { pos: [22, 31], axis: 0 },
+  { pos: [26, 31], axis: 0 },
   { pos: [26.5, 23], axis: 1 }, // old house front door
   { pos: [8, 52], axis: 1, hw: 1.2, h: 3.5 }, // cathedral portal (grand)
   { pos: [31.4, 7], axis: 0, hw: 0.7, h: 2.0, steel: true }, // bunker blast door
@@ -67,16 +67,16 @@ const DOOR_H = 2.1;
 // windows: glass — visible, not walkable; direct sound passes lightly damped
 const WINDOWS = [
   { pos: [3.0, 0.0], axis: 1, hw: 1.3 },
-  { pos: [32.0, 32.0], axis: 0, hw: 1.8 },
-  { pos: [26.0, 38.0], axis: 1, hw: 1.8 },
+  { pos: [36.0, 32.0], axis: 0, hw: 1.8 },
+  { pos: [30.0, 38.0], axis: 1, hw: 1.8 },
   { pos: [29.3, 23.0], axis: 1, hw: 1.4 }, // house ground floor → square
   { pos: [24.0, 19.5], axis: 0, hw: 1.4 }, // house ground floor → hall
 ];
 const SOURCES = [
   { name: 'music', pos: [2, 3], color: 0xffaa3c },
   { name: 'voice', pos: [10.5, 20.5], color: 0x6ee0a0 },
-  { name: 'club', pos: [27, 32], color: 0xff5a9e,
-    emitters: [[23.5, 27.5], [30.5, 27.5], [23.5, 36.5], [30.5, 36.5]] },
+  { name: 'club', pos: [31, 32], color: 0xff5a9e,
+    emitters: [[27.5, 27.5], [34.5, 27.5], [27.5, 36.5], [34.5, 36.5]] },
   { name: 'flute', pos: [8, 66], color: 0x9ad2ff },
   { name: 'radio', pos: [37.5, 12.5], z: -2.1, color: 0xd2b06e },
   { name: 'owl', pos: [4, 53], z: 24.25, color: 0xcfd8e6 }, // on the nave roof
@@ -165,14 +165,14 @@ const MIXER = [
   { name: 'voice', srcs: [1], base: 84, def: 65, meters: [1], spl: true },
   { name: 'club', srcs: [2], base: 104, def: 112, meters: [2], spl: true }, // a real club PA
   { name: 'flute', srcs: [3], base: 88, def: 76, meters: [3], spl: true },
-  { name: 'radio', srcs: [4], base: 80, def: 64, meters: [4], spl: true },
+  { name: 'radio', srcs: [4], base: 80, def: 56, meters: [4], spl: true },
   { name: 'owls', srcs: [5, 6], base: 74, def: 66, meters: [5, 6], spl: true },
   { name: 'bells', srcs: [7], base: 100, def: 104, meters: [7], spl: true },
-  { name: 'balls', srcs: [8, 9, 10], base: 89, def: 89, meters: [8, 9, 10], spl: true },
+  { name: 'balls', srcs: [8, 9, 10], base: 89, def: 79, meters: [8, 9, 10], spl: true },
   { name: 'cars', srcs: [11, 12], base: 92, def: 86, meters: [11, 12], spl: true },
   { name: 'steps', srcs: [13], base: 78, def: 62, meters: [13], spl: true },
   { name: 'fountain', srcs: [14], base: 76, def: 76, meters: [14], spl: true },
-  { name: 'stage', srcs: [15], base: 84, def: 78, meters: [15], spl: true }, // a voice projecting
+  { name: 'stage', srcs: [15], base: 84, def: 54, meters: [15], spl: true }, // quiet humming, 60 dB at 1 m
   { name: 'ambience', target: 'ambient', def: -16, meters: [16] },
   { name: 'rain', target: 'rainGain', def: 0, meters: [17] },
   { name: 'master', target: 'master', def: 0, meters: 'lr' },
@@ -1411,6 +1411,31 @@ function updateCars(dt, now) {
   });
 }
 
+// A warning plate (ISO 7010 W001: a black-rimmed yellow triangle with an
+// exclamation mark) over CAREFUL — VERY LOUD, facing +z, 0.48 × 0.62 m.
+let warningMat = null;
+function warningSign() {
+  if (!warningMat) {
+    const c = document.createElement('canvas');
+    c.width = 240; c.height = 310;
+    const g = c.getContext('2d');
+    g.fillStyle = '#ffc700'; g.fillRect(0, 0, 240, 310);
+    const tri = (s, y0, col) => {
+      g.beginPath();
+      g.moveTo(120, y0); g.lineTo(120 + s / 2, y0 + s * 0.866); g.lineTo(120 - s / 2, y0 + s * 0.866);
+      g.closePath(); g.fillStyle = col; g.fill();
+    };
+    tri(180, 14, '#111');
+    tri(136, 40, '#ffc700');
+    g.fillStyle = '#111'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = 'bold 84px sans-serif'; g.fillText('!', 120, 118);
+    g.font = 'bold 36px sans-serif';
+    g.fillText('CAREFUL', 120, 214); g.fillText('VERY LOUD', 120, 262);
+    warningMat = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c) });
+  }
+  return new THREE.Mesh(new THREE.PlaneGeometry(0.48, 0.62), warningMat);
+}
+
 // Openable door panels: a wood slab in each doorway with its own
 // toggleable collider. E toggles the nearest door; the sim hears the
 // closed panel as mass-law transmission instead of a free aperture.
@@ -1437,6 +1462,14 @@ function buildDoorPanels() {
       leaf.position.set(hw, 0, 0);
     }
     hinge.add(leaf);
+    // the club's two doors warn whoever comes from the street (their
+    // west faces)
+    if (state.doorMeshes.length === 3 || state.doorMeshes.length === 4) {
+      const w = warningSign();
+      w.position.set(-0.045, 0.5, 0);
+      w.rotation.y = -Math.PI / 2;
+      leaf.add(w);
+    }
     scene.add(hinge);
     const collider = {
       axis: d.axis, plane: d.axis === 0 ? dx : dy,
@@ -1861,6 +1894,11 @@ function buildPiece(p) {
       });
       break;
     }
+    case 'absorber_panel':
+      // fabric over mineral wool in a slim black frame, its front +y
+      part(-W, -D, 0, W, D, h, 0x0a0a0c);
+      part(-W + 0.03, D, 0.03, W - 0.03, D + 0.004, h - 0.03, 0x33203d);
+      break;
     default:
       part(-W, -D, 0, W, D, h);
   }
@@ -1924,14 +1962,21 @@ function buildWorld() {
   wallX(14, 14, 24, 7);           // hall east
   wallY(24, 0, 14, 7);            // hall north (door 2, to outside)
 
-  // club building (entered from outside via the entrance lobby)
-  wallX(20, 28, 34, 2.6);         // entrance west (door 3)
-  wallY(28, 20, 22, 2.6);         // entrance south
-  wallY(34, 20, 22, 2.6);         // entrance north
-  wallX(22, 26, 38, 4.5);         // club west (door 4, shared with entrance)
-  wallX(32, 26, 38, 4.5);         // club east
-  wallY(26, 22, 32, 4.5);         // club south
-  wallY(38, 22, 32, 4.5);         // club north
+  // club building (entered from the street through a 6 m entrance corridor)
+  wallX(20, 29.5, 32.5, 2.6);     // entrance west (door 3)
+  wallY(29.5, 20, 26, 2.6);       // entrance south
+  wallY(32.5, 20, 26, 2.6);       // entrance north
+  wallX(26, 26, 38, 4.5);         // club west (door 4, shared with entrance)
+  wallX(36, 26, 38, 4.5);         // club east
+  wallY(26, 26, 36, 4.5);         // club south
+  wallY(38, 26, 36, 4.5);         // club north
+  // the warning beside the street door (the door itself stands open)
+  {
+    const w = warningSign();
+    w.position.copy(v3(19.88, 32.15, 1.55));
+    w.rotation.y = -Math.PI / 2; // faces west, the street
+    scene.add(w);
+  }
 
   // cathedral, far north across the field (portal = door 6): walls to
   // the eaves; gables, roof and vault in buildCathedralShell
@@ -2308,12 +2353,21 @@ async function startAudio() {
     for (let i = 0; i < n; i++) out[i] *= 0.12 / p;
     return out;
   };
+  // the recordings that loop take a break after each pass: they play,
+  // ring out through the town, and start again (the fountain runs on;
+  // the engine's import loudness is gated, the silence doesn't count)
+  const LOOP_GAP_S = 10;
+  const gapped = (x) => {
+    const y = new Float32Array(x.length + Math.round(LOOP_GAP_S * audio.sampleRate));
+    y.set(x);
+    return y;
+  };
   const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops, m0, m1, m2, m3, ambience, fountain] = await Promise.all([
-    decodeMono(ariaRaw),
-    decodeMono(aliceRaw),
-    decodeMono(clubRaw),
-    decodeMono(fluteRaw),
-    decodeMono(radioRaw),
+    decodeMono(ariaRaw).then(gapped),
+    decodeMono(aliceRaw).then(gapped),
+    decodeMono(clubRaw).then(gapped),
+    decodeMono(fluteRaw).then(gapped),
+    decodeMono(radioRaw).then(gapped),
     Promise.resolve(makeWoosh(audio.sampleRate)), // fx 0: the ball woosh
     decodeMono(fxT, 0.4), // bounce thump, kept modest
     decodeMono(fxB, 1.9), // boom: retired from the ball, kept in the bank
@@ -2397,8 +2451,12 @@ async function startAudio() {
     fetchBuf('../assets/whisper/whisper_0.ogg').then(decodeWhisper),
     fetchBuf('../assets/whisper/whisper_1.ogg').then(decodeWhisper),
   ]);
-  // the listener's clap (K): synthesized (tools/make_fx.py), CC0
+  // the listener's clap (K) and whistle (J): recorded, CC0 / public
+  // domain (tools/make_recorded_fx.py)
   const clapFx = await fetchBuf('../assets/fx_clap.ogg').then((b) => decodeMono(b, 0.6));
+  const whistleFx = await fetchBuf('../assets/fx_call_whistle.ogg').then((b) => decodeMono(b, 0.6));
+  // the dome's stage: a woman humming, very dry (tools/make_hum_loop.py)
+  const hum = await fetchBuf('../assets/hum48.ogg').then((b) => decodeMono(b)).then(gapped);
   const [owl0, owl1, owl2, bellBig, bellSmall] = await Promise.all([
     fetchBuf('../assets/birds/owl_0.ogg').then((b) => decodeMono(b, 0.5)),
     fetchBuf('../assets/birds/owl_1.ogg').then((b) => decodeMono(b, 0.5)),
@@ -2409,9 +2467,8 @@ async function startAudio() {
   // projectile slots + owls/bells + feet: fx voices only (one buffer
   // each — transferables)
   const silents = Array.from({ length: 7 }, () => new Float32Array(480));
-  // the dome's stage plays the voice too (its own copy: a buffer is
-  // transferred once)
-  const stageVoice = alice.buffer.slice(0);
+  // the dome's stage: the humming
+  const stageVoice = hum.buffer;
 
   await audio.audioWorklet.addModule('worklet.js');
   const node = new AudioWorkletNode(audio, 'omg-engine', {
@@ -2436,13 +2493,13 @@ async function startAudio() {
                 fountain.buffer, stageVoice],                            // 14: fountain, 15: the dome's stage
       fx: [whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
            owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
-           whis0.buffer, whis1.buffer, clapFx.buffer],
+           whis0.buffer, whis1.buffer, clapFx.buffer, whistleFx.buffer],
       ambient: ambience.buffer, drops: drops.buffer },
     [wasm1, aria.buffer, alice.buffer, club.buffer, flute.buffer,
      radio.buffer, ...silents.map((b) => b.buffer), fountain.buffer, stageVoice,
      whistle.buffer, thumpFx.buffer, boomFx.buffer, ...steps.map((s) => s.buffer),
      owl0.buffer, owl1.buffer, owl2.buffer, bellBig.buffer, bellSmall.buffer,
-     whis0.buffer, whis1.buffer, clapFx.buffer,
+     whis0.buffer, whis1.buffer, clapFx.buffer, whistleFx.buffer,
      ambience.buffer, drops.buffer],
   );
   await new Promise((res, rej) => {
@@ -2709,10 +2766,14 @@ async function startAudio() {
         // after a clap it is the hands instead — chest height, 0.4 m
         // ahead (the sim's source set is fixed; at the feet a clap
         // doubled with its floor reflection, loudest crouched)
+        // (and after a whistle, the lips: 8 cm ahead, 8 cm under the eyes)
         performance.now() < (state.clapUntil || 0)
           ? [5, state.pose.x + Math.cos(state.heading) * 0.4, state.pose.y + Math.sin(state.heading) * 0.4,
             EYE - 0.45 + (state.pose.z || 0) + (state.airZ || 0) - 0.7 * (state.crouch || 0), 1]
-          : [5, state.pose.x, state.pose.y, Math.max(0.2, (state.pose.z || 0) + 0.2), 1],
+          : performance.now() < (state.mouthUntil || 0)
+            ? [5, state.pose.x + Math.cos(state.heading) * 0.08, state.pose.y + Math.sin(state.heading) * 0.08,
+              EYE - 0.08 + (state.pose.z || 0) + (state.airZ || 0) - 0.7 * (state.crouch || 0), 1]
+            : [5, state.pose.x, state.pose.y, Math.max(0.2, (state.pose.z || 0) + 0.2), 1],
       ],
     });
   };
@@ -2750,7 +2811,7 @@ function setupControls() {
   };
 
   if (!isTouch) {
-    hintEl.textContent = 'click: capture mouse · WASD walk · Shift run · Space jump · C crouch · F fly · click throw · E door · B bells · V whisper · K clap · R rain';
+    hintEl.textContent = 'click: capture mouse · WASD walk · Shift run · Space jump · C crouch · F fly · click throw · E door · B bells · V whisper · K clap · J whistle · R rain';
     glCanvas.addEventListener('click', () => {
       if (document.pointerLockElement !== glCanvas) glCanvas.requestPointerLock();
       else throwBall();
@@ -2769,6 +2830,7 @@ function setupControls() {
       else if (e.code === 'KeyB') ringBells();
       else if (e.code === 'KeyV') whisperNow();
       else if (e.code === 'KeyK') clapNow();
+      else if (e.code === 'KeyJ') whistleNow();
       else state.keys.add(e.code);
     });
     addEventListener('keyup', (e) => state.keys.delete(e.code));
@@ -3138,7 +3200,7 @@ function movePose(t) {
 const STEP_SURFACES = ['wood', 'carpet', 'concrete', 'grass'];
 const ROOM_SURFACE = {
   'Living Room': 'wood', Corridor: 'wood', 'Great Hall': 'concrete',
-  Entrance: 'concrete', Club: 'concrete', 'Old House': 'wood', 'Bunker Stair': 'concrete',
+  Entrance: 'carpet', Club: 'concrete', 'Old House': 'wood', 'Bunker Stair': 'concrete',
   'Old House Upper': 'carpet', Cathedral: 'concrete', Bunker: 'concrete',
   Outside: 'grass',
 };
@@ -3225,6 +3287,15 @@ function clapNow() {
   const gain = 8 * (0.9 + Math.random() * 0.2);
   const rate = 0.98 + Math.random() * 0.04;
   setTimeout(() => state.fx(13, 30, 'play', gain, rate), 150);
+}
+// A whistle (J) from the listener's lips, through the feet source moved
+// there: 80 dB at 1 m, 6 dB over the feet source (74 dB), as Godot's.
+function whistleNow() {
+  if (!state.fx) return;
+  state.mouthUntil = performance.now() + 2200;
+  const gain = 2.0;
+  const rate = 0.97 + Math.random() * 0.06;
+  setTimeout(() => state.fx(13, 31, 'play', gain, rate), 150);
 }
 function updateWildlife(t) {
   if (!state.fx || !state.running) return;

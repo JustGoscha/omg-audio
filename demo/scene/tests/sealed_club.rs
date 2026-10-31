@@ -21,11 +21,11 @@ fn sealed_club_is_boomy_from_every_angle() {
     let mut spots: Vec<(f32, f32)> = Vec::new();
     for i in 0..14 {
         spots.push((19.2, 25.0 + i as f32));
-        spots.push((33.2, 25.0 + i as f32));
+        spots.push((37.2, 25.0 + i as f32));
     }
     for i in 0..10 {
-        spots.push((23.0 + i as f32, 39.2));
-        spots.push((23.0 + i as f32, 24.8));
+        spots.push((27.0 + i as f32, 39.2));
+        spots.push((27.0 + i as f32, 24.8));
     }
     for (x, y) in spots {
         for _ in 0..12 {

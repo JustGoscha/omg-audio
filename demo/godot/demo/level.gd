@@ -15,8 +15,8 @@ const ROOMS := [
 	["Living Room", Vector2(0, 0), Vector2(8, 6), 0.0, 2.7, "wood"],
 	["Corridor", Vector2(3.2, 6), Vector2(4.8, 14), 0.0, 2.4, "wood"],
 	["Great Hall", Vector2(0, 14), Vector2(14, 24), 0.0, 7.0, "concrete"],
-	["Entrance", Vector2(20, 28), Vector2(22, 34), 0.0, 2.6, "concrete"],
-	["Club", Vector2(22, 26), Vector2(32, 38), 0.0, 4.5, "concrete"],
+	["Entrance", Vector2(20, 29.5), Vector2(26, 32.5), 0.0, 2.6, "carpet"],
+	["Club", Vector2(26, 26), Vector2(36, 38), 0.0, 4.5, "concrete"],
 	["Old House Upper", Vector2(24, 16), Vector2(31, 23), 2.9, 5.6, "carpet"],
 	["Old House", Vector2(24, 16), Vector2(31, 23), -0.5, 2.8, "wood"],
 	["Cathedral", Vector2(0, 52), Vector2(16, 74), 0.0, 23.0, "concrete"],
@@ -33,7 +33,7 @@ const DOORS := [
 	[Vector2(4, 14), 1, 0.55, 2.0, false],
 	[Vector2(7, 24), 1, 0.55, 2.0, false],
 	[Vector2(20, 31), 0, 0.55, 2.0, true],
-	[Vector2(22, 31), 0, 0.55, 2.0, true],
+	[Vector2(26, 31), 0, 0.55, 2.0, true],
 	[Vector2(26.5, 23), 1, 0.55, 2.0, false],
 	[Vector2(8, 52), 1, 1.2, 3.5, true],
 	[Vector2(31.4, 7), 0, 0.7, 2.0, true],
@@ -43,8 +43,8 @@ const DOOR_OPEN := [true, true, true, true, false, true, false, true]
 # Glass panes (walkthrough doors with glass): pos, axis, half, z centre, heavy.
 const WINDOWS := [
 	[Vector2(3.0, 0.0), 1, 1.3, 1.5, false],
-	[Vector2(32.0, 32.0), 0, 1.8, 1.5, true],
-	[Vector2(26.0, 38.0), 1, 1.8, 1.5, true],
+	[Vector2(36.0, 32.0), 0, 1.8, 1.5, true],
+	[Vector2(30.0, 38.0), 1, 1.8, 1.5, true],
 	[Vector2(29.3, 23.0), 1, 1.4, 1.5, false],
 	[Vector2(24.0, 19.5), 0, 1.4, 1.5, false],
 	[Vector2(29.3, 23.0), 1, 1.4, 4.5, false],
@@ -53,7 +53,7 @@ const WINDOWS := [
 const WIN_H := 1.4
 
 # Club PA: four corner speakers (walkthrough CLUB_SPEAKERS).
-const CLUB_SPEAKERS := [Vector2(23.5, 27.5), Vector2(30.5, 27.5), Vector2(23.5, 36.5), Vector2(30.5, 36.5)]
+const CLUB_SPEAKERS := [Vector2(27.5, 27.5), Vector2(34.5, 27.5), Vector2(27.5, 36.5), Vector2(34.5, 36.5)]
 # The garden fountain beside the belfry path (walkthrough FOUNTAIN).
 const FOUNTAIN := Vector2(14.2, 199.0)
 
@@ -188,45 +188,54 @@ func _club() -> void:
 	var out := geo.B(DemoMats.blocks(Color(0.42, 0.42, 0.46)), "concrete")
 	var dark := geo.B(DemoMats.concrete(Color(0.16, 0.15, 0.18)), "concrete")
 	var lobby := geo.B(DemoMats.plaster(Color(0.55, 0.32, 0.42), "concrete"))
+	var roof := geo.B(DemoMats.concrete(Color(0.4, 0.4, 0.42)), "concrete")
 	var door := func(y: float) -> Array: return [y, 0.55, 0.0, 2.0]
-	# entrance lobby
-	geo.wall(0, 20, 28, 34, 0, 3.0, 0.2, [door.call(31.0)], lobby, out, 1)
-	geo.wall(1, 28, 20, 22, 0, 3.0, 0.2, [], lobby, out, 1)
-	geo.wall(1, 34, 20, 22, 0, 3.0, 0.2, [], lobby, out, -1)
-	geo.slab(20, 28, 22, 34, 2.6, 2.8, [], lobby, geo.B(DemoMats.concrete(Color(0.4, 0.4, 0.42)), "concrete"))
-	geo.B(DemoMats.concrete(Color(0.3, 0.28, 0.3)), "concrete").box(20, 28, -0.1, 22, 34, 0.02)
-	# the club hall (west wall shared with the lobby: one wall, as the web)
+	# the entrance: a 6 m sound-lock corridor from the street door (x 20)
+	# east to the club's (x 26), carpeted wall to wall
+	geo.wall(0, 20, 29.5, 32.5, 0, 3.0, 0.2, [door.call(31.0)], lobby, out, 1)
+	geo.wall(1, 29.5, 20, 26, 0, 3.0, 0.2, [], lobby, out, 1)
+	geo.wall(1, 32.5, 20, 26, 0, 3.0, 0.2, [], lobby, out, -1)
+	geo.slab(20, 29.5, 26, 32.5, 2.6, 2.8, [], lobby, roof)
+	geo.B(DemoMats.carpet(Color(0.3, 0.07, 0.12)), "carpet").box(20, 29.5, -0.1, 26, 32.5, 0.02)
+	# the club wall's face at the corridor's end, plastered like the rest
+	# (a skin: the wall itself is the club's)
+	var skin := geo.B(DemoMats.plaster(Color(0.55, 0.32, 0.42)), "", false, false, "entrance end wall (skin)")
+	geo.wall(0, 25.815, 29.6, 32.4, 0, 2.6, 0.01, [door.call(31.0)], skin, skin, 1)
+	_entrance_dressing()
+	# the club hall (its west wall the corridor's end: one wall)
 	var t := 0.35
-	geo.wall(0, 22, 26, 38, 0, 4.9, t, [door.call(31.0)], dark, out, 1)
-	geo.wall(0, 32, 26, 38, 0, 4.9, t, [[32.0, 1.8, 0.8, 2.2]], dark, out, -1)
-	geo.wall(1, 26, 22, 32, 0, 4.9, t, [], dark, out, 1)
-	geo.wall(1, 38, 22, 32, 0, 4.9, t, [[26.0, 1.8, 0.8, 2.2]], dark, out, -1)
-	geo.B(DemoMats.concrete(Color(0.22, 0.2, 0.22)), "concrete").box(22, 26, -0.1, 32, 38, 0.02)
-	geo.slab(22, 26, 32, 38, 4.5, 4.7, [], dark, geo.B(DemoMats.concrete(Color(0.4, 0.4, 0.42)), "concrete"))
-	_cornice(22, 26, 32, 38, 4.9)
-	# neon sign over the entrance
+	geo.wall(0, 26, 26, 38, 0, 4.9, t, [door.call(31.0)], dark, out, 1)
+	geo.wall(0, 36, 26, 38, 0, 4.9, t, [[32.0, 1.8, 0.8, 2.2]], dark, out, -1)
+	geo.wall(1, 26, 26, 36, 0, 4.9, t, [], dark, out, 1)
+	geo.wall(1, 38, 26, 36, 0, 4.9, t, [[30.0, 1.8, 0.8, 2.2]], dark, out, -1)
+	geo.B(DemoMats.concrete(Color(0.22, 0.2, 0.22)), "concrete").box(26, 26, -0.1, 36, 38, 0.02)
+	geo.slab(26, 26, 36, 38, 4.5, 4.7, [], dark, roof)
+	_cornice(26, 26, 36, 38, 4.9)
+	# neon sign over the street door
 	var sign := Label3D.new()
 	sign.text = "CLUB"
 	sign.font_size = 160
 	sign.pixel_size = 0.004
 	sign.modulate = Color(1.0, 0.35, 0.75)
 	sign.outline_modulate = Color(0.5, 0.0, 0.3)
-	sign.position = v(19.85, 31, 3.4)
+	sign.position = v(19.85, 31, 2.5)
 	sign.rotation_degrees = Vector3(0, -90, 0)
 	root.add_child(sign)
 	var neon := OmniLight3D.new()
-	neon.position = v(19.4, 31, 3.3)
+	neon.position = v(19.4, 31, 2.6)
 	neon.light_color = Color(1.0, 0.3, 0.7)
 	neon.light_energy = 2.0
 	neon.omni_range = 7.0
 	root.add_child(neon)
+	# the warning beside the street door (the door itself stands open)
+	_warning_sign(root, v(19.88, 32.15, 1.55), -90.0)
 	# LED strips along the club ceiling + coloured wash lights
 	var led := geo.B(DemoMats.glow(Color(0.9, 0.2, 1.0), 4.0), "", false, false, "LED strips (light)")
-	led.box(22.3, 26.4, 4.3, 31.7, 26.5, 4.36)
-	led.box(22.3, 37.5, 4.3, 31.7, 37.6, 4.36)
+	led.box(26.3, 26.4, 4.3, 35.7, 26.5, 4.36)
+	led.box(26.3, 37.5, 4.3, 35.7, 37.6, 4.36)
 	var cols := [Color(1.0, 0.2, 0.6), Color(0.2, 0.4, 1.0), Color(0.1, 0.9, 0.8), Color(0.8, 0.2, 1.0)]
 	var i := 0
-	for p in [Vector2(25, 29), Vector2(29, 29), Vector2(25, 35), Vector2(29, 35)]:
+	for p in [Vector2(29, 29), Vector2(33, 29), Vector2(29, 35), Vector2(33, 35)]:
 		var l := OmniLight3D.new()
 		l.position = v(p.x, p.y, 4.0)
 		l.light_color = cols[i]
@@ -241,9 +250,96 @@ func _club() -> void:
 	var cone := geo.B(DemoMats.plain(Color(0.12, 0.12, 0.13), 0.4), "", false, false, "speaker cones")
 	for s in CLUB_SPEAKERS:
 		cab.box(s.x - 0.35, s.y - 0.28, 1.35, s.x + 0.35, s.y + 0.28, 2.45)
-		var face := -1.0 if s.x > 27 else 1.0
+		var face := -1.0 if s.x > 31 else 1.0
 		cone.box(s.x + face * 0.36 - 0.02, s.y - 0.2, 1.5, s.x + face * 0.36 + 0.02, s.y + 0.2, 2.3)
 		cab.box(s.x - 0.08, s.y - 0.08, 0.0, s.x + 0.08, s.y + 0.08, 1.35)
+
+# The entrance corridor's look (its bench, coat rack, coat-check counter
+# and runner come from the layout): warm downlights, a magenta neon line
+# along both walls, posters, the coat-check sign — all decor.
+func _entrance_dressing() -> void:
+	var neon := geo.B(DemoMats.glow(Color(1.0, 0.25, 0.65), 3.0), "", false, false, "entrance neon line (light)")
+	neon.box(20.2, 29.62, 2.45, 25.7, 29.65, 2.5)
+	neon.box(20.2, 32.35, 2.45, 25.7, 32.38, 2.5)
+	for x in [21.2, 23.0, 24.8]:
+		var l := OmniLight3D.new()
+		l.position = v(x, 31.0, 2.4)
+		l.light_color = Color(1.0, 0.62, 0.72)
+		l.light_energy = 0.9
+		l.omni_range = 3.6
+		root.add_child(l)
+		geo.B(DemoMats.glow(Color(1.0, 0.8, 0.85), 3.0), "", false, false, "entrance downlights (light)").box(x - 0.12, 30.88, 2.57, x + 0.12, 31.12, 2.6)
+	# posters on the south wall between the bench and the coat rack, and
+	# one by the club door
+	var frame := geo.B(DemoMats.plain(Color(0.06, 0.05, 0.06), 0.5), "", false, false, "poster frames")
+	var pcols := [Color(0.95, 0.35, 0.2), Color(0.25, 0.55, 0.95), Color(0.9, 0.2, 0.7)]
+	var k := 0
+	for x in [22.95, 25.05]:
+		frame.box(x - 0.36, 29.6, 0.95, x + 0.36, 29.63, 2.0)
+		geo.B(DemoMats.glow(pcols[k], 0.7), "", false, false, "posters (light)").box(x - 0.31, 29.63, 1.0, x + 0.31, 29.64, 1.95)
+		k += 1
+	frame.box(20.85, 32.37, 1.0, 21.55, 32.4, 2.0)
+	geo.B(DemoMats.glow(pcols[2], 0.7), "", false, false, "posters (light)").box(20.9, 32.36, 1.05, 21.5, 32.37, 1.95)
+	var cc := Label3D.new()
+	cc.text = "COAT CHECK"
+	cc.font_size = 64
+	cc.pixel_size = 0.0035
+	cc.modulate = Color(1.0, 0.85, 0.6)
+	cc.outline_modulate = Color(0.3, 0.1, 0.05)
+	cc.position = v(23.2, 32.38, 2.05)
+	cc.rotation_degrees = Vector3(0, 180, 0)
+	root.add_child(cc)
+
+# A warning plate (ISO 7010 W001: a black-rimmed yellow triangle with an
+# exclamation mark) over "CAREFUL — VERY LOUD", its face turned `yaw`
+# degrees from +z, centred at `at` (Godot coordinates) under `parent`.
+func _warning_sign(parent: Node3D, at: Vector3, yaw: float) -> Node3D:
+	var sign := Node3D.new()
+	sign.name = "WarningSign"
+	sign.set_meta("omg_material", "none")
+	sign.position = at
+	sign.rotation_degrees = Vector3(0, yaw, 0)
+	parent.add_child(sign)
+	var yellow := DemoMats.plain(Color(1.0, 0.78, 0.0), 0.6)
+	var black := DemoMats.plain(Color(0.03, 0.03, 0.03), 0.6)
+	var plate := MeshInstance3D.new()
+	var pm := BoxMesh.new()
+	pm.size = Vector3(0.48, 0.62, 0.008)
+	plate.mesh = pm
+	plate.material_override = yellow
+	sign.add_child(plate)
+	var rim := MeshInstance3D.new()
+	var rm := PrismMesh.new()
+	rm.size = Vector3(0.36, 0.31, 0.004)
+	rim.mesh = rm
+	rim.material_override = black
+	rim.position = Vector3(0, 0.12, 0.006)
+	sign.add_child(rim)
+	var tri := MeshInstance3D.new()
+	var tm := PrismMesh.new()
+	tm.size = Vector3(0.27, 0.233, 0.004)
+	tri.mesh = tm
+	tri.material_override = yellow
+	tri.position = Vector3(0, 0.1, 0.009)
+	sign.add_child(tri)
+	var bang := Label3D.new()
+	bang.text = "!"
+	bang.font_size = 96
+	bang.pixel_size = 0.0018
+	bang.outline_size = 0
+	bang.modulate = Color(0.03, 0.03, 0.03)
+	bang.position = Vector3(0, 0.085, 0.0125)
+	sign.add_child(bang)
+	var words := Label3D.new()
+	words.text = "CAREFUL\nVERY LOUD"
+	words.font_size = 40
+	words.pixel_size = 0.0021
+	words.outline_size = 0
+	words.line_spacing = -4.0
+	words.modulate = Color(0.03, 0.03, 0.03)
+	words.position = Vector3(0, -0.18, 0.0055)
+	sign.add_child(words)
+	return sign
 
 # -------------------------------------------------------------- old house
 
@@ -788,7 +884,7 @@ const FURNITURE := [
 	[10.2, 19.9, 0.0, 10.8, 20.3, 1.2, "cabinet", "lectern"],
 	[12.0, 16.5, 0.0, 12.3, 19.5, 2.2, "panel", "whiteboard"],
 	# club bar
-	[23.0, 29.0, 0.0, 24.0, 33.5, 1.1, "cabinet", "bar"],
+	[27.0, 32.6, 0.0, 28.0, 35.4, 1.1, "cabinet", "bar"],
 	# old house ground floor
 	[25.0, 18.0, 0.0, 27.2, 18.9, 0.75, "soft", "sofa"],
 	[25.6, 19.4, 0.0, 26.6, 20.0, 0.4, "furniture_wood", "table"],
@@ -1072,6 +1168,12 @@ func _piece(it: Dictionary) -> void:
 		"lectern":
 			_part(node, -hx, -hy, 0.0, hx, hy, h, dark)
 			_part(decor, -hx - 0.05, -hy - 0.05, h, hx + 0.05, hy + 0.05, h + 0.05, dark, false)
+		"absorber_panel":
+			# fabric over mineral wool in a slim black frame, its front +y
+			var cloth := DemoMats.plain(Color(0.2, 0.13, 0.24), 1.0)
+			var rimm := DemoMats.plain(Color(0.04, 0.04, 0.05), 0.6)
+			_part(node, -hx, -hy, 0.0, hx, hy, h, rimm)
+			_part(decor, -hx + 0.03, hy, 0.03, hx - 0.03, hy + 0.004, h - 0.03, cloth, false)
 		"rug":
 			# the room floors lie 2 cm up: float the rug just above them
 			_part(decor, -hx, -hy, 0.025, hx, hy, 0.035, DemoMats.carpet(Color(0.42, 0.2, 0.17)), false)
@@ -1125,7 +1227,7 @@ func _props() -> void:
 	_figure(Vector2(8.0, 66.4), 0.0, Color(0.3, 0.28, 0.4))
 	# lamps inside: warm pools in every room
 	for l in [[Vector3(4, 3, 2.4), Color(1.0, 0.78, 0.5), 2.2, 7.0, true], [Vector3(4, 10, 2.2), Color(1.0, 0.85, 0.65), 1.0, 5.0, false],
-			[Vector3(21, 31, 2.3), Color(1.0, 0.5, 0.7), 1.2, 5.0, false], [Vector3(27, 19.5, 2.5), Color(1.0, 0.75, 0.5), 2.0, 7.0, true],
+			[Vector3(27, 19.5, 2.5), Color(1.0, 0.75, 0.5), 2.0, 7.0, true],
 			[Vector3(27, 19.5, 5.2), Color(1.0, 0.8, 0.6), 1.5, 6.0, false]]:
 		var o := OmniLight3D.new()
 		var p: Vector3 = l[0]
@@ -1289,6 +1391,10 @@ func _doors() -> void:
 		knob.material_override = DemoMats.metal(Color(0.75, 0.62, 0.3))
 		knob.position = Vector3(hw * 0.8, -0.05 * h, thick * 0.7)
 		leaf.add_child(knob)
+		# the club's two doors warn whoever comes from the street (their
+		# west faces: the leaf's −z)
+		if i == 3 or i == 4:
+			_warning_sign(leaf, Vector3(0, 0.55, -thick * 0.5 - 0.005), 180.0)
 		root.add_child(hinge)
 		# the acoustic leaf: covered fraction priced continuously
 		var omg := OmgDoor.new()

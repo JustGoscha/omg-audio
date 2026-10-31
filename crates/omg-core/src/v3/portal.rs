@@ -102,8 +102,9 @@ pub(super) struct PortalState {
 pub(super) type Fresh = HashMap<(u32, u8), (Vec<(u32, [f32; NBANDS])>, u32)>;
 
 /// A source ray's diffuse bounce connected to the ears (light tracing):
-/// what it brings per band, when, and from where (from the ears).
-pub(super) type Conn = ([f32; NBANDS], f32, Vec3);
+/// what it brings per band, when, from where (from the ears), the bounce
+/// itself and the opening its path crossed last (for a debug view).
+pub(super) type Conn = ([f32; NBANDS], f32, Vec3, Vec3, u8);
 
 /// A source ray's diffuse bounce past an opening it crossed with a rough
 /// past (light tracing's vertex), kept while the source and the world
@@ -512,7 +513,7 @@ pub(super) fn connect(world: &World, kept: &[Vpl], kept_cum: &[f64], new: &[Vpl]
         // its odds weight(v) / sum a draw, of `draws`, over `ticks` ticks
         let w = (sum / (draws as f64 * weight(v) as f64 * ticks as f64)) as f32;
         let g = w * cos_out / (core::f32::consts::PI * r * r);
-        out.push((core::array::from_fn(|b| v.e[b] * g * air[b] * air[b]), (v.length + r) / SPEED_OF_SOUND, d * -1.0));
+        out.push((core::array::from_fn(|b| v.e[b] * g * air[b] * air[b]), (v.length + r) / SPEED_OF_SOUND, d * -1.0, v.p, v.ap));
     }
     out
 }

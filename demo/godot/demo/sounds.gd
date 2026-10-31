@@ -19,16 +19,21 @@ var STATIC := [
 	["music", Vector2(2, 3), 1.5, "aria48.ogg", spl(1.0, 90, 72)],
 	["voice", Vector2(10.5, 20.5), 1.5, "alice48.ogg", spl(0.5, 84, 65)],
 	["flute", Vector2(8, 66), 1.5, "flute48.ogg", spl(1.0, 88, 76)],
-	["radio", Vector2(37.5, 12.5), -1.5, "radio48.ogg", spl(0.5, 80, 64)],
+	["radio", Vector2(37.5, 12.5), -1.5, "radio48.ogg", spl(0.5, 80, 56)],
 	["owl·cathedral", Vector2(4, 53), 24.25, "", spl(1.6, 74, 66)],
 	["owl·house", Vector2(27.5, 19.5), 6.3, "", spl(1.4, 74, 66)],
 	["bells", Vector2(10, 321), 25.5, "", spl(30.0, 100, 104)],
 	["fountain", DemoLevel.FOUNTAIN, 0.8, "fountain48.ogg", spl(0.2, 76, 76)],
-	# a voice projecting on the radar dome's stage (layout.json "radome")
-	["stage", Vector2(-42, 30), 2.4, "alice48.ogg", spl(1.0, 84, 78)],
+	# a woman humming quietly on the radar dome's stage (layout.json
+	# "radome"; a dry take: the dome's echo is the engine's) — 60 dB at 1 m
+	["stage", Vector2(-42, 30), 2.4, "hum48.ogg", spl(1.0, 84, 54)],
 ]
+# The recordings that loop take a break after each pass: they play, ring
+# out through the town, and start again (the fountain runs on).
+const LOOP_GAP_S := 10.0
+const GAPPED := ["music", "voice", "flute", "radio", "stage"]
 var CLUB_LEVEL := spl(5.0, 104, 112) - 6.0206 # 112 dB at 1 m (a real club PA), power split over 4 sample-locked speakers
-var BALL_LEVEL := spl(0.9, 89, 89)
+var BALL_LEVEL := spl(0.9, 89, 79)
 var CAR_LEVEL := spl(2.2, 92, 86)
 var FEET_LEVEL := spl(1.0, 78, 62)
 
@@ -42,6 +47,10 @@ const CAR_LANES := [-18.9, -17.1]
 # its slot frees once it is as far past. From 900 m (as it was) a 95 dB
 # motor arrived ~30 dB SPL on a quiet road: a car out of nothing.
 const HEARING_DB := 22.0
+# Cars on the road at once, alternating directions. Each holds its slot
+# for the whole drive — in from out of earshot (2–6 km) and out as far —
+# 4–8 minutes at 45–85 km/h: three each way pass about every 1½ minutes.
+const CAR_SLOTS := 6
 
 static func car_far_m(level_db: float) -> float:
 	return pow(10.0, (level_db + 3.0 - HEARING_DB) / 20.0)
@@ -55,6 +64,9 @@ var balls: Array[OmgSource] = []
 var cars_src: Array[OmgSource] = []
 var feet: OmgSource
 var hands: OmgSource # the clap: chest height, a little in front
+var mouth: OmgSource # the whistle (J): at the lips
+# a whistled call, dB SPL at 1 m (a casual whistle; a loud one is 100+)
+const WHISTLE_LEVEL := 80.0
 var clip := {}          # name → clip id
 var steps := []         # [surface][variant] → clip id
 var t0 := 0.0
@@ -90,16 +102,20 @@ func setup(w: OmgWorld, r: Node3D, l: DemoLevel, pl: DemoPlayer) -> void:
 	player = pl
 	for d in STATIC:
 		sources[d[0]] = _src(d[0], d[1], d[2], d[3], d[4])
+		if d[0] in GAPPED:
+			sources[d[0]].loop_gap = LOOP_GAP_S
 	var i := 0
 	for s in DemoLevel.CLUB_SPEAKERS:
 		sources["club%d" % i] = _src("club%d" % i, s, 1.9, "club48.ogg", CLUB_LEVEL)
+		sources["club%d" % i].loop_gap = LOOP_GAP_S
 		i += 1
 	for k in 3:
 		balls.append(_src("ball%d" % k, Vector2.ZERO, 1.5, "", BALL_LEVEL, false))
-	for k in 2:
+	for k in CAR_SLOTS:
 		cars_src.append(_src("car%d" % k, Vector2(-18, 0), 0.7, "", CAR_LEVEL, false))
 	feet = _src("feet", Vector2(3, 3), 0.2, "", FEET_LEVEL)
 	hands = _src("hands", Vector2(3, 3), 1.2, "", FEET_LEVEL)
+	mouth = _src("mouth", Vector2(3, 3), 1.5, "", WHISTLE_LEVEL)
 
 	# fx bank, shaped on import as the web shapes it on decode
 	clip["woosh"] = world.add_clip(_woosh(world.sample_rate()))
@@ -116,6 +132,7 @@ func setup(w: OmgWorld, r: Node3D, l: DemoLevel, pl: DemoPlayer) -> void:
 	clip["bell_big"] = world.load_clip(A + "birds/bell_big.ogg", {"peak": 0.6, "max_seconds": 16.0, "fade_out": 2.0})
 	clip["bell_small"] = world.load_clip(A + "birds/bell_small.ogg", {"peak": 0.5, "max_seconds": 10.0, "fade_out": 2.0})
 	clip["clap"] = world.load_clip(A + "fx_clap.ogg", {"peak": 0.6})
+	clip["call_whistle"] = world.load_clip(A + "fx_call_whistle.ogg", {"peak": 0.6})
 	for k in 2:
 		clip["whisper%d" % k] = world.load_clip(A + "whisper/whisper_%d.ogg" % k,
 			{"peak": 0.5, "trim_start": 0.02, "max_seconds": 7.0, "fade_out": 1.5})
@@ -166,6 +183,10 @@ func clap() -> void:
 	# a clap stands well above a footstep: +18 dB over the footstep level
 	# (+28, the physical difference, was too loud at the ears)
 	hands.play_clip(clip["clap"], 8.0 * (0.9 + randf() * 0.2), 0.98 + randf() * 0.04)
+
+# A whistled call (J) from the player's lips: the room answers it.
+func whistle() -> void:
+	mouth.play_clip(clip["call_whistle"], 1.0, 0.97 + randf() * 0.06)
 
 func whisper() -> void:
 	world.whisper(clip["whisper%d" % (randi() % 2)], randf() < 0.5, 0.05 + randf() * 0.07, 0.55 + randf() * 0.25)
@@ -286,13 +307,13 @@ func _update_balls(dt: float) -> void:
 
 func _spawn_car() -> void:
 	var free := -1
-	for s in 2:
+	for s in CAR_SLOTS:
 		if not cars.any(func(c): return c["slot"] == s):
 			free = s
 			break
 	if free < 0:
 		return
-	var north := free == 1
+	var north := free % 2 == 1
 	var body := Node3D.new()
 	var paint := DemoMats.plain(Color(0.25, 0.32, 0.45) if north else Color(0.45, 0.2, 0.15), 0.25, 0.6)
 	var b := MeshInstance3D.new()
@@ -481,6 +502,8 @@ func _process(dt: float) -> void:
 	var ahead := player.look_dir()
 	ahead.y = 0.0
 	hands.global_position = player.cam.global_position + ahead.normalized() * 0.4 + Vector3(0, -0.45, 0)
+	# the lips: just ahead of and below the eyes
+	mouth.global_position = player.cam.global_position + ahead.normalized() * 0.08 + Vector3(0, -0.08, 0)
 	if player.landed:
 		_step(true)
 	elif player.stepped > 0.0:

@@ -12,7 +12,7 @@ fn main() {
     for i in 0..town.defs.len() {
         town.set_muted(&mut sim, i, i != 2);
     }
-    sim.set_listener([21.0, 30.2, 1.6], 0.0, 0.0, 0.0);
+    sim.set_listener([25.0, 30.6, 1.6], 0.0, 0.0, 0.0);
     for _ in 0..40 {
         sim.tick();
     }
