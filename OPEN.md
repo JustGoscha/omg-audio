@@ -153,6 +153,27 @@ WebGPU driver (`gpu.js`) carries the deposits too but is untested in a
 browser; the kernel still lacks v6.2's aperture tags, the wall split at a
 sounding room and the clearance (its early family priced as v6.1's).
 
+### Exact paths stepping in motion (Oct 31, v6.4)
+Done in v6.4 (`diffraction.rs::passing_a_corner_the_bend_is_there_at_once_v64`):
+corners looked ahead (Schissler, Mückl & Calamia 2021 §5.2.2: the edge
+nearest each source's straight line kept, 1 m ahead while it is clear),
+and a thick end's two edges bent round as one corner (`twins`,
+`price_thick`): past a 25 cm wall's end 36 → 4.4 dB a tick, its shadow
+51 → 9.8 dB deep (a thin end's 9.7). Left:
+- **Door leaves don't diffract.** A leaf is an object box, its free edge
+  in no edge set: as it swings past the straight line the direct sound
+  steps by the leaf's whole damping in a tick (the club's south door,
+  capture 18-49-57: −99.5 ↔ −77.5 dB, the ears still). Make each leaf's
+  free edge an edge that moves with it.
+- **Two doorways in a row** (the vestibule) need a two-edge string; level
+  0 searches none (`LADDER` edge2 = 0), the single bend's leg flips
+  between the second doorway and its wall (capture 18-49-57 at (17.4,
+  31): −88 → −28 → −74 dB within half a second).
+- **The shadow boundary's own step**, 4–5 dB a tick at a corner: the bend
+  at grazing is −6 dB, the direct on the lit side full. Normalize the
+  bend to the direct at the boundary (Tsingos et al. 2001, as the 2021
+  paper does).
+
 ### Auto quality held at the bottom by the mirror chains (Oct 31)
 In Godot `auto` stays at 0–2/10 in the club and the cathedral, the frame
 rate fine (the tick runs on its own thread). The governor climbs when

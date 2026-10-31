@@ -4598,7 +4598,7 @@ impl Tracer {
         if !budget.diffraction {
             return edge_taps;
         }
-        let Some(es) = self.edges.take() else { return edge_taps };
+        let Some(mut es) = self.edges.take() else { return edge_taps };
         let tick = self.tick;
         let debug = self.debug;
 
@@ -4643,6 +4643,7 @@ impl Tracer {
         }
         // one bend: rank every exposed edge by its pure knife-edge bound,
         // price the best the listener sees, keep the strongest distinct
+        let twins = self.v64;
         for &(_, _, si) in &due1 {
             let s = &sources[si];
             let sp = emitted[si].expect("due sources emitted");
@@ -4675,7 +4676,7 @@ impl Tracer {
                 .take(EDGE_LOOKS)
                 .filter(|&(_, ei)| ear_sees(world, &es, ear_seen, ei, listener))
                 .take(EDGE_CANDIDATES)
-                .filter_map(|(_, ei)| price_one(world, &es, &mut self.hits, ei, listener, sp, vis[si]).map(|(p, tap)| (tap.gains[0] + tap.gains[1], p, ei)))
+                .filter_map(|(_, ei)| price_bend(world, &es, &mut self.hits, ei, listener, sp, vis[si], twins).map(|(p, tap)| (tap.gains[0] + tap.gains[1], p[0], ei)))
                 .collect();
             found.sort_by(|x, y| y.0.total_cmp(&x.0));
             let mut kept: Vec<(Vec3, usize)> = Vec::new();
@@ -4711,6 +4712,53 @@ impl Tracer {
             c.two_at = Some((listener, sp, tick));
         }
 
+        // v6.4: look ahead — every source, every tick, the edge its
+        // straight line passes nearest: while the line is clear, one it is
+        // about to pass behind (within `LOOK_AHEAD_M`); blocked, the one
+        // it went behind. Kept till the source's next full search has seen
+        // them: the bend over a corner is there the tick the line goes
+        // behind it, not when the rationed search next comes round (one
+        // source a tick at the lowest level: a second and more of the bare
+        // step through the wall — Godot, Oct 31)
+        if self.v64 {
+            for (si, s) in sources.iter().enumerate() {
+                let Some(sp) = emitted[si] else { continue };
+                let to = sp - listener;
+                let len = to.length();
+                if len < 0.4 {
+                    continue;
+                }
+                let d = to * (1.0 / len);
+                let clear = vis[si][1] > 0.999;
+                let reach = if clear { LOOK_AHEAD_M } else { EDGE_REACH };
+                let mut near: Vec<usize> = Vec::new();
+                let mut skip = None;
+                for _ in 0..2 {
+                    match es.nearest(listener, d, len, skip) {
+                        Some((_, dist, _, ei)) if dist <= reach => {
+                            near.push(ei);
+                            skip = Some(ei);
+                        }
+                        _ => break,
+                    }
+                }
+                let c = self.edge_cache.entry(s.id).or_default();
+                // a full search since: it has seen what was near before it
+                let searched = c.one_at.map_or(0, |a| a.2);
+                c.ahead.retain(|&(_, at)| at >= searched);
+                for ei in near {
+                    match c.ahead.iter_mut().find(|a| a.0 == ei) {
+                        Some(a) => a.1 = tick,
+                        None => c.ahead.push((ei, tick)),
+                    }
+                }
+                if c.ahead.len() > AHEAD_KEEP {
+                    c.ahead.sort_by(|a, b| b.1.cmp(&a.1));
+                    c.ahead.truncate(AHEAD_KEEP);
+                }
+            }
+        }
+
         // every blocked source's paths, solved for now
         for (si, s) in sources.iter().enumerate() {
             if vis[si][1] > 0.999 {
@@ -4720,10 +4768,27 @@ impl Tracer {
             let Some(c) = self.edge_cache.get_mut(&s.id) else { continue };
             c.taps.clear();
             c.points.clear();
-            for &ei in &c.one {
-                if let Some((p, tap)) = price_one(world, &es, &mut self.hits, ei, listener, sp, vis[si]) {
+            // the edges its search found, and (v6.4) those looked ahead
+            let mut ones = c.one.clone();
+            for &(ei, _) in &c.ahead {
+                if !ones.contains(&ei) {
+                    ones.push(ei);
+                }
+            }
+            let mut done: Vec<usize> = Vec::new();
+            for &ei in &ones {
+                if done.contains(&ei) {
+                    continue; // its twin's bend took it
+                }
+                done.push(ei);
+                if self.v64 {
+                    if let Some(t) = es.twin[ei] {
+                        done.push(t as usize);
+                    }
+                }
+                if let Some((p, tap)) = price_bend(world, &es, &mut self.hits, ei, listener, sp, vis[si], self.v64) {
                     c.taps.push(tap);
-                    c.points.push(vec![p]);
+                    c.points.push(p);
                 }
             }
             // a string through a single bend's point whose other bend adds
@@ -4788,6 +4853,9 @@ struct EdgePaths {
     /// are re-timed through them: `exact_taps`).
     taps: Vec<Tap>,
     points: Vec<Vec<Vec3>>,
+    /// v6.4: the edges its straight line passed nearest lately, and the
+    /// tick each was last near (`Tracer::edge_paths`: looked ahead).
+    ahead: Vec<(usize, u64)>,
 }
 
 /// Loudness grows as energy to this power (Stevens: twice as loud per
@@ -4801,6 +4869,118 @@ const LOUDNESS_EXP: f32 = 0.3;
 /// around): a true silhouette edge has open air there and neither leg
 /// grazes it; an edge lying on a zero-thickness wall plane leaves one leg
 /// crossing that wall.
+/// v6.4: edges closer than this across a thin end face are one corner to
+/// bend round (`twins`): a door's jamb, a wall's end. The two-edge strings
+/// take bends from 0.5 m apart (`price_two`); a single bend over one of a
+/// jamb's two edges ran its other leg through the jamb — the sound round a
+/// 25 cm wall's end 51 dB under what it is round a thin one, gone in a
+/// tick as the ears passed it (Godot, Oct 31: leaving rooms).
+const TWIN_M: f32 = 0.5;
+
+/// Each edge's twin (`EdgeSet::twin`): the nearest parallel edge (to a
+/// degree) whose span overlaps most of the shorter one's, between 2 cm and
+/// `TWIN_M` off its line — the other side of a thin end face.
+fn twins(edges: &[(Vec3, Vec3)], grid: &HashMap<(i32, i32, i32), Vec<u32>>) -> Vec<Option<u32>> {
+    edges
+        .iter()
+        .enumerate()
+        .map(|(ei, &(a, b))| {
+            let len = (b - a).length();
+            let u = (b - a) * (1.0 / len.max(1e-6));
+            let list = grid.get(&cell_key((a + b) * 0.5))?;
+            let mut best: Option<(f32, u32)> = None;
+            for &ej in list {
+                if ej as usize == ei {
+                    continue;
+                }
+                let (c, d) = edges[ej as usize];
+                let lj = (d - c).length();
+                if (d - c).dot(u).abs() < 0.9998 * lj {
+                    continue; // not parallel
+                }
+                // its span along this one's line, and how far off it lies
+                let (sc, sd) = ((c - a).dot(u), (d - a).dot(u));
+                let overlap = sc.max(sd).min(len) - sc.min(sd).max(0.0);
+                if overlap < 0.5 * len.min(lj) {
+                    continue;
+                }
+                let m = (c + d) * 0.5 - a;
+                let off = (m - u * m.dot(u)).length();
+                if !(0.02..=TWIN_M).contains(&off) {
+                    continue;
+                }
+                if best.is_none_or(|(o, _)| off < o) {
+                    best = Some((off, ej));
+                }
+            }
+            best.map(|b| b.1)
+        })
+        .collect()
+}
+
+/// A bend over edge `ei` (`price_one`) — and (v6.4, `twins`) over the
+/// thick end it bounds with its twin (`price_thick`), the stronger: the
+/// bend points (one, or both edges') and the tap.
+#[allow(clippy::too_many_arguments)]
+fn price_bend(world: &World, es: &EdgeSet, hits: &mut Vec<SegHit>, ei: usize, listener: Vec3, sp: Vec3, vis: [f32; NBANDS], twins: bool) -> Option<(Vec<Vec3>, Tap)> {
+    let one = price_one(world, es, hits, ei, listener, sp, vis).map(|(p, t)| (vec![p], t));
+    let Some(tj) = es.twin[ei].filter(|_| twins).map(|t| t as usize) else { return one };
+    let thick = price_thick(world, es, hits, ei, tj, listener, sp, vis).or_else(|| price_thick(world, es, hits, tj, ei, listener, sp, vis));
+    let e = |t: &Tap| t.gains.iter().map(|g| g * g).sum::<f32>();
+    match (one, thick) {
+        (Some(a), Some(b)) => Some(if e(&b.1) > e(&a.1) { b } else { a }),
+        (a, None) => a,
+        (None, b) => b,
+    }
+}
+
+/// v6.4: the bend round a thin end — the ears' leg to edge `e1`, along the
+/// end face to its twin `e2`, the source's leg from there — as one corner:
+/// its detour over the shortest string (`refine_two`), the knife edge's
+/// law as for one edge (`price_one`), each leg through what it crosses.
+/// Keyed by `e1` (the edge the source keeps).
+#[allow(clippy::too_many_arguments)]
+fn price_thick(world: &World, es: &EdgeSet, hits: &mut Vec<SegHit>, e1: usize, e2: usize, listener: Vec3, sp: Vec3, vis: [f32; NBANDS]) -> Option<(Vec<Vec3>, Tap)> {
+    if es.filled[e1] || es.filled[e2] {
+        return None;
+    }
+    let (l, p1, p2) = refine_two(es, e1, e2, listener, sp);
+    if !on_edge(p1, es.edges[e1]) || !on_edge(p2, es.edges[e2]) {
+        return None;
+    }
+    let (d1, d2) = ((p1 - listener).length(), (sp - p2).length());
+    if d1 < 0.2 || d2 < 0.2 {
+        return None;
+    }
+    if world.grade.is_some_and(|g| p1.z.min(p2.z) < g + 0.3 && listener.z > g) {
+        return None;
+    }
+    let n1 = (p1 - listener) * (1.0 / d1);
+    let out = n1 - (sp - p2) * (1.0 / d2);
+    if out.length() < 1e-3 {
+        return None;
+    }
+    let (q1, q2) = (off_edge(p1, es.edges[e1], out)?, off_edge(p2, es.edges[e2], out)?);
+    let t1 = world.transmission(listener, q1, hits);
+    if t1[0] < 1e-6 {
+        return None;
+    }
+    let t12 = world.transmission(q1, q2, hits);
+    let t2 = world.transmission(q2, sp, hits);
+    if t1[0] * t12[0] * t2[0] < 1e-6 {
+        return None;
+    }
+    let det = l - (sp - listener).length().max(MIN_DIST);
+    let ka = crate::diffraction::knife_edge_bands(det.max(1e-4));
+    let air = air_attenuation(l);
+    let open = (es.open[e1] * es.open[e2]).sqrt();
+    let gains: [f32; NBANDS] = core::array::from_fn(|b| ka[b] * t1[b] * t12[b] * t2[b] * air[b] / l * (1.0 - vis[b]).clamp(0.0, 1.0).sqrt() * open);
+    if gains.iter().all(|&g| g < 1e-7) {
+        return None;
+    }
+    Some((vec![p1, p2], Tap { key: KEY_EDGE_BASE + e1 as u32, delay_s: l / SPEED_OF_SOUND, dir: [n1.x, n1.y, n1.z], gains }))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn price_one(world: &World, es: &EdgeSet, hits: &mut Vec<SegHit>, ei: usize, listener: Vec3, sp: Vec3, vis: [f32; NBANDS]) -> Option<(Vec3, Tap)> {
     if es.filled[ei] {
@@ -6272,6 +6452,14 @@ const EDGE_REUSE_M: f32 = 0.2;
 const FILL_M: f32 = 0.08;
 /// Deterministic single-edge direct paths kept per source.
 const EDGE_PATHS: usize = 3;
+/// v6.4: how near its straight line an edge counts as one a source's
+/// sound may soon have to bend over — while the line is still clear
+/// (Schissler, Mückl & Calamia 2021, §5.2.2: a path anticipated within a
+/// 1 m tolerance of the edge's shadow is cached when the direct sound is
+/// occluded, no gap until a search finds it).
+const LOOK_AHEAD_M: f32 = 1.0;
+/// v6.4: edges looked ahead a source keeps at most.
+const AHEAD_KEEP: usize = 4;
 /// Edges whose legs are checked per blocked source (best knife-edge
 /// bounds first — most near the blocked line are themselves blocked).
 const EDGE_CANDIDATES: usize = 40;
@@ -6329,6 +6517,9 @@ pub struct EdgeSet {
     /// instead of stopping (a −18 dB path on and off within a tick, the
     /// swing's treble clicks).
     open: Vec<f32>,
+    /// Each edge's twin: the parallel edge across a thin end face (a door
+    /// jamb, a wall's end — closer than `TWIN_M`), if any (`price_bend`).
+    twin: Vec<Option<u32>>,
 }
 
 /// Words before the edges in `EdgeSet::flat`.
@@ -6403,6 +6594,7 @@ impl EdgeSet {
                 hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
             }
         }
+        let twin = twins(&edges, &grid);
         Self {
             edges,
             grid,
@@ -6412,6 +6604,7 @@ impl EdgeSet {
             hi: hi + r,
             filled: vec![false; n],
             open: vec![1.0; n],
+            twin,
         }
     }
 
