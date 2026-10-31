@@ -56,6 +56,14 @@ night before). What it still flags, by cause:
   field south 7 → 2 → 7. The smoothed guide's means agree across seeds
   (the bunker path −30.3 / −30.1 / −30.1 dB, unguided −35 / −35 / −41) —
   the estimate converging — but the bursts don't fall: still off.
+  The ground's mirror tried too: light tracing connecting each bounce to
+  the ears' image under the level ground they stand on, the walk leaving
+  it a first touch that mirrors off that ground and a diffuse touch next
+  (consistent: the test rooms agree) — the same bursts at the same moments
+  (the south field 7 over three seeds, the bunker path 2): the path at
+  122.65 s bends round low edges right after the paving, not a diffuse
+  touch. Reverted. What would take those: the bends' own second way —
+  a source's bounce connected to the ears through an edge.
 - **The portals' pool is one sample, frozen.** Far from the club its
   level is light tracing's: standing 600 ticks on the road, four seeds read
   −38, −40, −32, −50 dB (the walk alone −77, −47, −63, −71). Growing a
