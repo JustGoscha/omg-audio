@@ -1,0 +1,45 @@
+/Users/justgoscha/dev/omg-audio/docs/runs/2026-10-31/portals-on/tour_v6.2: 306.2 s at 44100 Hz
+  artifacts (above 3 kHz, under the whole; a pure tone's output has none):
+    piano    1403 windows: median  -37.5 dB, worst  -26.2 dB, over −40 dB 959, over −30 dB  60
+    corridor  772 windows: median  -34.6 dB, worst  -16.0 dB, over −40 dB 603, over −30 dB 148
+    seminar  2216 windows: median  -26.0 dB, worst   -3.9 dB, over −40 dB 2207, over −30 dB 1830
+    square   3152 windows: median  -26.4 dB, worst   -4.1 dB, over −40 dB 2980, over −30 dB 1983
+    entrance 1657 windows: median  -23.3 dB, worst   -4.2 dB, over −40 dB 1598, over −30 dB 1240
+    club     1543 windows: median  -23.7 dB, worst   -5.1 dB, over −40 dB 1530, over −30 dB 1263
+    path     1354 windows: median  -34.6 dB, worst  -13.4 dB, over −40 dB 1084, over −30 dB 381
+    portal   1519 windows: median  -27.9 dB, worst   -6.4 dB, over −40 dB 1381, over −30 dB 867
+    cathedral 2710 windows: median  -32.2 dB, worst   -7.4 dB, over −40 dB 2473, over −30 dB 942
+    lane     1511 windows: median  -28.7 dB, worst   -7.6 dB, over −40 dB 1450, over −30 dB 858
+    bunker path 2758 windows: median  -27.0 dB, worst   -3.3 dB, over −40 dB 2682, over −30 dB 1795
+    blockhouse  430 windows: median  -23.1 dB, worst  -11.8 dB, over −40 dB 430, over −30 dB 355
+    stair     375 windows: median  -21.8 dB, worst  -11.8 dB, over −40 dB 375, over −30 dB 352
+    bunker   1479 windows: median  -23.1 dB, worst  -10.3 dB, over −40 dB 1479, over −30 dB 1418
+    south    6427 windows: median  -11.6 dB, worst   -1.6 dB, over −40 dB 6416, over −30 dB 6177
+    canyon   9837 windows: median   -7.1 dB, worst   -1.6 dB, over −40 dB 9837, over −30 dB 9837
+    road     17944 windows: median  -16.4 dB, worst   -2.7 dB, over −40 dB 17813, over −30 dB 16685
+    dome     2453 windows: median  -30.2 dB, worst  -13.4 dB, over −40 dB 2331, over −30 dB 1192
+    stage    1824 windows: median  -26.4 dB, worst   -0.8 dB, over −40 dB 1795, over −30 dB 1252
+    loudest: 300.158s -1dB (stage), 304.962s -1dB (stage), 299.769s -1dB (stage), 304.967s -1dB (stage), 300.153s -1dB (stage), 304.268s -1dB (stage), 304.273s -1dB (stage), 304.712s -2dB (stage)
+  level jumps (10 ms off its 90 ms course):
+    piano     702 windows: >2 dB 121, >4 dB  19
+    corridor  385 windows: >2 dB  75, >4 dB  13
+    seminar  1105 windows: >2 dB 214, >4 dB  42
+    square   1573 windows: >2 dB 506, >4 dB 195
+    entrance  826 windows: >2 dB 260, >4 dB  78
+    club      770 windows: >2 dB 249, >4 dB  70
+    path      676 windows: >2 dB 289, >4 dB 109
+    portal    757 windows: >2 dB 205, >4 dB  71
+    cathedral 1352 windows: >2 dB 196, >4 dB  42
+    lane      754 windows: >2 dB 321, >4 dB 116
+    bunker path 1375 windows: >2 dB 561, >4 dB 215
+    blockhouse  216 windows: >2 dB  52, >4 dB  12
+    stair     186 windows: >2 dB  40, >4 dB  11
+    bunker    738 windows: >2 dB 110, >4 dB  17
+    south    3207 windows: >2 dB 1067, >4 dB 345
+    canyon   4907 windows: >2 dB 1197, >4 dB 335
+    road     8952 windows: >2 dB 3526, >4 dB 1203
+    dome     1223 windows: >2 dB 460, >4 dB 151
+    stage     906 windows: >2 dB 235, >4 dB  51
+  audio thread: 26372 callbacks of 512 frames; 0 with frames rendered late (0 frames); slowest take 26 µs; spacing median 11.6 ms, max 11.7 ms
+  quality: rung 2 at the start; 18.1s → 3, 19.9s → 2, 24.5s → 3, 27.7s → 4, 33.5s → 3, 34.1s → 2, 34.1s → 1, 46.0s → 2, 48.0s → 3, 59.0s → 2, 76.6s → 3, 80.1s → 4, 98.2s → 3, 104.6s → 4, 105.9s → 3, 112.9s → 4, 120.2s → 5, 122.6s → 6, 157.4s → 7, 159.4s → 8, 166.4s → 9, 168.4s → 8, 180.5s → 9, 182.6s → 8, 182.7s → 7, 210.8s → 8, 212.8s → 9, 216.2s → 10, 255.0s → 9, 255.1s → 8, 259.9s → 7, 263.1s → 6, 292.5s → 5, 299.0s → 4, 301.4s → 5
+  engine: tick 5.6–31.0 ms, load up to 0.36, budget changes 0 (taps 480 → 480), late frames 0

@@ -1,0 +1,94 @@
+docs/runs/2026-10-31/portals-on/tour_v6.2: 306.2 s, 81 steps
+  step  start  phase         kind      mean dB   max dB   low / mid / high dB
+     0    0.0  piano         wait        -38.9    -29.3    -45.2  -40.2  -59.4
+     2    4.0  piano         wait        -28.1    -18.2    -35.9  -28.9  -53.9
+     3    7.1  corridor      go          -30.8    -23.1    -38.1  -31.7  -59.8
+     4    7.9  corridor      go          -33.8    -26.9    -38.2  -35.7  -59.5
+     5   10.9  seminar       go          -38.1    -33.1    -42.0  -40.4  -60.5
+     8   12.5  seminar       wait        -44.4    -35.9    -51.5  -45.5  -61.5
+    10   16.5  seminar       wait        -30.9    -14.4    -33.4  -35.5  -41.6
+    11   19.5  seminar       go          -43.8    -38.5    -48.1  -45.8  -64.7
+    12   22.0  square        go          -43.5    -37.6    -47.8  -45.7  -59.7
+    13   23.0  square        go          -44.6    -39.6    -46.6  -49.6  -58.1
+    14   25.7  square        wait        -42.9    -39.2    -43.6  -52.9  -57.8
+    15   27.7  entrance      go          -40.5    -34.6    -41.2  -49.4  -58.5
+    16   30.5  entrance      go          -30.6    -25.2    -30.8  -43.5  -59.0
+    18   31.3  entrance      wait        -10.2     -7.6    -10.4  -24.7  -28.5
+    19   33.3  club          go          -13.2     -9.3    -13.4  -28.8  -31.4
+    20   35.0  club          go          -15.7     -9.9    -15.8  -32.2  -37.2
+    21   36.0  club          wait        -18.6    -14.9    -18.8  -32.4  -39.1
+    22   41.0  entrance      go          -17.3    -13.5    -17.4  -33.6  -43.9
+    23   43.6  square        go          -17.1    -13.1    -17.2  -33.6  -48.4
+    24   44.6  square        go          -25.2    -20.2    -25.3  -41.7  -56.5
+    25   46.7  square        go          -28.6    -24.6    -28.7  -44.9  -58.9
+    26   48.8  path          go          -32.3    -24.8    -32.4  -48.5  -66.8
+    27   52.7  portal        go          -30.4    -23.1    -30.5  -48.3  -64.2
+    29   54.7  portal        wait        -38.4    -34.1    -39.1  -46.2  -63.4
+    30   56.7  cathedral     go          -36.3    -33.6    -37.8  -41.7  -63.1
+    31   58.8  cathedral     go          -33.7    -24.4    -45.5  -34.1  -49.7
+    34   61.2  cathedral     wait        -28.6    -23.6    -44.4  -28.7  -49.3
+    36   65.2  cathedral     wait        -31.3    -14.8    -36.8  -33.1  -43.3
+    37   70.2  portal        go          -32.3    -18.6    -32.9  -41.5  -67.5
+    38   73.8  path          go          -18.1     -9.9    -18.2  -35.3  -57.1
+    39   76.6  square        go          -25.5    -15.9    -25.6  -42.8  -54.7
+    40   81.5  lane          go          -18.8    -12.5    -19.0  -35.0  -44.0
+    41   85.6  lane          go          -25.1    -17.8    -25.2  -41.4  -53.3
+    42   89.0  bunker path   go          -31.3    -22.9    -31.4  -46.2  -58.5
+    43   93.6  bunker path   go          -22.4     -8.3    -22.7  -34.5  -53.9
+    44   97.1  blockhouse    go          -33.0    -28.6    -33.5  -43.3  -60.1
+    45   98.0  stair         go          -37.8    -32.5    -41.1  -40.7  -59.1
+    46   99.2  bunker        go          -37.7    -34.9    -44.2  -38.9  -57.1
+    47   99.8  bunker        go          -35.9    -31.7    -40.4  -37.9  -56.9
+    48  100.7  bunker        wait        -31.8    -26.2    -37.3  -33.4  -49.4
+    49  105.7  bunker        go          -32.9    -28.5    -38.1  -34.5  -52.3
+    50  106.6  stair         go          -39.6    -35.7    -44.1  -41.6  -55.8
+    51  107.2  blockhouse    go          -36.6    -31.5    -41.3  -38.4  -54.5
+    52  108.5  bunker path   go          -34.1    -28.3    -37.0  -37.3  -55.3
+    53  109.4  bunker path   go          -33.6    -26.2    -34.0  -43.9  -57.5
+    54  111.2  bunker path   wait        -28.4    -21.4    -28.6  -44.3  -57.1
+    55  114.2  south         go          -36.4    -22.5    -36.7  -49.9  -57.5
+    56  133.2  canyon        go          -47.5    -35.8    -49.5  -52.8  -58.5
+    57  149.3  canyon        go          -48.7    -41.8    -51.0  -54.0  -58.2
+    59  155.4  canyon        wait        -33.7    -15.3    -36.6  -38.0  -42.8
+    60  159.4  canyon        go          -49.3    -41.9    -52.0  -54.2  -58.0
+    62  164.2  canyon        wait        -33.8    -14.9    -36.8  -38.1  -43.1
+    63  168.2  canyon        go          -48.6    -41.1    -50.9  -53.7  -57.8
+    65  178.2  canyon        wait        -33.7    -14.7    -36.6  -37.9  -43.3
+    66  182.2  south         go          -45.9    -35.2    -47.1  -53.7  -58.0
+    67  195.3  road          go          -48.3    -39.8    -50.8  -52.8  -58.7
+    68  208.8  road          wait        -34.9    -28.6    -35.0  -50.9  -58.9
+    70  209.8  road          wait        -33.9    -28.3    -34.0  -50.5  -58.6
+    72  214.8  road          wait        -32.7    -17.1    -32.8  -48.7  -58.8
+    73  254.8  road          go          -31.6    -16.8    -31.8  -45.9  -56.9
+    74  284.8  dome          go          -26.3    -19.6    -26.6  -38.5  -54.2
+    75  291.2  dome          go          -25.5    -19.0    -26.0  -36.0  -55.3
+    76  294.1  dome          wait        -24.1    -18.9    -25.0  -31.6  -50.0
+    77  297.1  stage         go          -23.3    -18.6    -24.7  -28.9  -42.5
+    78  299.1  stage         wait        -21.0    -14.6    -25.9  -22.9  -36.8
+    80  301.2  stage         wait        -21.6    -15.1    -26.8  -23.5  -34.1
+  standing out (10 dB over the 2 s before, 150 ms or more, no event):
+       6.03 s at (3.5, 4.0) [piano]: 150 ms up to -19.2 dB, +16.2 over the 2 s before
+      31.98 s at (21.0, 31.0) [entrance]: 3800 ms up to -7.8 dB, +24.1 over the 2 s before
+      60.68 s at (8.0, 60.8) [cathedral]: 150 ms up to -24.4 dB, +14.6 over the 2 s before
+      72.62 s at (8.0, 56.0) [portal]: 39550 ms up to -8.3 dB, +48.4 over the 2 s before
+     112.62 s at (26.0, 7.0) [bunker path]: 1000 ms up to -21.4 dB, +19.9 over the 2 s before
+     120.38 s at (24.0, -8.4) [south]: 300 ms up to -31.0 dB, +14.8 over the 2 s before
+     123.18 s at (23.1, -15.3) [south]: 500 ms up to -22.5 dB, +21.2 over the 2 s before
+     128.53 s at (21.5, -28.6) [south]: 950 ms up to -27.9 dB, +20.6 over the 2 s before
+     133.97 s at (19.7, -42.1) [canyon]: 200 ms up to -35.8 dB, +15.6 over the 2 s before
+     192.28 s at (17.0, -71.9) [south]: 600 ms up to -35.2 dB, +15.7 over the 2 s before
+     192.98 s at (16.3, -70.3) [south]: 150 ms up to -36.1 dB, +12.2 over the 2 s before
+     209.28 s at (-13.0, -45.0) [road]: 8250 ms up to -28.3 dB, +23.1 over the 2 s before
+     241.68 s at (-13.0, -45.0) [road]: 1150 ms up to -18.0 dB, +24.7 over the 2 s before
+     246.73 s at (-13.0, -45.0) [road]: 200 ms up to -25.4 dB, +15.1 over the 2 s before
+     246.98 s at (-13.0, -45.0) [road]: 900 ms up to -17.1 dB, +21.8 over the 2 s before
+     276.62 s at (-13.7, 9.5) [road]: 1800 ms up to -22.9 dB, +22.6 over the 2 s before
+     280.88 s at (-13.9, 20.1) [road]: 650 ms up to -22.9 dB, +18.7 over the 2 s before
+     281.57 s at (-13.9, 21.9) [road]: 350 ms up to -25.5 dB, +15.0 over the 2 s before
+     304.48 s at (-42.0, 31.0) [stage]: 250 ms up to -15.1 dB, +14.4 over the 2 s before
+     305.12 s at (-42.0, 31.0) [stage]: 300 ms up to -17.9 dB, +11.5 over the 2 s before
+  20 moments
+  dropouts (15 dB under the 2 s before, 150 ms or more, no event):
+      13.68 s at (5.5, 17.0) [seminar]: 300 ms down to -63.0 dB, -20.5 under the 2 s before
+      67.28 s at (8.0, 62.0) [cathedral]: 1700 ms down to -57.4 dB, -23.6 under the 2 s before
+  2 dropouts
