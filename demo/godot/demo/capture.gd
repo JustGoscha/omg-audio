@@ -440,7 +440,7 @@ func _notes(dir: String, s0: float, s1: float, f0: int, f1: int, a: int, b: int)
 	t += "- the minute: frames %d – %d (%.1f s)\n\n" % [start_fr, end_fr, span]
 	t += "## At the mark\n\n"
 	t += "- ears at (%.2f, %.2f, %.2f), facing %.0f°, pitch %.0f°, in %s\n" % [ears[1], ears[2], ears[3], ears[4], ears[5], ears[6]]
-	t += "- quality %s (%s) · rays %d, bounces %d, late rays %d, diffraction %s\n" % [world.quality_label(), "gpu" if st.get("gpu", false) else "cpu",
+	t += "- quality %s (%s) · rays %d, bounces %d, late rays %d, diffraction %s\n" % [world.quality_label(), st.get("compute", "cpu"),
 		bud.get("rays", 0), bud.get("bounces", 0), bud.get("late_rays", 0), bud.get("diffraction", false)]
 	t += "- sim tick %.1f ms · render load %.0f %% · late %d · %d paths · %d sources rendering\n" % [st.get("tick_ms", 0.0), 100.0 * st.get("load", 0.0),
 		st.get("late", 0), st.get("paths", 0), st.get("rendering", 0)]

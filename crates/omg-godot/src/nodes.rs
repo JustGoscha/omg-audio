@@ -640,7 +640,9 @@ impl OmgWorld {
         if let Some(path) = dump {
             match c.g.save(&path) {
                 Ok(()) => godot_print!("omg: geometry written to {path}"),
-                Err(e) => godot_error!("omg: geometry not written to {path}: {e}"),
+                Err(e) => {
+                    godot_error!("omg: geometry not written to {path}: {e}");
+                }
             }
         }
         if let Some(h) = host().as_mut() {
@@ -823,10 +825,18 @@ impl OmgWorld {
             d.set("tick_parts", &PackedFloat32Array::from(&s.tick_parts[..]));
             d.set("gpu_ms", s.gpu_ms);
             d.set("ticks", s.ticks as i64);
-            // the walk on the GPU — not with portals (the CPU walks then:
-            // omg_core::v3::walker::trace_with)
-            let portals = self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_portals;
-            d.set("gpu", h.gpu && !portals);
+            d.set("gpu", s.gpu_found && !self.portals());
+            // what the compute switch got: the GPU when the machine has
+            // one, else the CPU; the CPU walking while portals are on
+            d.set(
+                "compute",
+                match (h.gpu, s.gpu_found, self.portals()) {
+                    (false, _, _) => "cpu",
+                    (true, false, _) => "cpu (no gpu found)",
+                    (true, true, false) => "gpu",
+                    (true, true, true) => "gpu found, walk on cpu (portals)",
+                },
+            );
             d.set("load", s.load);
             d.set("taps", s.budget.0 as i64);
             d.set("points", s.budget.1 as i64);
@@ -930,7 +940,8 @@ impl OmgWorld {
     /// late_rays, diffraction — what a settings screen shows.
     #[func]
     fn effective_budget(&self) -> Dictionary<Variant, Variant> {
-        let b = self.sim_config().quality.budget(self.use_gpu);
+        let c = self.sim_config();
+        let b = c.quality.budget(c.gpu_walks());
         let mut d = Dictionary::new();
         d.set("rays", b.rays as i64);
         d.set("bounces", b.bounces as i64);
@@ -1048,12 +1059,32 @@ impl OmgWorld {
         }
     }
 
+    /// Portals on: v6.2 and the portals module.
+    fn portals(&self) -> bool {
+        self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_portals
+    }
+
     fn sim_config(&self) -> Config {
         let tier = self.sim_quality();
-        // pinned levers: the tier's budget with them overridden
+        let cfg = Config {
+            quality: tier,
+            compute: if self.use_gpu { Compute::Gpu } else { Compute::Cpu },
+            v4: self.engine_v4,
+            v5: self.engine_v4 && self.engine_v5,
+            v6: self.engine_v6,
+            v61: self.engine_v6 && self.engine_v61,
+            v62: self.engine_v6 && self.engine_v61 && self.engine_v62,
+            portals: self.portals(),
+            clearance: self.engine_v6 && self.engine_clearance,
+            sample_rate: engine_rate(),
+            gpu_budget: self.gpu_budget.clamp(0.02, 1.0),
+            ..Config::default()
+        };
+        // pinned levers: the tier's budget, for where the walk runs, with
+        // them overridden
         let pinned = self.rays > 0 || self.bounces > 0 || self.late_rays > 0 || !self.diffraction;
         let quality = if pinned {
-            let mut b = tier.budget(self.use_gpu);
+            let mut b = tier.budget(cfg.gpu_walks());
             if self.rays > 0 {
                 b.rays = self.rays as u32;
             }
@@ -1068,20 +1099,7 @@ impl OmgWorld {
         } else {
             tier
         };
-        Config {
-            quality,
-            compute: if self.use_gpu { Compute::Gpu } else { Compute::Cpu },
-            v4: self.engine_v4,
-            v5: self.engine_v4 && self.engine_v5,
-            v6: self.engine_v6,
-            v61: self.engine_v6 && self.engine_v61,
-            v62: self.engine_v6 && self.engine_v61 && self.engine_v62,
-            portals: self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_portals,
-            clearance: self.engine_v6 && self.engine_clearance,
-            sample_rate: engine_rate(),
-            gpu_budget: self.gpu_budget.clamp(0.02, 1.0),
-            ..Config::default()
-        }
+        Config { quality, ..cfg }
     }
 
     fn start(&mut self) {

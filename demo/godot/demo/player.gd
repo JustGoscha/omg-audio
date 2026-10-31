@@ -8,6 +8,12 @@ const WALK := 3.0
 const FLY := 8.0
 const FLY_TOP := 150.0
 const EYE := 1.6
+# The eyes sit ~9 cm before the body's middle and ~20 cm over the neck's
+# base; looking down bends the neck first (up to ~45°), carrying the eyes
+# (and the ears with them) forward and down, so you see past your chest.
+const EYE_FWD := 0.09
+const NECK := 0.2
+const NECK_BEND := 0.8
 const GRAVITY := 9.8
 
 var cam: Camera3D
@@ -44,14 +50,15 @@ func _init() -> void:
 	floor_snap_length = 0.45
 	safe_margin = 0.02
 
-# A blocky body under the eyes (seen looking down): legs, torso, arms —
-# no head (the eyes are in it). Not acoustic: the engine hears from one
+# A blocky body under the eyes (seen looking down): legs, shoes, torso,
+# arms, its middle EYE_FWD behind the eyes — no head (the eyes are in it). Not acoustic: the engine hears from one
 # point in the middle of the head, which a head around it would wall in.
 var body: Node3D
 
 func _body() -> void:
 	body = Node3D.new()
 	body.set_meta("omg_material", "none")
+	body.position.z = EYE_FWD
 	add_child(body)
 	var shirt := StandardMaterial3D.new()
 	shirt.albedo_color = Color(0.22, 0.3, 0.42)
@@ -62,7 +69,8 @@ func _body() -> void:
 	# (x right, y up, z back: the player faces −z)
 	for b in [[Vector3(-0.17, 0.0, -0.08), Vector3(-0.03, 0.84, 0.08), cloth], [Vector3(0.03, 0.0, -0.08), Vector3(0.17, 0.84, 0.08), cloth],
 			[Vector3(-0.19, 0.84, -0.12), Vector3(0.19, 1.42, 0.12), shirt],
-			[Vector3(-0.23, 0.86, -0.06), Vector3(-0.19, 1.4, 0.06), shirt], [Vector3(0.19, 0.86, -0.06), Vector3(0.23, 1.4, 0.06), shirt]]:
+			[Vector3(-0.23, 0.86, -0.06), Vector3(-0.19, 1.4, 0.06), shirt], [Vector3(0.19, 0.86, -0.06), Vector3(0.23, 1.4, 0.06), shirt],
+			[Vector3(-0.16, 0.0, -0.22), Vector3(-0.05, 0.09, 0.06), cloth], [Vector3(0.05, 0.0, -0.22), Vector3(0.16, 0.09, 0.06), cloth]]:
 		var mi := MeshInstance3D.new()
 		var bm := BoxMesh.new()
 		var a: Vector3 = b[0]
@@ -165,6 +173,9 @@ func _physics_process(dt: float) -> void:
 		if global_position.y < -20.0:
 			global_position = Vector3(3, 0.1, -3)
 			velocity = Vector3.ZERO
-	cam.position.y = EYE - 0.7 * crouch
-	body.scale.y = (EYE - 0.7 * crouch) / EYE
+	var eye := EYE - 0.7 * crouch
+	body.scale.y = eye / EYE
+	# the neck bends first when looking down, the eyes about it
+	var neck := clampf(pitch, -NECK_BEND, 0.0)
+	cam.position = Vector3(0, eye - NECK, EYE_FWD) + Vector3(0, NECK, -EYE_FWD).rotated(Vector3.RIGHT, neck)
 	cam.rotation.x = pitch

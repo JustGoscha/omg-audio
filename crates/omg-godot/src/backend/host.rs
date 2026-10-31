@@ -261,6 +261,8 @@ pub struct Stats {
     pub tick_burst: bool,
     /// The last GPU walk, submit to read-back (ms; 0 on the CPU).
     pub gpu_ms: f32,
+    /// The GPU asked for and an adapter found.
+    pub gpu_found: bool,
     pub ticks: u32,
     pub load: f32,
     pub budget: (usize, usize, usize, usize),
@@ -423,6 +425,7 @@ impl Host {
             tick_parts: self.engine.tick_parts(),
             tick_burst: self.engine.tick_burst(),
             gpu_ms: self.engine.gpu_walk_ms(),
+            gpu_found: self.engine.gpu_found(),
             ticks,
             load: f(&self.sh.load),
             budget: LADDER[self.sh.rung.load(Ordering::Relaxed).min(LADDER.len() - 1)],

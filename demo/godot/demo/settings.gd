@@ -282,7 +282,7 @@ func _refresh() -> void:
 	var tick: float = st.get("tick_ms", 0.0)
 	stats_label.text = "%s · sim tick %.1f ms (%.0f %%) · %s · render load %.0f %% · %d/%d sources · %d paths · late %d" % [
 		world.quality_label(),
-		tick, tick / world.tick_target_ms * 100.0, "gpu" if st.get("gpu", false) else "cpu", 100.0 * st.get("load", 0.0),
+		tick, tick / world.tick_target_ms * 100.0, st.get("compute", "cpu"), 100.0 * st.get("load", 0.0),
 		st.get("rendering", 0), st.get("sources", 0), st.get("paths", 0), st.get("late", 0)]
 
 # ---------------------------------------------------------------- widgets

@@ -240,6 +240,15 @@ pub fn default_walk_threads() -> usize {
 }
 
 impl Config {
+    /// Does the walk go to the GPU (when one is found)? `Compute::Gpu` and
+    /// no portals: the kernel walks none, so with them the CPU walks
+    /// (`omg_core::v3::walker::trace_with`) at the CPU's budget — the
+    /// budget a host pins its levers over.
+    pub fn gpu_walks(&self) -> bool {
+        let c = self.engine();
+        c.compute != Compute::Cpu && !c.portals
+    }
+
     /// The engine switches made consistent: v6 runs v3's estimate (v4
     /// and v5 off); v5 needs v4, v6.1 needs v6.
     pub fn engine(mut self) -> Self {
@@ -683,6 +692,12 @@ impl Simulation {
     /// portals: the kernel walks none, the CPU does — `trace_with`)?
     pub fn gpu_active(&self) -> bool {
         self.walker.is_some() && !self.tracer.portals
+    }
+
+    /// Has the GPU been found: `Compute::Gpu` asked for and an adapter
+    /// there (portals or not)? Without one the CPU walks.
+    pub fn gpu_found(&self) -> bool {
+        self.walker.is_some()
     }
 
     /// The acoustic mesh the tracer walks (its BVH), as built from the

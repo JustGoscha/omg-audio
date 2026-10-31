@@ -102,11 +102,10 @@ func _ready() -> void:
 	world.ambience_file = DemoSounds.A + "night-nature48.ogg"
 	world.ambience_db = -16.0
 	world.rain_bank_file = DemoSounds.A + "drops48.ogg"
-	# Trace on the CPU by default: this town costs the CPU walk ~4 ms a
-	# tick on its own thread, while the GPU walker competes with the
-	# renderer for the GPU (measured on an M1 Max: 60–105 fps on the CPU
-	# walk vs 15–100 with the GPU walk). `-- --gpu` switches it on.
-	world.use_gpu = "--gpu" in OS.get_cmdline_user_args()
+	# Trace on the GPU by default, at its share of the GPU (gpu_budget) so
+	# it leaves the renderer its frames; `-- --cpu` walks on the CPU. With
+	# portals on the CPU walks either way until the GPU kernel walks them.
+	world.use_gpu = not "--cpu" in OS.get_cmdline_user_args()
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--gpu-budget="):
 			world.gpu_budget = float(a.trim_prefix("--gpu-budget="))
@@ -787,6 +786,6 @@ func _process(dt: float) -> void:
 			Engine.get_frames_per_second(), "fine" if fine else "pixel %dp" % pixel_h,
 			room, s.get("rt60", 0.0), 100.0 * s.get("enclosure", 0.0), rain_name,
 			"flying" if player.flying else "walking", " · crouched" if player.crouch > 0.5 else "",
-			s.get("tick_ms", 0.0), q, "gpu" if s.get("gpu", false) else "cpu",
+			s.get("tick_ms", 0.0), q, s.get("compute", "cpu"),
 			100.0 * s.get("load", 0.0), s.get("taps", 0), s.get("points", 0), s.get("voices", 0),
 			s.get("rendering", 0), s.get("sources", 0), s.get("paths", 0), s.get("late", 0)]

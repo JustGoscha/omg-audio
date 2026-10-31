@@ -82,7 +82,7 @@ const ENV_OFF: usize = 4 + NSRC * 9;
 
 impl SimHost {
     fn config(&self) -> Config {
-        Config { quality: Quality::Custom(self.budget(self.cfg.compute != Compute::Cpu)), ..self.cfg }
+        Config { quality: Quality::Custom(self.budget(self.cfg.gpu_walks())), ..self.cfg }
     }
 
     /// The tracer budget in effect: auto's level or the tier, the pinned
@@ -112,7 +112,7 @@ impl SimHost {
         let c = self.config();
         self.sim.set_config(c);
         // a rebuild (v3/v4) drops the walker: the GPU walk stays on
-        if self.cfg.compute != Compute::Cpu && !self.sim.gpu_active() {
+        if self.cfg.compute != Compute::Cpu && !self.sim.gpu_found() {
             self.sim.set_walker(Some(Box::new(JsWalker)));
         }
     }
