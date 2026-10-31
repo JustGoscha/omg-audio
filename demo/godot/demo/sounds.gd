@@ -52,7 +52,7 @@ const HEARING_DB := 22.0
 # Cars on the road at once, alternating directions. Each holds its slot
 # for the whole drive — in from out of earshot (2–6 km) and out as far —
 # 4–8 minutes at 45–85 km/h: three each way pass about every 1½ minutes.
-const CAR_SLOTS := 6
+const CAR_SLOTS := 10
 
 static func car_far_m(level_db: float) -> float:
 	return pow(10.0, (level_db + 3.0 - HEARING_DB) / 20.0)
@@ -110,10 +110,8 @@ func setup(w: OmgWorld, r: Node3D, l: DemoLevel, pl: DemoPlayer) -> void:
 			sources[d[0]].loop_gap = LOOP_GAP_S
 	var i := 0
 	for s in DemoLevel.CLUB_SPEAKERS:
+		# the club's track loops on without a break (a club doesn't pause)
 		sources["club%d" % i] = _src("club%d" % i, s, 1.9, "club48.ogg", CLUB_LEVEL)
-		sources["club%d" % i].loop_gap = LOOP_GAP_S
-		# the track fades in and out over a second (a DJ's, not a cut)
-		sources["club%d" % i].loop_fade = 1.0
 		i += 1
 	for k in 3:
 		balls.append(_src("ball%d" % k, Vector2.ZERO, 1.5, "", BALL_LEVEL, false))
@@ -386,7 +384,9 @@ func _update_cars(dt: float) -> void:
 		_spawn_car()
 		if randf() < 0.35:
 			_spawn_car()
-		next_car = now + 20.0 + randf() * 25.0
+		# one every 12–28 s, sometimes two: ~4 a minute (a car stays a
+		# minute or more, audible from far off to far off: 10 slots)
+		next_car = now + 12.0 + randf() * 16.0
 	var me := player.plan()
 	for c in cars.duplicate():
 		var src: OmgSource = cars_src[c["slot"]]

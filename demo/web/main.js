@@ -1402,7 +1402,7 @@ function updateCars(dt, now) {
   if (now > (state.nextCarAt || 0)) {
     spawnCar();
     if (Math.random() < 0.35) spawnCar(); // sometimes two come at once
-    state.nextCarAt = now + 20000 + Math.random() * 25000;
+    state.nextCarAt = now + 12000 + Math.random() * 16000; // ~4 a minute
   }
   for (const c of state.cars) {
     c.y += c.vy * dt;
@@ -2404,19 +2404,11 @@ async function startAudio() {
     y.set(x);
     return y;
   };
-  // the club's track fades in and out over a second (a DJ's, not a cut)
-  const faded = (x, s = 1) => {
-    const n = Math.min(Math.round(s * audio.sampleRate), x.length >> 1);
-    for (let i = 0; i < n; i++) {
-      x[i] *= i / n;
-      x[x.length - 1 - i] *= i / n;
-    }
-    return x;
-  };
   const [aria, alice, club, flute, radio, whistle, thumpFx, boomFx, drops, m0, m1, m2, m3, ambience, fountain] = await Promise.all([
     decodeMono(ariaRaw).then(gapped),
     decodeMono(aliceRaw).then(gapped),
-    decodeMono(clubRaw).then((x) => gapped(faded(x))),
+    // the club's track loops on without a break (a club doesn't pause)
+    decodeMono(clubRaw),
     decodeMono(fluteRaw).then(gapped),
     decodeMono(radioRaw).then(gapped),
     Promise.resolve(makeWoosh(audio.sampleRate)), // fx 0: the ball woosh
