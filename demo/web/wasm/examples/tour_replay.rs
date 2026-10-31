@@ -16,11 +16,13 @@
 //!     GEOMETRY=<file>: the host's dumped level   COMPUTE=gpu   PACE=1
 //!     THREADS=n: the walk's threads (the machine's default)
 //!     PORTALS=1: enclosed sources heard through openings from their side
+//!     PATHS=1: at a tick whose low band jumps 12 dB or more over the tick
+//!     before, that tick's strongest sampled paths, vertex by vertex
 //!     MIX=1: rendered through the mixer too (no HRIR; the source plays
 //!     bass-heavy noise, or CLIP=<raw f32 mono 48 kHz>): the output's
 //!     level under 250 Hz and in all (dBFS) per 50 ms, after the ear (and
 //!     the ear: the level it is adapted to, dB SPL, its gain, its reflex)
-use omg_audio::{clip, Compute, Config, Frame, Hrir, Mixer, Play, Quality, Simulation, SourceId};
+use omg_audio::{clip, Compute, Config, Frame, Hrir, Mixer, PathKind, Play, Quality, Simulation, SourceId};
 use omg_web::town::Town;
 use std::fs;
 
@@ -171,10 +173,13 @@ fn main() {
     let start = std::time::Instant::now();
     let rate = 120.0;
     // COST=1: per second, the ticks' mean cost by part
-    let mut costs = [0.0f64; 9];
+    let mut costs = [0.0f64; 10];
     let mut n_cost = 0usize;
     let mut acc = [[0.0f64; 5]; 3];
     let mut n = 0;
+    let paths = env("PATHS").as_deref() == Some("1");
+    sim.set_debug_paths(paths);
+    let mut prev_low = 0.0f64;
     for k in 0..((t1 - t0) * rate) as usize {
         let t = t0 + k as f64 / rate;
         if pace {
@@ -193,7 +198,7 @@ fn main() {
             let clock = std::time::Instant::now();
             let f = sim.tick();
             let c = sim.tick_costs();
-            let v = [clock.elapsed().as_secs_f64() * 1e3, c.direct as f64, (c.edges - c.edges2) as f64, c.edges2 as f64, c.early as f64, c.late as f64, c.chains as f64, c.naming as f64, c.fold as f64];
+            let v = [clock.elapsed().as_secs_f64() * 1e3, c.direct as f64, (c.edges - c.edges2) as f64, c.edges2 as f64, c.early as f64, c.late as f64, c.chains as f64, c.naming as f64, c.fold as f64, c.portals as f64];
             for (a, b) in costs.iter_mut().zip(v) {
                 *a += b;
             }
@@ -207,10 +212,10 @@ fn main() {
                 let c = costs.map(|v| v / n_cost.max(1) as f64);
                 let q = at(t);
                 println!(
-                    "  {t:6.1}  ({:6.1}, {:6.1})  tick {:5.1} ms: direct {:.1} edges {:.1} 2-edge {:.1} early {:.1} late {:.1} chains {:.1} (naming {:.1}) fold {:.1}",
-                    q[0], q[1], c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8]
+                    "  {t:6.1}  ({:6.1}, {:6.1})  tick {:5.1} ms: direct {:.1} edges {:.1} 2-edge {:.1} early {:.1} late {:.1} chains {:.1} (naming {:.1}) fold {:.1} portals {:.1}",
+                    q[0], q[1], c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9]
                 );
-                costs = [0.0; 9];
+                costs = [0.0; 10];
                 n_cost = 0;
             }
             continue;
@@ -230,6 +235,17 @@ fn main() {
         }
         if let Some(f) = f.as_ref() {
             let p = parts(f, &ids);
+            let low: f64 = p[0].iter().sum();
+            if paths && k > 0 && db(low) - db(prev_low) >= 12.0 {
+                println!("  {t:6.2}  the low band {:+.1} dB over the tick before:", db(low) - db(prev_low));
+                let mut ps: Vec<_> = sim.debug_paths().into_iter().filter(|p| ids.contains(&p.source) && p.kind == PathKind::Sampled).collect();
+                ps.sort_by(|a, b| b.energy.total_cmp(&a.energy));
+                for p in ps.iter().take(4) {
+                    let pts: Vec<String> = p.points.iter().map(|q| format!("({:.2}, {:.2}, {:.2})", q[0], q[1], q[2])).collect();
+                    println!("     sampled path {:+.1} dB: {}", db(p.energy as f64), pts.join(" → "));
+                }
+            }
+            prev_low = low;
             for b in 0..3 {
                 for c in 0..5 {
                     acc[b][c] += p[b][c];

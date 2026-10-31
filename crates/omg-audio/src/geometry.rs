@@ -19,10 +19,8 @@ pub struct MaterialId(pub u32);
 
 /// Half-size of the ground plane (m): far beyond anything audible.
 const GROUND_HALF: f32 = 2000.0;
-/// Margin around the level where the ground keeps fine tessellation.
+/// Margin around the level the ground's inner patch spans.
 const GROUND_FINE_MARGIN: f32 = 50.0;
-/// Tessellation of the far ground (m): rays rarely travel there.
-const GROUND_COARSE_EDGE: f32 = 64.0;
 
 /// A level's static acoustic geometry. Build it once (or whenever the
 /// level changes) and pass it to `Simulation::set_geometry`.
@@ -228,15 +226,13 @@ impl Geometry {
                 }
             };
             self.mb.begin_surface();
-            // the level and its surroundings: wall-grade patches
+            // the level and its surroundings
             quad(&mut self.mb, x0, x1, y0, y1);
-            // the far field to the horizon, coarse
-            self.mb.coarse(GROUND_COARSE_EDGE);
+            // the far field to the horizon
             quad(&mut self.mb, -g, g, -g, y0);
             quad(&mut self.mb, -g, g, y1, g);
             quad(&mut self.mb, -g, x0, y0, y1);
             quad(&mut self.mb, x1, g, y0, y1);
-            self.mb.coarse(0.0);
         }
         (self.mb.build(), grade)
     }

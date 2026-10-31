@@ -33,6 +33,10 @@ pub struct Mesh {
     /// rays actually travel, and a street 800 m out never sees one.
     tri_max_edge: Vec<f32>,
     nodes: Vec<BvhNode>,
+    /// The binary tree collapsed four children to a node: what `raycast`
+    /// walks (the GPU and the segment queries walk `nodes`).
+    nodes4: Vec<Node4>,
+    tris4: Vec<Tri4>,
     /// Intersection primitives in BVH-leaf order. Oversized triangles are
     /// tessellated into patches here (coplanar, same original id) — one
     /// scene-spanning wall triangle would otherwise inflate every node's
@@ -41,8 +45,11 @@ pub struct Mesh {
     packed: Vec<PackedTri>,
 }
 
-/// BVH primitives larger than this get split (longest edge, meters).
-const MAX_PRIM_EDGE: f32 = 4.0;
+/// BVH primitives larger than this get split (longest edge, meters):
+/// by default none. A wall or a floor is a flat box already; split into
+/// 4 m patches (as it was) the Godot level's 11,888 triangles packed as
+/// 98,722 and a cast took 458 ns instead of 380 (`examples/ray_bench`).
+const MAX_PRIM_EDGE: f32 = f32::MAX;
 
 #[derive(Clone, Copy)]
 struct PackedTri {
@@ -61,6 +68,30 @@ struct BvhNode {
     a: u32,
     b: u32,
 }
+
+/// Four children's boxes side by side, per axis: one visit tests all four
+/// (a loop the compiler runs four wide) at half the binary tree's depth.
+#[derive(Clone, Copy)]
+struct Node4 {
+    lo: [[f32; 4]; 3],
+    hi: [[f32; 4]; 3],
+    /// Per child: a `Node4` index; a leaf, LEAF_BIT | its `Tri4` index;
+    /// EMPTY4: no child.
+    child: [u32; 4],
+}
+
+/// A leaf's triangles (at most LEAF_SIZE = 4) side by side, per axis: the
+/// four Möller–Trumbore tests at once. A slot without a triangle has no
+/// edges (det 0: never met).
+#[derive(Clone, Copy)]
+struct Tri4 {
+    a: [[f32; 4]; 3],
+    e1: [[f32; 4]; 3],
+    e2: [[f32; 4]; 3],
+    tri: [u32; 4],
+}
+
+const EMPTY4: u32 = u32::MAX;
 
 /// One crossing of a segment through the mesh (for transmission queries).
 #[derive(Clone, Copy)]
@@ -237,9 +268,12 @@ impl Mesh {
             tri_surface,
             tri_max_edge,
             nodes: Vec::new(),
+            nodes4: Vec::new(),
+            tris4: Vec::new(),
             packed: Vec::new(),
         };
         mesh.build_bvh();
+        mesh.build_bvh4();
         mesh
     }
 
@@ -326,6 +360,74 @@ impl Mesh {
         let n = prims.len();
         self.build_node(&mut prims, 0, n);
         self.packed = prims;
+    }
+
+    /// `nodes4` from `nodes`: each node takes its binary children, and
+    /// while it has room the inner one with the largest surface opens
+    /// into its two.
+    fn build_bvh4(&mut self) {
+        self.nodes4.clear();
+        self.tris4.clear();
+        if !self.nodes.is_empty() {
+            self.collapse4(0);
+        }
+    }
+
+    fn collapse4(&mut self, bin: u32) -> u32 {
+        let leaf = |n: &BvhNode| n.a & LEAF_BIT != 0;
+        let area = |n: &BvhNode| {
+            let e = n.bmax - n.bmin;
+            e.x * e.y + e.y * e.z + e.z * e.x
+        };
+        let mut kids: Vec<u32> = if leaf(&self.nodes[bin as usize]) {
+            vec![bin]
+        } else {
+            vec![self.nodes[bin as usize].a, self.nodes[bin as usize].b]
+        };
+        while kids.len() < 4 {
+            let open = kids
+                .iter()
+                .enumerate()
+                .filter(|(_, &k)| !leaf(&self.nodes[k as usize]))
+                .max_by(|(_, &x), (_, &y)| area(&self.nodes[x as usize]).total_cmp(&area(&self.nodes[y as usize])))
+                .map(|(i, _)| i);
+            let Some(i) = open else { break };
+            let k = kids.remove(i);
+            let n = &self.nodes[k as usize];
+            kids.insert(i, n.b);
+            kids.insert(i, n.a);
+        }
+        let idx = self.nodes4.len() as u32;
+        self.nodes4.push(Node4 { lo: [[f32::MAX; 4]; 3], hi: [[f32::MIN; 4]; 3], child: [EMPTY4; 4] });
+        for (slot, &k) in kids.iter().enumerate() {
+            let (bmin, bmax, a, b) = {
+                let n = &self.nodes[k as usize];
+                (n.bmin, n.bmax, n.a, n.b)
+            };
+            let child = if a & LEAF_BIT != 0 {
+                let start = (a & !LEAF_BIT) as usize;
+                let mut t4 = Tri4 { a: [[0.0; 4]; 3], e1: [[0.0; 4]; 3], e2: [[0.0; 4]; 3], tri: [u32::MAX; 4] };
+                for (j, pt) in self.packed[start..start + b as usize].iter().enumerate() {
+                    for (axis, (pa, p1, p2)) in [(pt.a.x, pt.e1.x, pt.e2.x), (pt.a.y, pt.e1.y, pt.e2.y), (pt.a.z, pt.e1.z, pt.e2.z)].into_iter().enumerate() {
+                        t4.a[axis][j] = pa;
+                        t4.e1[axis][j] = p1;
+                        t4.e2[axis][j] = p2;
+                    }
+                    t4.tri[j] = pt.tri;
+                }
+                self.tris4.push(t4);
+                LEAF_BIT | (self.tris4.len() - 1) as u32
+            } else {
+                self.collapse4(k)
+            };
+            let n4 = &mut self.nodes4[idx as usize];
+            for (axis, (lo, hi)) in [(bmin.x, bmax.x), (bmin.y, bmax.y), (bmin.z, bmax.z)].into_iter().enumerate() {
+                n4.lo[axis][slot] = lo;
+                n4.hi[axis][slot] = hi;
+            }
+            n4.child[slot] = child;
+        }
+        idx
     }
 
     /// Binned SAH split (16 bins on the widest centroid axis); falls back
@@ -499,6 +601,27 @@ impl Mesh {
         (t > 1e-5).then_some(t)
     }
 
+    /// `ray_tri_packed` on a leaf's four triangles at once (the same
+    /// arithmetic per lane); f32::MAX where a lane is not met.
+    #[inline(always)]
+    fn ray_tri4(l: &Tri4, o: [f32; 3], d: [f32; 3]) -> [f32; 4] {
+        let mut out = [f32::MAX; 4];
+        for k in 0..4 {
+            let (e1, e2) = ([l.e1[0][k], l.e1[1][k], l.e1[2][k]], [l.e2[0][k], l.e2[1][k], l.e2[2][k]]);
+            let p = [d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0]];
+            let det = e1[0] * p[0] + e1[1] * p[1] + e1[2] * p[2];
+            let inv = 1.0 / det;
+            let sv = [o[0] - l.a[0][k], o[1] - l.a[1][k], o[2] - l.a[2][k]];
+            let u = (sv[0] * p[0] + sv[1] * p[1] + sv[2] * p[2]) * inv;
+            let q = [sv[1] * e1[2] - sv[2] * e1[1], sv[2] * e1[0] - sv[0] * e1[2], sv[0] * e1[1] - sv[1] * e1[0]];
+            let v = (d[0] * q[0] + d[1] * q[1] + d[2] * q[2]) * inv;
+            let t = (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) * inv;
+            let ok = (det.abs() >= 1e-9) & (u >= -1e-6) & (u <= 1.0 + 1e-6) & (v >= -1e-6) & (u + v <= 1.0 + 1e-6) & (t > 1e-5);
+            out[k] = if ok { t } else { f32::MAX };
+        }
+        out
+    }
+
     pub fn tri_normal(&self, tri: u32) -> Vec3 {
         let (a, b, c) = self.tri_verts(tri);
         (b - a).cross(c - a).normalize()
@@ -526,62 +649,69 @@ impl Mesh {
 
     /// Nearest hit along a normalized ray. Also see `AcousticGeometry`.
     pub fn raycast(&self, o: Vec3, d: Vec3) -> Option<(f32, u32)> {
-        if self.nodes.is_empty() {
+        if self.nodes4.is_empty() {
             return None;
         }
-        let inv_d = Vec3::new(1.0 / d.x, 1.0 / d.y, 1.0 / d.z);
-        let mut best: Option<(f32, u32)> = None;
-        // Ordered traversal: (node, entry distance), nearer child popped
-        // first so `best` shrinks early and culls the far subtree.
-        let mut stack = [(0u32, 0.0f32); 64];
+        let inv = [1.0 / d.x, 1.0 / d.y, 1.0 / d.z];
+        let oo = [o.x, o.y, o.z];
+        let (mut best, mut best_tri) = (f32::MAX, u32::MAX);
+        // Ordered traversal: (child, entry distance), nearer children
+        // popped first so `best` shrinks early and culls the far ones.
+        let mut stack = [(0u32, 0.0f32); 256];
         let mut sp = 1usize;
         while sp > 0 {
             sp -= 1;
-            let (ni, t_enter) = stack[sp];
-            if best.is_some_and(|(bt, _)| t_enter >= bt) {
+            let (r, t_enter) = stack[sp];
+            if t_enter >= best {
                 continue;
             }
-            let node = &self.nodes[ni as usize];
-            if node.a & LEAF_BIT != 0 {
-                let start = (node.a & !LEAF_BIT) as usize;
-                for pt in &self.packed[start..start + node.b as usize] {
-                    if let Some(t) = Self::ray_tri_packed(pt.a, pt.e1, pt.e2, o, d) {
-                        if best.is_none_or(|(bt, _)| t < bt) {
-                            best = Some((t, pt.tri));
-                        }
+            if r & LEAF_BIT != 0 {
+                let l = &self.tris4[(r & !LEAF_BIT) as usize];
+                let t = Self::ray_tri4(l, oo, [d.x, d.y, d.z]);
+                for k in 0..4 {
+                    // the nearest; of two at once the lower id, however
+                    // the tree is laid out
+                    if t[k] < best || (t[k] == best && t[k] < f32::MAX && l.tri[k] < best_tri) {
+                        best = t[k];
+                        best_tri = l.tri[k];
                     }
                 }
-            } else {
-                let tmax = best.map_or(f32::MAX, |(t, _)| t);
-                let l = &self.nodes[node.a as usize];
-                let r = &self.nodes[node.b as usize];
-                let tl = Self::ray_aabb(l.bmin, l.bmax, o, inv_d, tmax);
-                let tr = Self::ray_aabb(r.bmin, r.bmax, o, inv_d, tmax);
-                match (tl, tr) {
-                    (Some(a), Some(b)) => {
-                        // push far first, near on top
-                        let (near, nt, far, ft) = if a <= b {
-                            (node.a, a, node.b, b)
-                        } else {
-                            (node.b, b, node.a, a)
-                        };
-                        stack[sp] = (far, ft);
-                        stack[sp + 1] = (near, nt);
-                        sp += 2;
-                    }
-                    (Some(a), None) => {
-                        stack[sp] = (node.a, a);
-                        sp += 1;
-                    }
-                    (None, Some(b)) => {
-                        stack[sp] = (node.b, b);
-                        sp += 1;
-                    }
-                    (None, None) => {}
+                continue;
+            }
+            let n = &self.nodes4[r as usize];
+            // the four slabs at once, as `ray_aabb` (a NaN, 0·∞ on a face
+            // the ray runs in, is no bound)
+            let mut t0 = [0.0f32; 4];
+            let mut t1 = [best; 4];
+            for axis in 0..3 {
+                for k in 0..4 {
+                    let a = (n.lo[axis][k] - oo[axis]) * inv[axis];
+                    let b = (n.hi[axis][k] - oo[axis]) * inv[axis];
+                    let (near, far) = if a > b { (b, a) } else { (a, b) };
+                    t0[k] = t0[k].max(near);
+                    t1[k] = t1[k].min(far);
                 }
             }
+            // the children met, far to near onto the stack
+            let mut met = [(0.0f32, 0u32); 4];
+            let mut m = 0;
+            for k in 0..4 {
+                if n.child[k] != EMPTY4 && t0[k] <= t1[k] {
+                    let mut j = m;
+                    while j > 0 && met[j - 1].0 < t0[k] {
+                        met[j] = met[j - 1];
+                        j -= 1;
+                    }
+                    met[j] = (t0[k], n.child[k]);
+                    m += 1;
+                }
+            }
+            for &(t, c) in &met[..m] {
+                stack[sp] = (c, t);
+                sp += 1;
+            }
         }
-        best
+        (best_tri != u32::MAX).then_some((best, best_tri))
     }
 
     /// Every crossing of segment a→b strictly between its endpoints,
