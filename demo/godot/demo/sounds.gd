@@ -36,6 +36,10 @@ const SURFACES := ["wood", "carpet", "concrete", "grass"]
 const RAIN_LEVELS := [0.0, 0.3, 0.65, 1.0]
 const RAIN_NAMES := ["off", "drizzle", "rain", "downpour"]
 const CAR_LANES := [-18.9, -17.1]
+# Cars start this far out (and up to twice it), heard by no one there —
+# their approach a fade-in from nothing (distance, air) — and their slot
+# is free again once they are as far past.
+const CAR_SPAWN_M := 900.0
 
 var world: OmgWorld
 var root: Node3D
@@ -337,7 +341,7 @@ func _spawn_car() -> void:
 	if not north:
 		body.rotation_degrees = Vector3(0, 180, 0)
 	root.add_child(body)
-	var y := (-1.0 if north else 1.0) * (900.0 + randf() * 900.0)
+	var y := (-1.0 if north else 1.0) * (CAR_SPAWN_M + randf() * CAR_SPAWN_M)
 	var motor := _motor_clip(randi() % 4, 0.85 + randf() * 0.4)
 	cars.append({"slot": free, "mesh": body, "x": CAR_LANES[1 if north else 0], "y": y, "north": north,
 		"vy": (1.0 if north else -1.0) * (12.0 + randf() * 12.0), "base": 0.6 + randf(), "motor": motor, "started": false})
@@ -358,12 +362,13 @@ func _update_cars(dt: float) -> void:
 		var pos := DemoGeo.P(c["x"], c["y"], 0.0)
 		(c["mesh"] as Node3D).global_position = pos
 		src.global_position = pos + Vector3(0, 0.7, 0)
-		# perceptual envelope (web): full level within 140 m, gone by 320 m
+		# its own level at any distance: the engine carries the motor as
+		# far as it is heard (distance, air, the mix's audible window)
 		var d := Vector2(c["x"] - me.x, c["y"] - me.y).length()
-		var vol: float = c["base"] * (1.0 if d < 140.0 else maxf(0.0, 1.0 - (d - 140.0) / 180.0))
-		src.active = c["started"] and vol > 0.01
-		src.level_db = CAR_LEVEL + 20.0 * log(maxf(vol, 1e-4)) / log(10.0)
-		var gone: bool = c["y"] > 560.0 if c["north"] else c["y"] < -500.0
+		src.active = c["started"]
+		src.level_db = CAR_LEVEL + 20.0 * log(c["base"]) / log(10.0)
+		var past: bool = (c["y"] - me.y) * c["vy"] > 0.0
+		var gone: bool = past and d > CAR_SPAWN_M
 		if gone:
 			(c["mesh"] as Node3D).queue_free()
 			src.active = false

@@ -1320,6 +1320,9 @@ function buildCathedralInterior() {
 // audibility, drive through, despawn — the pass-by fade and the Doppler
 // both come from the engine (distance loss + tap-delay glide).
 const CAR_LANES = [-18.9, -17.1]; // southbound, northbound
+// Cars start this far out (up to twice it), heard by no one there, and
+// free their slot once as far past.
+const CAR_SPAWN_M = 900;
 function spawnCar() {
   const free = [3, 4].find((slot) => !state.cars.some((c) => c.slot === slot));
   if (free === undefined) return;
@@ -1370,7 +1373,7 @@ function spawnCar() {
     x: CAR_LANES[north ? 1 : 0],
     // spawn KILOMETERS out — genuinely inaudible, the approach is a
     // true fade-in from nothing (distance loss + air absorption)
-    y: (north ? -1 : 1) * (900 + Math.random() * 900),
+    y: (north ? -1 : 1) * (CAR_SPAWN_M + Math.random() * CAR_SPAWN_M),
     north,
     vy: (north ? 1 : -1) * (12 + Math.random() * 12),
     baseVol: 0.6 + Math.random(), // some cars are just louder
@@ -1387,16 +1390,15 @@ function updateCars(dt, now) {
   for (const c of state.cars) {
     c.y += c.vy * dt;
     c.mesh.position.copy(v3(c.x, c.y, 0));
-    // perceptual envelope: physically a motor IS faintly audible for
-    // hundreds of meters, but two looping motors somewhere out there
-    // read as a constant drone — fade fully out beyond ~320 m
-    const d = Math.hypot(c.x - state.pose.x, c.y - state.pose.y);
-    c.vol = (c.baseVol ?? 1) * (d < 140 ? 1 : Math.max(0, 1 - (d - 140) / 180));
+    // its own level at any distance: the engine carries the motor as
+    // far as it is heard (distance, air, the mix's audible window)
+    c.vol = c.baseVol ?? 1;
   }
   state.cars = state.cars.filter((c) => {
-    // free the slot once it is inaudible again on the far side — no
-    // need to drive the remaining kilometers in silence
-    const gone = c.north ? c.y > 560 : c.y < -500;
+    // free the slot once it is as far past as cars start out — heard by
+    // no one there, as where it came from
+    const d = Math.hypot(c.x - state.pose.x, c.y - state.pose.y);
+    const gone = (c.y - state.pose.y) * c.vy > 0 && d > CAR_SPAWN_M;
     if (gone) scene.remove(c.mesh);
     return !gone;
   });

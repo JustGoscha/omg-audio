@@ -41,9 +41,11 @@
 #         fixed points of the walk instead: the same tour every take (the
 #         engine traces in real time: its paths, not the tour, vary a
 #         little). --video=fps: frames of the window too (<name>_frames/),
-#         for tools/tour_video.sh. --until=n: stop after step n (a stretch
-#         of it); --alone=name: only the sources whose name starts so
-#         play, their own recordings (the steps, beds and one-shots off)
+#         for tools/tour_video.sh. --from=n / --until=n: start at step n
+#         (where the walk had got to, the doors and curtains as they were
+#         left) / stop after step n — a stretch of it; --alone=name: only
+#         the sources whose name starts so play, their own recordings (the
+#         steps, beds and one-shots off)
 #   --paths the scenario's source's exactly solved paths (direct, edge
 #           bends, mirror chains) per frame to <name>.paths.csv
 #   --tone  the scenario's source plays a steady 500 Hz instead of its
@@ -65,6 +67,7 @@ var shots := -1 # --view=0|1|2: the paths view off/exact/all, a screenshot a sec
 var at := Vector3(35.0, 10.0, -2.6) # --at=x,y,z: where the bunker scenario walks (feet)
 var video_fps := 0.0 # --video=fps: the tour's frames of the window
 var until_step := -1 # --until=n: the tour stops after step n
+var from_step := 0 # --from=n: the tour starts at step n
 var alone := "" # --alone=name: the tour with those sources only
 var paths_file: FileAccess
 var frames: FileAccess
@@ -94,6 +97,8 @@ func _init(d: Node, w: OmgWorld, p: DemoPlayer) -> void:
 			video_fps = float(a.trim_prefix("--video="))
 		elif a.begins_with("--until="):
 			until_step = int(a.trim_prefix("--until="))
+		elif a.begins_with("--from="):
+			from_step = int(a.trim_prefix("--from="))
 		elif a.begins_with("--alone="):
 			alone = a.trim_prefix("--alone=")
 		elif a.begins_with("--at="):
@@ -404,7 +409,8 @@ func _tour(base: String) -> void:
 	# the legs keep clear of solids — through the kiosk the ears heard
 	# nothing for half a second, rightly); "wait" s;
 	# "door" i, open; "curtains"; "clap"; "bells"; "owl" source; "car"
-	# north (from 200 m off at 100 km/h)
+	# north (from CAR_SPAWN_M off — where cars start: heard by no one — at
+	# 100 km/h)
 	# the feet on the floors, the ears 1.6 m over them (the player's EYE),
 	# as a person's: 0.4 m up they rode at 2.0 m, the height of the
 	# doorways' lintels — walking through a door they grazed the lintel,
@@ -433,7 +439,7 @@ func _tour(base: String) -> void:
 		["go", 2.0, -95.0, g, "canyon"], ["clap", "canyon"], ["wait", 4.0, "canyon"],
 		["go", 27.0, -95.0, g, "canyon"], ["clap", "canyon"], ["wait", 4.0, "canyon"],
 		["go", 14.0, -65.0, g, "south"], ["go", -13.0, -45.0, g, "road"], ["wait", 1.0, "road"],
-		["car", true, "road"], ["wait", 5.0, "road"], ["car", false, "road"], ["wait", 9.0, "road"],
+		["car", true, "road"], ["wait", 5.0, "road"], ["car", false, "road"], ["wait", 40.0, "road"],
 		["go", -14.0, 30.0, g, "road"], ["go", -30.0, 30.0, g, "dome"], ["go", -37.0, 30.0, g, "dome"], ["wait", 3.0, "dome"],
 		["go", -42.0, 31.0, 0.8, "stage"], ["wait", 2.0, "stage"], ["clap", "stage"], ["wait", 5.0, "stage"],
 	]
@@ -444,8 +450,26 @@ func _tour(base: String) -> void:
 		world.ambience_db = -200.0
 		world.rain_db = -200.0
 	var pos := Vector3(3.5, 4.0, g)
+	# --from=n: where the walk had got to, the doors and curtains as left
+	for i in mini(from_step, plan.size()):
+		var st: Array = plan[i]
+		match st[0]:
+			"go":
+				var to := Vector3(st[1], st[2], st[3])
+				if Vector2(to.x - pos.x, to.y - pos.y).length() > 0.01:
+					player.set_heading(atan2(to.y - pos.y, to.x - pos.x))
+				pos = to
+			"door":
+				lv.door_nodes[int(st[1])]["target"] = 1.0 if st[2] else 0.0
+			"curtains":
+				var best := 0
+				for k in lv.curtain_sets.size():
+					if (lv.curtain_sets[k]["cord"] - Vector2(pos.x, pos.y)).length() < (lv.curtain_sets[best]["cord"] - Vector2(pos.x, pos.y)).length():
+						best = k
+				lv.curtain_sets[best]["target"] = 0.0
 	_place(pos.x, pos.y, pos.z)
-	player.set_heading(PI / 2.0)
+	if from_step == 0:
+		player.set_heading(PI / 2.0)
 	await get_tree().create_timer(4.0).timeout
 	if not _start(base):
 		return
@@ -460,6 +484,8 @@ func _tour(base: String) -> void:
 	for i in plan.size():
 		if until_step >= 0 and i > until_step:
 			break
+		if i < from_step:
+			continue
 		var st: Array = plan[i]
 		var kind: String = st[0]
 		phase = st[st.size() - 1]
@@ -519,7 +545,7 @@ func _tour(base: String) -> void:
 				var c: Dictionary = snd.cars.back()
 				var north: bool = st[1]
 				c["x"] = DemoSounds.CAR_LANES[1] if north else DemoSounds.CAR_LANES[0]
-				c["y"] = -200.0 if north else 160.0
+				c["y"] = pos.y + (-1.0 if north else 1.0) * DemoSounds.CAR_SPAWN_M
 				c["vy"] = 27.8 if north else -27.8
 	log.close()
 	_stop(base)
