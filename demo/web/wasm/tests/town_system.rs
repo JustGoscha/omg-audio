@@ -635,8 +635,9 @@ fn the_radar_dome_focuses_its_echo_back_to_its_centre() {
 /// the club through its doors, no longer only in bursts).
 #[test]
 fn the_club_heard_from_the_street_does_not_burst_v64() {
-    let run = |v64: bool| -> (f32, f32) {
-        let mut sim = Simulation::new(Config { quality: Quality::Level(0), compute: Compute::Cpu, v6: true, v61: true, v62: true, v63: true, v64, portals: true, kernel_thread: false, kernel_step_samples: 1 << 24, ..Config::default() });
+    // (v6.4, v6.5, v6.6)
+    let run = |v: (bool, bool, bool)| -> (f32, f32) {
+        let mut sim = Simulation::new(Config { quality: Quality::Level(0), compute: Compute::Cpu, v6: true, v61: true, v62: true, v63: true, v64: v.0, v65: v.1, v66: v.2, portals: true, kernel_thread: false, kernel_step_samples: 1 << 24, ..Config::default() });
         let mut town = Town::new(&mut sim);
         let club = town.defs.iter().position(|d| d.name == "club").expect("the club");
         only(&mut town, &mut sim, club);
@@ -658,8 +659,63 @@ fn the_club_heard_from_the_street_does_not_burst_v64() {
         let mean = db(lv[200..].iter().map(|d| 10f32.powf(d / 10.0)).sum::<f32>() / (lv.len() - 200) as f32);
         (jump, mean)
     };
-    let (j63, m63) = run(false);
-    let (j64, m64) = run(true);
-    eprintln!("the club from the street: v6.3 jumps {j63:.1} dB (mean {m63:.1}), v6.4 {j64:.1} dB (mean {m64:.1})");
+    let (j63, m63) = run((false, false, false));
+    let (j64, m64) = run((true, false, false));
+    let (j65, m65) = run((true, true, false));
+    let (j66, m66) = run((true, true, true));
+    eprintln!("the club from the street: v6.3 jumps {j63:.1} dB (mean {m63:.1}), v6.4 {j64:.1} dB (mean {m64:.1}), v6.5 {j65:.1} dB (mean {m65:.1}), v6.6 {j66:.1} dB (mean {m66:.1})");
     assert!(j64 < 6.0, "v6.4: the club jumped {j64:.1} dB within 0.15 s standing still");
+    assert!(j66 < 6.0, "v6.6: the club jumped {j66:.1} dB within 0.15 s standing still");
+}
+
+/// Flying into the cathedral (Godot Oct 31: "takes a while to adjust"):
+/// the flute's sound in the nave — its reverb, its random early part —
+/// as soon as the ears are in. v6.4's rise limit let the random part
+/// climb 30 dB a second: the nave came in over a second. v6.6 walks 8×
+/// the late rays (on the CPU) instead and holds nothing back.
+#[test]
+fn flying_into_the_cathedral_it_is_there_at_once_v66() {
+    let run = |v66: bool, door: f32| -> (Option<f32>, f32, f32) {
+        let mut sim = Simulation::new(Config { quality: Quality::Level(0), compute: Compute::Cpu, v6: true, v61: true, v62: true, v63: true, v64: true, v65: true, v66, portals: true, kernel_thread: false, kernel_step_samples: 1 << 24, ..Config::default() });
+        let mut town = Town::new(&mut sim);
+        let flute = town.defs.iter().position(|d| d.name == "flute").expect("the flute");
+        only(&mut town, &mut sim, flute);
+        let portal = town.doors.iter().position(|d| d.pos == (8.0, 52.0)).expect("the cathedral's portal");
+        town.set_door(&mut sim, portal, door);
+        let level = |f: &omg_audio::Frame| -> f32 {
+            db(town.sources[flute]
+                .iter()
+                .filter_map(|&id| f.block(id))
+                .map(|pb| pb.taps.iter().map(|t| t.gains[1] * t.gains[1]).sum::<f32>() + pb.reverb.level[1] * pb.reverb.level[1] + pb.remote.map_or(0.0, |r| r.send[1] * r.send[1]) + pb.early.level[1] * pb.early.level[1])
+                .sum())
+        };
+        // on the path south of the portal, then in at 6 m/s (through
+        // the door, or the wall where it is shut), standing a metre and a
+        // half in (0.25 s after crossing)
+        let (from, to) = (40.0f32, 54.0f32);
+        for _ in 0..60 {
+            sim.set_listener([8.0, from, 1.6], 0.0, 0.0, 0.0);
+            sim.tick();
+        }
+        let outside = level(&sim.tick());
+        let mut y = from;
+        while y < to {
+            y = (y + 6.0 * 0.05).min(to);
+            sim.set_listener([8.0, y, 1.6], 0.0, 0.0, 0.0);
+            sim.tick();
+        }
+        let lv: Vec<f32> = (0..160).map(|_| level(&sim.tick())).collect();
+        // settled: the last 3 s's mean; there: the first tick from which on
+        // the level stays within 3 dB of it for a second
+        let settled = db(lv[100..].iter().map(|d| 10f32.powf(d / 10.0)).sum::<f32>() / 60.0);
+        let there = (0..lv.len() - 20).find(|&i| lv[i..i + 20].iter().all(|l| (l - settled).abs() < 3.0)).map(|i| i as f32 * 0.05);
+        (there, settled, outside)
+    };
+    for door in [1.0, 0.0] {
+        let (t65, s65, o65) = run(false, door);
+        let (t66, s66, o66) = run(true, door);
+        eprintln!("into the cathedral (portal {door}): from {o65:.1} dB outside to {s65:.1} in the nave: v6.5 there after {t65:?} s; v6.6 from {o66:.1} to {s66:.1}, there after {t66:?} s");
+        assert!(t66.is_some_and(|t| t <= 0.1), "v6.6: the nave's sound took {t66:?} s to arrive");
+        assert!((s66 - s65).abs() < 2.0, "the nave settles at the same level: v6.5 {s65:.1}, v6.6 {s66:.1} dB");
+    }
 }

@@ -59,7 +59,11 @@ pub fn trace_with(
         // first dispatch, `GPU_LATE_FACTOR`× the CPU's (16 a tick on the
         // CPU at the lowest level, the reverb's estimate young and heavy-
         // tailed); the CPU walks none, its portal records' part only
-        let late_on_gpu = tracer.v65;
+        // v6.6: not — a GPU thread waits on memory 0.15–0.5 ms a bounce
+        // and a late ray takes ~150 in a row: 128 of them held the GPU
+        // 24 ms (sliced across dispatches still 10–20 ms each: the game's
+        // frames froze), the CPU's cores walk them in 0.5 ms
+        let late_on_gpu = tracer.v65 && !tracer.v66;
         let cpu_late = if late_on_gpu {
             tracer.portals.then_some(0)
         } else {

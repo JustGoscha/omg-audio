@@ -207,6 +207,13 @@ pub struct Config {
     /// follows a moving listener as quick as the early one (out of a room
     /// its reverb goes as fast as its paths). `Tracer::v65`.
     pub v65: bool,
+    /// Engine v6.6 (on v6.5): the late rays `LATE_FACTOR_V66`× the
+    /// ladder's, walked on the CPU in every mode (a GPU thread waits on
+    /// memory 0.15–0.5 ms a bounce, a late ray's ~150 bounces in a row: 128
+    /// of them 24 ms on the GPU, holding the game's frames; 0.5 ms on the
+    /// CPU's cores); the random part no longer held to `RISE_DB_PER_S` — a
+    /// room flown into is there at once. `Tracer::v66`.
+    pub v66: bool,
     /// The mixer's sample rate (v4 builds its convolution kernels for it).
     pub sample_rate: f32,
     /// v4: build convolution kernels on a thread of their own (off the
@@ -280,6 +287,7 @@ impl Config {
         self.v63 &= self.v62;
         self.v64 &= self.v63;
         self.v65 &= self.v64;
+        self.v66 &= self.v65;
         self
     }
 }
@@ -302,6 +310,7 @@ impl Default for Config {
             v63: false,
             v64: false,
             v65: false,
+            v66: false,
             sample_rate: 48_000.0,
             kernel_thread: true,
             max_kernels: 64,
@@ -528,6 +537,9 @@ const RISE_DB_PER_S: f32 = 30.0;
 /// v6.4: a source's first estimate starts this far under itself and rises
 /// from there (its first tick is one tick's rays: the heaviest tail).
 const RISE_START_DB: f32 = 20.0;
+/// v6.6: the late rays a tick, per the ladder's (16 at level 0 left the
+/// reverb's estimate heavy-tailed; 128 cost the CPU 0.5 ms, Oct 31).
+pub const LATE_FACTOR_V66: u32 = 8;
 
 /// v6.4: the factor (amplitude) on a field's random part — its walk taps
 /// (`tap_kind` 3), dense early field and late field — that keeps its energy
@@ -655,6 +667,7 @@ impl Simulation {
                 t.v63 = cfg.v63;
                 t.v64 = cfg.v64;
                 t.v65 = cfg.v65;
+                t.v66 = cfg.v66;
                 t.portals = cfg.portals;
                 t.guide = cfg.guide;
                 t.clearance = cfg.clearance;
@@ -712,6 +725,7 @@ impl Simulation {
         self.tracer.v63 = cfg.v63;
         self.tracer.v64 = cfg.v64;
         self.tracer.v65 = cfg.v65;
+        self.tracer.v66 = cfg.v66;
         self.tracer.portals = cfg.portals;
         self.tracer.guide = cfg.guide;
         self.tracer.clearance = cfg.clearance;
@@ -737,6 +751,7 @@ impl Simulation {
         self.tracer.v63 = self.cfg.v63;
         self.tracer.v64 = self.cfg.v64;
         self.tracer.v65 = self.cfg.v65;
+        self.tracer.v66 = self.cfg.v66;
         self.tracer.portals = self.cfg.portals;
         self.tracer.guide = self.cfg.guide;
         self.tracer.clearance = self.cfg.clearance;
@@ -1322,7 +1337,11 @@ impl Simulation {
             self.size_gpu_walk();
             budget.rays = ((budget.rays as f32 * self.gpu_rays) as u32).max(64);
         }
-        let cpu_budget = self.cfg.quality.budget(false);
+        let mut cpu_budget = self.cfg.quality.budget(false);
+        if self.cfg.v66 {
+            budget.late_rays *= LATE_FACTOR_V66;
+            cpu_budget.late_rays *= LATE_FACTOR_V66;
+        }
         let world = World { grade: self.grade, pockets: &[], apertures: &self.apertures, ..World::new(&self.mesh, &self.panels) };
         let traced: Vec<&Src> = self.picks.iter().map(|&(_, i)| &self.sources[i]).collect();
         let mo = motion(self.clock, &traced);
@@ -1337,15 +1356,16 @@ impl Simulation {
 
         // fields → blocks (the generic half of the demo's WorldSim::v3_blocks)
         let mut first_traced = Vec::new();
-        let (v64, now) = (self.cfg.v64, self.clock);
+        let (v64, v66, now) = (self.cfg.v64, self.cfg.v66, self.clock);
         for ((&(_, i), f), onset_s) in self.picks.iter().zip(fields).zip(onsets) {
             let s = &mut self.sources[i];
             if s.traced.is_none() {
                 first_traced.push(s.id);
             }
             let g = s.gain;
-            // v6.4: the random part held to its rise (`Config::v64`)
-            let k = if v64 { rise_limit(&f, &mut s.rand_shown, now) } else { 1.0 };
+            // v6.4: the random part held to its rise (`Config::v64`; v6.6
+            // not: its late rays enough that a room is there at once)
+            let k = if v64 && !v66 { rise_limit(&f, &mut s.rand_shown, now) } else { 1.0 };
             let mut pb = ParamBlock { version, onset_s, ..Default::default() };
             pb.taps.reserve(f.taps.len());
             for t in f.taps {

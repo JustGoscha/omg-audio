@@ -135,6 +135,8 @@ pub extern "C" fn sim_setup(sample_rate: f32) {
         v64: true,
         // v6.5: the late rays on the GPU (with WebGPU), the reverb following
         v65: true,
+        // v6.6: the late rays 8× on the CPU, a room there at once
+        v66: true,
         // a loud room heard through its openings from its sources' side
         portals: true,
         sample_rate,

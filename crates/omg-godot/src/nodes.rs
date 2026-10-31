@@ -567,10 +567,16 @@ pub struct OmgWorld {
     #[init(val = true)]
     engine_v64: bool,
     /// Engine v6.5 (on v6.4): the GPU walks the late rays too; a moving
-    /// listener's reverb follows as quick as the early sound. The default.
+    /// listener's reverb follows as quick as the early sound.
     #[export]
     #[init(val = true)]
     engine_v65: bool,
+    /// Engine v6.6 (on v6.5): the late rays 8× on the CPU again (the GPU's
+    /// held the game's frames), the random part no longer held to its
+    /// rise — a room flown into is there at once. The default.
+    #[export]
+    #[init(val = true)]
+    engine_v66: bool,
     /// Portals (on v6.2, the walk on the CPU): a source enclosed in a room
     /// heard through the room's openings (the `OmgDoor`s' holes) from its
     /// own side — rays from it record what leaves each opening and bring
@@ -596,7 +602,7 @@ pub struct OmgWorld {
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 22],
+    sent: [f32; 23],
     #[init(val = LevelGovernor::new(LEVELS - 1))]
     auto_tier: LevelGovernor,
     auto_ticks: u32,
@@ -1102,6 +1108,7 @@ impl OmgWorld {
             v63: self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_v63,
             v64: self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_v63 && self.engine_v64,
             v65: self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_v63 && self.engine_v64 && self.engine_v65,
+            v66: self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_v63 && self.engine_v64 && self.engine_v65 && self.engine_v66,
             portals: self.portals(),
             clearance: self.engine_v6 && self.engine_clearance,
             sample_rate: engine_rate(),
@@ -1148,7 +1155,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 22];
+        self.sent = [f32::NAN; 23];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -1366,6 +1373,7 @@ impl OmgWorld {
             self.engine_v63 as i32 as f32,
             self.engine_v64 as i32 as f32,
             self.engine_v65 as i32 as f32,
+            self.engine_v66 as i32 as f32,
             self.engine_portals as i32 as f32,
             self.engine_clearance as i32 as f32,
         ];

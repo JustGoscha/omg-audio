@@ -2562,6 +2562,9 @@ pub struct Tracer {
     /// `GPU_LATE_FACTOR`× the CPU's), and the late average follows a moving
     /// listener as quick as the early one (`SourceState::fold`).
     pub v65: bool,
+    /// Engine v6.6 (on v6.5): the late rays the CPU's again, every mode
+    /// (`trace_with`; the simulation walks more of them).
+    pub v66: bool,
     /// Portals (`portal.rs`; v6, the walk on the CPU): what reaches the
     /// listener from an enclosed source through an opening, estimated
     /// from the source's side — rays from it record what leaves each
@@ -2979,6 +2982,7 @@ impl Tracer {
             v63: false,
             v64: false,
             v65: false,
+            v66: false,
             portals: false,
             portal_state: HashMap::default(),
             portal_ctab: Vec::new(),
