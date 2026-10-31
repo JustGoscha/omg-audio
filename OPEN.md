@@ -38,6 +38,17 @@ night before). What it still flags, by cause:
   the bass up to 3× each). The cure would be a second way to those paths
   weighed against the walk's: the sources' bounces connected to the
   ears' mirror image in the ground, or through an edge to the ears.
+  Path guiding tried (`Config::guide`, off by default): a third of the
+  ears' rays drawn where the last ticks' energy came from (an equal-area
+  grid of 128 directions), every ray weighed by its direction's odds under
+  both draws — unbiased in the test room (`portals::guiding_leaves_the_
+  walk_unbiased`: within 0.02 dB), and the replayed means rise toward
+  what the unguided walk misses (the field south of the town −35 / −33 /
+  −39 → −26 / −29 / −32 dB, the bunker path −35 / −35 / −41 → −30 / −29
+  / −28) — but the jumps don't fall: on the bunker path the largest
+  +24 / +20 / +20 → +37 / +28 / +34 dB, the guide catching a door's way
+  after a find and losing it as the ears move. A smoother guide (learnt
+  over neighbouring directions, a floor under every cell) is next.
 - **The portals' pool is one sample, frozen.** Far from the club its
   level is light tracing's: standing 600 ticks on the road, four seeds read
   −38, −40, −32, −50 dB (the walk alone −77, −47, −63, −71). Growing a

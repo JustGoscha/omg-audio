@@ -2368,6 +2368,15 @@ pub struct Tracer {
     portal_state: HashMap<u32, portal::PortalState>,
     portal_ctab: Vec<Vec<f32>>,
     portal_air: Vec<[f32; NBANDS]>,
+    /// Path guiding (`GUIDE_SHARE`): a share of the listener's rays drawn
+    /// where the last ticks' energy came from, every ray weighed by its
+    /// direction's odds under both draws (the balance heuristic) — the
+    /// estimate unbiased; a rare path to a loud room, found once, is found
+    /// again with less weight instead of bursting.
+    pub guide: bool,
+    /// What the walk's paths brought by their first direction from the
+    /// ears (`guide_cell`), a running sum (`GUIDE_KEEP`).
+    guide_hist: Vec<f32>,
     /// What the last tick's walk deposited per source (id, per band: the
     /// estimate before averaging — tests compare estimators by it).
     pub walked: Vec<(u32, [f32; NBANDS])>,
@@ -2744,6 +2753,8 @@ impl Tracer {
             portal_state: HashMap::default(),
             portal_ctab: Vec::new(),
             portal_air: Vec::new(),
+            guide: false,
+            guide_hist: vec![0.0; GUIDE_CELLS],
             walked: Vec::new(),
             costs: TickCosts::default(),
             late_pool: std::collections::VecDeque::new(),
@@ -2853,6 +2864,7 @@ impl Tracer {
         self.sky_primed = false;
         self.epoch = self.epoch.wrapping_add(1);
         self.walk_stale = true;
+        self.guide_hist.iter_mut().for_each(|h| *h = 0.0);
     }
 
     /// Step 4b, shared with the externally walked fold: the sky. A running
@@ -3101,14 +3113,47 @@ impl Tracer {
         // share it (`walk_chunks`)
         let rot = random_rotation(&mut self.rng);
         let seed = self.rng.next_u64();
-        let primary = if early { fibonacci_sphere(n as usize) } else { Vec::new() };
+        // path guiding: each family's rays a share drawn from the guide,
+        // the rest stratified as ever; a ray's weight (its length: the
+        // walk starts it with that throughput) is the uniform odds over
+        // the mixture's at its direction
+        let guide_p: Option<Vec<f32>> = (self.guide && self.guide_hist.iter().sum::<f32>() > 0.0).then(|| {
+            let sum: f32 = self.guide_hist.iter().sum();
+            self.guide_hist.iter().map(|h| h / sum).collect()
+        });
+        // (drawn only guiding: without, the tick's random numbers as ever)
+        let guide_rng_seed = if guide_p.is_some() { self.rng.next_u64() } else { 0 };
+        let dirs_for = |n: usize, salt: u64| -> Vec<Vec3> {
+            let Some(p) = guide_p.as_ref() else { return fibonacci_sphere(n) };
+            let weight = |w: Vec3| 1.0 / ((1.0 - GUIDE_SHARE) + GUIDE_SHARE * GUIDE_CELLS as f32 * p[guide_cell(w)]);
+            let n_g = ((n as f32 * GUIDE_SHARE).round() as usize).min(n);
+            let mut out: Vec<Vec3> = fibonacci_sphere(n - n_g).into_iter().map(|d| d * weight(rot_apply(&rot, d))).collect();
+            let mut grng = Rng::new(ray_seed(guide_rng_seed ^ salt));
+            let mut cdf = Vec::with_capacity(GUIDE_CELLS);
+            let mut acc = 0.0f32;
+            for &q in p {
+                acc += q;
+                cdf.push(acc);
+            }
+            for _ in 0..n_g {
+                let u = grng.next_f32() * acc;
+                let cell = cdf.partition_point(|&c| c <= u).min(GUIDE_CELLS - 1);
+                let w = guide_sample(cell, grng.next_f32(), grng.next_f32());
+                // in the walk's frame: it turns every direction by `rot`
+                out.push(rot_apply_t(&rot, w) * weight(w));
+            }
+            out
+        };
+        let primary = if early { dirs_for(n as usize, 1) } else { Vec::new() };
         // Three estimators, disjoint per path, so every path is counted
         // exactly once: EARLY rays count paths with 1..=bounces
         // reflections, LATE rays (fewer, long) everything beyond — except
         // the exact chain solver's (`solver_owns`: coherent, loud chains
         // that are long or arrive late — flutter, canyon echoes), which
         // `find_chains` names and `solve_chains` counts.
-        let late_primary = fibonacci_sphere(budget.late_rays as usize);
+        let late_primary = dirs_for(budget.late_rays as usize, 2);
+        // what this tick's paths brought, by their first direction
+        let mut guide_tick = vec![0.0f32; GUIDE_CELLS];
         let mut sky_acc: Vec<([f32; NBANDS], Vec3)> =
             vec![([0.0; NBANDS], Vec3::new(0.0, 0.0, 0.0)); N_CELLS];
         let fams: [(&[Vec3], u32, u32, u32, usize); 2] = [
@@ -3304,6 +3349,7 @@ impl Tracer {
                 } else {
                     for (si, e, delay, half, first, (at, n, virt)) in out.deps {
                         if !virt {
+                            guide_tick[guide_cell(first)] += e[0] + e[1] + e[2];
                             deposit_spread(&mut accs[si as usize], cx.cells, e, delay, first, half);
                         }
                         if n > 0 && n != OVERFLOW {
@@ -3312,6 +3358,11 @@ impl Tracer {
                     }
                     // portals: each crossing and connection, gathered
                     for d in &out.portals {
+                        // (for the guide: what the opening's records hold
+                        // leaving toward here, roughly)
+                        if let Some((_, tot)) = cx.portal_aps.iter().find(|(k, _)| *k == d.k as usize) {
+                            guide_tick[guide_cell(d.first)] += d.w[1] * tot[d.side as usize];
+                        }
                         let i = (d.delay / portal::HIST_BIN_S) as usize;
                         if i >= portal::HIST_BINS {
                             continue;
@@ -3327,6 +3378,11 @@ impl Tracer {
             *if lo > 0 { &mut self.costs.late } else { &mut self.costs.early } += clock.ms();
         }
         self.edges = edges;
+        if self.guide {
+            for (h, t) in self.guide_hist.iter_mut().zip(&guide_tick) {
+                *h = *h * GUIDE_KEEP + t;
+            }
+        }
         // portals: each opening's gathered walk under each enclosed
         // source's record of what leaves it there
         if !hists.is_empty() {
@@ -4646,9 +4702,15 @@ fn walk_ray(cx: &WalkCtx, fam: &Fam, sc: &mut WalkScratch, rng: &mut Rng, d0: Ve
     let solver_owns = |refl: u32, coherent: bool, loud: bool, rel: f32| {
         coherent && loud && refl >= 1 && refl <= MAX_COHERENT_REFL && (v4 || refl > bounces || rel >= EARLY_S)
     };
+    // a guided walk's ray carries its weight as its length (a unit one
+    // starts as it always did)
     let first = rot_apply(&cx.rot, d0);
+    let w0 = first.length();
+    let (first, w0) = if (w0 - 1.0).abs() < 1e-4 { (first, 1.0) } else { (first * (1.0 / w0), w0) };
     branches.clear();
-    branches.push(Branch::start(listener, first));
+    let mut start = Branch::start(listener, first);
+    start.thr = [w0; NBANDS];
+    branches.push(start);
     // v5: this ray's first bounce (diffuse, nothing on the way
     // there: A) and what it deposits
     let mut first_bounce: Option<(Vec3, Vec3, f32, f32)> = None;
@@ -6291,6 +6353,43 @@ fn random_rotation(rng: &mut Rng) -> [[f32; 3]; 3] {
         [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
         [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
     ]
+}
+
+/// The inverse turn (`rot_apply` by the transpose).
+fn rot_apply_t(m: &[[f32; 3]; 3], v: Vec3) -> Vec3 {
+    Vec3::new(
+        m[0][0] * v.x + m[1][0] * v.y + m[2][0] * v.z,
+        m[0][1] * v.x + m[1][1] * v.y + m[2][1] * v.z,
+        m[0][2] * v.x + m[1][2] * v.y + m[2][2] * v.z,
+    )
+}
+
+/// Path guiding's grid of directions from the ears: `GUIDE_Z` equal bands
+/// of height (equal area) × `GUIDE_PHI` sectors.
+const GUIDE_Z: usize = 8;
+const GUIDE_PHI: usize = 16;
+const GUIDE_CELLS: usize = GUIDE_Z * GUIDE_PHI;
+/// The share of a family's rays drawn from the guide; the rest stay
+/// uniform and stratified (every direction keeps its odds).
+const GUIDE_SHARE: f32 = 0.3;
+/// The guide's running sum keeps this much of itself a tick (a few
+/// ticks: the ears move on).
+const GUIDE_KEEP: f32 = 0.8;
+
+fn guide_cell(d: Vec3) -> usize {
+    let zi = (((d.z + 1.0) * 0.5 * GUIDE_Z as f32) as usize).min(GUIDE_Z - 1);
+    let phi = d.y.atan2(d.x) + core::f32::consts::PI;
+    let pi = ((phi / core::f32::consts::TAU * GUIDE_PHI as f32) as usize).min(GUIDE_PHI - 1);
+    zi * GUIDE_PHI + pi
+}
+
+/// A direction uniform over guide cell `cell` (`u`, `v` uniform in 0..1).
+fn guide_sample(cell: usize, u: f32, v: f32) -> Vec3 {
+    let (zi, pi) = (cell / GUIDE_PHI, cell % GUIDE_PHI);
+    let z = -1.0 + 2.0 * (zi as f32 + u) / GUIDE_Z as f32;
+    let phi = core::f32::consts::TAU * (pi as f32 + v) / GUIDE_PHI as f32 - core::f32::consts::PI;
+    let r = (1.0 - z * z).max(0.0).sqrt();
+    Vec3::new(r * phi.cos(), r * phi.sin(), z)
 }
 
 fn rot_apply(m: &[[f32; 3]; 3], v: Vec3) -> Vec3 {

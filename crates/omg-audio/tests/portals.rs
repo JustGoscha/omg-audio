@@ -10,6 +10,10 @@ use omg_audio::{Config, Geometry, Material, Quality, Simulation, SourceDesc};
 /// nothing — across it between them; per band, what the walk deposits a
 /// tick (dB, mean over `ticks`).
 fn walked_through(scatter: f32, through: f32, portals: bool, k: f32, ticks: usize) -> [f64; 3] {
+    walked_with(scatter, through, portals, false, k, ticks)
+}
+
+fn walked_with(scatter: f32, through: f32, portals: bool, guide: bool, k: f32, ticks: usize) -> [f64; 3] {
     let mut g = Geometry::new();
     let m = g.material(Material::new([0.1; 3], scatter, [through; 3]));
     let (lx, ly, lz, t) = (10.0f32, 8.0f32, 4.0f32, 0.3f32);
@@ -22,7 +26,7 @@ fn walked_through(scatter: f32, through: f32, portals: bool, k: f32, ticks: usiz
     let mut b = Quality::High.budget(false);
     b.diffraction = false;
     b.k = k;
-    let cfg = Config { quality: Quality::Custom(b), v4: false, v5: false, v6: true, v61: true, v62: true, portals, seed: 1, kernel_thread: false, ..Config::default() };
+    let cfg = Config { quality: Quality::Custom(b), v4: false, v5: false, v6: true, v61: true, v62: true, portals, guide, seed: 1, kernel_thread: false, ..Config::default() };
     let mut sim = Simulation::new(cfg);
     sim.set_geometry(g);
     let o = sim.add_object([4.96, 0.0, 0.0], [5.04, ly, lz], Material::DOOR);
@@ -82,5 +86,19 @@ fn portals_and_the_walk_agree_where_walls_let_sound_through() {
     let (w, p) = (walked_through(1.0, 0.5, false, 0.06, 120), walked_through(1.0, 0.5, true, 0.06, 120));
     for b in 0..3 {
         assert!((p[b] - w[b]).abs() < 0.25, "band {b}: portals {:.2} dB, the walk {:.2} dB", p[b], w[b]);
+    }
+}
+
+/// Path guiding sends a share of the rays where the last ticks' energy
+/// came from and weighs every ray by its direction's odds under both
+/// draws: what the walk deposits is the same on average, guided or not.
+#[test]
+fn guiding_leaves_the_walk_unbiased() {
+    for portals in [false, true] {
+        let (w, g) = (walked_with(0.5, 0.0, portals, false, 0.06, 200), walked_with(0.5, 0.0, portals, true, 0.06, 200));
+        eprintln!("portals {portals}: uniform {w:.2?} dB, guided {g:.2?} dB");
+        for b in 0..3 {
+            assert!((g[b] - w[b]).abs() < 0.15, "portals {portals}, band {b}: guided {:.2} dB, uniform {:.2} dB", g[b], w[b]);
+        }
     }
 }

@@ -54,7 +54,8 @@ fn main() {
     let geometry = env("GEOMETRY");
     // (settled low, settled mid, jumps, ms a tick)
     let run = |p: [f32; 2], seed: u64, portals: bool| -> (f64, f64, usize, f64) {
-        let cfg = Config { quality, v4: false, v5: false, v6: true, v61: true, v62: true, portals, seed, kernel_thread: false, ..Config::default() };
+        let guide = env("GUIDE").as_deref() == Some("1");
+        let cfg = Config { quality, v4: false, v5: false, v6: true, v61: true, v62: true, portals, guide, seed, kernel_thread: false, ..Config::default() };
         let mut sim = Simulation::new(cfg);
         let mut town = Town::new(&mut sim);
         if let Some(g) = geometry.as_ref() {

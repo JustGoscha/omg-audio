@@ -16,6 +16,7 @@
 //!     GEOMETRY=<file>: the host's dumped level   COMPUTE=gpu   PACE=1
 //!     THREADS=n: the walk's threads (the machine's default)
 //!     PORTALS=1: enclosed sources heard through openings from their side
+//!     GUIDE=1: path guiding (`Config::guide`)
 //!     PATHS=1: at a tick whose low band jumps 12 dB or more over the tick
 //!     before, that tick's strongest sampled paths, vertex by vertex
 //!     MIX=1: rendered through the mixer too (no HRIR; the source plays
@@ -103,6 +104,7 @@ fn main() {
         v61: mode == "v6.1" || mode == "v6.2",
         v62: mode == "v6.2",
         portals: env("PORTALS").as_deref() == Some("1"),
+        guide: env("GUIDE").as_deref() == Some("1"),
         seed: env("SEED").and_then(|v| v.parse().ok()).unwrap_or(1),
         kernel_thread: false,
         compute: if env("COMPUTE").as_deref() == Some("gpu") { Compute::Gpu } else { Compute::Cpu },

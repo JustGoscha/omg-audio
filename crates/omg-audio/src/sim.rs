@@ -179,6 +179,10 @@ pub struct Config {
     /// takes it from where it first crosses one. A loud room heard from
     /// outside comes steady instead of in bursts (its rare paths in).
     pub portals: bool,
+    /// Path guiding (on v6): a share of the listener's rays sent where the
+    /// last ticks' energy came from, every ray weighed by its direction's
+    /// odds — the estimate unbiased, a rare path found once found again.
+    pub guide: bool,
     /// The mixer's sample rate (v4 builds its convolution kernels for it).
     pub sample_rate: f32,
     /// v4: build convolution kernels on a thread of their own (off the
@@ -241,6 +245,7 @@ impl Config {
         self.v61 &= self.v6;
         self.v62 &= self.v61;
         self.portals &= self.v62;
+        self.guide &= self.v6;
         self
     }
 }
@@ -258,6 +263,7 @@ impl Default for Config {
             v61: false,
             v62: false,
             portals: false,
+            guide: false,
             sample_rate: 48_000.0,
             kernel_thread: true,
             max_kernels: 64,
@@ -566,6 +572,7 @@ impl Simulation {
                 t.v61 = cfg.v61;
                 t.v62 = cfg.v62;
                 t.portals = cfg.portals;
+                t.guide = cfg.guide;
                 t.threads = cfg.walk_threads;
                 t
             },
@@ -618,6 +625,7 @@ impl Simulation {
         self.tracer.v61 = cfg.v61;
         self.tracer.v62 = cfg.v62;
         self.tracer.portals = cfg.portals;
+        self.tracer.guide = cfg.guide;
         self.tracer.threads = cfg.walk_threads;
         if rebuild {
             self.make_walker();
@@ -638,6 +646,7 @@ impl Simulation {
         self.tracer.v61 = self.cfg.v61;
         self.tracer.v62 = self.cfg.v62;
         self.tracer.portals = self.cfg.portals;
+        self.tracer.guide = self.cfg.guide;
         self.tracer.threads = self.cfg.walk_threads;
         self.tracer.debug = self.debug_paths;
         for s in &mut self.sources {
