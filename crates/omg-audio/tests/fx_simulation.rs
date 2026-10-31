@@ -1077,3 +1077,69 @@ fn a_shoebox_plays_its_image_sources_early_and_late() {
         assert!(off(&e61, 1)[b] < off(&e62, 1)[b] - 3.0, "v6.1 played the early part whole? {:?}", off(&e61, 1));
     }
 }
+
+/// A source in a shoebox's corner, 0.5 m off three walls, against its
+/// image sources: the walk catches a mirror path in a sphere around the
+/// source and weighs each hit as if the sphere's whole disk across the
+/// ray were reachable — here most of it lies behind the walls, and the
+/// late part reads ~5 dB low. With `Config::clearance` each hit is
+/// weighed by the share of its disk the rays can reach: within 1 dB
+/// early and late (measured +0.5 / +0.2 / +0.2 and +0.5 / +0.1 / −0.6;
+/// without, −1.3 / −1.3 / −0.9 and −5.5 / −5.0 / −4.7, `examples/
+/// shoebox_ref SRC=0.5,0.5,0.5`).
+#[test]
+fn a_corner_source_plays_its_image_sources_with_clearance() {
+    use omg_core::vec3::Vec3;
+    let (size, alpha, sp, lp) = ([10.0f32, 7.0, 4.0], [0.1f32, 0.2, 0.3], [0.5f32, 0.5, 0.5], [7.0f32, 4.5, 1.6]);
+    let mat = Material::new(alpha, 0.0, [0.0; 3]);
+    let t_direct = ((sp[0] - lp[0]).powi(2) + (sp[1] - lp[1]).powi(2) + (sp[2] - lp[2]).powi(2)).sqrt() / omg_core::SPEED_OF_SOUND;
+    let room = omg_core::scene::Shoebox::new(Vec3::new(size[0], size[1], size[2]), [mat; 6]);
+    let mut taps = Vec::new();
+    omg_core::ism::image_source_taps(&room, Vec3::new(sp[0], sp[1], sp[2]), Vec3::new(lp[0], lp[1], lp[2]), 40, &mut taps);
+    let mut ism = [[0.0f64; 3]; 3];
+    for t in &taps {
+        let k = if (t.delay_s - t_direct).abs() < 1e-5 { 0 } else if t.delay_s - t_direct < 0.08 { 1 } else { 2 };
+        for b in 0..3 {
+            ism[k][b] += (t.gains[b] as f64).powi(2);
+        }
+    }
+    let engine = |clearance: bool| -> [[f64; 3]; 3] {
+        let mut g = Geometry::new();
+        let m = g.material(mat);
+        let t = 0.3;
+        let (lx, ly, lz) = (size[0], size[1], size[2]);
+        g.add_box([-t, -t, -t], [lx + t, ly + t, 0.0], m);
+        g.add_box([-t, -t, lz], [lx + t, ly + t, lz + t], m);
+        g.add_box([-t, -t, 0.0], [0.0, ly + t, lz], m);
+        g.add_box([lx, -t, 0.0], [lx + t, ly + t, lz], m);
+        g.add_box([0.0, -t, 0.0], [lx, 0.0, lz], m);
+        g.add_box([0.0, ly, 0.0], [lx, ly + t, lz], m);
+        let cfg = Config { quality: Quality::High, v6: true, v61: true, v62: true, clearance, kernel_thread: false, ..Config::default() };
+        let mut sim = Simulation::new(cfg);
+        sim.set_geometry(g);
+        let src = sim.add_source(SourceDesc::at(sp));
+        sim.set_listener(lp, 0.0, 0.0, 0.0);
+        let f = settle(&mut sim, 60);
+        let pb = f.block(src).unwrap();
+        let mut p = [[0.0f64; 3]; 3];
+        for tp in &pb.taps {
+            let k = if tp.key == omg_core::v3::KEY_DIRECT { 0 } else if tp.delay_s - pb.onset_s < 0.08 { 1 } else { 2 };
+            for b in 0..3 {
+                p[k][b] += (tp.gains[b] as f64).powi(2);
+            }
+        }
+        for b in 0..3 {
+            p[1][b] += (pb.early.level[b] as f64).powi(2);
+            p[2][b] += (pb.reverb.level[b] as f64).powi(2) + pb.remote.map_or(0.0, |r| (r.send[b] as f64).powi(2));
+        }
+        p
+    };
+    let off = |p: &[[f64; 3]; 3], k: usize| -> [f64; 3] { core::array::from_fn(|b| 10.0 * (p[k][b] / ism[k][b]).log10()) };
+    let (plain, clear) = (engine(false), engine(true));
+    eprintln!("corner source against its image sources, dB: early {:?} / {:?}, late {:?} / {:?} (without / with clearance)", off(&plain, 1), off(&clear, 1), off(&plain, 2), off(&clear, 2));
+    for b in 0..3 {
+        assert!(off(&clear, 1)[b].abs() < 1.0, "early with clearance {:?}", off(&clear, 1));
+        assert!(off(&clear, 2)[b].abs() < 1.0, "late with clearance {:?}", off(&clear, 2));
+        assert!(off(&plain, 2)[b] < -3.0, "without, the late part read low: {:?}", off(&plain, 2));
+    }
+}

@@ -183,6 +183,11 @@ pub struct Config {
     /// last ticks' energy came from, every ray weighed by its direction's
     /// odds — the estimate unbiased, a rare path found once found again.
     pub guide: bool,
+    /// A walk's sphere hit weighed by the share of its disk the rays can
+    /// reach (on v6): mirror paths near a surface as loud as image
+    /// sources say, not 1–4.5 dB low; a door's swing noisier. Off by
+    /// default: to be judged by ear.
+    pub clearance: bool,
     /// The mixer's sample rate (v4 builds its convolution kernels for it).
     pub sample_rate: f32,
     /// v4: build convolution kernels on a thread of their own (off the
@@ -246,6 +251,7 @@ impl Config {
         self.v62 &= self.v61;
         self.portals &= self.v62;
         self.guide &= self.v6;
+        self.clearance &= self.v6;
         self
     }
 }
@@ -264,6 +270,7 @@ impl Default for Config {
             v62: false,
             portals: false,
             guide: false,
+            clearance: false,
             sample_rate: 48_000.0,
             kernel_thread: true,
             max_kernels: 64,
@@ -573,6 +580,7 @@ impl Simulation {
                 t.v62 = cfg.v62;
                 t.portals = cfg.portals;
                 t.guide = cfg.guide;
+                t.clearance = cfg.clearance;
                 t.threads = cfg.walk_threads;
                 t
             },
@@ -626,6 +634,7 @@ impl Simulation {
         self.tracer.v62 = cfg.v62;
         self.tracer.portals = cfg.portals;
         self.tracer.guide = cfg.guide;
+        self.tracer.clearance = cfg.clearance;
         self.tracer.threads = cfg.walk_threads;
         if rebuild {
             self.make_walker();
@@ -647,6 +656,7 @@ impl Simulation {
         self.tracer.v62 = self.cfg.v62;
         self.tracer.portals = self.cfg.portals;
         self.tracer.guide = self.cfg.guide;
+        self.tracer.clearance = self.cfg.clearance;
         self.tracer.threads = self.cfg.walk_threads;
         self.tracer.debug = self.debug_paths;
         for s in &mut self.sources {

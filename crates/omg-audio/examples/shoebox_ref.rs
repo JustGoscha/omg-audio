@@ -15,6 +15,7 @@
 //!     SCATTER=0..1 (default 0)  SIZE=x,y,z (10,7,4)  ALPHA=low,mid,high
 //!     (0.1,0.2,0.3)  SRC=x,y,z  LIS=x,y,z  TICKS=n (60)  MODES=v6.2,v6.1,v5
 //!     K=k: the source sphere's radius per metre of path
+//!     CLEARANCE=1: sphere hits by their reachable share (`Config::clearance`)
 //!     PROFILE=1: v5's response per 100 ms against the images'
 //!     FLOOR=1: a floor alone (an infinite plane at z = 0): the direct
 //!     sound and its one image
@@ -129,6 +130,7 @@ fn main() {
             v6: mode.starts_with("v6"),
             v61: mode == "v6.1" || mode == "v6.2",
             v62: mode == "v6.2",
+            clearance: std::env::var("CLEARANCE").as_deref() == Ok("1"),
             kernel_thread: false,
             ..Config::default()
         };

@@ -50,6 +50,8 @@
 #           bends, mirror chains) per frame to <name>.paths.csv
 #   --no-portals the engine's portals off (an enclosed source heard
 #           through openings from its side; on by default)
+#   --clearance the walk's sphere hits by the share the rays can reach
+#           (Config::clearance; off by default)
 #   --tone  the scenario's source plays a steady 500 Hz instead of its
 #           recording, alone (the other sources and the beds off):
 #           whatever comes out above ~3 kHz, the engine made
@@ -70,6 +72,7 @@ var at := Vector3(35.0, 10.0, -2.6) # --at=x,y,z: where the bunker scenario walk
 var video_fps := 0.0 # --video=fps: the tour's frames of the window
 var until_step := -1 # --until=n: the tour stops after step n
 var portals := true # --no-portals: the engine's portals off (Config::portals)
+var clearance := false # --clearance: sphere hits by their reachable share (Config::clearance)
 var from_step := 0 # --from=n: the tour starts at step n
 var alone := "" # --alone=name: the tour with those sources only
 var paths_file: FileAccess
@@ -90,6 +93,8 @@ func _init(d: Node, w: OmgWorld, p: DemoPlayer) -> void:
 			engine = a.trim_prefix("--engine=")
 		elif a == "--no-portals":
 			portals = false
+		elif a == "--clearance":
+			clearance = true
 		elif a == "--tone":
 			tone = true
 		elif a.begins_with("--quality="):
@@ -117,12 +122,13 @@ func run() -> void:
 	world.engine_v61 = engine == "v6.1" or engine == "v6.2"
 	world.engine_v62 = engine == "v6.2"
 	world.engine_portals = portals
+	world.engine_clearance = clearance
 	world.engine_v4 = engine == "v4" or engine == "v5"
 	world.engine_v5 = engine == "v5"
 	if quality >= -1:
 		world.quality = quality
 	DirAccess.make_dir_recursive_absolute(out_dir)
-	var name := "%s_%s%s%s%s" % [scenario, engine, "_tone" if tone else "", ("_" + alone) if alone != "" else "", "" if portals else "_noportals"]
+	var name := "%s_%s%s%s%s" % [scenario, engine, "_tone" if tone else "", ("_" + alone) if alone != "" else "", ("" if portals else "_noportals") + ("_clearance" if clearance else "")]
 	player.set_physics_process(false) # the script moves the ears
 	player.flying = true
 	var base := out_dir.path_join(name)

@@ -92,6 +92,10 @@ func _ready() -> void:
 		world.gpu_budget = x / 100.0)
 	_row(v, "diffraction", _choice_box("diffraction", ["on", "off"], 0 if world.diffraction else 1, func(i: int) -> void:
 		world.diffraction = i == 0))
+	# the walk's sphere hits by the share the rays can reach: mirror paths
+	# as loud as image sources say; a closing door's treble ~2 dB rougher
+	_row(v, "clearance", _choice_box("clearance", ["off", "on"], 1 if world.engine_clearance else 0, func(i: int) -> void:
+		world.engine_clearance = i == 1))
 	_row(v, "render budget", _choice_box("budget", ["auto", "1", "2", "3", "4", "5"], 0, func(i: int) -> void:
 		world.set_render_budget(i - 1)))
 	_row(v, "ear", _choice_box("ear", ["on", "off"], 0, func(i: int) -> void:

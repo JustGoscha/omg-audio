@@ -542,6 +542,13 @@ pub struct OmgWorld {
     #[export]
     #[init(val = true)]
     engine_portals: bool,
+    /// The walk's sphere hits weighed by the share of their disk the rays
+    /// can reach (on v6): mirror paths near a surface as loud as image
+    /// sources say (a shoebox's late part −1.8 → +0.5 dB, a corner
+    /// source's −5.5 → +0.5), a closing door's treble ~2 dB rougher. Off
+    /// by default: to be judged by ear (Settings › engine modules).
+    #[export]
+    engine_clearance: bool,
     /// Record each tick's strongest traced paths for `paths()` (a debug
     /// view). Off: the tracer records nothing.
     #[export]
@@ -551,7 +558,7 @@ pub struct OmgWorld {
     sources: HashMap<InstanceId, SourceRec>,
     doors: HashMap<InstanceId, DoorRec>,
     frame: u64,
-    sent: [f32; 18],
+    sent: [f32; 19],
     #[init(val = LevelGovernor::new(LEVELS - 1))]
     auto_tier: LevelGovernor,
     auto_ticks: u32,
@@ -980,6 +987,7 @@ impl OmgWorld {
             v61: self.engine_v6 && self.engine_v61,
             v62: self.engine_v6 && self.engine_v61 && self.engine_v62,
             portals: self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_portals,
+            clearance: self.engine_v6 && self.engine_clearance,
             sample_rate: engine_rate(),
             gpu_budget: self.gpu_budget.clamp(0.02, 1.0),
             ..Config::default()
@@ -1004,7 +1012,7 @@ impl OmgWorld {
         }
         *host() = Some(h);
         self.started = true;
-        self.sent = [f32::NAN; 18];
+        self.sent = [f32::NAN; 19];
         if !self.ambience_file.is_empty() {
             let mut imp = Import::default();
             imp.opts.stereo = true;
@@ -1218,6 +1226,7 @@ impl OmgWorld {
             self.engine_v61 as i32 as f32,
             self.engine_v62 as i32 as f32,
             self.engine_portals as i32 as f32,
+            self.engine_clearance as i32 as f32,
         ];
         let cfg = self.sim_config();
         let mut g = host();

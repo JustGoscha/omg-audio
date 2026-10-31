@@ -82,6 +82,12 @@ night before). What it still flags, by cause:
   122.65 s bends round low edges right after the paving, not a diffuse
   touch. Reverted. What would take those: the bends' own second way —
   a source's bounce connected to the ears through an edge.
+- **Portals through walls that let sound through read a little low:**
+  over 20 seeds −0.073 ± 0.014 dB (bass and mid), −0.122 ± 0.014 (high)
+  against the walk (`portals::portals_and_the_walk_agree_where_walls_
+  let_sound_through`) — real (5 se), small (1.7 %, 2.8 % of the energy);
+  without transmission none. Both sides price a wall alike (keep, draw,
+  `World::through`); not found.
 - **The portals' pool is one sample, frozen.** Far from the club its
   level is light tracing's: standing 600 ticks on the road, four seeds read
   −38, −40, −32, −50 dB (the walk alone −77, −47, −63, −71). Growing a
@@ -417,7 +423,18 @@ first 3 s. A shoebox against its image sources (ENGINE_V6.md) finds v5
 1.4 dB over in the early part and both v5 and v6.2 within 1 dB of each
 other late: v5 isn't the yardstick; the cathedral itself is untested.
 
-### Mirror paths near a surface read low (every engine) — fixed on a branch
+### Mirror paths near a surface read low (every engine) — an option now (`Config::clearance`)
+Oct 31 morning: the branch's fix ported onto the CPU walk as
+`Config::clearance` (off by default; Godot: Settings › engine modules ›
+clearance, `OmgWorld.engine_clearance`, the recorder's `--clearance`;
+the GPU walk still without). Against the image sources (`examples/
+shoebox_ref`, test `a_corner_source_plays_its_image_sources_with_
+clearance`): the shoebox's late part −1.8 / −1.1 / −0.9 → +0.5 / +0.2 /
+−0.2 dB, a corner source's early −1.3 / −1.3 / −0.9 → +0.5 / +0.2 /
++0.2 and late −5.5 / −5.0 / −4.7 → +0.5 / +0.1 / −0.6. The cost, paired
+over 31 seeds of a door's swing (portals on): the treble's worst window
+1.8 dB higher (se 0.65; worse in 24 of 31), −39.1 → −37.2 dB on average.
+To be judged by ear — switch it on in the demo and close a door.
 Against a shoebox's image sources (`examples/shoebox_ref`, ENGINE_V6.md
 "Against the image sources") the late part reads low, more the larger
 the walls' mirror share (scattering 1: 0 dB; 0: −1.8 … −0.6 dB) and the
