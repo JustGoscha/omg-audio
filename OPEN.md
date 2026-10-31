@@ -47,8 +47,15 @@ night before). What it still flags, by cause:
   −39 → −26 / −29 / −32 dB, the bunker path −35 / −35 / −41 → −30 / −29
   / −28) — but the jumps don't fall: on the bunker path the largest
   +24 / +20 / +20 → +37 / +28 / +34 dB, the guide catching a door's way
-  after a find and losing it as the ears move. A smoother guide (learnt
-  over neighbouring directions, a floor under every cell) is next.
+  after a find and losing it as the ears move — though the largest of
+  those is the tour stepping out of the blockhouse, a real rise that
+  stays. Counted as bursts (up 10 dB, back within 6 dB inside a second):
+  the bunker path 1 (unguided, three seeds) → 8 (guided) → 5 (the guide
+  smoothed: each tick by its directions' shares, half a cell's weight
+  shared with its neighbours, half the guide spread evenly — kept); the
+  field south 7 → 2 → 7. The smoothed guide's means agree across seeds
+  (the bunker path −30.3 / −30.1 / −30.1 dB, unguided −35 / −35 / −41) —
+  the estimate converging — but the bursts don't fall: still off.
 - **The portals' pool is one sample, frozen.** Far from the club its
   level is light tracing's: standing 600 ticks on the road, four seeds read
   −38, −40, −32, −50 dB (the walk alone −77, −47, −63, −71). Growing a

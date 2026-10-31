@@ -3118,8 +3118,25 @@ impl Tracer {
         // walk starts it with that throughput) is the uniform odds over
         // the mixture's at its direction
         let guide_p: Option<Vec<f32>> = (self.guide && self.guide_hist.iter().sum::<f32>() > 0.0).then(|| {
-            let sum: f32 = self.guide_hist.iter().sum();
-            self.guide_hist.iter().map(|h| h / sum).collect()
+            // each cell shares half with its neighbours (round the
+            // sectors, across the bands), and half the guide is spread
+            // evenly: no one direction's odds collapse onto a find
+            let h = &self.guide_hist;
+            let smooth: Vec<f32> = (0..GUIDE_CELLS)
+                .map(|c| {
+                    let (zi, pi) = (c / GUIDE_PHI, c % GUIDE_PHI);
+                    let mut n = vec![zi * GUIDE_PHI + (pi + 1) % GUIDE_PHI, zi * GUIDE_PHI + (pi + GUIDE_PHI - 1) % GUIDE_PHI];
+                    if zi > 0 {
+                        n.push((zi - 1) * GUIDE_PHI + pi);
+                    }
+                    if zi + 1 < GUIDE_Z {
+                        n.push((zi + 1) * GUIDE_PHI + pi);
+                    }
+                    0.5 * h[c] + 0.5 * n.iter().map(|&k| h[k]).sum::<f32>() / n.len() as f32
+                })
+                .collect();
+            let sum: f32 = smooth.iter().sum();
+            smooth.iter().map(|x| 0.5 * x / sum + 0.5 / GUIDE_CELLS as f32).collect()
         });
         // (drawn only guiding: without, the tick's random numbers as ever)
         let guide_rng_seed = if guide_p.is_some() { self.rng.next_u64() } else { 0 };
@@ -3379,8 +3396,10 @@ impl Tracer {
         }
         self.edges = edges;
         if self.guide {
+            // each tick by its directions' shares: a burst is one tick
+            let sum: f32 = guide_tick.iter().sum();
             for (h, t) in self.guide_hist.iter_mut().zip(&guide_tick) {
-                *h = *h * GUIDE_KEEP + t;
+                *h = *h * GUIDE_KEEP + if sum > 0.0 { t / sum } else { 0.0 };
             }
         }
         // portals: each opening's gathered walk under each enclosed
