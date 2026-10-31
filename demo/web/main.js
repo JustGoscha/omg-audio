@@ -3289,11 +3289,12 @@ function clapNow() {
   setTimeout(() => state.fx(13, 30, 'play', gain, rate), 150);
 }
 // A whistle (J) from the listener's lips, through the feet source moved
-// there: 80 dB at 1 m, 6 dB over the feet source (74 dB), as Godot's.
+// there: 70 dB at 1 m (a moderate whistle), 4 dB under the feet source
+// (74 dB), as Godot's. The lips are 11 cm from the ears: +19 dB there.
 function whistleNow() {
   if (!state.fx) return;
   state.mouthUntil = performance.now() + 2200;
-  const gain = 2.0;
+  const gain = 0.63;
   const rate = 0.97 + Math.random() * 0.06;
   setTimeout(() => state.fx(13, 31, 'play', gain, rate), 150);
 }

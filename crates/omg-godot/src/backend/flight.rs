@@ -111,17 +111,23 @@ pub fn save(path: &str, from: u64, to: u64) -> std::io::Result<u64> {
     Ok(n)
 }
 
-/// Window lengths by frequency, as an ear resolves them: long for the
-/// lows (their pitch), short for the highs (their onsets — a click, a
-/// burst, the crackle of a path). (Upper edge Hz, FFT size, Hann.)
-const ZONES: [(f32, usize); 4] = [(250.0, 4096), (1000.0, 2048), (4000.0, 512), (f32::INFINITY, 256)];
-/// The display's range, dB: −100 … −30 of a sinusoid's amplitude in the
-/// longest window; every window's power per bin is normalised by its own
-/// Σw², so a noise (a reverb tail) reads the same across the zones and a
-/// short sound stands out where the windows are short.
+/// Window lengths by frequency, as an ear resolves them — it tells
+/// sounds 2–3 ms apart in the treble and integrates over 20–40 ms in the
+/// bass: long for the lows (their pitch), short for the highs (their
+/// onsets — a click, a burst, the crackle of a path). (Upper edge Hz, FFT
+/// size, Hann: 43 / 21 / 11 / 5 ms at 48 kHz.)
+const ZONES: [(f32, usize); 4] = [(200.0, 2048), (800.0, 1024), (3000.0, 512), (f32::INFINITY, 256)];
+/// The display's range, dB: −100 … −30 of a sinusoid's amplitude in a
+/// 4096-point window (`REF_N`, the overlay's scale before); every
+/// window's power per bin is normalised by its own Σw², so a noise (a
+/// reverb tail) reads the same across the zones and a short sound stands
+/// out where the windows are short.
 const DB_FLOOR: f32 = -100.0;
 const DB_SPAN: f32 = 70.0;
-const LONGEST: usize = 4096;
+const REF_N: usize = 4096;
+/// The longest window: the newest column's centre lies half of it behind
+/// the newest frame.
+const LONGEST: usize = 2048;
 const GAP: usize = 4;
 
 struct Zone {
@@ -154,7 +160,7 @@ impl Analyzer {
                 let win: Vec<f32> = (0..n).map(|i| 0.5 - 0.5 * (2.0 * core::f32::consts::PI * i as f32 / n as f32).cos()).collect();
                 // power over Σw², scaled so the longest window reads a
                 // sinusoid's amplitude as before (6/N for a Hann window)
-                let norm = 6.0 / LONGEST as f32 / win.iter().map(|w| w * w).sum::<f32>();
+                let norm = 6.0 / REF_N as f32 / win.iter().map(|w| w * w).sum::<f32>();
                 Zone { n, fft: RealFft::new(n), win, norm, x: vec![0.0; n], spec: vec![C::default(); n / 2 + 1], pow: vec![0.0; n / 2 + 1] }
             })
             .collect();
@@ -227,7 +233,7 @@ impl Analyzer {
 /// the left ear's `bands` log bands (40 Hz – 16 kHz, low at the bottom)
 /// over the right's, 4 rows apart — each column the loudest bin of its
 /// band at the column's time, in a window as long as its frequency needs
-/// (`ZONES`: 85 ms under 250 Hz … 5 ms over 4 kHz), coloured as the
+/// (`ZONES`: 43 ms under 200 Hz … 5 ms over 3 kHz), coloured as the
 /// overlay's live one (inferno, −100 … −30 dB). Height: 2 · bands + 4.
 pub fn spectrogram(from: u64, to: u64, width: usize, bands: usize) -> Vec<u8> {
     let h = 2 * bands + GAP;

@@ -3,21 +3,23 @@
 # — and the output spectrogram per ear: time running right to left (the
 # newest at the right edge), log frequency up, inferno colours; left above
 # right. Top right. Its columns are the output's own (the flight
-# recorder's minute, OmgWorld.flight_columns), one every 6.25 ms of audio
+# recorder's minute, OmgWorld.flight_columns), one every 4 ms of audio
 # whatever the frame rate, each band in a window as long as its frequency
-# needs — 85 ms under 250 Hz, 5 ms over 4 kHz: a click is a column wide.
+# needs, as the ear resolves it — 43 ms under 200 Hz, 21 to 800 Hz, 11 to
+# 3 kHz, 5 above: a click is a column wide.
 class_name DemoDebug
 extends CanvasLayer
 
 const W := 680.0
+const SW := 1000.0      # the spectrogram's width
 const H := 220.0
 const SH := 330.0       # the spectrum panel: two flame graphs
 const TOP := 36.0       # below the title
 const N := 240          # samples kept (~4 s at 60 fps)
 const BANDS := 256      # log bands, 40 Hz – 16 kHz (0.4 semitone each)
 const COL_PX := 1.0     # a column's width on screen
-const COLS := int(W / COL_PX)
-const COL_HZ := 160.0   # columns per second of audio (4.25 s shown)
+const COLS := int(SW / COL_PX)
+const COL_HZ := 250.0   # columns per second of audio (4 s shown)
 const F_LO := 40.0
 const F_HI := 16000.0
 
@@ -50,7 +52,7 @@ func _ready() -> void:
 		flame.append(img)
 		flame_tex.append(ImageTexture.create_from_image(img))
 	perf = _panel(Vector2(-W - 16, 16), H, _draw_perf)
-	spec = _panel(Vector2(-W - 16, 16 + H + 16), SH, _draw_spectrum)
+	spec = _panel(Vector2(-SW - 16, 16 + H + 16), SH, _draw_spectrum, SW)
 	# the image smoothed onto the panel, not blown up into blocks
 	spec.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	_apply()
@@ -73,12 +75,12 @@ func _apply() -> void:
 	spec.visible = spectrum_on
 	spec.position.y = (16 + H + 16) if perf_on else 16
 
-func _panel(at: Vector2, h: float, draw: Callable) -> Control:
+func _panel(at: Vector2, h: float, draw: Callable, w := W) -> Control:
 	var c := Control.new()
 	c.anchor_left = 1.0
 	c.anchor_right = 1.0
 	c.position = at
-	c.size = Vector2(W, h)
+	c.size = Vector2(w, h)
 	c.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	c.draw.connect(draw.bind(c))
 	add_child(c)
@@ -170,11 +172,11 @@ func _draw_spectrum(c: Control) -> void:
 	var gh := (SH - top - 10.0 - gap) * 0.5
 	for ear in 2:
 		var y0 := top + ear * (gh + gap)
-		c.draw_texture_rect(flame_tex[ear], Rect2(0, y0, W, gh), false)
+		c.draw_texture_rect(flame_tex[ear], Rect2(0, y0, SW, gh), false)
 		# frequency gridlines: 100 Hz, 1 kHz, 10 kHz
 		for f in [100.0, 1000.0, 10000.0]:
 			var y := y0 + gh * (1.0 - log(f / F_LO) / log(F_HI / F_LO))
-			c.draw_line(Vector2(0, y), Vector2(W, y), Color(0.48, 0.52, 0.59, 0.27))
+			c.draw_line(Vector2(0, y), Vector2(SW, y), Color(0.48, 0.52, 0.59, 0.27))
 			c.draw_string(ThemeDB.fallback_font, Vector2(6, y - 3), "%dk" % int(f / 1000) if f >= 1000 else "%d" % int(f),
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color(1, 1, 1, 0.5))
-		c.draw_string(ThemeDB.fallback_font, Vector2(W - 30, y0 + 24), ["L", "R"][ear], HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color(1, 1, 1, 0.8))
+		c.draw_string(ThemeDB.fallback_font, Vector2(SW - 30, y0 + 24), ["L", "R"][ear], HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color(1, 1, 1, 0.8))

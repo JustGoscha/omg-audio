@@ -65,8 +65,10 @@ var cars_src: Array[OmgSource] = []
 var feet: OmgSource
 var hands: OmgSource # the clap: chest height, a little in front
 var mouth: OmgSource # the whistle (J): at the lips
-# a whistled call, dB SPL at 1 m (a casual whistle; a loud one is 100+)
-const WHISTLE_LEVEL := 80.0
+# a whistled call, dB SPL at 1 m (a moderate whistle; a loud one is
+# 100+). The lips are 11 cm from the ears: it arrives there 19 dB over
+# this (80 at 1 m was ~99 dB at the ears — too loud).
+const WHISTLE_LEVEL := 70.0
 var clip := {}          # name → clip id
 var steps := []         # [surface][variant] → clip id
 var t0 := 0.0
