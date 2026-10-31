@@ -1,13 +1,31 @@
 # Open items
 
-What is still open after the Oct 29 2026 session (engine v5.5, see
-ENGINE_V5_5.md; measured in docs/runs/2026-10-29/). Each item says what
+What is still open after the Oct 31 2026 session (engine v6.2, portals
+on; see ENGINE_V6.md; measured in docs/runs/2026-10-31/; started from
+the Oct 29 session's list, engine v5.5, ENGINE_V5_5.md). Each item says what
 is wrong or missing, how it was measured, and what would fix it. Develop
 against CLAUDE.md; measure before and after with impulses
 (`demo/web/wasm/examples/assess.rs`, `probe.rs`), test on the live engine
 (`demo/web/wasm/tests/town_system.rs`).
 
 ## Known issues (measured, not fixed)
+
+### A moving listener's estimate is one tick's: the level steps up as the ears stop
+The tour with portals on (`docs/runs/2026-10-31/portals-on/`): the club's
+bursts are gone — nothing unexplained rises more than 23 dB (46.8 the
+night before) — and what is left is of one kind. At 209 s the tour stops
+on the road at (−13, −45): the club's bass, −52 dB while walking, steps
+to −32 within half a second and holds at ~−35. Moving, each tick's
+estimate stands alone (v6 averages only a still spell): the paths that
+carry the most are rare, so a tick usually reads far under the mean.
+Standing, the ticks are averaged and the rare ones arrive. Portals made
+the mean truer and louder (standing 300 ticks, the walk alone −54, −33,
+−51 dB on three seeds, portals −26, −26, −29), so the step grew while the
+bursts went. The cure: keep what still holds as the ears move — the
+portal records and pools do (they don't depend on the ears); the walk's
+own part would need its paths re-priced from where the ears are now
+(shift mapping) instead of thrown away, or more of the field from the
+sources' side.
 
 ### Tests that guard the legacy engine
 About half the test files drive the legacy engine (WorldSim, AutoPaths,
