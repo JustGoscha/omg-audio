@@ -93,7 +93,42 @@ pub(super) struct PortalState {
     cum: Vec<f64>,
     /// Where the source was and the world's signature, last tick.
     seen: Option<(Vec3, u64)>,
+    /// The region the records' rays covered inside — up to the first
+    /// opening, wall or leaf each passed (`trace_source`): what moves in
+    /// it changes them, what moves elsewhere doesn't (`local_sig`).
+    reach: Option<(Vec3, Vec3)>,
 }
+
+/// The panels (door leaves, panes, objects) lying in `reach` (its box
+/// grown by `REACH_MARGIN_M`), hashed — a source's records' world: the
+/// hall's door swinging doesn't start the cathedral's flute over (every
+/// enclosed source's records restarted at any door: the walk alone for 8
+/// ticks, the flute behind the shut portal +16 dB over its level on the
+/// CPU after the hall's door was opened — Godot, Oct 31).
+pub(super) fn reach_sig(panels: &[(Vec3, Vec3, Material)], reach: (Vec3, Vec3)) -> u64 {
+    let (lo, hi) = (reach.0 - Vec3::new(REACH_MARGIN_M, REACH_MARGIN_M, REACH_MARGIN_M), reach.1 + Vec3::new(REACH_MARGIN_M, REACH_MARGIN_M, REACH_MARGIN_M));
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut eat = |x: f32| {
+        h ^= x.to_bits() as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    };
+    for (a, b, m) in panels {
+        if a.x > hi.x || a.y > hi.y || a.z > hi.z || b.x < lo.x || b.y < lo.y || b.z < lo.z {
+            continue;
+        }
+        // to the millimetre (`panels_sig`)
+        for v in [a.x, a.y, a.z, b.x, b.y, b.z] {
+            eat((v * 1000.0).round());
+        }
+        eat(m.transmission[1]);
+        eat(m.absorption[1]);
+    }
+    h
+}
+
+/// How far past the records' rays a panel still counts as in their reach
+/// (a leaf just outside the opening they leave by).
+const REACH_MARGIN_M: f32 = 0.5;
 
 /// A tick's trace of one source: per record, what its rays left in which
 /// slots (a few hundred of a record's 9,600: a tick's records in full
@@ -125,16 +160,25 @@ impl PortalState {
     /// This tick's record into the sum — over again where the source moved
     /// or the world changed. (No more are traced once it holds
     /// `PORTAL_MEMORY` ticks: the sum over `n` is their mean.)
-    pub(super) fn fold(&mut self, fresh: Fresh, vpls: Vec<Vpl>, pos: Vec3, sig: u64) {
-        if self.resets(pos, sig) {
+    pub(super) fn fold(&mut self, fresh: Fresh, vpls: Vec<Vpl>, reach: Option<(Vec3, Vec3)>, pos: Vec3, panels: &[(Vec3, Vec3, Material)], world: u64) {
+        if self.resets(pos, self.local_sig(panels, world)) {
             self.recs.clear();
             self.counts.clear();
             self.vpls.clear();
             self.cum.clear();
             self.n = 0.0;
             self.at = Some(pos);
-            self.sig = sig;
+            self.reach = None;
         }
+        // the reach grows as the rays fill the room: its world with it
+        // (nothing moved: the same panels, more of them seen)
+        if let Some((a, b)) = reach {
+            self.reach = Some(match self.reach {
+                Some((c, d)) => (Vec3::new(a.x.min(c.x), a.y.min(c.y), a.z.min(c.z)), Vec3::new(b.x.max(d.x), b.y.max(d.y), b.z.max(d.z))),
+                None => (a, b),
+            });
+        }
+        self.sig = self.local_sig(panels, world);
         let mut acc = self.cum.last().copied().unwrap_or(0.0);
         for v in &vpls {
             acc += weight(v) as f64;
@@ -161,6 +205,12 @@ impl PortalState {
         } else {
             0.0
         }
+    }
+
+    /// The signature of the world the records are of: the panels in their
+    /// reach (`reach_sig`); `world`'s (every panel) before any ray.
+    pub(super) fn local_sig(&self, panels: &[(Vec3, Vec3, Material)], world: u64) -> u64 {
+        self.reach.map_or(world, |r| reach_sig(panels, r))
     }
 
     /// Does a tick traced with the source at `pos` in world `sig` start
@@ -274,6 +324,10 @@ pub(super) fn cos_tables(cells: &[Vec3]) -> Vec<Vec<f32>> {
 /// reflected and been rough recorded (`Record`), and every diffuse bounce
 /// past such a crossing kept (`Vpl`).
 #[allow(clippy::too_many_arguments)]
+/// A source's rays for its records: what leaves each opening (`Fresh`),
+/// the bounces past them (light tracing's vertices), and the region the
+/// rays covered inside — each up to the first opening, wall or leaf it
+/// passed (`PortalState::reach`).
 pub(super) fn trace_source(
     world: &World,
     edges: Option<&EdgeSet>,
@@ -286,12 +340,19 @@ pub(super) fn trace_source(
     all: u32,
     diffraction: bool,
     rng: &mut Rng,
-) -> (Fresh, Vec<Vpl>) {
+) -> (Fresh, Vec<Vpl>, Option<(Vec3, Vec3)>) {
     let aps = world.apertures;
     let mut out: Fresh = HashMap::default();
     let mut vpls: Vec<Vpl> = Vec::new();
+    let mut reach: Option<(Vec3, Vec3)> = None;
+    let mut grow = |p: Vec3| {
+        reach = Some(match reach {
+            Some((a, b)) => (Vec3::new(a.x.min(p.x), a.y.min(p.y), a.z.min(p.z)), Vec3::new(b.x.max(p.x), b.y.max(p.y), b.z.max(p.z))),
+            None => (p, p),
+        });
+    };
     if aps.is_empty() || rays == 0 {
-        return (out, vpls);
+        return (out, vpls, None);
     }
     let flux = 4.0 * core::f32::consts::PI / all.max(1) as f32;
     // every crossing of a path that has reflected and been rough, into
@@ -338,6 +399,9 @@ pub(super) fn trace_source(
         let mut last_edge: Option<usize> = None;
         // the last opening crossed: the ears' share past it (`record`)
         let mut last: Option<(bool, usize)> = None;
+        // still inside: no opening, wall or leaf passed yet
+        let mut inside = true;
+        grow(pos);
         for _ in 0..LATE_MAX_SEGMENTS + MAX_BENDS {
             if world.in_earth(origin) {
                 break;
@@ -352,6 +416,12 @@ pub(super) fn trace_source(
             };
             let t_seg = edge.map_or(t_hit, |(te, _, _, _)| te);
             record(&mut out, origin, origin + dir * t_seg.min(1e3), length, thr, dir, refl >= 1 && rough, &mut last);
+            if last.is_some() {
+                inside = false;
+            }
+            if inside && t_seg.is_finite() && t_seg < 1e3 {
+                grow(origin + dir * t_seg);
+            }
             if let Some((te, a, u, ei)) = edge {
                 last_edge = Some(ei);
                 let (eps, w) = sample_bend(rng, a);
@@ -401,6 +471,7 @@ pub(super) fn trace_source(
                     thr[b] *= t2[b] / pt;
                 }
                 rough = true;
+                inside = false;
                 // through a leaf in an opening: what leaves it, the leaf's
                 // part paid
                 record(&mut out, p, beyond, length, thr, dir, refl >= 1, &mut last);
@@ -436,7 +507,7 @@ pub(super) fn trace_source(
             origin = p + normal * EPS;
         }
     }
-    (out, vpls)
+    (out, vpls, reach)
 }
 
 /// What a bounce is drawn by: the most it carries in a band.

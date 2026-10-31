@@ -169,6 +169,12 @@ const ECHO_SLOT_S: f32 = 0.012;
 /// tap (the ear hears one arrival; the cap counts arrivals).
 const ECHO_MERGE_S: f32 = 0.0015;
 const ECHO_MERGE_COS: f32 = 0.9;
+/// v6.2, a door's leaf moving: a source starts its averages over when at
+/// least this share of its estimate came through that opening — what the
+/// leaf then adds or takes moves its level by half a decibel or more
+/// (`SourceState::crossing_share`). Below it the averages go on: the
+/// kept paths through the opening are priced by the leaf every tick.
+const RESTART_SHARE: f32 = 0.1;
 /// Light-traced connections kept for a debug view a tick (the strongest).
 const DEBUG_LIT_MAX: usize = 64;
 /// Distances below this are clamped (a source on a wall is not infinite).
@@ -1856,8 +1862,11 @@ impl SourceState {
         let mut ids: Vec<u32> = paths.evs.iter().map(|e| e.ap).collect();
         ids.sort_unstable();
         ids.dedup();
+        let mut crossed: Vec<u32> = paths.evs.iter().filter(|e| !e.bounce).map(|e| e.ap).collect();
+        crossed.sort_unstable();
+        crossed.dedup();
         // two entries as one: each's paths by its share of their weight
-        let join = |x: &mut PathsEntry, wy: [f32; 2], mut y: Paths, yids: &[u32]| {
+        let join = |x: &mut PathsEntry, wy: [f32; 2], mut y: Paths, yids: &[u32], ycrossed: &[u32]| {
             let w: [f32; 2] = core::array::from_fn(|k| x.w[k] + wy[k]);
             let share = |v: [f32; 2]| -> [f32; 2] { core::array::from_fn(|k| if w[k] > 0.0 { v[k] / w[k] } else { 0.5 }) };
             x.paths.scale(share(x.w));
@@ -1868,29 +1877,56 @@ impl SourceState {
             x.ids.extend_from_slice(yids);
             x.ids.sort_unstable();
             x.ids.dedup();
+            x.crossed.extend_from_slice(ycrossed);
+            x.crossed.sort_unstable();
+            x.crossed.dedup();
             x.then = x.paths.values(None);
         };
         match self.paths.back_mut() {
             // the last entry was walked with the apertures as they are
             Some(last) if last.sig != 0 && apertures_sig(&last.ids, aps) == last.sig => {
-                join(last, a, paths, &ids);
+                join(last, a, paths, &ids, &crossed);
                 last.sig = apertures_sig(&last.ids, aps);
             }
             _ => {
                 paths.thin(PATHS_KEEP, u);
                 let sig = apertures_sig(&ids, aps);
                 let then = paths.values(None);
-                self.paths.push_back(PathsEntry { w: a, ids, sig, paths, then });
+                self.paths.push_back(PathsEntry { w: a, ids, crossed, sig, paths, then });
                 if self.paths.len() > PATHS_TICKS {
                     let mut old = self.paths.pop_front().expect("over the cap");
                     let next = self.paths.pop_front().expect("over the cap");
-                    join(&mut old, next.w, next.paths, &next.ids);
+                    join(&mut old, next.w, next.paths, &next.ids, &next.crossed);
                     // walked with different apertures: always priced
                     old.sig = 0;
                     self.paths.push_front(old);
                 }
             }
         }
+    }
+
+    /// v6.2: the share of its estimate (early or late, the larger) its
+    /// paths crossing any of these apertures (ids) carried: of the paths
+    /// that met an aperture (`walked` of `tots`), those kept that crossed
+    /// one of them, by what they carried as walked.
+    fn crossing_share(&self, ids: &[u32]) -> f32 {
+        if !self.paths.iter().any(|e| e.crossed.iter().any(|a| ids.contains(a))) {
+            return 0.0;
+        }
+        let (mut through, mut all) = ([0.0f32; 2], [0.0f32; 2]);
+        for e in &self.paths {
+            for &(part, f, at, n) in &e.paths.recs {
+                let p = part as usize;
+                let w = e.w[p] * f[1];
+                all[p] += w;
+                if e.paths.evs[at as usize..at as usize + n as usize].iter().any(|ev| !ev.bounce && ids.contains(&ev.ap)) {
+                    through[p] += w;
+                }
+            }
+        }
+        (0..2)
+            .map(|p| if all[p] > 0.0 { through[p] / all[p] * (self.walked[p][1] / self.tots[p][1].max(1e-30)).min(1.0) } else { 0.0 })
+            .fold(0.0f32, f32::max)
     }
 
     /// v6.2: by how much the estimate (early, late) changes per band with
@@ -2146,6 +2182,9 @@ struct Acc {
 struct PathsEntry {
     w: [f32; 2],
     ids: Vec<u32>,
+    /// The apertures its paths crossed (not only bounced off their leaf):
+    /// a leaf moving there changes what they carry (`SourceState::crosses`).
+    crossed: Vec<u32>,
     sig: u64,
     paths: Paths,
     /// What its paths carried as walked (`Paths::values`).
@@ -2537,6 +2576,14 @@ pub struct Tracer {
     /// v4: a signature of the world's movable parts (panels) last tick: a
     /// door closing ends every source's settled average.
     world_sig: u64,
+    /// `world_sig` without the doors' leaves (v6.2: only leaves moved).
+    fixed_sig: u64,
+    /// Each aperture's leaf as last seen (to the millimetre; v6.2: which
+    /// moved).
+    leaf_at: HashMap<u32, Option<[i32; 6]>>,
+    /// The leaves of the world's last change, when only leaves moved (its
+    /// coming to rest restarts the sources crossing them).
+    swinging: Vec<u32>,
     /// Ticks since the world last changed (v6: under the early average's
     /// memory, a door is still on its way).
     rest: u32,
@@ -2912,6 +2959,9 @@ impl Tracer {
             late_pool: std::collections::VecDeque::new(),
             late_pool_sig: 0,
             world_sig: 0,
+            fixed_sig: 0,
+            leaf_at: HashMap::default(),
+            swinging: Vec::new(),
             rest: u32::MAX,
             moved_for: 0,
             debug: false,
@@ -3393,7 +3443,8 @@ impl Tracer {
             .iter()
             .zip(&portal)
             .map(|(s, &p)| {
-                let st = self.portal_state.get(&s.id).filter(|st| p && !st.resets(s.pos, self.world_sig));
+                // (each record's own world: the panels in its rays' reach)
+                let st = self.portal_state.get(&s.id).filter(|st| p && !st.resets(s.pos, st.local_sig(world.panels, self.world_sig)));
                 st.map_or(0, |st| st.mask(world.apertures))
             })
             .collect();
@@ -3417,9 +3468,15 @@ impl Tracer {
             // a source's rays while its records want them (a source and
             // the world standing, full ones stay as they are; started over
             // only once both stand a tick)
+            // (each source's records answer to the panels in their reach —
+            // `PortalState::local_sig` — not to every door of the level)
+            let lsig = |st: &portal::PortalState| st.local_sig(world.panels, sig);
             let wants = |si: usize| {
                 let (pos, st) = (sources[si].pos, states.get(&sources[si].id));
-                st.is_none_or(|st| st.wants_rays(pos, sig) && (!st.resets(pos, sig) || st.steady(pos, sig)))
+                st.is_none_or(|st| {
+                    let l = lsig(st);
+                    st.wants_rays(pos, l) && (!st.resets(pos, l) || st.steady(pos, l))
+                })
             };
             // two sources a tick at most, their rays split over the walk's
             // threads: after a change every enclosed source starts over at
@@ -3428,7 +3485,7 @@ impl Tracer {
             // governor shed to its lowest rungs for ten seconds after. The
             // least filled first, then the nearest; the rest wait, the walk
             // keeping their paths till they hold `PORTAL_MIN_TICKS`
-            let held = |si: usize| states.get(&sources[si].id).map_or(0.0, |st| st.held(sources[si].pos, sig));
+            let held = |si: usize| states.get(&sources[si].id).map_or(0.0, |st| st.held(sources[si].pos, lsig(st)));
             let mut eager: Vec<usize> = which.iter().copied().filter(|&si| wants(si)).collect();
             eager.sort_by(|&a, &b| held(a).total_cmp(&held(b)).then((sources[a].pos - listener).length().total_cmp(&(sources[b].pos - listener).length())));
             eager.truncate(2);
@@ -3441,14 +3498,19 @@ impl Tracer {
                 portal::trace_source(world, edges_ref, &mut sc.marks, &mut sc.hits, cells, ctab, sources[si].pos, part_rays(c), rays, budget.diffraction, &mut rng)
             });
             // a source's parts as one tick's trace, in order
-            let mut fresh: Vec<Option<(portal::Fresh, Vec<portal::Vpl>)>> = (0..sources.len()).map(|_| None).collect();
-            for (&(si, _), (rec, vpls)) in jobs.iter().zip(traced) {
+            #[allow(clippy::type_complexity)]
+            let mut fresh: Vec<Option<(portal::Fresh, Vec<portal::Vpl>, Option<(Vec3, Vec3)>)>> = (0..sources.len()).map(|_| None).collect();
+            for (&(si, _), (rec, vpls, reach)) in jobs.iter().zip(traced) {
                 match &mut fresh[si] {
-                    Some((r0, v0)) => {
+                    Some((r0, v0, q0)) => {
                         portal::merge(r0, rec);
                         v0.extend(vpls);
+                        *q0 = match (*q0, reach) {
+                            (Some((a, b)), Some((c, d))) => Some((Vec3::new(a.x.min(c.x), a.y.min(c.y), a.z.min(c.z)), Vec3::new(b.x.max(d.x), b.y.max(d.y), b.z.max(d.z)))),
+                            (q, None) | (None, q) => q,
+                        };
                     }
-                    none => *none = Some((rec, vpls)),
+                    none => *none = Some((rec, vpls, reach)),
                 }
             }
             // then each source's pool of bounces past the openings
@@ -3458,7 +3520,7 @@ impl Tracer {
                 let si = which[j];
                 let mut rng = Rng::new(ray_seed(tick_seed ^ (si as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)));
                 let (pos, st) = (sources[si].pos, states.get(&sources[si].id));
-                let (kept, kept_cum, ticks) = st.map_or((&[][..], &[][..], 0.0), |st| st.pool(pos, sig));
+                let (kept, kept_cum, ticks) = st.map_or((&[][..], &[][..], 0.0), |st| st.pool(pos, lsig(st)));
                 let f = fresh_ref[si].as_ref();
                 let new = f.map_or(&[][..], |f| &f.1[..]);
                 portal::connect(world, kept, kept_cum, new, ticks + if f.is_some() { 1.0 } else { 0.0 }, rays as usize, masks[si], listener, &mut rng)
@@ -3466,10 +3528,11 @@ impl Tracer {
             let mut lit: Vec<(u32, f32, Vec<Vec3>)> = Vec::new();
             for (&si, conns) in which.iter().zip(conns) {
                 let st = self.portal_state.entry(sources[si].id).or_default();
-                if let Some((rec, vpls)) = fresh[si].take() {
-                    st.fold(rec, vpls, sources[si].pos, sig);
+                if let Some((rec, vpls, reach)) = fresh[si].take() {
+                    st.fold(rec, vpls, reach, sources[si].pos, world.panels, sig);
                 }
-                st.see(sources[si].pos, sig);
+                let l = st.local_sig(world.panels, sig);
+                st.see(sources[si].pos, l);
                 for (e, delay, dir, p, ap) in conns {
                     deposit(&mut accs[si], &self.cells, e, delay, dir);
                     if self.debug {
@@ -4269,6 +4332,23 @@ impl Tracer {
         // estimate)
         let sig = panels_sig(world.panels);
         let changed = sig != self.world_sig;
+        // v6.2: only doors' leaves moved — what passes their openings is
+        // priced by how much each leaf covers, every tick (`price`): the
+        // averages go on (restarted at every door, every source of the
+        // level played a young estimate's heavy tail: the cathedral's
+        // flute +16 dB, the living room's piano +18 over their levels as
+        // the hall's door was opened and shut — Godot, Oct 31)
+        let fixed = if self.v62 { panels_sig(&world.panels.iter().filter(|(a, b, _)| !world.apertures.iter().any(|ap| ap.leaf == Some((*a, *b)))).copied().collect::<Vec<_>>()) } else { sig };
+        let leaves_only = self.v62 && changed && fixed == self.fixed_sig;
+        self.fixed_sig = fixed;
+        // the apertures whose leaf moved
+        let mut moved_leaves: Vec<u32> = Vec::new();
+        for ap in world.apertures {
+            let at = ap.leaf.map(|(a, b)| [a.x, a.y, a.z, b.x, b.y, b.z].map(|v| (v * 1000.0).round() as i32));
+            if self.leaf_at.insert(ap.id, at).is_some_and(|was| was != at) {
+                moved_leaves.push(ap.id);
+            }
+        }
         if changed {
             self.world_sig = sig;
             for c in self.chains.values_mut() {
@@ -4302,8 +4382,23 @@ impl Tracer {
         let restart = if self.v6 { (changed && self.rest >= memory) || settled } else { changed };
         self.moved_for = if changed { if self.rest < memory { self.moved_for + 1 } else { 1 } } else if self.rest >= memory { 0 } else { self.moved_for };
         self.rest = if changed { 0 } else { self.rest.saturating_add(1) };
+        if changed {
+            // a swing's moving ticks and where it comes to rest name the
+            // leaves that moved: the same ones (`swinging`)
+            self.swinging = if leaves_only { moved_leaves.clone() } else { Vec::new() };
+        }
         if restart || (self.v6 && changed) {
+            // v6.2, only leaves moved: the sources whose paths cross their
+            // openings start over; the rest go on (restarted at every door,
+            // every source of the level played a young estimate's heavy
+            // tail: the cathedral's flute +16 dB, the living room's piano
+            // +18 over their levels as the hall's door was opened and shut
+            // — Godot, Oct 31; now within 0…+5 dB)
+            let only = leaves_only || (settled && !self.swinging.is_empty());
             for st in self.state.values_mut() {
+                if only && st.crossing_share(&self.swinging) < RESTART_SHARE {
+                    continue;
+                }
                 st.restart |= restart;
                 st.world_moving |= self.v6 && changed;
             }

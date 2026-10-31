@@ -1076,11 +1076,18 @@ pub enum FurnMat {
     Panel,
     /// Acoustic treatment: 10 cm of mineral wool (`Material::ABSORBER`).
     Absorber,
-    /// A person (`Kind::Person`): a standing, lightly clad person absorbs
-    /// ~0.15 / 0.45 / 0.6 m² (125 Hz / 1 kHz / 4 kHz; the per-person
-    /// tables of Beranek and Kuttruff) — over the box's 2.9 m², 0.05 /
-    /// 0.15 / 0.2; nothing worth hearing passes through a body (≥ 40 dB:
-    /// 250 kg/m² of water), it goes round.
+    /// A person (`Kind::Person`, `Kind::Head`): the wave as it passes a
+    /// body, not the body's flesh. A body is small against the bass's
+    /// wavelength (2.7 m at 125 Hz: ka ≈ 0.5) and the wave closes behind
+    /// it; the treble it shadows. What passes, 0.9 / 0.55 / 0.2 in
+    /// amplitude (125 Hz / 0.8 kHz / 5.6 kHz), is a talker's drop heard
+    /// from behind (−1 / −5 / −14 dB; Chu & Warnock, NRC IRC-RR-104) —
+    /// the wrap-around a knife-edge round the box's edges misses (as an
+    /// opaque box: −7 / −10.5 / −13 dB behind with the room, the bass 6
+    /// dB too shadowed). The rest it absorbs and reflects nothing worth
+    /// hearing: a ray through it loses 0.19 / 0.70 / 0.96 — over a body's
+    /// mean cross-section ~0.35 m² at mid, a standing person's ~0.45 m² of
+    /// absorption (Beranek, Kuttruff).
     Body,
 }
 
@@ -1137,9 +1144,9 @@ impl FurnMat {
             },
             FurnMat::Absorber => Material::ABSORBER,
             FurnMat::Body => Material {
-                absorption: [0.05, 0.15, 0.2],
-                scattering: 0.5,
-                transmission: [0.01, 0.001, 0.0001],
+                absorption: [1.0 - 0.9 * 0.9, 1.0 - 0.55 * 0.55, 1.0 - 0.2 * 0.2],
+                scattering: 0.0,
+                transmission: [0.9, 0.55, 0.2],
             },
         }
     }

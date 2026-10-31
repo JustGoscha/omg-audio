@@ -87,6 +87,10 @@ fn async_gpu_walks_arrive_a_tick_late() {
 /// wall (`fx_simulation`'s), its leaf covering `1 − open` from y = 2, the
 /// doorway the leaf's aperture (v6.2); the room's source heard by `ears`.
 fn doorway_scene(mode: &str, compute: Compute, ears: [f32; 3], open: f32) -> (Simulation, omg_audio::SourceId, omg_audio::ObjectId) {
+    doorway_scene_with(Config { compute, v6: true, v61: true, v62: mode == "v6.2", kernel_thread: false, ..Config::default() }, ears, open)
+}
+
+fn doorway_scene_with(cfg: Config, ears: [f32; 3], open: f32) -> (Simulation, omg_audio::SourceId, omg_audio::ObjectId) {
     let mut g = Geometry::new();
     let w = g.material(Material::CONCRETE);
     let t = 0.2;
@@ -100,7 +104,7 @@ fn doorway_scene(mode: &str, compute: Compute, ears: [f32; 3], open: f32) -> (Si
     g.add_box([6.0, 2.0, 2.1], [6.0 + t, 3.0, 3.0], w);
     let ground = g.material(Material::GRASS);
     g.ground_plane(-t, ground);
-    let mut sim = Simulation::new(Config { compute, v6: true, v61: true, v62: mode == "v6.2", kernel_thread: false, ..Config::default() });
+    let mut sim = Simulation::new(cfg);
     sim.set_geometry(g);
     let src = sim.add_source(SourceDesc::at([2.0, 1.5, 1.5]));
     sim.set_listener(ears, 0.0, 0.0, 0.0);
@@ -199,4 +203,38 @@ fn a_door_swinging_shut_is_heard_where_it_is_on_the_gpu() {
     eprintln!("mean rms: v6.1 {e61:.1} dB, v6.2 {e62:.1} dB");
     assert!(e62 < 0.5 * e61, "v6.2 follows the door far closer than v6.1 on the GPU: {e62:.1} vs {e61:.1} dB");
     assert!(e62 < 5.0, "v6.2 within 5 dB rms of the door standing: {e62:.1} dB");
+}
+
+/// With portals the walk is the CPU's, the GPU requested or not: the
+/// kernel knows no openings (neither the records gathered at them nor the
+/// diffuse-first paths left to light tracing), and its ticks played an
+/// enclosed source from outside as the walk's rare finds of its door —
+/// near silence — while every CPU tick of a world change (a door moved)
+/// brought the whole field back at once: +20…+100 dB in Godot (Oct 31's
+/// captures; `town_system`, the hall door toggled: the living room's piano
+/// +95 dB over its level on the GPU, +18 at most on the CPU). The room's
+/// source heard from outside its doorway, the GPU asked for, matches the
+/// CPU's to the decibel.
+#[test]
+fn the_gpu_walk_leaves_portals_to_the_cpu() {
+    let ears = [10.0, 0.5, 1.6];
+    let level = |compute: Compute| -> (bool, f32) {
+        let cfg = Config { compute, v6: true, v61: true, v62: true, portals: true, kernel_thread: false, ..Config::default() };
+        let (mut sim, src, _) = doorway_scene_with(cfg, ears, 1.0);
+        let gpu = sim.gpu_active();
+        for _ in 0..60 {
+            sim.tick();
+        }
+        let mut e = 0.0f32;
+        for _ in 0..40 {
+            let f = sim.tick();
+            e += f.block(src).map_or(0.0, |pb| energy(pb)[1]);
+        }
+        (gpu, 10.0 * (e / 40.0).max(1e-30).log10())
+    };
+    let (gpu, on_gpu) = level(Compute::Gpu);
+    let (_, on_cpu) = level(Compute::Cpu);
+    eprintln!("the room heard from outside, portals on: GPU asked {on_gpu:.2} dB (walking on the GPU: {gpu}), CPU {on_cpu:.2} dB");
+    assert!(!gpu, "with portals the walk is the CPU's");
+    assert!((on_gpu - on_cpu).abs() < 0.5, "GPU asked {on_gpu:.2} dB, CPU {on_cpu:.2} dB");
 }

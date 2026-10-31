@@ -823,7 +823,10 @@ impl OmgWorld {
             d.set("tick_parts", &PackedFloat32Array::from(&s.tick_parts[..]));
             d.set("gpu_ms", s.gpu_ms);
             d.set("ticks", s.ticks as i64);
-            d.set("gpu", h.gpu);
+            // the walk on the GPU — not with portals (the CPU walks then:
+            // omg_core::v3::walker::trace_with)
+            let portals = self.engine_v6 && self.engine_v61 && self.engine_v62 && self.engine_portals;
+            d.set("gpu", h.gpu && !portals);
             d.set("load", s.load);
             d.set("taps", s.budget.0 as i64);
             d.set("points", s.budget.1 as i64);

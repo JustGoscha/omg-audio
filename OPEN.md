@@ -115,6 +115,39 @@ the room's own absorption gives 0.47–0.65 s (v5, measured first by
 mistake: 1.31 / 1.05 / 0.82 → 0.66 / 0.61 / 0.48 s). The crowd of 15 on
 its dance floor: 0.51 / 0.42 / 0.30 s, the late −0.5…−1.5 dB.
 
+### A door shut on v6.2: the next click 20 dB too loud
+`town_system::a_door_shut_between_sounds_is_shut_for_the_next_one_v62`
+(ignored): the club clicks, its inner door shuts, it clicks 50 ms later —
+−18.7 dB against −39.0 once settled (the open door −2.5), the ears 1 m
+before the door. v6 (no portals): −44.9 against −42.7. The club's field
+past its door is mostly its portal's (records gathered at the opening,
+light tracing): the walk's kept paths are priced by the leaf every tick,
+what the portal brought isn't, and the restarted estimate is a few
+ticks young. Price the portal's part by the leaf too (its records are
+per opening).
+
+### Door leaves restart only the sources they concern (Oct 31)
+Any panel moving restarted every source's averages (and, globally
+signed, every enclosed source's portal records): opening the Great
+Hall's door, the cathedral's flute behind its shut portal rose +5…+16 dB
+over its level, the dome's singer +6…+14, the living room's piano +9…+18
+(3 seeds, the ears at the hall's door, `assess`-style headless). Now
+(v6.2) a leaf moving restarts the sources at least `RESTART_SHARE` (10 %)
+of whose estimate came through its opening, and a source's records answer
+to the panels in its rays' reach only: the flute −0.2…+3.5 dB, the singer
++0.1…+5.3; the piano still +9…+18 — its sound does come through that
+door (living room → corridor → hall → out), restarted rightly, its young
+estimate's heavy tail as above.
+
+### The GPU walk and portals (Oct 31)
+The GPU kernel walks no portals (no records gathered at openings, no
+diffuse-first paths left to light tracing): on the GPU an enclosed source
+from outside was the walk's rare finds of its door — near silence — and
+the CPU ticks of every world change brought its whole field back at once
+(+20…+100 dB, the ears ringing: Godot captures 16-29-16, 16-41-53).
+With portals the CPU walks now (`trace_with`; `gpu.rs::the_gpu_walk_
+leaves_portals_to_the_cpu`). Teach the kernel portals to have both.
+
 ### Auto quality held at the bottom by the mirror chains (Oct 31)
 In Godot `auto` stays at 0–2/10 in the club and the cathedral, the frame
 rate fine (the tick runs on its own thread). The governor climbs when

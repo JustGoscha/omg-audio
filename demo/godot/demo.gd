@@ -6,6 +6,7 @@
 # Click: capture mouse / throw a ball · WASD walk · Shift run · Space jump
 # C crouch · F fly · E door · B bells · V whisper · K clap · J whistle · R rain · L labels
 # M mark a moment (with the spectrogram on: the last minute saved to captures/)
+# Ctrl+R (Cmd+R) restart the demo (a fresh process: a rebuilt engine loads)
 # Q sound quality · G graphics (pixel ⇄ fine) · [ ] pixel height · H hud
 # Esc release mouse.
 #
@@ -646,7 +647,7 @@ func _hud() -> void:
 	panel.add_child(grid)
 	for row in [["WASD", "walk"], ["mouse", "look (click to capture)"], ["Shift", "run"], ["click", "throw a ball"],
 			["Space", "jump"], ["E", "open the door ahead"], ["C", "crouch"], ["T", "flashlight"],
-			["F", "fly"], ["B", "ring the bells"], ["R", "rain"], ["V", "whisper"], ["K", "clap (echoes)"], ["J", "whistle"], ["M", "mark a moment (spectrogram on)"],
+			["F", "fly"], ["B", "ring the bells"], ["R", "rain"], ["V", "whisper"], ["K", "clap (echoes)"], ["J", "whistle"], ["M", "mark a moment (spectrogram on)"], ["Ctrl+R", "restart the demo"],
 			["Q", "sound quality"], ["L", "source labels"], ["G", "graphics"], ["[ ]", "pixel size"],
 			["H", "hide the panels"], ["Esc", "settings"]]:
 		var k := Label.new()
@@ -699,6 +700,11 @@ func _unhandled_input(e: InputEvent) -> void:
 			capture.event("throw")
 	elif e is InputEventKey and e.pressed and not e.echo:
 		capture.event(OS.get_keycode_string(e.keycode))
+		# Ctrl+R (Cmd+R): start the demo over — a fresh process with the
+		# same arguments, so a rebuilt engine library loads too
+		if e.keycode == KEY_R and (e.ctrl_pressed or e.meta_pressed):
+			_restart()
+			return
 		match e.keycode:
 			KEY_M:
 				capture.mark()
@@ -738,6 +744,11 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_BRACKETRIGHT:
 				pixel_h = HEIGHTS[mini(HEIGHTS.size() - 1, HEIGHTS.find(pixel_h) + 1)]
 				_apply_graphics()
+
+func _restart() -> void:
+	var pid := OS.create_process(OS.get_executable_path(), OS.get_cmdline_args())
+	if pid > 0:
+		get_tree().quit()
 
 func _process(dt: float) -> void:
 	# the pixel view's camera follows the player's

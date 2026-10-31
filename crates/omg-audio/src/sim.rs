@@ -679,9 +679,10 @@ impl Simulation {
         }
     }
 
-    /// Is the walk running on the GPU (an adapter was found)?
+    /// Is the walk running on the GPU (an adapter was found, and no
+    /// portals: the kernel walks none, the CPU does — `trace_with`)?
     pub fn gpu_active(&self) -> bool {
-        self.walker.is_some()
+        self.walker.is_some() && !self.tracer.portals
     }
 
     /// The acoustic mesh the tracer walks (its BVH), as built from the
@@ -1234,7 +1235,7 @@ impl Simulation {
                 Source { id: s.id.0, pos: s.pos, weight: s.gain * s.gain }
             })
             .collect();
-        let gpu = self.walker.is_some();
+        let gpu = self.gpu_active();
         let mut budget = self.cfg.quality.budget(gpu);
         if gpu && self.cfg.compute == Compute::Gpu {
             self.size_gpu_walk();

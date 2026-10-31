@@ -246,6 +246,19 @@ fn the_bell_is_loudest_in_the_open() {
 /// ticks — one of the club's four still played the open door 3 ticks
 /// on, 0.38 changed, under its 0.5 withdraw-at-once — and v4/v5 aren't
 /// pursued.)
+/// The same on the demos' engine (v6.2, portals). Ignored (OPEN.md, "A
+/// door shut on v6.2: the next click 20 dB too loud"): 50 ms after the
+/// shut −18.7 dB against −39.0 settled (Oct 31, before and after the
+/// leaf-local restarts alike) — the club's portal field (records, light
+/// tracing) isn't priced by the leaf, and its young estimate holds the
+/// open door's for a few ticks.
+#[test]
+#[ignore = "fails on v6.2 since before Oct 31: OPEN.md, a door shut on v6.2"]
+fn a_door_shut_between_sounds_is_shut_for_the_next_one_v62() {
+    let sim = Simulation::new(Config { quality: Quality::High, compute: Compute::Cpu, v6: true, v61: true, v62: true, portals: true, kernel_thread: false, ..Config::default() });
+    door_shut_between_sounds(sim, 4.0);
+}
+
 #[test]
 fn a_door_shut_between_sounds_is_shut_for_the_next_one_v6() {
     let sim = Simulation::new(Config { quality: Quality::High, compute: Compute::Cpu, v4: false, v5: false, v6: true, ..Config::default() });
