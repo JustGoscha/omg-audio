@@ -60,6 +60,27 @@ sounding source is enclosed behind, a quarter of the time — its seeds
 within 0.9 dB (4.4 before), the one-second sd 1.3–1.9 → 0.3–0.7 dB. The
 bidirectional estimate stays the cure for what remains (rooms reached
 only over several walls).
+Oct 31, a first step (`Config::portals`, off by default; `v3/portal.rs`):
+an enclosed source's rays record what leaves each opening (an aperture:
+a door's hole, a pane), by direction and delay; the listener's walk, at
+its first crossing of an opening, takes what comes through from there
+from the record — every path counted once (the record's: past the first
+crossing, reflected and rough; the walk's: the rest). Unbiased where it
+can be checked (`tests/portals.rs`: a room with an opening across it,
+within 0.15 dB of the walk where the walk is exact) — and it shows the
+walk reading mirror paths low by its sphere (k): in the town the club
+through its doors reads 3–4 dB louder with portals, the walk's level
+rising toward it as k shrinks (`examples/portal_ab K=`). Standing in the
+field, the seeds' spread falls from 14–21 to 4.5–6 dB. But walking, the
+bursts stay: a listener's ray still has to find the door from 27 m away
+round a corner (an edge bend weighing the bass up to 3×), and when it
+does it now brings the club's whole field at once (`examples/tour_replay
+PORTALS=1`, the bunker path: −53 → −12 dB). Next: connect the walk's
+diffuse bounces to the openings (next-event estimation to apertures,
+weighed against the walk's own crossings by MIS), so a door is reached
+from every lit facade and patch of square, not by chance. Cost: 4 ms a
+tick for the club's four speakers (rays from each, Russian roulette, on
+the walk's threads).
 The same shows right after a door shuts: the field through the shut
 door restarts as a young estimate. Across four seeds the click 50 ms to
 0.8 s after the shut lands on average 2.3 dB (early part, per band) and
