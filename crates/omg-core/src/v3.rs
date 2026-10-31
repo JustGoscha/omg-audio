@@ -3176,7 +3176,7 @@ impl Tracer {
         };
 
         // 2. the ray walk, both families
-        let sky_acc = self.walk_rays(world, listener, sources, budget, &vis, true, &mut accs, &mut dbg);
+        let sky_acc = self.walk_rays(world, listener, sources, budget, &vis, true, None, &mut accs, &mut dbg);
         self.walked = sources.iter().zip(&accs).map(|(s, a)| (s.id, a.total)).collect();
 
         if debug {
@@ -3308,12 +3308,70 @@ impl Tracer {
         }
     }
 
+    /// v6.2: the rooms the sources sound in (`WalkCtx::rooms`): the
+    /// farthest of the six walls round each, 0 beyond `WALL_SPLIT_M`
+    /// (outdoors).
+    fn rooms(&self, world: &World, sources: &[Source]) -> Vec<f32> {
+        sources
+            .iter()
+            .map(|s| {
+                if !self.v62 {
+                    return 0.0;
+                }
+                let axes = [(1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, -1.0)];
+                axes.iter()
+                    .map(|&(x, y, z)| world.raycast(s.pos, Vec3::new(x, y, z)).map_or(f32::MAX, |h| h.t))
+                    .fold(0.0f32, f32::max)
+                    .min(f32::MAX)
+            })
+            .map(|r| if r <= WALL_SPLIT_M { r } else { 0.0 })
+            .collect()
+    }
+
+    /// Portals in this world (`portal.rs`): v6.2's, and openings to have.
+    fn portals_on(&self, world: &World) -> bool {
+        self.portals && self.v62 && !self.v4 && !world.apertures.is_empty()
+    }
+
+    /// Portals: which sources have records (enclosed: `rooms`), and the
+    /// openings each one's covers as it stands coming into this tick (none
+    /// where it starts over: it was another world's) — the walk and the
+    /// source's own rays to the ears go by the same.
+    fn portal_masks(&self, world: &World, sources: &[Source], rooms: &[f32], portal_on: bool) -> (Vec<bool>, Vec<u64>) {
+        let portal: Vec<bool> = rooms.iter().map(|&r| portal_on && r > 0.0).collect();
+        let masks = sources
+            .iter()
+            .zip(&portal)
+            .map(|(s, &p)| {
+                // (each record's own world: the panels in its rays' reach)
+                let st = self.portal_state.get(&s.id).filter(|st| p && !st.resets(s.pos, st.local_sig(world.panels, self.world_sig)));
+                st.map_or(0, |st| st.mask(world.apertures))
+            })
+            .collect();
+        (portal, masks)
+    }
+
+    /// A GPU walk with portals, as the CPU walk would take them: each
+    /// source's mask and the openings the walk connects to, into `job`
+    /// (none without portals, or past the kernel's apertures).
+    fn portal_job(&self, world: &World, sources: &[Source], job: fold::WalkJob) -> fold::WalkJob {
+        if !self.portals_on(world) || world.apertures.len() > fold::MAX_APERTURES {
+            return job;
+        }
+        let rooms = self.rooms(world, sources);
+        let (_, masks) = self.portal_masks(world, sources, &rooms, true);
+        let paps = portal::portal_aps(world.apertures, sources, &masks, &self.portal_state);
+        job.portals(world.apertures, &masks, &paps)
+    }
+
     /// Step 2 of a tick: the ray walk, deposited into `accs` (one per
     /// source) and `dbg`; returns the sky cells' escapes. The EARLY family
     /// (paths with 0..=bounces reflections, `budget.rays` rays) only when
     /// `early`, then the LATE family (everything beyond, `budget.late_rays`)
     /// — a live GPU walk leaves only the late family to the CPU
     /// (`trace_walked`): long serial walks are what a GPU is slowest at.
+    /// `gpu`: that walk, landed — its deposits at openings laid over the
+    /// records with the late family's.
     #[allow(clippy::too_many_arguments)]
     fn walk_rays(
         &mut self,
@@ -3323,6 +3381,7 @@ impl Tracer {
         budget: Budget,
         vis: &[[f32; NBANDS]],
         early: bool,
+        gpu: Option<&fold::Walked>,
         accs: &mut [Acc],
         dbg: &mut Vec<(u32, f32, Vec<Vec3>)>,
     ) -> Vec<([f32; NBANDS], Vec3)> {
@@ -3415,39 +3474,13 @@ impl Tracer {
             self.scratch.resize_with(threads, WalkScratch::default);
         }
         let edges = self.edges.take();
-        // v6.2: the rooms the sources sound in (`WalkCtx::rooms`)
-        let rooms: Vec<f32> = sources
-            .iter()
-            .map(|s| {
-                if !self.v62 {
-                    return 0.0;
-                }
-                let axes = [(1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, -1.0)];
-                axes.iter()
-                    .map(|&(x, y, z)| world.raycast(s.pos, Vec3::new(x, y, z)).map_or(f32::MAX, |h| h.t))
-                    .fold(0.0f32, f32::max)
-                    .min(f32::MAX)
-            })
-            .map(|r| if r <= WALL_SPLIT_M { r } else { 0.0 })
-            .collect();
+        let rooms = self.rooms(world, sources);
         // portals: an enclosed source's records of what leaves the
-        // openings, this tick's rays into its running mean — only with
-        // both families walked here (a GPU walk's early family doesn't
-        // leave the record's paths out)
-        let portal_on = self.portals && self.v62 && !self.v4 && early && !world.apertures.is_empty();
-        let portal: Vec<bool> = rooms.iter().map(|&r| portal_on && r > 0.0).collect();
-        // each source's portals as its records stand coming into this tick
-        // (none where they start over: they were another world's) — the
-        // walk and the source's own rays to the ears go by the same
-        let portal_mask: Vec<u64> = sources
-            .iter()
-            .zip(&portal)
-            .map(|(s, &p)| {
-                // (each record's own world: the panels in its rays' reach)
-                let st = self.portal_state.get(&s.id).filter(|st| p && !st.resets(s.pos, st.local_sig(world.panels, self.world_sig)));
-                st.map_or(0, |st| st.mask(world.apertures))
-            })
-            .collect();
+        // openings, this tick's rays into its running mean — with both
+        // families walked here, or the early one on a GPU that left the
+        // records' paths out as well (`gpu`: its deposits at openings)
+        let portal_on = self.portals_on(world) && (early || gpu.is_some());
+        let (portal, portal_mask) = self.portal_masks(world, sources, &rooms, portal_on);
         let portal_union = portal_mask.iter().fold(0u64, |a, &m| a | m);
         if portal_on {
             let clock = Stopwatch::start();
@@ -3652,21 +3685,44 @@ impl Tracer {
                 *h = *h * GUIDE_KEEP + if sum > 0.0 { t / sum } else { 0.0 };
             }
         }
+        // the GPU's early walk's deposits at openings, gathered alike — each
+        // laid under the records the sources had when it was launched
+        // (`Walked::masks`: the paths it left to them)
+        let mut ghists: std::collections::BTreeMap<(u16, u8, u16), portal::Hist> = std::collections::BTreeMap::new();
+        let gmasks: &[u64] = gpu.map_or(&[], |w| &w.masks);
+        if portal_on {
+            for d in gpu.map_or(&[][..], |w| w.portal_deps()).chunks_exact(fold::DEP_WORDS) {
+                let key = d[0].to_bits();
+                let (k, side, cell) = ((key & 0xff) as u16, ((key >> 8) & 0xff) as u8, (key >> 16) as u16);
+                let i = (d[4] / portal::HIST_BIN_S) as usize;
+                if i >= portal::HIST_BINS || k as usize >= world.apertures.len() || cell as usize >= N_CELLS {
+                    continue;
+                }
+                let h = ghists.entry((k, side, cell)).or_insert_with(portal::Hist::new);
+                for b in 0..NBANDS {
+                    h.w[i][b] += d[1 + b];
+                }
+                h.dir[i] = h.dir[i] + Vec3::new(d[5], d[6], d[7]) * d[2];
+            }
+        }
         // portals: each opening's gathered walk under each enclosed
         // source's record of what leaves it there
-        if !hists.is_empty() {
+        if !hists.is_empty() || !ghists.is_empty() {
             let clock = Stopwatch::start();
             for (si, s) in sources.iter().enumerate() {
                 if !portal[si] {
                     continue;
                 }
                 let Some(st) = self.portal_state.get(&s.id) else { continue };
-                for (&(k, side, cell), h) in &hists {
-                    if (portal_mask[si] >> k) & 1 == 0 {
-                        continue;
-                    }
-                    if let Some(rec) = st.recs.get(&(world.apertures[k as usize].id, side)) {
-                        portal::convolve(&mut accs[si], &self.cells, &self.portal_air, h, rec, st.scale(), cell as usize);
+                let launched = gpu.and_then(|w| w.ids.iter().position(|&id| id == s.id)).and_then(|j| gmasks.get(j)).copied().unwrap_or(0);
+                for (hs, mask) in [(&hists, portal_mask[si]), (&ghists, launched)] {
+                    for (&(k, side, cell), h) in hs {
+                        if (mask >> k) & 1 == 0 {
+                            continue;
+                        }
+                        if let Some(rec) = st.recs.get(&(world.apertures[k as usize].id, side)) {
+                            portal::convolve(&mut accs[si], &self.cells, &self.portal_air, h, rec, st.scale(), cell as usize);
+                        }
                     }
                 }
             }

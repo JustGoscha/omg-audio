@@ -825,16 +825,15 @@ impl OmgWorld {
             d.set("tick_parts", &PackedFloat32Array::from(&s.tick_parts[..]));
             d.set("gpu_ms", s.gpu_ms);
             d.set("ticks", s.ticks as i64);
-            d.set("gpu", s.gpu_found && !self.portals());
+            d.set("gpu", s.gpu_found);
             // what the compute switch got: the GPU when the machine has
-            // one, else the CPU; the CPU walking while portals are on
+            // one, else the CPU
             d.set(
                 "compute",
-                match (h.gpu, s.gpu_found, self.portals()) {
-                    (false, _, _) => "cpu",
-                    (true, false, _) => "cpu (no gpu found)",
-                    (true, true, false) => "gpu",
-                    (true, true, true) => "gpu found, walk on cpu (portals)",
+                match (h.gpu, s.gpu_found) {
+                    (false, _) => "cpu",
+                    (true, false) => "cpu (no gpu found)",
+                    (true, true) => "gpu",
                 },
             );
             d.set("load", s.load);

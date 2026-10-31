@@ -188,7 +188,7 @@ struct Stats {
     parts_us: [AtomicU32; 8],
     /// The last tick traced a world change's extra rays (`TickCosts::burst`).
     burst: AtomicBool,
-    /// `Simulation::gpu_found` as of the last tick.
+    /// `Simulation::gpu_active` as of the last tick.
     gpu_found: AtomicBool,
 }
 
@@ -474,7 +474,7 @@ impl Engine {
         self.stats.walk_us.load(Ordering::Relaxed) as f32 / 1000.0
     }
 
-    /// Was the GPU found (`Simulation::gpu_found`, as of the last tick)?
+    /// Was the GPU found (`Simulation::gpu_active`, as of the last tick)?
     pub fn gpu_found(&self) -> bool {
         self.stats.gpu_found.load(Ordering::Relaxed)
     }
@@ -536,7 +536,7 @@ fn sim_loop(
         stats.tick_us.store(t0.elapsed().as_micros().min(u32::MAX as u128) as u32, Ordering::Relaxed);
         stats.ticks.fetch_add(1, Ordering::Relaxed);
         stats.walk_us.store((sim.gpu_walk_ms() * 1000.0) as u32, Ordering::Relaxed);
-        stats.gpu_found.store(sim.gpu_found(), Ordering::Relaxed);
+        stats.gpu_found.store(sim.gpu_active(), Ordering::Relaxed);
         let c = sim.tick_costs();
         stats.burst.store(c.burst, Ordering::Relaxed);
         for (a, ms) in stats.parts_us.iter().zip(c.parts()) {

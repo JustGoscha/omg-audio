@@ -139,14 +139,19 @@ to the panels in its rays' reach only: the flute −0.2…+3.5 dB, the singer
 door (living room → corridor → hall → out), restarted rightly, its young
 estimate's heavy tail as above.
 
-### The GPU walk and portals (Oct 31)
-The GPU kernel walks no portals (no records gathered at openings, no
-diffuse-first paths left to light tracing): on the GPU an enclosed source
-from outside was the walk's rare finds of its door — near silence — and
-the CPU ticks of every world change brought its whole field back at once
-(+20…+100 dB, the ears ringing: Godot captures 16-29-16, 16-41-53).
-With portals the CPU walks now (`trace_with`; `gpu.rs::the_gpu_walk_
-leaves_portals_to_the_cpu`). Teach the kernel portals to have both.
+### The GPU walk and portals (Oct 31) — done
+The kernel walks the early family's part of portals as v3.rs does (the
+paths on through an opening a record covers left to it, deposits where a
+ray first crosses one, diffuse bounces connected to the openings, light
+tracing's first-diffuse paths); its deposits come back past the bins and
+the CPU lays them over the records with the late family's
+(`gpu.rs::the_gpu_walk_takes_portals_as_the_cpu_does`: GPU against CPU
+within 1 dB from three places; the old GPU path 2.9 dB short). Town,
+portals on, walking the square: the tick 4.2 / 4.8 / 5.7 ms on the GPU
+against 5.8 / 7.8 / 9.2 on the CPU (levels 0 / 3 / 6). Left: the web's
+WebGPU driver (`gpu.js`) carries the deposits too but is untested in a
+browser; the kernel still lacks v6.2's aperture tags, the wall split at a
+sounding room and the clearance (its early family priced as v6.1's).
 
 ### Auto quality held at the bottom by the mirror chains (Oct 31)
 In Godot `auto` stays at 0–2/10 in the club and the cathedral, the frame

@@ -205,36 +205,40 @@ fn a_door_swinging_shut_is_heard_where_it_is_on_the_gpu() {
     assert!(e62 < 5.0, "v6.2 within 5 dB rms of the door standing: {e62:.1} dB");
 }
 
-/// With portals the walk is the CPU's, the GPU requested or not: the
-/// kernel knows no openings (neither the records gathered at them nor the
-/// diffuse-first paths left to light tracing), and its ticks played an
-/// enclosed source from outside as the walk's rare finds of its door —
-/// near silence — while every CPU tick of a world change (a door moved)
-/// brought the whole field back at once: +20…+100 dB in Godot (Oct 31's
-/// captures; `town_system`, the hall door toggled: the living room's piano
-/// +95 dB over its level on the GPU, +18 at most on the CPU). The room's
-/// source heard from outside its doorway, the GPU asked for, matches the
-/// CPU's to the decibel.
+/// Portals on the GPU: the kernel walks the early family's part of them
+/// as the CPU walk does (the paths on through an opening a record covers
+/// left to it, deposits where the walk crosses one, its diffuse bounces
+/// connected to the openings), the CPU lays them over the records. Before,
+/// the kernel knew no openings: an enclosed source heard from outside was
+/// the walk's rare finds of its door — near silence — and every CPU tick
+/// of a world change brought the whole field back at once, +20…+100 dB in
+/// Godot (Oct 31's captures). The room's source heard from outside its
+/// doorway and from across the room, on the GPU, against the CPU's.
 #[test]
-fn the_gpu_walk_leaves_portals_to_the_cpu() {
-    let ears = [10.0, 0.5, 1.6];
-    let level = |compute: Compute| -> (bool, f32) {
+fn the_gpu_walk_takes_portals_as_the_cpu_does() {
+    let level = |compute: Compute, ears: [f32; 3]| -> Option<f32> {
         let cfg = Config { compute, v6: true, v61: true, v62: true, portals: true, kernel_thread: false, ..Config::default() };
         let (mut sim, src, _) = doorway_scene_with(cfg, ears, 1.0);
-        let gpu = sim.gpu_active();
+        if compute != Compute::Cpu && !sim.gpu_active() {
+            return None;
+        }
         for _ in 0..60 {
             sim.tick();
         }
         let mut e = 0.0f32;
-        for _ in 0..40 {
+        for _ in 0..80 {
             let f = sim.tick();
             e += f.block(src).map_or(0.0, |pb| energy(pb)[1]);
         }
-        (gpu, 10.0 * (e / 40.0).max(1e-30).log10())
+        Some(10.0 * (e / 80.0).max(1e-30).log10())
     };
-    let (gpu, on_gpu) = level(Compute::Gpu);
-    let (_, on_cpu) = level(Compute::Cpu);
-    eprintln!("the room heard from outside, portals on: GPU asked {on_gpu:.2} dB (walking on the GPU: {gpu}), CPU {on_cpu:.2} dB");
-    assert!(!gpu, "with portals the walk is the CPU's");
-    assert!((on_gpu - on_cpu).abs() < 0.5, "GPU asked {on_gpu:.2} dB, CPU {on_cpu:.2} dB");
+    for ears in [[10.0, 0.5, 1.6], [12.0, 6.0, 1.6], [8.0, -3.0, 1.6]] {
+        let Some(on_gpu) = level(Compute::GpuSync, ears) else {
+            eprintln!("no GPU adapter — skipped");
+            return;
+        };
+        let on_cpu = level(Compute::Cpu, ears).unwrap();
+        eprintln!("the room heard from {ears:?}, portals on: GPU {on_gpu:.2} dB, CPU {on_cpu:.2} dB");
+        assert!((on_gpu - on_cpu).abs() < 1.5, "from {ears:?}: GPU {on_gpu:.2} dB, CPU {on_cpu:.2} dB");
+    }
 }

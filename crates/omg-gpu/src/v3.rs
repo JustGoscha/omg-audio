@@ -15,8 +15,8 @@
 use crate::layout::{flatten_mesh, GpuBvhNode};
 use omg_core::mesh::Mesh;
 use omg_core::v3::fold::{
-    decode_debug, output_words, slice_word, Walk, WalkJob, Walked, DEBUG_WORDS, MAX_EDGES, MAX_PANELS, MAX_POCKETS,
-    MAX_SCENE_WORDS, MAX_SOURCES,
+    decode_debug, output_words, portal_words, slice_word, Walk, WalkJob, Walked, DEBUG_WORDS, DEP_WORDS, MAX_APERTURES,
+    MAX_EDGES, MAX_PANELS, MAX_POCKETS, MAX_SCENE_WORDS, MAX_SOURCES,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -38,6 +38,9 @@ struct InFlight {
     passes: u32,
     out_bytes: u64,
     dbg_bytes: u64,
+    /// Portals: the job's masks, and the deposits it may leave.
+    masks: Vec<u64>,
+    cap: usize,
     /// map_async callbacks still outstanding (0 = all mapped).
     pending: Arc<AtomicU32>,
     t0: Instant,
@@ -72,9 +75,15 @@ pub struct GpuV3Tracer {
     pub n_edges: u32,
     job: wgpu::Buffer,
     scene: wgpu::Buffer,
+    /// The fixed-point bins, then (portals) the deposits at openings —
+    /// grown to a job's cap; `acc_bytes` its size.
     acc: wgpu::Buffer,
+    acc_bytes: u64,
     out: wgpu::Buffer,
     read: wgpu::Buffer,
+    /// The deposits read back (grown as needed).
+    pread: wgpu::Buffer,
+    pread_bytes: u64,
     dbg: wgpu::Buffer,
     dbg_read: wgpu::Buffer,
     dbg_words: usize,
@@ -186,9 +195,12 @@ impl GpuV3Tracer {
         let job = buf("v3-job", core::mem::size_of::<crate::layout::GpuV3Job>(), U::UNIFORM | U::COPY_DST);
         let scene = buf("v3-scene", MAX_SCENE_WORDS * 4, U::STORAGE | U::COPY_DST);
         let out_bytes = output_words(MAX_SOURCES) * 4;
-        let acc = buf("v3-acc", out_bytes * 2, U::STORAGE | U::COPY_DST);
+        // the bins, and the deposits' count (portals: the deposits after,
+        // the buffer grown to a job's cap)
+        let acc = buf("v3-acc", out_bytes * 2 + 16, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let out = buf("v3-out", out_bytes, U::STORAGE | U::COPY_SRC);
-        let read = buf("v3-read", out_bytes, U::MAP_READ | U::COPY_DST);
+        let read = buf("v3-read", out_bytes + 16, U::MAP_READ | U::COPY_DST);
+        let pread = buf("v3-portal-read", 16, U::MAP_READ | U::COPY_DST);
         let dbg_words = DEBUG_WORDS;
         let dbg = buf("v3-dbg", dbg_words * 4, U::STORAGE | U::COPY_SRC | U::COPY_DST);
         let dbg_read = buf("v3-dbg-read", dbg_words * 4, U::MAP_READ | U::COPY_DST);
@@ -225,8 +237,11 @@ impl GpuV3Tracer {
             job,
             scene,
             acc,
+            acc_bytes: (out_bytes * 2 + 16) as u64,
             out,
             read,
+            pread,
+            pread_bytes: 16,
             dbg,
             dbg_read,
             dbg_words,
@@ -261,7 +276,27 @@ impl GpuV3Tracer {
             && job.n_pockets() <= MAX_POCKETS
             && job.n_edges() <= MAX_EDGES
             && job.scene().len() <= MAX_SCENE_WORDS
+            && job.n_apertures() <= MAX_APERTURES
             && job.n_rays() > 0
+    }
+
+    /// Bind the walk's and the resolve's buffers as they are now.
+    fn rebind(&mut self) {
+        self.walk_bind = Self::bind(
+            &self.device,
+            &self.walk_pipe,
+            &[
+                (0, &self.job),
+                (1, &self.nodes),
+                (2, &self.prims),
+                (3, &self.mats),
+                (4, &self.scene),
+                (5, &self.acc),
+                (7, &self.dbg),
+                (8, &self.edges),
+            ],
+        );
+        self.resolve_bind = Self::bind(&self.device, &self.resolve_pipe, &[(0, &self.job), (4, &self.scene), (5, &self.acc), (6, &self.out)]);
     }
 
     /// Queue one walk (job upload, clear, walk, resolve, copy, map) —
@@ -294,20 +329,21 @@ impl GpuV3Tracer {
             self.dbg = mk("v3-dbg", U::STORAGE | U::COPY_SRC | U::COPY_DST);
             self.dbg_read = mk("v3-dbg-read", U::MAP_READ | U::COPY_DST);
             self.dbg_words = words;
-            self.walk_bind = Self::bind(
-                &self.device,
-                &self.walk_pipe,
-                &[
-                    (0, &self.job),
-                    (1, &self.nodes),
-                    (2, &self.prims),
-                    (3, &self.mats),
-                    (4, &self.scene),
-                    (5, &self.acc),
-                    (7, &self.dbg),
-                    (8, &self.edges),
-                ],
-            );
+            self.rebind();
+        }
+        // portals: the bins, the deposits' count and the deposits
+        let cap = job.portal_cap();
+        let acc_need = ((2 * output_words(ns) + portal_words(cap)) * 4) as u64;
+        if acc_need > self.acc_bytes {
+            let bytes = acc_need.next_power_of_two();
+            self.acc = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("v3-acc"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            self.acc_bytes = bytes;
+            self.rebind();
         }
         let (mut header, passes) = match &live {
             Some(l) => (l.header.clone(), l.passes),
@@ -331,7 +367,7 @@ impl GpuV3Tracer {
             self.queue.write_buffer(&self.job, 0, bytemuck::cast_slice(&header));
             let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("v3") });
             if pass == 0 {
-                enc.clear_buffer(&self.acc, 0, Some(out_bytes * 2));
+                enc.clear_buffer(&self.acc, 0, Some(out_bytes * 2 + if cap > 0 { 16 } else { 0 }));
                 if dbg_bytes > 0 {
                     enc.clear_buffer(&self.dbg, 0, Some(dbg_bytes));
                 }
@@ -355,6 +391,11 @@ impl GpuV3Tracer {
             }
             if last {
                 enc.copy_buffer_to_buffer(&self.out, 0, &self.read, 0, out_bytes);
+                if cap > 0 {
+                    // the deposits' count, after the bins (the deposits
+                    // themselves once it is known: `poll`)
+                    enc.copy_buffer_to_buffer(&self.acc, out_bytes * 2, &self.read, out_bytes, 16);
+                }
                 if dbg_bytes > 0 {
                     enc.copy_buffer_to_buffer(&self.dbg, 0, &self.dbg_read, 0, dbg_bytes);
                 }
@@ -378,7 +419,8 @@ impl GpuV3Tracer {
             });
         }
         let p = pending.clone();
-        self.read.slice(..out_bytes).map_async(wgpu::MapMode::Read, move |r| {
+        let read_bytes = out_bytes + if cap > 0 { 16 } else { 0 };
+        self.read.slice(..read_bytes).map_async(wgpu::MapMode::Read, move |r| {
             let _ = r; // aborted only when the tracer goes away mid-walk
             p.fetch_sub(1, Ordering::AcqRel);
         });
@@ -397,6 +439,8 @@ impl GpuV3Tracer {
             passes,
             out_bytes,
             dbg_bytes,
+            masks: job.masks.clone(),
+            cap,
             pending,
             t0: Instant::now(),
         });
@@ -456,12 +500,44 @@ impl GpuV3Tracer {
             return None;
         }
         let f = self.flight.take().unwrap();
-        let data: Vec<f32> = {
-            let view = self.read.slice(..f.out_bytes).get_mapped_range().expect("mapped v3 out");
+        let read_bytes = f.out_bytes + if f.cap > 0 { 16 } else { 0 };
+        let mut data: Vec<f32> = {
+            let view = self.read.slice(..read_bytes).get_mapped_range().expect("mapped v3 out");
             bytemuck::cast_slice(&view).to_vec()
         };
         self.read.unmap();
-        debug_assert_eq!(data.len(), f.out_words);
+        debug_assert_eq!(data.len(), f.out_words + if f.cap > 0 { 4 } else { 0 });
+        if f.cap > 0 {
+            // the deposits at openings: as many as the walk left (never
+            // more than its cap: one a segment and one crossing a ray)
+            let n = (data[f.out_words].to_bits() as usize).min(f.cap);
+            debug_assert!(data[f.out_words].to_bits() as usize <= f.cap, "portal deposits past the cap");
+            data[f.out_words] = f32::from_bits(n as u32);
+            if n > 0 {
+                let bytes = (n * DEP_WORDS * 4) as u64;
+                if bytes > self.pread_bytes {
+                    self.pread_bytes = bytes.next_power_of_two();
+                    self.pread = self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("v3-portal-read"),
+                        size: self.pread_bytes,
+                        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                }
+                let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("v3-portals") });
+                enc.copy_buffer_to_buffer(&self.acc, f.out_bytes * 2 + 16, &self.pread, 0, bytes);
+                self.queue.submit([enc.finish()]);
+                self.pread.slice(..bytes).map_async(wgpu::MapMode::Read, |r| {
+                    let _ = r;
+                });
+                let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+                {
+                    let view = self.pread.slice(..bytes).get_mapped_range().expect("mapped v3 portals");
+                    data.extend_from_slice(bytemuck::cast_slice(&view));
+                }
+                self.pread.unmap();
+            }
+        }
         let debug = if f.dbg_bytes > 0 {
             let list = {
                 let view = self.dbg_read.slice(..f.dbg_bytes).get_mapped_range().expect("mapped v3 dbg");
@@ -486,7 +562,7 @@ impl GpuV3Tracer {
                 self.floor_latency((self.waited - sum * 1e-3) / f.passes as f32);
             }
         }
-        Some(Walked { ids: f.ids, data, debug, epoch: f.epoch, listener: f.listener })
+        Some(Walked { ids: f.ids, data, debug, epoch: f.epoch, listener: f.listener, masks: f.masks })
     }
 
     /// Walk one job synchronously: dispatch, wait, read the bins back.

@@ -51,18 +51,11 @@ pub fn trace_with(
     cpu_budget: Budget,
     walker: Option<&mut dyn V3Walker>,
 ) -> Vec<SourceField> {
-    // Not with portals: the GPU kernel knows no openings — it neither
-    // gathers the records at them nor leaves the diffuse-first paths to
-    // light tracing, so an enclosed source played only the walk's rare
-    // finds of its door (near silence from outside), and whenever a door
-    // moved the CPU's ticks (`trace_walked`'s stale walks) brought its
-    // whole field back at once: +20…+100 dB over that near silence, the
-    // ears ringing (Godot, Oct 31: the cathedral's flute, the living
-    // room's piano, a car — `town_system::the_gpu_walk_leaves_portals_
-    // to_the_cpu`). Until the kernel walks portals, the CPU walks.
-    if let Some(w) = walker.filter(|_| !tracer.portals) {
+    if let Some(w) = walker {
         // the late family at the CPU's own count when the walker leaves it
-        let cpu_late = (!w.walks_late()).then_some(cpu_budget.late_rays);
+        // — and with portals always: the kernel walks the early family's
+        // part of them only (its deposits bounded by its rays' segments)
+        let cpu_late = (!w.walks_late() || tracer.portals).then_some(cpu_budget.late_rays);
         if let Some(fields) = tracer.trace_walked(world, listener, sources, budget, cpu_budget, cpu_late, &mut |job| w.walk(job)) {
             return fields;
         }
@@ -91,7 +84,7 @@ mod tests {
             match self.flight.take() {
                 Some((epoch, ids, age, at)) if age + 1 >= self.late => {
                     self.flight = Some((job.epoch, job.ids.clone(), 0, job.listener));
-                    Walk::Fresh(Walked { data: vec![1e-3; output_words(ids.len())], ids, debug: Vec::new(), epoch, listener: at })
+                    Walk::Fresh(Walked { data: vec![1e-3; output_words(ids.len())], ids, debug: Vec::new(), epoch, listener: at, masks: Vec::new() })
                 }
                 Some((epoch, ids, age, at)) => {
                     self.flight = Some((epoch, ids, age + 1, at));

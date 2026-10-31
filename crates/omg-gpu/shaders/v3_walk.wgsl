@@ -32,21 +32,26 @@
 // Known, documented deviation: the echogram's direction sums start at
 // EARLY_S (the only part read).
 //
-// WALK_LAYOUT_VERSION 7 — must match omg_core::v3::fold and layout.rs:
+// WALK_LAYOUT_VERSION 9 — must match omg_core::v3::fold and layout.rs:
 //   Job {rot0@0, n_early@12, rot1@16, n_late@28, rot2@32, bounces@44,
 //        listener@48, seed@60, k@64, nee@68, late_nee@72, n_sources@76,
 //        n_panels@80, n_pockets@84, has_grade@88, grade@92, debug@96,
 //        n_edges@100, off_panels@104, off_pockets@108, edge_lo@112,
-//        off_edges@124, edge_hi@128, v4@140}                      160 B
+//        off_edges@124, edge_hi@128, v4@140, steps_pass@144, state_off@148,
+//        off_portal@152, portal_cap@156}                         160 B
 //   scene (u32 words): sources ×12 {pos, weight, t_free, id, vis, norm},
 //        panels ×16 {pmin, scattering, pmax, -, absorption, -,
-//        transmission, -}, pockets ×8 {min, -, max, -}, edges ×8 {a, -, b, -}
+//        transmission, -}, pockets ×8 {min, -, max, -}, edges ×8 {a, -, b, -},
+//        portals (fold.rs `WalkJob::portals`: head ×8, apertures ×20, the
+//        openings with records ×4; a source's words 10, 11 its mask)
 //   Node/Prim/Mat: MESH_LAYOUT_VERSION 3 (trace_mesh.wgsl)
 // Output (resolve, f32): SKY_WORDS sky, then per source [early
 // CELLS×DELAY_BINS slots | echo ECHO_BINS slots | total ×3, pad]; a slot
 // = (e0, e1, e2, Σe1·dx, Σe1·dy, Σe1·dz), true energy units.
 // v4 (job.v4): per source [dense DENSE_BINS slots of 7 (the six above +
 // Σe1²) | total ×3, pad] — the whole response, no early/late split.
+// Portals (portal_cap > 0): the deposits at openings in `acc` past the
+// bins — their count, 3 × 0, then DEP_WORDS each — copied out raw.
 
 // The exact chain solver's paths (omg_core::v3 `solver_owns`): coherent
 // — every bounce a mirror, nothing scattered or bent — and loud chains
@@ -118,8 +123,11 @@ const NO_EDGE: u32 = 0xFFFFFFFFu;
 // bends 13, bend_from 14..17, last_edge 17, segment 18, rng 19, first
 // direction 20..23, first cell 23, alive 27
 // a ray's state, then its split branch's (v3.rs `Branch`: the same 24
-// words at +28, word 55 = pending)
-const STATE_WORDS: u32 = 56u;
+// words at +32, word 63 = pending); portals: first opening | reflections
+// since << 8 at 24, the last diffuse bounce's normal at 25, 26, 28, its
+// scattering at 29 (flags: crossed 128, rough since 256, a diffuse
+// bounce last 512, light tracing's 1024)
+const STATE_WORDS: u32 = 64u;
 // v4: a ray splits at the first surface passing this share of the energy
 // (v3.rs SPLIT_T2)
 const SPLIT_T2: f32 = 1e-6;
@@ -159,8 +167,10 @@ struct Job {
     // the early rays' polylines.
     steps_pass: u32,
     state_off: u32,
-    _r0: u32,
-    _r1: u32,
+    // portals (fold.rs): the block's scene offset, and the deposits the
+    // walk may leave (0: no portals)
+    off_portal: u32,
+    portal_cap: u32,
 }
 
 struct Node {
@@ -931,6 +941,175 @@ fn cell_of(d: vec3<f32>) -> u32 {
     return best;
 }
 
+// ------------------------------------------------------------ portals
+// omg_core::v3 portals (portal.rs), the walk's part, as v3.rs walks them:
+// a path on through an opening a source's record covers is the record's;
+// the walk leaves a deposit where it first crosses an opening some record
+// covers, and connects its diffuse bounces to the openings (weighed against
+// its own crossings by the odds of each). The deposits go to `acc` past
+// the bins, binned and laid over the records on the CPU.
+const AP_WORDS: u32 = 20u;
+const PAP_WORDS: u32 = 4u;
+const DEP_WORDS: u32 = 8u;
+const MAX_PAPS: u32 = 64u;
+const NO_AP: u32 = 0xFFFFFFFFu;
+
+fn portal_on() -> bool { return job.portal_cap > 0u; }
+fn n_aps() -> u32 { return scene[job.off_portal]; }
+fn n_paps() -> u32 { return min(scene[job.off_portal + 1u], MAX_PAPS); }
+fn ap_base(k: u32) -> u32 { return job.off_portal + 8u + k * AP_WORDS; }
+fn ap_min(k: u32) -> vec3<f32> { return sv3(ap_base(k)); }
+fn ap_ax(k: u32) -> u32 { return scene[ap_base(k) + 3u]; }
+fn ap_max(k: u32) -> vec3<f32> { return sv3(ap_base(k) + 4u); }
+fn ap_mid(k: u32) -> f32 { return sf(ap_base(k) + 7u); }
+fn pap_base(i: u32) -> u32 { return job.off_portal + 8u + scene[job.off_portal] * AP_WORDS + i * PAP_WORDS; }
+fn pap_area(i: u32) -> f32 { return sf(pap_base(i) + 3u); }
+
+// does source si's record cover opening k (v3.rs `portal_owns`)?
+fn owns(si: u32, k: u32) -> bool {
+    if (k >= 64u) { return false; }
+    return ((scene[si * SRC_WORDS + 10u + k / 32u] >> (k % 32u)) & 1u) == 1u;
+}
+
+// is opening k some source's portal (v3.rs `portal_any`)?
+fn portal_any(k: u32) -> bool {
+    if (k >= 64u) { return false; }
+    return ((scene[job.off_portal + 2u + k / 32u] >> (k % 32u)) & 1u) == 1u;
+}
+
+// the opening k's entry among those with records (NO_AP: none)
+fn pap_of(k: u32) -> u32 {
+    for (var i = 0u; i < n_paps(); i++) {
+        if (scene[pap_base(i)] == k) { return i; }
+    }
+    return NO_AP;
+}
+
+// the side of opening k a direction leaves toward (0: +axis)
+fn side_of(k: u32, d: vec3<f32>) -> u32 {
+    return select(1u, 0u, d[ap_ax(k)] > 0.0);
+}
+
+// Aperture::crossed_by: where a→b passes the opening's middle plane,
+// within its extent (to `cross_q`)
+var<private> cross_q: vec3<f32>;
+fn crossed_by(k: u32, a: vec3<f32>, b: vec3<f32>) -> bool {
+    let ax = ap_ax(k);
+    let mid = ap_mid(k);
+    let da = a[ax] - mid;
+    let db = b[ax] - mid;
+    if (da * db >= 0.0) { return false; }
+    let q = a + (b - a) * (da / (da - db));
+    let mn = ap_min(k);
+    let mx = ap_max(k);
+    for (var j = 0u; j < 3u; j++) {
+        if (j != ax && (q[j] < mn[j] - 1e-3 || q[j] > mx[j] + 1e-3)) { return false; }
+    }
+    cross_q = q;
+    return true;
+}
+
+// v3.rs `first_crossing`: the first opening a→b passes (NO_AP: none),
+// where (to `first_q`)
+var<private> first_q: vec3<f32>;
+fn first_crossing(a: vec3<f32>, b: vec3<f32>) -> u32 {
+    var best = NO_AP;
+    var bd = T_MISS;
+    for (var k = 0u; k < n_aps(); k++) {
+        if (crossed_by(k, a, b)) {
+            let d = length(cross_q - a);
+            if (d < bd) {
+                bd = d;
+                best = k;
+                first_q = cross_q;
+            }
+        }
+    }
+    return best;
+}
+
+// Aperture::passes: what a path crossing opening k at x along d keeps —
+// t² where it enters the opening's slab on the leaf, all of it elsewhere
+fn ap_passes(k: u32, x: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
+    let o = ap_base(k);
+    if (scene[o + 11u] == 0u) { return vec3<f32>(1.0); }
+    let ax = ap_ax(k);
+    let half = 0.5 * (ap_max(k)[ax] - ap_min(k)[ax]);
+    let entry = x - d * (half / max(abs(d[ax]), 1e-6));
+    let lo = sv3(o + 8u);
+    let hi = sv3(o + 12u);
+    for (var j = 0u; j < 3u; j++) {
+        if (j != ax && (entry[j] < lo[j] || entry[j] > hi[j])) { return vec3<f32>(1.0); }
+    }
+    return sv3(o + 16u);
+}
+
+// portal.rs `pick_weights`: what each opening with records would bring a
+// diffuse bounce at p facing `normal`, roughly (to `pw`), and their sum
+var<private> pw: array<f32, MAX_PAPS>;
+fn pick_weights(p: vec3<f32>, normal: vec3<f32>) -> f32 {
+    var sum = 0.0;
+    for (var i = 0u; i < n_paps(); i++) {
+        let o = pap_base(i);
+        let k = scene[o];
+        let to = (ap_min(k) + ap_max(k)) * 0.5 - p;
+        let r2 = max(dot(to, to), 1e-6);
+        let d = to * (1.0 / sqrt(r2));
+        let cos_p = dot(d, normal);
+        let cos_q = abs(d[ap_ax(k)]);
+        var c = 0.0;
+        if (cos_p > 0.0) {
+            // the radiance toward p leaves toward p's side: along −d
+            c = sf(o + 1u + side_of(k, -d)) * sf(o + 3u) * cos_p * cos_q / max(r2, 1.0);
+        }
+        pw[i] = c;
+        sum += c;
+    }
+    return sum;
+}
+
+// portal.rs `sample_opening`: a point on opening k's middle plane, uniform
+fn sample_opening(k: u32, u1: f32, u2: f32) -> vec3<f32> {
+    let ax = ap_ax(k);
+    let a = (ax + 1u) % 3u;
+    let b = (ax + 2u) % 3u;
+    let mn = ap_min(k);
+    let mx = ap_max(k);
+    var q = vec3<f32>(0.0);
+    q[ax] = ap_mid(k);
+    q[a] = mn[a] + u1 * (mx[a] - mn[a]);
+    q[b] = mn[b] + u2 * (mx[b] - mn[b]);
+    return q;
+}
+
+// portal.rs `opening_pdf`: r²/(A·cos_q)
+fn opening_pdf(area: f32, r: f32, cos_q: f32) -> f32 {
+    return r * r / (area * max(cos_q, 1e-6));
+}
+
+// a deposit at opening k (v3.rs `PortalDep`) into the list past the bins
+fn push_dep(k: u32, side: u32, cell: u32, w: vec3<f32>, delay: f32) {
+    let base = 2u * (SKY_WORDS + job.n_sources * SOURCE_WORDS);
+    let i = atomicAdd(&acc[base], 1u);
+    if (i >= job.portal_cap) { return; }
+    let o = base + 4u + i * DEP_WORDS;
+    atomicStore(&acc[o], k | (side << 8u) | (cell << 16u));
+    atomicStore(&acc[o + 1u], bitcast<u32>(w.x));
+    atomicStore(&acc[o + 2u], bitcast<u32>(w.y));
+    atomicStore(&acc[o + 3u], bitcast<u32>(w.z));
+    atomicStore(&acc[o + 4u], bitcast<u32>(delay));
+    atomicStore(&acc[o + 5u], bitcast<u32>(ray_first.x));
+    atomicStore(&acc[o + 6u], bitcast<u32>(ray_first.y));
+    atomicStore(&acc[o + 7u], bitcast<u32>(ray_first.z));
+}
+
+// v3.rs `portal_dep`: a walk crossing opening k at x on its way from
+// `a` along `dir` (`length_m` behind it there, throughput `thr`)
+fn portal_dep(k: u32, x: vec3<f32>, a: vec3<f32>, dir: vec3<f32>, length_m: f32, thr: vec3<f32>, inv_n: f32) {
+    let back = -dir;
+    push_dep(k, side_of(k, back), cell_of(back), thr * (4.0 * PI * inv_n), (length_m + length(x - a)) / SPEED_OF_SOUND);
+}
+
 // ---------------------------------------------------------------- walk
 
 @compute @workgroup_size(64)
@@ -1008,6 +1187,19 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
     var p_bend_from = vec3<f32>(0.0);
     var p_last_edge = NO_EDGE;
     var p_seg = 0u;
+    // portals (v3.rs `Branch`): crossed an opening already, which first,
+    // and since then how often it reflected and whether it was rough
+    // (scattered, bent, through a wall or a leaf); the bounce the segment
+    // left from was diffuse (its normal, scattering); its first touch from
+    // the ears was diffuse (light tracing's)
+    var crossed = false;
+    var first_ap = 0u;
+    var s_refl = 0u;
+    var s_rough = false;
+    var ld_on = false;
+    var ld_n = vec3<f32>(0.0);
+    var ld_s = 0.0;
+    var lt = false;
 
     // a sliced ray starts in pass 0, goes on where the last dispatch left
     // it and, once done, sits out the tick's later passes
@@ -1036,9 +1228,17 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
         ray_first = vec3<f32>(bitcast<f32>(dbg[so + 20u]), bitcast<f32>(dbg[so + 21u]), bitcast<f32>(dbg[so + 22u]));
         ray_cell = dbg[so + 23u];
         split = (flags & 32u) != 0u;
-        has_pending = dbg[so + 55u] == 1u;
+        crossed = (flags & 128u) != 0u;
+        s_rough = (flags & 256u) != 0u;
+        ld_on = (flags & 512u) != 0u;
+        lt = (flags & 1024u) != 0u;
+        first_ap = dbg[so + 24u] & 0xFFu;
+        s_refl = dbg[so + 24u] >> 8u;
+        ld_n = vec3<f32>(bitcast<f32>(dbg[so + 25u]), bitcast<f32>(dbg[so + 26u]), bitcast<f32>(dbg[so + 28u]));
+        ld_s = bitcast<f32>(dbg[so + 29u]);
+        has_pending = dbg[so + 63u] == 1u;
         if (has_pending) {
-            let q = so + 28u;
+            let q = so + 32u;
             p_origin = vec3<f32>(bitcast<f32>(dbg[q]), bitcast<f32>(dbg[q + 1u]), bitcast<f32>(dbg[q + 2u]));
             p_dir = vec3<f32>(bitcast<f32>(dbg[q + 3u]), bitcast<f32>(dbg[q + 4u]), bitcast<f32>(dbg[q + 5u]));
             p_thr = vec3<f32>(bitcast<f32>(dbg[q + 6u]), bitcast<f32>(dbg[q + 7u]), bitcast<f32>(dbg[q + 8u]));
@@ -1071,7 +1271,8 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             dbg[so + 10u] = refl;
             dbg[so + 11u] = select(0u, 1u, specular) | select(0u, 2u, mirror_only) | select(0u, 4u, loud)
                 | select(0u, 8u, bent) | select(0u, 16u, have_bend_from) | select(0u, 32u, split)
-                | select(0u, 64u, mirrored);
+                | select(0u, 64u, mirrored) | select(0u, 128u, crossed) | select(0u, 256u, s_rough)
+                | select(0u, 512u, ld_on) | select(0u, 1024u, lt);
             dbg[so + 12u] = bitcast<u32>(mirror_thr);
             dbg[so + 13u] = bends;
             dbg[so + 14u] = bitcast<u32>(bend_from.x);
@@ -1084,10 +1285,15 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             dbg[so + 21u] = bitcast<u32>(ray_first.y);
             dbg[so + 22u] = bitcast<u32>(ray_first.z);
             dbg[so + 23u] = ray_cell;
+            dbg[so + 24u] = first_ap | (s_refl << 8u);
+            dbg[so + 25u] = bitcast<u32>(ld_n.x);
+            dbg[so + 26u] = bitcast<u32>(ld_n.y);
+            dbg[so + 28u] = bitcast<u32>(ld_n.z);
+            dbg[so + 29u] = bitcast<u32>(ld_s);
             dbg[so + 27u] = 1u;
-            dbg[so + 55u] = select(0u, 1u, has_pending);
+            dbg[so + 63u] = select(0u, 1u, has_pending);
             if (has_pending) {
-                let q = so + 28u;
+                let q = so + 32u;
                 dbg[q] = bitcast<u32>(p_origin.x);
                 dbg[q + 1u] = bitcast<u32>(p_origin.y);
                 dbg[q + 2u] = bitcast<u32>(p_origin.z);
@@ -1127,6 +1333,8 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
         // the source's REAL position
         if ((specular || bent) && refl >= lo && refl <= hi) {
             for (var si = 0u; si < n_src; si++) {
+                // past an opening, reflected and rough: the record's
+                if (crossed && s_refl >= 1u && s_rough && owns(si, first_ap)) { continue; }
                 let sp = src_pos(si);
                 let to = sp - origin;
                 let along = dot(to, dir);
@@ -1164,9 +1372,41 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
 
+        // portals: the first opening this segment passes (its open part:
+        // a leaf stops the segment) — what comes through it from there is
+        // the record's
+        if (portal_on() && !crossed) {
+            let k = first_crossing(origin, origin + dir * min(t_seg, 1e3));
+            if (k != NO_AP) {
+                if (refl >= lo && refl <= hi && portal_any(k) && !lt) {
+                    // left a diffuse bounce: the bounce also connected to
+                    // the openings — this path either way, weighed by the
+                    // odds of each (balance heuristic)
+                    var m = 1.0;
+                    if (ld_on) {
+                        let pb = ld_s * max(dot(dir, ld_n), 0.0) / PI;
+                        var pn = 0.0;
+                        let i = pap_of(k);
+                        if (i != NO_AP) {
+                            let sum = pick_weights(origin, ld_n);
+                            if (sum > 0.0) {
+                                pn = pw[i] / sum * opening_pdf(pap_area(i), length(first_q - origin), abs(dir[ap_ax(k)]));
+                            }
+                        }
+                        if (pb + pn > 0.0) { m = pb / (pb + pn); }
+                    }
+                    portal_dep(k, first_q, origin, dir, length_m, thr * m, inv_n);
+                }
+                crossed = true;
+                first_ap = k;
+            }
+        }
+
         if (edge.found) {
             // bend around the edge at the closest approach
             last_edge = edge.idx;
+            ld_on = false;
+            if (crossed) { s_rough = true; }
             if (!have_bend_from) {
                 bend_from = origin;
                 have_bend_from = true;
@@ -1217,6 +1457,11 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             var total = 0.0;
             var faced = 0u;
             for (var si = 0u; si < n_src; si++) {
+                // past an opening: a scattering bounce, the record's
+                if (crossed && owns(si, first_ap)) {
+                    cum[si] = 0.0;
+                    continue;
+                }
                 let to = src_pos(si) - off;
                 let r = length(to);
                 var c = 0.0;
@@ -1275,6 +1520,51 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
 
+        // 2b. portals: the diffuse share of this surface connected to an
+        // opening (one, picked by what it would bring), what the opening's
+        // record holds leaving toward here taken from there — weighed
+        // against the walk's own crossings by the odds of each (a first
+        // touch's diffuse share, or any bounce past one: light tracing's)
+        let first_touch = seg == 0u && refl == 0u && bends == 0u;
+        if (portal_on() && !crossed && !lt && !first_touch && hit.scattering > 0.0 && refl + 1u >= lo && refl + 1u <= hi && n_paps() > 0u) {
+            let off = p + normal * EPS;
+            let sum = pick_weights(off, normal);
+            if (sum > 0.0) {
+                var u = rand_f32() * sum;
+                var pick = n_paps() - 1u;
+                for (var i = 0u; i < n_paps(); i++) {
+                    if (u < pw[i]) {
+                        pick = i;
+                        break;
+                    }
+                    u -= pw[i];
+                }
+                let pa = pw[pick] / sum;
+                let k = scene[pap_base(pick)];
+                let q = sample_opening(k, rand_f32(), rand_f32());
+                let to = q - off;
+                let r = length(to);
+                if (pa > 0.0 && r > 1e-3) {
+                    let d = to * (1.0 / r);
+                    let cos_p = dot(d, normal);
+                    let cos_q = abs(d[ap_ax(k)]);
+                    var seen = cos_p > 0.0 && cos_q > 1e-4 && all(ap_passes(k, q, d) >= vec3<f32>(1.0));
+                    if (seen) { seen = first_crossing(off, q + d * 0.01) == k; }
+                    if (seen) { seen = raycast_world(off, d).t >= r - 1e-3; }
+                    if (seen) {
+                        // the odds of this direction: the pick's × the
+                        // area's; the diffuse share lit by the opening over
+                        // them (the record's radiance at the gathering)
+                        let pn = pa * opening_pdf(pap_area(pick), r, cos_q);
+                        let pb = hit.scattering * cos_p / PI;
+                        let g = 4.0 * inv_n * hit.scattering * cos_p * (pn / (pn + pb)) / pn;
+                        let back = -d;
+                        push_dep(k, side_of(k, back), cell_of(back), thr * keep * g, (length_m + r) / SPEED_OF_SOUND);
+                    }
+                }
+            }
+        }
+
         // 4. continue: v4 splits at the first partition passing real
         // energy (both branches, their exact weights) — except a sliced
         // walk's early rays, whose walk must end within the walk's passes
@@ -1312,6 +1602,20 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
         let pt = select(select(select(0.0, leaf_draw, p_t > 1e-5), 1.0, pure), 0.0, split_here);
         if (pt > 0.0 && rand_f32() < pt) {
             let tw = through(p, dir, hit);
+            // portals: through a leaf (or a wall) in an opening — the first
+            // crossing, the record's from there (the walk's share 1/pt)
+            if (portal_on() && !crossed) {
+                let k = first_crossing(p, beyond);
+                if (k != NO_AP) {
+                    if (refl >= lo && refl <= hi && portal_any(k) && !lt) {
+                        portal_dep(k, first_q, p, dir, length_m, thr / pt, inv_n);
+                    }
+                    crossed = true;
+                    first_ap = k;
+                }
+            }
+            if (crossed) { s_rough = true; }
+            ld_on = false;
             thr = thr * tw / pt;
             mirror_thr = mirror_thr * tw.y;
             loud = loud && mirror_thr >= COHERENT_FLOOR;
@@ -1329,7 +1633,9 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             thr = thr / p;
         }
         if (all(thr < vec3<f32>(LATE_FLOOR))) { break; }
+        let was_first = seg == 0u && refl == 0u && bends == 0u && !crossed;
         refl += 1u;
+        if (crossed) { s_refl += 1u; }
         have_bend_from = false;
         mirror_thr = mirror_thr * keep.y * (1.0 - hit.scattering);
         loud = loud && mirror_thr >= COHERENT_FLOOR;
@@ -1341,9 +1647,15 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
             bent = false;
             mirror_only = false;
             mirrored = false;
+            if (crossed) { s_rough = true; }
+            ld_on = true;
+            ld_n = normal;
+            ld_s = hit.scattering;
+            if (was_first && portal_on()) { lt = true; }
         } else {
             dir = dir - normal * (2.0 * dot(dir, normal));
             specular = true;
+            ld_on = false;
         }
         origin = p + normal * EPS;
     }
@@ -1371,7 +1683,7 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     if (sliced) {
         dbg[so + 27u] = 0u; // ended
-        dbg[so + 55u] = 0u;
+        dbg[so + 63u] = 0u;
     }
 }
 

@@ -7,11 +7,12 @@
 // frames come first — and hands the result back, folded the tick after.
 // Any failure: the driver reports none and the walk stays on the CPU.
 
-const V3_VERSION = 8; // omg_core::v3::fold::WALK_LAYOUT_VERSION
+const V3_VERSION = 9; // omg_core::v3::fold::WALK_LAYOUT_VERSION
 const V3_SKY = 384;
 const V3_SRC = 17164; // SOURCE_WORDS
 const V3_MAX_SRC = 64;
-const V3_SCENE_WORDS = 64 * 12 + 256 * 16 + 8 * 8 + 65536 / 32; // fold MAX_SCENE_WORDS
+const V3_SCENE_WORDS = 64 * 12 + 256 * 16 + 8 * 8 + 65536 / 32 + 8 + 256 * 20 + 64 * 4; // fold MAX_SCENE_WORDS
+const V3_DEP_WORDS = 8; // fold DEP_WORDS
 
 export async function initGpu(wasm) {
   if (!navigator.gpu || !wasm.sim_v3_version || wasm.sim_v3_version() !== V3_VERSION) return null;
@@ -45,26 +46,29 @@ export async function initGpu(wasm) {
   const outBytes = (V3_SKY + V3_MAX_SRC * V3_SRC) * 4;
   const job = device.createBuffer({ size: 160, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const scene = device.createBuffer({ size: V3_SCENE_WORDS * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  const acc = device.createBuffer({ size: outBytes * 2, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  // the fixed-point bins, then (portals) the deposits at openings: their
+  // count and the deposits, grown to a job's cap
+  let accBytes = outBytes * 2 + 16;
+  let acc = device.createBuffer({ size: accBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
   const out = device.createBuffer({ size: outBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-  const read = device.createBuffer({ size: outBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
-  const resolveBind = device.createBindGroup({
-    layout: resolvePipe.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: job } },
-      { binding: 4, resource: { buffer: scene } },
-      { binding: 5, resource: { buffer: acc } },
-      { binding: 6, resource: { buffer: out } },
-    ],
-  });
+  const read = device.createBuffer({ size: outBytes + 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  let preadBytes = 16;
+  let pread = device.createBuffer({ size: preadBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  let resolveBind = null;
   // the early rays' state across a walk's dispatches
   let state = null;
   let stateWords = 0;
   let walkBind = null;
-  const ensureState = (words) => {
-    if (words <= stateWords) return false;
-    stateWords = 1 << Math.ceil(Math.log2(Math.max(words, 64)));
-    state = device.createBuffer({ size: stateWords * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const bindAll = () => {
+    resolveBind = device.createBindGroup({
+      layout: resolvePipe.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: job } },
+        { binding: 4, resource: { buffer: scene } },
+        { binding: 5, resource: { buffer: acc } },
+        { binding: 6, resource: { buffer: out } },
+      ],
+    });
     walkBind = device.createBindGroup({
       layout: walkPipe.getBindGroupLayout(0),
       entries: [
@@ -78,9 +82,23 @@ export async function initGpu(wasm) {
         { binding: 8, resource: { buffer: edges } },
       ],
     });
+  };
+  const ensureState = (words) => {
+    if (words <= stateWords) return false;
+    stateWords = 1 << Math.ceil(Math.log2(Math.max(words, 64)));
+    state = device.createBuffer({ size: stateWords * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    bindAll();
     return true;
   };
   ensureState(64);
+  // portals: room for the bins, the deposits' count and `cap` deposits
+  const ensureAcc = (outWords, cap) => {
+    const need = (2 * outWords + (cap ? 4 + cap * V3_DEP_WORDS : 0)) * 4;
+    if (need <= accBytes) return;
+    accBytes = 2 ** Math.ceil(Math.log2(need));
+    acc = device.createBuffer({ size: accBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+    bindAll();
+  };
 
   let busy = false;
   let lastMs = 0;
@@ -108,7 +126,7 @@ export async function initGpu(wasm) {
   // of a frame), spaced by rests sized from it
   let passMs = null;
 
-  async function run(words, passes, w36, outWords, budget, done) {
+  async function run(words, passes, w36, outWords, cap, budget, done) {
     const nRays = words[3] + words[7];
     if (!query && walks % 16 === 0) await probeLatency();
     device.queue.writeBuffer(scene, 0, words.subarray(40));
@@ -124,7 +142,7 @@ export async function initGpu(wasm) {
       hdr[36] = w36[pass];
       device.queue.writeBuffer(job, 0, hdr);
       const enc = device.createCommandEncoder();
-      if (pass === 0) enc.clearBuffer(acc, 0, outWords * 8);
+      if (pass === 0) enc.clearBuffer(acc, 0, outWords * 8 + (cap ? 16 : 0));
       const last = pass + 1 === passes;
       const cp = enc.beginComputePass(pass < stamped
         ? { timestampWrites: { querySet: query.set, beginningOfPassWriteIndex: 2 * pass, endOfPassWriteIndex: 2 * pass + 1 } }
@@ -140,6 +158,8 @@ export async function initGpu(wasm) {
       cp.end();
       if (last) {
         enc.copyBufferToBuffer(out, 0, read, 0, outWords * 4);
+        // the deposits' count after the bins (the deposits once it is known)
+        if (cap) enc.copyBufferToBuffer(acc, outWords * 8, read, outWords * 4, 16);
         if (stamped) {
           enc.resolveQuerySet(query.set, 0, 2 * stamped, query.resolved, 0);
           enc.copyBufferToBuffer(query.resolved, 0, query.read, 0, 16 * stamped);
@@ -163,9 +183,32 @@ export async function initGpu(wasm) {
       longest = Math.max(longest, busyMs);
       await sleep(busyMs * (1 / budget - 1));
     }
-    await read.mapAsync(GPUMapMode.READ, 0, outWords * 4);
-    const data = new Float32Array(read.getMappedRange(0, outWords * 4)).slice();
+    const head = outWords + (cap ? 4 : 0);
+    await read.mapAsync(GPUMapMode.READ, 0, head * 4);
+    let data = new Float32Array(read.getMappedRange(0, head * 4)).slice();
     read.unmap();
+    if (cap) {
+      // the deposits at openings the walk left (never past its cap)
+      const count = Math.min(new Uint32Array(data.buffer, outWords * 4, 1)[0], cap);
+      new Uint32Array(data.buffer, outWords * 4, 1)[0] = count;
+      if (count) {
+        const bytes = count * V3_DEP_WORDS * 4;
+        if (bytes > preadBytes) {
+          preadBytes = 2 ** Math.ceil(Math.log2(bytes));
+          pread = device.createBuffer({ size: preadBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        }
+        const enc = device.createCommandEncoder();
+        enc.copyBufferToBuffer(acc, outWords * 8 + 16, pread, 0, bytes);
+        device.queue.submit([enc.finish()]);
+        await pread.mapAsync(GPUMapMode.READ, 0, bytes);
+        const deps = new Float32Array(pread.getMappedRange(0, bytes));
+        const all = new Float32Array(head + deps.length);
+        all.set(data);
+        all.set(deps, head);
+        pread.unmap();
+        data = all;
+      }
+    }
     if (stamped) {
       await query.read.mapAsync(GPUMapMode.READ, 0, 16 * stamped);
       const t = new BigUint64Array(query.read.getMappedRange(0, 16 * stamped));
@@ -200,7 +243,9 @@ export async function initGpu(wasm) {
       const passes = w.sim_v3_passes();
       const w36 = Array.from({ length: passes }, (_, p) => w.sim_v3_word36(p));
       const outWords = w.sim_v3_out_words();
-      run(words, passes, w36, outWords, Math.min(1, Math.max(0.02, budget)), (data, sum, longest) => {
+      const cap = w.sim_v3_portal_cap ? w.sim_v3_portal_cap() : 0;
+      ensureAcc(outWords, cap);
+      run(words, passes, w36, outWords, cap, Math.min(1, Math.max(0.02, budget)), (data, sum, longest) => {
         new Float32Array(w.memory.buffer, w.sim_v3_buf_ptr(data.length), data.length).set(data);
         w.sim_v3_inject(data.length, sum, longest);
         lastMs = sum;

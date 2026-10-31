@@ -30,9 +30,11 @@
 //!   24 debug  25 n_edges  26 off_panels  27 off_pockets  (scene words)
 //!   28..31 edge bounds lo  31 off_edges   32..35 edge bounds hi
 //!   35 v4  36 a live walk's pass word (`slice_word`; 0 for a whole
-//!   walk)  37 state_off  38..40 reserved (0)
+//!   walk)  37 state_off  38 off_portal  39 portal_cap (the deposits at
+//!   openings the walk may leave; 0: no portals)
 //! scene: sources (SRC_WORDS = 12 each): pos xyz, weight, t_free, id,
-//!          direct visibility xyz, fixed-point norm, 0, 0
+//!          direct visibility xyz, fixed-point norm, its portal mask (the
+//!          openings its record covers, bits by aperture: lo, hi)
 //!        panels (PANEL_WORDS = 16):  min xyz, scattering, max xyz, leaf
 //!          (1: a door's leaf in its aperture, v6.2), absorption xyz, 0,
 //!          transmission xyz, 0
@@ -41,6 +43,12 @@
 //!          the edge set (`EdgeSet::flat`, uploaded with the mesh): set =
 //!          filled by a panel or on the ground this tick (no bend there);
 //!          n_edges 0 = no diffraction
+//!        portals (at off_portal, with portal_cap > 0; `WalkJob::portals`):
+//!          n_apertures, n_portal_openings, the masks' union lo, hi, 4 × 0;
+//!          apertures (AP_WORDS = 20): min xyz, axis, max xyz, middle,
+//!          leaf min xyz, has a leaf, leaf max xyz, 0, the leaf's t² xyz, 0;
+//!          the openings with records (PAP_WORDS = 4): aperture index, what
+//!          they hold leaving each side (`PortalAps`), area
 //! ```
 //! OUTPUT — f32 words, true energy units (the fold applies the v2
 //! echogram scale): SKY_WORDS of sky cells, then one SOURCE_WORDS block
@@ -51,6 +59,12 @@
 //! direction sums are only kept from EARLY_S on (all `late_direction`
 //! reads); `reflected` counts what lands inside the 3 s echogram.
 //!
+//! PORTALS — with portal_cap > 0 the output goes on: the deposits'
+//! count, 3 × 0, then DEP_WORDS each (`PortalDep`, the CPU walk's): the
+//! aperture | its side << 8 | the direction cell << 16, the weight xyz,
+//! the delay to the opening, the ray's first direction xyz. The walker
+//! hands back the count's deposits (`Walked::data` past `output_words`).
+//!
 //! DEBUG — DEBUG_WORDS per early ray: mid energy, source index, vertex
 //! count, 0, then up to DEBUG_VERTS vertices (ears → bends/bounces →
 //! source).
@@ -58,7 +72,7 @@
 use super::*;
 
 /// Bump on ANY change to the flat formats above or in v3_walk.wgsl.
-pub const WALK_LAYOUT_VERSION: u32 = 8;
+pub const WALK_LAYOUT_VERSION: u32 = 9;
 /// Direction cells for early binning (and the sky).
 pub const CELLS: usize = N_CELLS;
 /// Early delay bins: the early window over the delay bin width.
@@ -91,11 +105,20 @@ pub const MAX_SOURCES: usize = 64;
 pub const MAX_PANELS: usize = 256;
 pub const MAX_POCKETS: usize = 8;
 pub const MAX_EDGES: usize = 65536;
+/// Apertures a walk with portals carries (every opening a ray may cross
+/// first, portals or not).
+pub const MAX_APERTURES: usize = 256;
+/// Portals' words: the block's head, an aperture, an opening with
+/// records, a deposit.
+pub const PORTAL_HEAD: usize = 8;
+pub const AP_WORDS: usize = 20;
+pub const PAP_WORDS: usize = 4;
+pub const DEP_WORDS: usize = 8;
 pub const DEBUG_VERTS: usize = 8;
 pub const DEBUG_WORDS: usize = 4 + DEBUG_VERTS * 3;
 /// Words per sliced ray's state in the kernel's `dbg` buffer: the ray's
 /// and its split branch's (v3_walk.wgsl STATE_WORDS).
-pub const STATE_WORDS: usize = 56;
+pub const STATE_WORDS: usize = 64;
 /// Debug paths a walker needs to return at most (the view's cap).
 pub const DEBUG_KEEP: usize = DEBUG_PATHS;
 
@@ -105,8 +128,23 @@ pub fn output_words(n_sources: usize) -> usize {
 }
 
 /// Scene words a job can carry at most (host buffer sizing).
-pub const MAX_SCENE_WORDS: usize =
-    MAX_SOURCES * SRC_WORDS + MAX_PANELS * PANEL_WORDS + MAX_POCKETS * POCKET_WORDS + MAX_EDGES / 32;
+pub const MAX_SCENE_WORDS: usize = MAX_SOURCES * SRC_WORDS
+    + MAX_PANELS * PANEL_WORDS
+    + MAX_POCKETS * POCKET_WORDS
+    + MAX_EDGES / 32
+    + PORTAL_HEAD
+    + MAX_APERTURES * AP_WORDS
+    + 64 * PAP_WORDS;
+
+/// The output's portal part for `cap` deposits: their count (+ 3), then
+/// the deposits.
+pub fn portal_words(cap: usize) -> usize {
+    if cap == 0 {
+        0
+    } else {
+        4 + cap * DEP_WORDS
+    }
+}
 
 /// One tick's walk, flattened for an external walker.
 #[derive(Clone, Debug)]
@@ -120,6 +158,9 @@ pub struct WalkJob {
     /// Where the listener was at launch; hand it back in
     /// `Walked::listener` (a walk landing ticks later describes there).
     pub listener: Vec3,
+    /// Portals: each source's mask at launch (the openings whose paths
+    /// the walk left to its record); hand it back in `Walked::masks`.
+    pub masks: Vec<u64>,
 }
 
 impl WalkJob {
@@ -206,7 +247,57 @@ impl WalkJob {
             }
         }
         w[25] = n_edges;
-        Self { words: w, ids: sources.iter().map(|s| s.id).collect(), epoch: 0, listener }
+        Self { words: w, ids: sources.iter().map(|s| s.id).collect(), epoch: 0, listener, masks: Vec::new() }
+    }
+
+    /// Portals: the openings, each source's (`masks`: the openings whose
+    /// paths on are its record's) and the openings the walk connects to
+    /// (`paps`). An early ray leaves a deposit at most once a segment and
+    /// once at its crossing: the cap. No portals beyond MAX_APERTURES (the
+    /// walker then refuses: `fits`).
+    pub(super) fn portals(mut self, aps: &[Aperture], masks: &[u64], paps: &portal::PortalAps) -> Self {
+        let f = |x: f32| x.to_bits();
+        for (si, &m) in masks.iter().enumerate().take(self.n_sources()) {
+            let o = HEADER_WORDS + si * SRC_WORDS + 10;
+            self.words[o] = m as u32;
+            self.words[o + 1] = (m >> 32) as u32;
+        }
+        let union = masks.iter().fold(0u64, |a, &m| a | m);
+        self.words[38] = (self.words.len() - HEADER_WORDS) as u32;
+        let segments = self.words[11] + 1 + MAX_BENDS;
+        self.words[39] = self.n_early().max(1) * (segments + 1);
+        self.words.extend_from_slice(&[aps.len() as u32, paps.len() as u32, union as u32, (union >> 32) as u32, 0, 0, 0, 0]);
+        for ap in aps {
+            let (lo, hi, has) = match ap.leaf {
+                Some((lo, hi)) => (lo, hi, 1),
+                None => (Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.0), 0),
+            };
+            let t = ap.material.transmission;
+            self.words.extend_from_slice(&[f(ap.min.x), f(ap.min.y), f(ap.min.z), ap.ax as u32]);
+            self.words.extend_from_slice(&[f(ap.max.x), f(ap.max.y), f(ap.max.z), f(ap.mid)]);
+            self.words.extend_from_slice(&[f(lo.x), f(lo.y), f(lo.z), has]);
+            self.words.extend_from_slice(&[f(hi.x), f(hi.y), f(hi.z), 0]);
+            self.words.extend_from_slice(&[f(t[0] * t[0]), f(t[1] * t[1]), f(t[2] * t[2]), 0]);
+        }
+        for &(k, tot) in paps {
+            self.words.extend_from_slice(&[k as u32, f(tot[0]), f(tot[1]), f(portal::area(&aps[k]))]);
+        }
+        self.masks = masks.to_vec();
+        self
+    }
+
+    /// Deposits at openings the walk may leave (0: no portals).
+    pub fn portal_cap(&self) -> usize {
+        self.words[39] as usize
+    }
+
+    /// Apertures the job carries (0: no portals).
+    pub fn n_apertures(&self) -> usize {
+        if self.portal_cap() == 0 {
+            0
+        } else {
+            self.words[HEADER_WORDS + self.words[38] as usize] as usize
+        }
     }
 
     pub fn header(&self) -> &[u32] {
@@ -307,6 +398,19 @@ pub struct Walked {
     pub epoch: u32,
     /// `WalkJob::listener` of the job this answers.
     pub listener: Vec3,
+    /// `WalkJob::masks` of the job this answers.
+    pub masks: Vec<u64>,
+}
+
+impl Walked {
+    /// Portals: the deposits at openings the walk left (DEP_WORDS each),
+    /// past the bins.
+    pub fn portal_deps(&self) -> &[f32] {
+        let o = output_words(self.ids.len());
+        let Some(&count) = self.data.get(o) else { return &[] };
+        let n = (count.to_bits() as usize).min(self.data.len().saturating_sub(o + 4) / DEP_WORDS);
+        &self.data[o + 4..o + 4 + n * DEP_WORDS]
+    }
 }
 
 /// Decode debug records (DEBUG_WORDS each, any order) into the
@@ -394,7 +498,10 @@ impl Tracer {
         // sound (a moving source's echoes on the CPU reach further back)
         let at_emission: Vec<Source> =
             sources.iter().enumerate().map(|(si, s)| Source { pos: self.direct_from(si, s, listener).unwrap_or(s.pos), ..*s }).collect();
-        let mut job = WalkJob::build(world, listener, &at_emission, job_budget, rot, seed, self.debug, &vis, edges).v4(self.v4);
+        let job = WalkJob::build(world, listener, &at_emission, job_budget, rot, seed, self.debug, &vis, edges).v4(self.v4);
+        // portals: the paths on through an opening a source's record covers
+        // are its record's, on the GPU as on the CPU
+        let mut job = self.portal_job(world, sources, job);
         job.epoch = self.epoch;
         let (walked, refused) = match walk(&job) {
             Walk::Refused => (None, true),
@@ -423,16 +530,21 @@ impl Tracer {
         // the mirror chains the kernel leaves to the CPU (named by a few
         // mirror rays here, solved exactly), folded in with a fresh walk
         let chains = walked.as_ref().map(|_| self.walked_chains(world, listener, sources, budget));
-        // and the late family, when the walker leaves it to the CPU
+        // and the late family, when the walker leaves it to the CPU — with
+        // portals the records' part too (their rays, their connections to
+        // the ears, and the early walk's deposits at openings laid over
+        // them), even with no late rays
+        let portals = job.portal_cap() > 0 || walked.as_ref().is_some_and(|w| !w.masks.is_empty());
         let late = match cpu_late {
-            Some(n) if n > 0 && fresh => {
+            Some(n) if (n > 0 || portals) && fresh => {
                 let mut accs: Vec<Acc> = at_emission
                     .iter()
                     .map(|s| Acc::new((s.pos - listener).length() / SPEED_OF_SOUND, self.v4))
                     .collect();
                 self.pre_record(&mut accs, sources);
                 let late_budget = Budget { late_rays: n, ..budget };
-                let sky = self.walk_rays(world, listener, sources, late_budget, &vis, false, &mut accs, &mut dbg);
+                let gpu = walked.as_ref().filter(|w| !w.masks.is_empty());
+                let sky = self.walk_rays(world, listener, sources, late_budget, &vis, false, gpu, &mut accs, &mut dbg);
                 Some((accs, sky))
             }
             _ => None,
@@ -648,7 +760,7 @@ mod tests {
             move |job: &WalkJob| {
                 let epoch = if stale { last_epoch } else { job.epoch };
                 last_epoch = job.epoch;
-                Walk::Fresh(Walked { ids: job.ids.clone(), data: vec![1e-3; output_words(job.ids.len())], debug: Vec::new(), epoch, listener: job.listener })
+                Walk::Fresh(Walked { ids: job.ids.clone(), data: vec![1e-3; output_words(job.ids.len())], debug: Vec::new(), epoch, listener: job.listener, masks: Vec::new() })
             }
         };
         let early = |f: &SourceField| f.taps.iter().filter(|t| t.key >= KEY_EARLY_BASE && t.key < 20_000).count();

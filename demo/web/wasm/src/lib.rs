@@ -112,7 +112,7 @@ impl SimHost {
         let c = self.config();
         self.sim.set_config(c);
         // a rebuild (v3/v4) drops the walker: the GPU walk stays on
-        if self.cfg.compute != Compute::Cpu && !self.sim.gpu_found() {
+        if self.cfg.compute != Compute::Cpu && !self.sim.gpu_active() {
             self.sim.set_walker(Some(Box::new(JsWalker)));
         }
     }
@@ -509,8 +509,9 @@ pub extern "C" fn sim_nsrc() -> u32 {
 struct Bridge {
     /// The newest job not yet taken (newest wins).
     job: Option<WalkJob>,
-    /// The job gpu.js took (source ids, epoch) and its plan.
-    taken: Option<(Vec<u32>, u32, LiveWalk, omg_core::vec3::Vec3)>,
+    /// The job gpu.js took (source ids, epoch), its plan, where the
+    /// listener was, and its portals (masks, deposits' cap).
+    taken: Option<(Vec<u32>, u32, LiveWalk, omg_core::vec3::Vec3, Vec<u64>, usize)>,
     result: Option<Walked>,
     words: Vec<u32>,
     stage: Vec<f32>,
@@ -530,6 +531,9 @@ impl omg_audio::V3Walker for JsWalker {
     fn walk(&mut self, job: &WalkJob) -> Walk {
         if job.n_edges() != 0 && job.n_edges() != edges_flat()[0] as usize {
             return Walk::Refused; // another edge set than the kernel holds
+        }
+        if job.n_apertures() > walkfmt::MAX_APERTURES {
+            return Walk::Refused;
         }
         let b = bridge();
         b.job = Some(job.clone());
@@ -670,8 +674,15 @@ pub extern "C" fn sim_v3_take() -> u32 {
     b.words.clear();
     b.words.extend_from_slice(&live.header);
     b.words.extend_from_slice(job.scene());
-    b.taken = Some((job.ids.clone(), job.epoch, live, job.listener));
+    b.taken = Some((job.ids.clone(), job.epoch, live, job.listener, job.masks.clone(), job.portal_cap()));
     b.words.len() as u32
+}
+
+/// The taken job's deposits at openings at most (0: no portals) — the
+/// output's portal part follows its bins (`walkfmt::portal_words`).
+#[no_mangle]
+pub extern "C" fn sim_v3_portal_cap() -> u32 {
+    bridge().taken.as_ref().map_or(0, |t| t.5) as u32
 }
 
 #[no_mangle]
@@ -715,13 +726,14 @@ pub extern "C" fn sim_v3_buf_ptr(n: u32) -> *mut f32 {
 #[no_mangle]
 pub extern "C" fn sim_v3_inject(n: u32, gpu_ms: f32, gpu_max_ms: f32) {
     let b = bridge();
-    let Some((ids, epoch, _, listener)) = b.taken.take() else { return };
-    let out = walkfmt::output_words(ids.len());
+    let Some((ids, epoch, _, listener, masks, cap)) = b.taken.take() else { return };
+    let out = walkfmt::output_words(ids.len()) + if cap > 0 { 4 } else { 0 };
     if (n as usize) < out {
         return; // malformed: the next walk refreshes
     }
-    let data = b.stage[..out].to_vec();
-    b.result = Some(Walked { ids, data, debug: Vec::new(), epoch, listener });
+    // the bins, and with portals the deposits' count and the deposits
+    let data = b.stage[..n as usize].to_vec();
+    b.result = Some(Walked { ids, data, debug: Vec::new(), epoch, listener, masks });
     b.gpu_ms = gpu_ms;
     b.gpu_max_ms = gpu_max_ms;
 }

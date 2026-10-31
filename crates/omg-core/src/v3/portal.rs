@@ -289,7 +289,7 @@ pub(super) fn side_of(ap: &Aperture, d: Vec3) -> u8 {
 }
 
 /// The opening's area (across its axis).
-fn area(ap: &Aperture) -> f32 {
+pub(super) fn area(ap: &Aperture) -> f32 {
     let e = ap.max - ap.min;
     (0..3).filter(|&k| k != ap.ax).map(|k| e.get(k).max(1e-3)).product()
 }
