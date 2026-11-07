@@ -171,9 +171,25 @@ take a wavefront walk (Laine, Karras & Aila 2013: the shadow rays of every
 bounce as one wide dispatch) and a wide BVH — not worth it while the CPU
 has the cores. Still the CPU's on a landed walk, the rest of its spike: the
 portal records' rays (`trace_source`, ~1 ms while they fill), the mirror
-chains' finding and solving (1–3 ms), the fold (0.3–0.6 ms). The early
-walk's own passes still reach 11–20 ms at levels 5–10 (v6.4 the same): the
-next to slice finer.
+chains' finding and solving (1–3 ms), the fold (0.3–0.6 ms).
+
+The early walk's passes (Nov 7): a bounce's connections to sources, each
+a segment across the world through the BVH, one after another in the
+ray's thread, were most of a pass (level 10's 2-segment passes 5–20 ms).
+They are queued now and priced by a `connect` pass, one thread each
+(`v3_walk.wgsl queue_conn`; Laine, Karras & Aila 2013, wavefront path
+tracing) — the same sums to the bit
+(`v3_parity.rs::v3_queued_connections_sum_as_priced_in_place`). The town
+walk, queue off → on, same minute: longest dispatch level 5 12.6–13.3 →
+10.4–10.6 ms, level 10 22.9–23.4 → 16.4–16.7; the GPU's time a walk 25.5
+→ 17.5–19.9, 50–65 → 35–38 ms; level 0 (one connection a bounce) the
+same. Next: the edge search — a third of a level-10 walk (37 → 25 ms
+without diffraction, its longest dispatch 19 → 13): every escaping
+segment steps 120 m through the hash grid in 2 m steps; an exact cell
+walk (Amanatides & Woo 1987), on the CPU's side too (the probe pins the
+two segment by segment). One segment a pass instead of two: passes 2–6
+ms, but 30 % more GPU time a walk (a pass's fixed cost, the GPU clocking
+down between paced passes) and walks landing less often.
 
 ### Exact paths stepping in motion (Oct 31, v6.4)
 Done in v6.4 (`diffraction.rs::passing_a_corner_the_bend_is_there_at_once_v64`):

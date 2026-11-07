@@ -568,6 +568,58 @@ fn v3_demo_world_fields_match_cpu() {
     }
 }
 
+/// The walk queues its connections to sources and the `connect` pass
+/// prices them, one thread each (Laine, Karras & Aila 2013, wavefront
+/// path tracing: a bounce's connections one after another in the ray's
+/// thread were most of a live dispatch — level 10's 2-segment passes 5–20
+/// ms). Queuing draws no random numbers: the same job walked with the
+/// queue and without it is the same walk, its bins the same sums — whole
+/// and sliced, early and late rays, in the demo world with diffraction,
+/// earth and six sources.
+#[test]
+fn v3_queued_connections_sum_as_priced_in_place() {
+    let rooms = omg_scene::walkthrough::rooms();
+    let doors = omg_scene::walkthrough::doors();
+    let (mesh, _) = omg_scene::dome::build_world_mesh(&rooms, &doors);
+    let Some(mut g) = gpu(&mesh, "v3_queued_connections") else { return };
+    let w = World { grade: Some(0.0), ..World::new(&mesh, &[]) };
+    let lis = v(26.5, 31.0, 1.6);
+    let srcs: Vec<Source> = (0..6)
+        .map(|i| {
+            let a = i as f32 * 1.1;
+            let r = 5.0 + 6.0 * i as f32;
+            Source { id: i, pos: v(26.5 + r * a.cos(), 31.0 + r * a.sin(), 1.6), weight: 1.0 }
+        })
+        .collect();
+    let b = Budget { rays: 2048, bounces: 6, k: 0.06, ema: 0.35, nee: 4, late_rays: 256, late_ema: 0.1, late_nee: 1, diffraction: true, ..Budget::default() };
+    let mut t = Tracer::new(1);
+    let mut job = None;
+    t.trace_walked(&w, lis, &srcs, b, b, None, false, &mut |j| {
+        job = Some(j.clone());
+        Walk::Pending
+    });
+    let job = job.expect("a walk job");
+    for sliced in [false, true] {
+        g.sliced = sliced;
+        let mut walk = |defer: bool| {
+            g.defer = defer;
+            g.walk(&job).expect("walk").data
+        };
+        let (queued, inline) = (walk(true), walk(false));
+        assert_eq!(queued.len(), inline.len());
+        let top = inline.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        let (mut worst, mut total) = (0.0f32, [0.0f64; 2]);
+        for (a, b) in queued.iter().zip(&inline) {
+            worst = worst.max((a - b).abs() / (b.abs() + 1e-6 * top));
+            total[0] += *a as f64;
+            total[1] += *b as f64;
+        }
+        eprintln!("sliced {sliced}: {} words, worst relative difference {worst:.2e}, sums {:.6e} / {:.6e}", inline.len(), total[0], total[1]);
+        assert!(total[1] > 0.0, "the walk deposited something");
+        assert!(worst < 1e-3, "sliced {sliced}: queued and in-place connections differ by {worst:.2e}");
+    }
+}
+
 /// Discrete echoes on the GPU path: the kernel skips the chains the CPU
 /// solves exactly, the CPU names them with its own mirror rays — the
 /// flutter between two bare parallel walls comes out the same train.

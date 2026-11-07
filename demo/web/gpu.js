@@ -7,7 +7,8 @@
 // frames come first — and hands the result back, folded the tick after.
 // Any failure: the driver reports none and the walk stays on the CPU.
 
-const V3_VERSION = 9; // omg_core::v3::fold::WALK_LAYOUT_VERSION
+const V3_VERSION = 10; // omg_core::v3::fold::WALK_LAYOUT_VERSION
+const V3_HEADER = 44; // fold HEADER_WORDS (the uniform: 176 bytes)
 const V3_SKY = 384;
 const V3_SRC = 17164; // SOURCE_WORDS
 const V3_MAX_SRC = 64;
@@ -31,6 +32,9 @@ export async function initGpu(wasm) {
   const module = device.createShaderModule({ code });
   const walkPipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'walk' } });
   const resolvePipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'resolve' } });
+  // prices the connections to sources a walk's dispatch queued, one thread
+  // each (header word 41: how many it may queue)
+  const connectPipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'connect' } });
   // the simulation's mesh, uploaded once
   const staticBuf = (len, ptr) => {
     const n = Math.max(len, 4);
@@ -44,7 +48,7 @@ export async function initGpu(wasm) {
   // the diffraction edges and their search grid (EdgeSet::flat)
   const edges = staticBuf(wasm.sim_mesh_edges_len(), wasm.sim_mesh_edges_ptr());
   const outBytes = (V3_SKY + V3_MAX_SRC * V3_SRC) * 4;
-  const job = device.createBuffer({ size: 160, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const job = device.createBuffer({ size: V3_HEADER * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const scene = device.createBuffer({ size: V3_SCENE_WORDS * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   // the fixed-point bins, then (portals) the deposits at openings: their
   // count and the deposits, grown to a job's cap
@@ -59,6 +63,7 @@ export async function initGpu(wasm) {
   let state = null;
   let stateWords = 0;
   let walkBind = null;
+  let connectBind = null;
   const bindAll = () => {
     resolveBind = device.createBindGroup({
       layout: resolvePipe.getBindGroupLayout(0),
@@ -80,6 +85,18 @@ export async function initGpu(wasm) {
         { binding: 5, resource: { buffer: acc } },
         { binding: 7, resource: { buffer: state } },
         { binding: 8, resource: { buffer: edges } },
+      ],
+    });
+    connectBind = device.createBindGroup({
+      layout: connectPipe.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: job } },
+        { binding: 1, resource: { buffer: nodes } },
+        { binding: 2, resource: { buffer: prims } },
+        { binding: 3, resource: { buffer: mats } },
+        { binding: 4, resource: { buffer: scene } },
+        { binding: 5, resource: { buffer: acc } },
+        { binding: 7, resource: { buffer: state } },
       ],
     });
   };
@@ -129,7 +146,8 @@ export async function initGpu(wasm) {
   async function run(words, passes, w36, outWords, cap, budget, done) {
     const nRays = words[3] + words[7];
     if (!query && walks % 16 === 0) await probeLatency();
-    device.queue.writeBuffer(scene, 0, words.subarray(40));
+    device.queue.writeBuffer(scene, 0, words.subarray(V3_HEADER));
+    const connCap = words[41];
     let sum = 0;
     let longest = 0;
     let waited = 0;
@@ -138,11 +156,13 @@ export async function initGpu(wasm) {
     const gap = open ? passMs * (1 / budget - 1) : 0;
     let rest = null;
     for (let pass = 0; pass < passes; pass++) {
-      const hdr = words.slice(0, 40);
+      const hdr = words.slice(0, V3_HEADER);
       hdr[36] = w36[pass];
       device.queue.writeBuffer(job, 0, hdr);
       const enc = device.createCommandEncoder();
       if (pass === 0) enc.clearBuffer(acc, 0, outWords * 8 + (cap ? 16 : 0));
+      // the connections' counter (after the portal deposits')
+      enc.clearBuffer(acc, outWords * 8 + 4, 4);
       const last = pass + 1 === passes;
       const cp = enc.beginComputePass(pass < stamped
         ? { timestampWrites: { querySet: query.set, beginningOfPassWriteIndex: 2 * pass, endOfPassWriteIndex: 2 * pass + 1 } }
@@ -150,6 +170,11 @@ export async function initGpu(wasm) {
       cp.setPipeline(walkPipe);
       cp.setBindGroup(0, walkBind);
       cp.dispatchWorkgroups(Math.ceil(nRays / 64));
+      if (connCap) {
+        cp.setPipeline(connectPipe);
+        cp.setBindGroup(0, connectBind);
+        cp.dispatchWorkgroups(Math.ceil(connCap / 64));
+      }
       if (last) {
         cp.setPipeline(resolvePipe);
         cp.setBindGroup(0, resolveBind);

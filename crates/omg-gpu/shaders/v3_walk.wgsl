@@ -128,6 +128,11 @@ const NO_EDGE: u32 = 0xFFFFFFFFu;
 // scattering at 29 (flags: crossed 128, rough since 256, a diffuse
 // bounce last 512, light tracing's 1024)
 const STATE_WORDS: u32 = 64u;
+// a queued connection (fold.rs CONN_WORDS): from xyz 0..3, the source 3,
+// its energy before the segment's transmission 4..7, its delay 7, the
+// ray's first direction 8..11 and cell 11, its spread 12 (a sphere hit's
+// r/c; 0: none)
+const CONN_WORDS: u32 = 16u;
 // v4: a ray splits at the first surface passing this share of the energy
 // (v3.rs SPLIT_T2)
 const SPLIT_T2: f32 = 1e-6;
@@ -171,6 +176,13 @@ struct Job {
     // walk may leave (0: no portals)
     off_portal: u32,
     portal_cap: u32,
+    // the connections to sources a dispatch queues (fold.rs `conn_cap`):
+    // in `dbg` from `conn_off`, CONN_WORDS each, priced by `connect` after
+    // the walk's dispatch (0: each priced where it is made)
+    conn_off: u32,
+    conn_cap: u32,
+    _c0: u32,
+    _c1: u32,
 }
 
 struct Node {
@@ -927,6 +939,35 @@ fn deposit_sq(si: u32, e: vec3<f32>, delay: f32, sq_scale: f32) {
     }
 }
 
+// A connection from `a` to source `si` carrying `e` before the segment's
+// transmission: queued for `connect`, which prices it in a thread of its
+// own (a bounce's connections one after another in this thread — each a
+// segment across the world through the BVH — were most of a dispatch:
+// Laine, Karras & Aila 2013, wavefront path tracing). False when the queue
+// is off or full: the caller prices it here, as ever. Its counter sits
+// after the portal deposits' (cleared before every dispatch).
+fn queue_conn(si: u32, a: vec3<f32>, e: vec3<f32>, delay: f32, half: f32) -> bool {
+    if (job.conn_cap == 0u || dbg_on) { return false; }
+    if (!(e.x > 0.0 || e.y > 0.0 || e.z > 0.0)) { return true; } // nothing to bring
+    let k = atomicAdd(&acc[2u * (SKY_WORDS + job.n_sources * SOURCE_WORDS) + 1u], 1u);
+    if (k >= job.conn_cap) { return false; }
+    let o = job.conn_off + k * CONN_WORDS;
+    dbg[o] = bitcast<u32>(a.x);
+    dbg[o + 1u] = bitcast<u32>(a.y);
+    dbg[o + 2u] = bitcast<u32>(a.z);
+    dbg[o + 3u] = si;
+    dbg[o + 4u] = bitcast<u32>(e.x);
+    dbg[o + 5u] = bitcast<u32>(e.y);
+    dbg[o + 6u] = bitcast<u32>(e.z);
+    dbg[o + 7u] = bitcast<u32>(delay);
+    dbg[o + 8u] = bitcast<u32>(ray_first.x);
+    dbg[o + 9u] = bitcast<u32>(ray_first.y);
+    dbg[o + 10u] = bitcast<u32>(ray_first.z);
+    dbg[o + 11u] = ray_cell;
+    dbg[o + 12u] = bitcast<u32>(half);
+    return true;
+}
+
 // the 64 direction cells (fibonacci_sphere(64)): nearest to `d`
 fn cell_of(d: vec3<f32>) -> u32 {
     var best = 0u;
@@ -1359,7 +1400,6 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if (mirror_only && loud && refl >= 1u && refl <= MAX_COHERENT_REFL && (job.v4 != 0u || refl > job.bounces || rel >= EARLY_S)) {
                     continue;
                 }
-                let t = seg_transmission_free(origin, sp);
                 let a = air(l_s);
                 let w = 4.0 * inv_n / (job.k * job.k * l_s * l_s);
                 // a bent path only carries what the straight line from
@@ -1375,7 +1415,11 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
                         gate = clamp(vec3<f32>(1.0) - seg_transmission(bend_from, sp), vec3<f32>(0.0), vec3<f32>(1.0));
                     }
                 }
-                deposit_spread(si, thr * t * t * a * a * w * gate, l_s / SPEED_OF_SOUND, r / SPEED_OF_SOUND);
+                let e0 = thr * a * a * w * gate;
+                if (!queue_conn(si, origin, e0, l_s / SPEED_OF_SOUND, r / SPEED_OF_SOUND)) {
+                    let t = seg_transmission_free(origin, sp);
+                    deposit_spread(si, e0 * t * t, l_s / SPEED_OF_SOUND, r / SPEED_OF_SOUND);
+                }
             }
         }
 
@@ -1519,11 +1563,14 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let to = sp - off;
                 let r = length(to);
                 let cos_in = dot(to, normal) / r;
-                let t = seg_transmission_free(off, sp);
                 let rr = max(r, MIN_DIST);
                 let a = air(length_m + r);
                 let w = pw * hit.scattering * cos_in * 4.0 * inv_n / (rr * rr);
-                deposit(si, thr * keep * t * t * a * a * w, (length_m + r) / SPEED_OF_SOUND);
+                let e0 = thr * keep * a * a * w;
+                if (!queue_conn(si, off, e0, (length_m + r) / SPEED_OF_SOUND, 0.0)) {
+                    let t = seg_transmission_free(off, sp);
+                    deposit(si, e0 * t * t, (length_m + r) / SPEED_OF_SOUND);
+                }
             }
         }
 
@@ -1696,6 +1743,26 @@ fn walk(@builtin(global_invocation_id) gid: vec3<u32>) {
         dbg[so + 27u] = 0u; // ended
         dbg[so + 63u] = 0u;
     }
+}
+
+// ------------------------------------------------------------- connect
+// One thread per connection the walk's dispatch queued (`queue_conn`): the
+// segment from where it left to its source priced through the world, the
+// connection deposited as the walk would have.
+@compute @workgroup_size(64)
+fn connect(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let k = gid.x;
+    let n = atomicLoad(&acc[2u * (SKY_WORDS + job.n_sources * SOURCE_WORDS) + 1u]);
+    if (k >= min(n, job.conn_cap)) { return; }
+    let o = job.conn_off + k * CONN_WORDS;
+    let a = vec3<f32>(bitcast<f32>(dbg[o]), bitcast<f32>(dbg[o + 1u]), bitcast<f32>(dbg[o + 2u]));
+    let si = dbg[o + 3u];
+    let e = vec3<f32>(bitcast<f32>(dbg[o + 4u]), bitcast<f32>(dbg[o + 5u]), bitcast<f32>(dbg[o + 6u]));
+    ray_first = vec3<f32>(bitcast<f32>(dbg[o + 8u]), bitcast<f32>(dbg[o + 9u]), bitcast<f32>(dbg[o + 10u]));
+    ray_cell = dbg[o + 11u];
+    dbg_on = false;
+    let t = seg_transmission_free(a, src_pos(si));
+    deposit_spread(si, e * t * t, bitcast<f32>(dbg[o + 7u]), bitcast<f32>(dbg[o + 12u]));
 }
 
 // ------------------------------------------------------------- resolve

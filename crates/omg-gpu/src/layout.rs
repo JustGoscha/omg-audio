@@ -244,7 +244,8 @@ pub use omg_core::v3::fold::WALK_LAYOUT_VERSION as V3_LAYOUT_VERSION;
 /// n_sources @76, n_panels @80, n_pockets @84, has_grade @88, grade @92,
 /// debug @96, n_edges @100, off_panels @104, off_pockets @108,
 /// edge_lo @112, off_edges @124, edge_hi @128, v4 @140, steps_pass @144,
-/// state_off @148, off_portal @152, portal_cap @156 — 160 B.
+/// state_off @148, off_portal @152, portal_cap @156, conn_off @160,
+/// conn_cap @164 — 176 B.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuV3Job {
@@ -271,7 +272,7 @@ pub struct GpuV3Job {
     pub edge_lo: [f32; 3],
     pub off_edges: u32,
     pub edge_hi: [f32; 3],
-    pub _r: [u32; 5],
+    pub _r: [u32; 9],
 }
 
 /// One walk source (scene words). WGSL accessors: pos @0, weight @12,
@@ -419,7 +420,7 @@ mod tests {
         use omg_core::v3::{Budget, Source, World};
         use omg_core::vec3::Vec3;
         assert_eq!(core::mem::size_of::<GpuV3Job>(), HEADER_WORDS * 4);
-        assert_eq!(core::mem::size_of::<GpuV3Job>(), 160);
+        assert_eq!(core::mem::size_of::<GpuV3Job>(), 176);
         assert_eq!(core::mem::offset_of!(GpuV3Job, n_early), 12);
         assert_eq!(core::mem::offset_of!(GpuV3Job, n_late), 28);
         assert_eq!(core::mem::offset_of!(GpuV3Job, bounces), 44);

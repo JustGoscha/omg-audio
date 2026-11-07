@@ -64,6 +64,7 @@ pub struct GpuV3Tracer {
     queue: wgpu::Queue,
     walk_pipe: wgpu::ComputePipeline,
     resolve_pipe: wgpu::ComputePipeline,
+    connect_pipe: wgpu::ComputePipeline,
     probe_pipe: wgpu::ComputePipeline,
     nodes: wgpu::Buffer,
     prims: wgpu::Buffer,
@@ -89,6 +90,7 @@ pub struct GpuV3Tracer {
     dbg_words: usize,
     walk_bind: wgpu::BindGroup,
     resolve_bind: wgpu::BindGroup,
+    connect_bind: wgpu::BindGroup,
     flight: Option<InFlight>,
     /// Wall-clock of the last walk: dispatch to readback (sync), or
     /// submit to the poll that found it done (async — an upper bound).
@@ -97,6 +99,10 @@ pub struct GpuV3Tracer {
     /// lasting its rays' few segments. Else every ray is walked whole in
     /// one dispatch, as the CPU does.
     pub sliced: bool,
+    /// The walk queues its connections to sources for the `connect` pass
+    /// (`WalkJob::whole`/`live`; the default) — false: each priced where it
+    /// is made (the same sums: tests compare the two).
+    pub defer: bool,
     /// The share of GPU time a walk may take (0: none asked — the passes
     /// go out at once). Set on a thread of its own: `submit` then waits
     /// between passes (see `yield_after_pass`).
@@ -157,7 +163,7 @@ impl GpuV3Tracer {
                 cache: None,
             })
         };
-        let (walk_pipe, resolve_pipe, probe_pipe) = (pipe("walk"), pipe("resolve"), pipe("probe"));
+        let (walk_pipe, resolve_pipe, probe_pipe, connect_pipe) = (pipe("walk"), pipe("resolve"), pipe("probe"), pipe("connect"));
 
         let (mut nodes, mut prims, mut mats) = flatten_mesh(mesh);
         if nodes.is_empty() {
@@ -210,6 +216,11 @@ impl GpuV3Tracer {
             &[(0, &job), (1, &nodes), (2, &prims), (3, &mats), (4, &scene), (5, &acc), (7, &dbg), (8, &edges)],
         );
         let resolve_bind = Self::bind(&device, &resolve_pipe, &[(0, &job), (4, &scene), (5, &acc), (6, &out)]);
+        let connect_bind = Self::bind(
+            &device,
+            &connect_pipe,
+            &[(0, &job), (1, &nodes), (2, &prims), (3, &mats), (4, &scene), (5, &acc), (7, &dbg)],
+        );
         let timing = stamps.then(|| Timing {
             set: device.create_query_set(&wgpu::QuerySetDescriptor {
                 label: Some("v3-time"),
@@ -227,6 +238,7 @@ impl GpuV3Tracer {
             device,
             queue,
             walk_pipe,
+            connect_pipe,
             resolve_pipe,
             probe_pipe,
             nodes,
@@ -247,9 +259,11 @@ impl GpuV3Tracer {
             dbg_words,
             walk_bind,
             resolve_bind,
+            connect_bind,
             flight: None,
             last_ms: 0.0,
             sliced: false,
+            defer: true,
             pace: 0.0,
             latency: None,
             walks: 0,
@@ -297,6 +311,11 @@ impl GpuV3Tracer {
             ],
         );
         self.resolve_bind = Self::bind(&self.device, &self.resolve_pipe, &[(0, &self.job), (4, &self.scene), (5, &self.acc), (6, &self.out)]);
+        self.connect_bind = Self::bind(
+            &self.device,
+            &self.connect_pipe,
+            &[(0, &self.job), (1, &self.nodes), (2, &self.prims), (3, &self.mats), (4, &self.scene), (5, &self.acc), (7, &self.dbg)],
+        );
     }
 
     /// Queue one walk (job upload, clear, walk, resolve, copy, map) —
@@ -310,11 +329,9 @@ impl GpuV3Tracer {
         let ns = job.n_sources();
         let debug = job.debug();
         let live = self.sliced.then(|| job.live(MAX_PASSES));
-        let need = match &live {
-            Some(l) => l.state_words,
-            None if debug => job.n_early() as usize * DEBUG_WORDS,
-            None => 0,
-        };
+        // a whole walk: the debug records, then the connections' queue
+        let plan = live.clone().unwrap_or_else(|| job.whole());
+        let need = plan.state_words;
         if need > self.dbg_words {
             let words = need.next_power_of_two();
             use wgpu::BufferUsages as U;
@@ -345,10 +362,11 @@ impl GpuV3Tracer {
             self.acc_bytes = bytes;
             self.rebind();
         }
-        let (mut header, passes) = match &live {
-            Some(l) => (l.header.clone(), l.passes),
-            None => (job.header().to_vec(), 1),
-        };
+        let (mut header, passes) = (plan.header.clone(), plan.passes);
+        if !self.defer {
+            header[41] = 0;
+        }
+        let conn_cap = header[41];
         let out_words = output_words(ns);
         if !job.scene().is_empty() {
             self.queue.write_buffer(&self.scene, 0, bytemuck::cast_slice(job.scene()));
@@ -372,6 +390,8 @@ impl GpuV3Tracer {
                     enc.clear_buffer(&self.dbg, 0, Some(dbg_bytes));
                 }
             }
+            // the connections' counter (after the portal deposits')
+            enc.clear_buffer(&self.acc, out_bytes * 2 + 4, Some(4));
             let last = pass + 1 == passes;
             {
                 let timestamp_writes = self.timing.as_ref().map(|t| wgpu::ComputePassTimestampWrites {
@@ -383,6 +403,11 @@ impl GpuV3Tracer {
                 cp.set_pipeline(&self.walk_pipe);
                 cp.set_bind_group(0, &self.walk_bind, &[]);
                 cp.dispatch_workgroups(job.n_rays().div_ceil(64), 1, 1);
+                if conn_cap > 0 {
+                    cp.set_pipeline(&self.connect_pipe);
+                    cp.set_bind_group(0, &self.connect_bind, &[]);
+                    cp.dispatch_workgroups(conn_cap.div_ceil(64), 1, 1);
+                }
                 if last {
                     cp.set_pipeline(&self.resolve_pipe);
                     cp.set_bind_group(0, &self.resolve_bind, &[]);

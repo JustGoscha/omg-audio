@@ -22,7 +22,7 @@
 //!
 //! JOB — u32 words (f32 payloads as bits): the header, then the scene.
 //! ```text
-//! header (HEADER_WORDS = 40, the kernel's 160-byte uniform):
+//! header (HEADER_WORDS = 44, the kernel's 176-byte uniform):
 //!   0..3 rot row 0   3 n_early     4..7 rot row 1   7 n_late
 //!   8..11 rot row 2  11 bounces    12..15 listener  15 seed
 //!   16 k  17 nee  18 late_nee  19 n_sources
@@ -31,7 +31,10 @@
 //!   28..31 edge bounds lo  31 off_edges   32..35 edge bounds hi
 //!   35 v4  36 a live walk's pass word (`slice_word`; 0 for a whole
 //!   walk)  37 state_off  38 off_portal  39 portal_cap (the deposits at
-//!   openings the walk may leave; 0: no portals)
+//!   openings the walk may leave; 0: no portals)  40 conn_off  41
+//!   conn_cap (the connections to sources a dispatch queues for the
+//!   `connect` pass, in the state buffer from `conn_off`; 0: each priced
+//!   where it is made)  42, 43 reserved
 //! scene: sources (SRC_WORDS = 12 each): pos xyz, weight, t_free, id,
 //!          direct visibility xyz, fixed-point norm, its portal mask (the
 //!          openings its record covers, bits by aperture: lo, hi)
@@ -72,7 +75,7 @@
 use super::*;
 
 /// Bump on ANY change to the flat formats above or in v3_walk.wgsl.
-pub const WALK_LAYOUT_VERSION: u32 = 9;
+pub const WALK_LAYOUT_VERSION: u32 = 10;
 /// Direction cells for early binning (and the sky).
 pub const CELLS: usize = N_CELLS;
 /// Early delay bins: the early window over the delay bin width.
@@ -93,7 +96,7 @@ pub const DENSE_SLOT: usize = 7;
 pub const DENSE_WORDS: usize = DENSE_BINS * DENSE_SLOT;
 const _: () = assert!(DENSE_WORDS + 4 <= SOURCE_WORDS);
 pub const SKY_WORDS: usize = CELLS * SLOT;
-pub const HEADER_WORDS: usize = 40;
+pub const HEADER_WORDS: usize = 44;
 pub const SRC_WORDS: usize = 12;
 pub const PANEL_WORDS: usize = 16;
 pub const POCKET_WORDS: usize = 8;
@@ -330,6 +333,31 @@ impl WalkJob {
         (self.words[11] + 1 + super::MAX_BENDS).div_ceil(steps).max(1)
     }
 
+    /// The connections to sources one dispatch may queue (`CONN_WORDS`
+    /// each) when its rays walk `segments` early and `late` late segments
+    /// each: one a bounce for each source a bounce connects to, and a
+    /// sphere hit's — at most `CONN_MAX`; past the queue's room (and while
+    /// debug captures paths) the walk prices them where it makes them.
+    fn conn_cap(&self, segments: u32, late: u32) -> u32 {
+        if self.debug() {
+            return 0;
+        }
+        let per = |nee: u32| if nee == 0 { self.n_sources() as u64 } else { nee as u64 } + 1;
+        let n = self.n_early() as u64 * segments as u64 * per(self.words[17]) + self.n_late() as u64 * late as u64 * per(self.words[18]);
+        n.min(CONN_MAX as u64) as u32
+    }
+
+    /// Plan this job as one dispatch walking every ray whole (a
+    /// synchronous walk): the debug records, then the connections' queue.
+    pub fn whole(&self) -> LiveWalk {
+        let mut header = self.header().to_vec();
+        let off = if self.debug() { self.n_early() * DEBUG_WORDS as u32 } else { 0 };
+        let cap = self.conn_cap(self.words[11] + 1 + super::MAX_BENDS, LATE_CONN_SEGMENTS);
+        header[40] = off;
+        header[41] = cap;
+        LiveWalk { header, passes: 1, state_words: off as usize + cap as usize * CONN_WORDS }
+    }
+
     /// Plan this job as a live (sliced) walk: the early rays
     /// `SLICE_STEPS` segments per dispatch, their states kept between the
     /// walk's dispatches (none while debug captures them whole: pass 0
@@ -344,11 +372,16 @@ impl WalkJob {
         let states = if self.debug() { 0 } else { n_early as usize };
         let mut header = self.header().to_vec();
         header[37] = state_off;
+        // the connections' queue after the states
+        let conn_off = state_off as usize + states * STATE_WORDS;
+        let cap = self.conn_cap(SLICE_STEPS, LATE_CONN_SEGMENTS);
+        header[40] = conn_off as u32;
+        header[41] = cap;
         let passes = self.passes(SLICE_STEPS);
         LiveWalk {
             header,
             passes: if max_passes > 0 { passes.min(max_passes) } else { passes },
-            state_words: state_off as usize + states * STATE_WORDS,
+            state_words: conn_off + cap as usize * CONN_WORDS,
         }
     }
 
@@ -375,6 +408,19 @@ impl WalkJob {
 /// Segments per early ray per dispatch in a live (sliced) walk; they
 /// walk whole within the walk's passes.
 pub const SLICE_STEPS: u32 = 2;
+
+/// Words per queued connection to a source (v3_walk.wgsl CONN_WORDS):
+/// where it leaves from xyz, the source, its energy before the segment's
+/// transmission xyz, its delay, the ray's first direction xyz and cell,
+/// its spread (a sphere hit's r/c; 0: none).
+pub const CONN_WORDS: usize = 16;
+/// The most connections a dispatch queues (16 MB of queue): the rest are
+/// priced where they are made, as they all were before (v3_walk.wgsl
+/// `queue_conn`).
+pub const CONN_MAX: u32 = 1 << 18;
+/// A late ray's segments a dispatch, for the queue's room (most end
+/// within ~150; those past the room are priced where they are made).
+const LATE_CONN_SEGMENTS: u32 = 64;
 
 /// Header word 36 of a live walk's dispatch `pass`.
 pub fn slice_word(pass: u32) -> u32 {
